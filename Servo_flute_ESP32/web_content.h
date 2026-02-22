@@ -1229,27 +1229,44 @@ function refreshKbdAir(){
   const airSvg=$('kbdAirSvg');
   if(CFG&&CFG.show_air){
     box.style.display='';buildAirSvg('kbdAirSvg',true);
-    // Force both SVGs to identical rendering: block display, same width, left-aligned content
-    if(airSvg){airSvg.style.display='block';airSvg.style.maxWidth='none';airSvg.style.maxHeight='none'}
-    if(fs){fs.style.display='block';fs.style.maxWidth='none'}
-    // Align: adjust flute viewBox to add left padding so embouchure aligns with pipe exit
-    if(fs&&airSvg&&_kbdPipeExitRatio>0){
-      const fluteVB=fs.viewBox.baseVal;
-      if(fluteVB.width>0){
-        const em=CFG.embouchure||'bec';
-        const becPx=(em==='trav')?36:(em==='oca')?21:4;
-        const tw=fluteVB.width,th=fluteVB.height;
-        const r=_kbdPipeExitRatio;
-        const padLeft=Math.max(0,(r*tw-becPx)/(1-r||1));
-        fs.setAttribute('viewBox',(-padLeft)+' 0 '+(tw+padLeft)+' '+th);
-      }
-    }
+    // Align flute embouchure with pipe exit using pixel-accurate measurement.
+    // Double rAF ensures layout is fully computed after display:none -> visible.
+    if(fs)fs.style.transform='';
+    requestAnimationFrame(function(){requestAnimationFrame(function(){
+      _pixelAlignFlute(airSvg,fs);
+    })});
   }else{
     box.style.display='none';
-    if(airSvg){airSvg.style.display='';airSvg.style.maxWidth='';airSvg.style.maxHeight=''}
-    if(fs){fs.style.display='';fs.style.maxWidth=''}
+    if(fs)fs.style.transform='';
   }
   refreshKbdPumpPanel();
+}
+function _pixelAlignFlute(as,fs){
+  if(!as||!fs||!_kbdPipeExitRatio||!CFG)return;
+  // Get pipe exit actual screen X via SVG coordinate transform
+  var ctm=as.getScreenCTM();
+  if(!ctm)return;
+  var vb=as.viewBox.baseVal;
+  if(!vb||!vb.width)return;
+  var pt=as.createSVGPoint();
+  pt.x=_kbdPipeExitRatio*vb.width;pt.y=0;
+  var sp=pt.matrixTransform(ctm);
+  // Get embouchure actual screen X via SVG coordinate transform
+  var fctm=fs.getScreenCTM();
+  if(!fctm)return;
+  var em=CFG.embouchure||'bec';
+  var bpx=(em==='trav')?36:(em==='oca')?21:4;
+  var fpt=fs.createSVGPoint();fpt.x=bpx;fpt.y=0;
+  var fsp=fpt.matrixTransform(fctm);
+  // Apply pixel-exact horizontal shift
+  var dx=Math.round(sp.x-fsp.x);
+  if(dx>1)fs.style.transform='translateX('+dx+'px)';
+  // Debug: add alignment marker line at pipe exit X in air SVG (temporary)
+  var mk=as.querySelector('#dbgAlignMark');
+  if(!mk){mk=document.createElementNS('http://www.w3.org/2000/svg','line');mk.id='dbgAlignMark';as.appendChild(mk)}
+  mk.setAttribute('x1',_kbdPipeExitRatio*vb.width);mk.setAttribute('y1','0');
+  mk.setAttribute('x2',_kbdPipeExitRatio*vb.width);mk.setAttribute('y2',vb.height);
+  mk.setAttribute('stroke','red');mk.setAttribute('stroke-width','2');mk.setAttribute('stroke-dasharray','4,4');
 }
 let _kbdPumpOn=false;
 function refreshKbdPumpPanel(){
