@@ -1334,6 +1334,13 @@ function rotateServoNeedle(angle){
     const cy2=mp?parseFloat(mp[2]):0;
     nd.setAttribute('transform','rotate('+deg+','+cx+','+cy2+')');
   });
+  // Fan duct: immediate rotation feedback from slider
+  const off=CFG?(CFG.air_off||mn):mn;
+  const pctDuct=Math.min(1,Math.max(0,(angle-off)/(mx-off||1)));
+  document.querySelectorAll('[id=airFanDuct]').forEach(fd=>{
+    fd.style.transition='transform 0.15s ease';
+    fd.style.transform='rotate('+(-30+pctDuct*30)+'deg)';
+  });
 }
 let _servoFlowTimer=null;
 function testServoFlow(v){
@@ -2032,9 +2039,23 @@ function buildAirSvg(svgId,full){
   // --- MODE 3: Fan (radial/centrifugal) + Servo Flow ---
   if(hasFan){
     const fanCx=120,fanCy=h/2,fanR=44;
-    // Volute housing (snail/spiral shape)
-    s+='<path d="M'+(fanCx+fanR+10)+','+fanCy+' A'+(fanR+10)+','+(fanR+10)+' 0 1,0 '+(fanCx+fanR+10)+','+(fanCy-1)+' L'+(fanCx+fanR+50)+','+(fanCy-12)+' L'+(fanCx+fanR+50)+','+(fanCy+12)+' Z" fill="url(#agFanBody)" stroke="#556" stroke-width="1.5" opacity=".9"/>';
-    s+='<circle cx="'+fanCx+'" cy="'+fanCy+'" r="'+fanR+'" fill="#1a1a2e" stroke="#667" stroke-width="1.5"/>';
+    // === Radial fan chassis (square housing) ===
+    const chPad=12;
+    const chL=fanCx-fanR-chPad,chT=fanCy-fanR-chPad;
+    const chW=(fanR+chPad)*2,chH=(fanR+chPad)*2;
+    const chR=chL+chW,chB=chT+chH;
+    // Chassis body
+    s+='<rect x="'+chL+'" y="'+chT+'" width="'+chW+'" height="'+chH+'" rx="6" fill="url(#agFanBody)" stroke="#556" stroke-width="2"/>';
+    // Mounting flanges (corners)
+    [0,1,2,3].forEach(i=>{const cx=i<2?chL+6:chR-6,cy=i%2===0?chT+6:chB-6;
+      s+='<circle cx="'+cx+'" cy="'+cy+'" r="3" fill="#445" stroke="#556" stroke-width=".8"/>'});
+    // Circular intake (visible through chassis)
+    s+='<circle cx="'+fanCx+'" cy="'+fanCy+'" r="'+(fanR+2)+'" fill="#1a1a2e" stroke="#556" stroke-width="1.2"/>';
+    // Internal volute scroll (subtle guide showing airflow spiral to outlet)
+    s+='<path d="M'+(fanCx+fanR)+','+fanCy+
+      ' C'+(fanCx+fanR+6)+','+(fanCy+fanR*0.8)+' '+(fanCx-fanR*0.3)+','+(fanCy+fanR+6)+' '+(fanCx-fanR)+','+fanCy+
+      ' C'+(fanCx-fanR)+','+(fanCy-fanR*0.7)+' '+(fanCx+fanR*0.4)+','+(fanCy-fanR-6)+' '+(chR-6)+','+(chT+10)+
+      '" fill="none" stroke="#445" stroke-width="1.5" stroke-dasharray="4,3" opacity=".5"/>';
     // Fan blades (curved, animated)
     s+='<g id="airFanBlades" style="transform-origin:'+fanCx+'px '+fanCy+'px">';
     const nb=7;
@@ -2049,30 +2070,29 @@ function buildAirSvg(svgId,full){
     // Center hub
     s+='<circle cx="'+fanCx+'" cy="'+fanCy+'" r="8" fill="#556" stroke="#889" stroke-width="1"/>';
     s+='<circle cx="'+fanCx+'" cy="'+fanCy+'" r="3" fill="#334"/>';
-    s+='<text x="'+fanCx+'" y="'+(fanCy+fanR+18)+'" text-anchor="middle" style="font-size:8px;fill:#9aa">Ventilateur</text>';
-    // Air intake label (center)
-    s+='<text x="'+fanCx+'" y="'+(fanCy-fanR-8)+'" text-anchor="middle" style="font-size:6px;fill:#667">Aspiration</text>';
-    s+='<line x1="'+fanCx+'" y1="'+(fanCy-fanR-4)+'" x2="'+fanCx+'" y2="'+(fanCy-fanR+2)+'" stroke="#667" stroke-width="1" marker-end="none"/>';
-    // Output duct (volute exit, rotates with servo flow)
-    const ductStartX=fanCx+fanR+10,ductLen=70;
-    s+='<g id="airFanDuct" style="transform-origin:'+ductStartX+'px '+fanCy+'px">';
-    s+='<rect x="'+ductStartX+'" y="'+(fanCy-10)+'" width="'+ductLen+'" height="20" rx="3" fill="url(#agMetal)" stroke="#556" stroke-width="1"/>';
-    // Nozzle at end
-    s+='<polygon points="'+(ductStartX+ductLen)+','+(fanCy-12)+' '+(ductStartX+ductLen+14)+','+fanCy+' '+(ductStartX+ductLen)+','+(fanCy+12)+'" fill="#7799bb" opacity=".7"/>';
+    // === Outlet flange at top-right ===
+    const outH=20;
+    const pivotX=chR,pivotY=chT+outH/2+2;
+    s+='<rect x="'+(chR-3)+'" y="'+(chT-2)+'" width="8" height="'+(outH+6)+'" rx="2" fill="#556" stroke="#778" stroke-width="1"/>';
+    s+='<rect x="'+(chR-1)+'" y="'+(chT+1)+'" width="4" height="'+(outH)+'" rx="1" fill="#1a1a2e"/>';
+    // === Air duct (servo flow) - pivots at outlet ===
+    const ductLen=80;
+    s+='<g id="airFanDuct" style="transform-origin:'+pivotX+'px '+pivotY+'px">';
+    s+='<rect x="'+pivotX+'" y="'+(pivotY-9)+'" width="'+ductLen+'" height="18" rx="3" fill="url(#agMetal)" stroke="#556" stroke-width="1"/>';
+    s+='<line class="airFlowAnim" x1="'+(pivotX+6)+'" y1="'+pivotY+'" x2="'+(pivotX+ductLen-6)+'" y2="'+pivotY+'"/>';
+    // Small opening at duct end
+    s+='<rect x="'+(pivotX+ductLen-2)+'" y="'+(pivotY-7)+'" width="4" height="14" rx="1" fill="#334" stroke="#556" stroke-width=".5"/>';
     s+='</g>';
-    // Airflow animated dash
-    s+='<line id="airFlowLine" x1="'+ductStartX+'" y1="'+fanCy+'" x2="'+(ductStartX+ductLen)+'" y2="'+fanCy+'" stroke="#4ecca3" stroke-width="1.5" stroke-dasharray="4,4" opacity=".5"><animate attributeName="stroke-dashoffset" from="8" to="0" dur="0.5s" repeatCount="indefinite"/></line>';
-    // Servo flow label + needle on duct
-    const gaugeX=ductStartX+ductLen/2,gaugeY=fanCy+22;
-    s+='<text x="'+gaugeX+'" y="'+(fanCy-16)+'" text-anchor="middle" style="font-size:7px;fill:#9aa">Servo Flow</text>';
-    s+='<path id="airServoNeedle" d="M'+gaugeX+','+gaugeY+' L'+gaugeX+','+(gaugeY-12)+'" stroke="#e94" stroke-width="2" stroke-linecap="round"/>';
-    s+='<circle cx="'+gaugeX+'" cy="'+gaugeY+'" r="2.5" fill="#e94"/>';
-    // Flute at right
-    const flX=ductStartX+ductLen+24;
+    // Labels
+    s+='<text x="'+fanCx+'" y="'+(chB+14)+'" text-anchor="middle" style="font-size:8px;fill:#9aa">Ventilateur</text>';
+    s+='<text x="'+fanCx+'" y="'+(chT-6)+'" text-anchor="middle" style="font-size:6px;fill:#667">Aspiration</text>';
+    s+='<text x="'+(pivotX+ductLen/2)+'" y="'+(pivotY-14)+'" text-anchor="middle" style="font-size:7px;fill:#9aa">Servo Flow</text>';
+    // Flute at right (aligned with duct horizontal = pivotY height)
+    const flX=pivotX+ductLen+14;
     if(isKbd){_kbdPipeExitRatio=flX/w}
     else{
-      s+='<rect x="'+flX+'" y="'+(fanCy-12)+'" width="70" height="24" rx="10" fill="'+(CFG.color||'#D4B044')+'" stroke="#a89030" stroke-width="1" opacity=".8"/>';
-      s+='<text x="'+(flX+35)+'" y="'+(fanCy+4)+'" text-anchor="middle" style="font-size:9px;fill:#333;font-weight:bold">Flute</text>';
+      s+='<rect x="'+(flX+4)+'" y="'+(pivotY-12)+'" width="70" height="24" rx="10" fill="'+(CFG.color||'#D4B044')+'" stroke="#a89030" stroke-width="1" opacity=".8"/>';
+      s+='<text x="'+(flX+39)+'" y="'+(pivotY+4)+'" text-anchor="middle" style="font-size:9px;fill:#333;font-weight:bold">Flute</text>';
     }
     svg.innerHTML=s;
     return;
@@ -2292,8 +2312,10 @@ function updateAirDiagram(d){
   // Fan duct rotation (servo flow angle rotates the output duct)
   document.querySelectorAll('[id=airFanDuct]').forEach(fd=>{
     if(d.air_angle==null)return;
-    // Map 0-180 servo angle to -30..+30 degree duct rotation
-    const ductAngle=-30+(d.air_angle/180)*60;
+    // Map servo angle: noteOff -> -30° (tilted up), max -> 0° (horizontal toward flute)
+    const mn=CFG?(CFG.air_off||CFG.air_min||0):0,mx=CFG?(CFG.air_max||180):180;
+    const pct=Math.min(1,Math.max(0,(d.air_angle-mn)/(mx-mn||1)));
+    const ductAngle=-30+pct*30;
     fd.style.transition='transform 0.2s ease';
     fd.style.transform='rotate('+ductAngle+'deg)';
   });
