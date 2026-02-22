@@ -67,15 +67,27 @@ PressureController::PressureController()
 bool PressureController::begin() {
   _sensorType = cfg.sensorType;
 
-  // Configurer pin pompe
-  if (cfg.pumpEnabled) {
-    pinMode(cfg.pumpPin, OUTPUT);
-    analogWrite(cfg.pumpPin, 0);
+  // Configurer pins pompes
+  if (cfg.airMode >= AIR_MODE_PUMP_VALVE) {
+    for (uint8_t i = 0; i < cfg.numPumps && i < MAX_PUMPS; i++) {
+      pinMode(cfg.pumpPins[i], OUTPUT);
+      analogWrite(cfg.pumpPins[i], 0);
+    }
   }
 
-  if (!cfg.reservoirEnabled) {
+  // Configurer pin endstop (mode 6)
+  if (cfg.airMode == AIR_MODE_PUMP_ENDSTOP) {
+    pinMode(cfg.endstopPin, INPUT_PULLUP);
     if (DEBUG) {
-      Serial.println("DEBUG: PressureController - Mode pompe directe (sans capteur)");
+      Serial.print("DEBUG: PressureController - Endstop GPIO ");
+      Serial.print(cfg.endstopPin);
+      Serial.println(cfg.endstopActiveHigh ? " (actif HIGH)" : " (actif LOW)");
+    }
+  }
+
+  if (cfg.airMode != AIR_MODE_PUMP_RESERVOIR) {
+    if (DEBUG) {
+      Serial.println("DEBUG: PressureController - Mode pompe directe (sans capteur distance)");
     }
     return false;
   }
@@ -184,18 +196,28 @@ uint16_t PressureController::readSensor() {
 }
 
 void PressureController::update() {
-  if (!cfg.pumpEnabled) return;
+  if (cfg.airMode < AIR_MODE_PUMP_VALVE) return;
 
   unsigned long now = millis();
 
-  // Mode pompe directe (sans capteur/reservoir)
-  if (!cfg.reservoirEnabled || !_sensorDetected) {
-    // PWM proportionnel direct a la cible
-    if (_targetPercent == 0) {
-      setPumpPwm(0);
+  // Mode pompe directe (sans capteur/reservoir) ou mode endstop
+  if (cfg.airMode != AIR_MODE_PUMP_RESERVOIR || !_sensorDetected) {
+    if (cfg.airMode == AIR_MODE_PUMP_ENDSTOP) {
+      // Mode endstop: pompe ON si endstop inactif, OFF si actif
+      bool endstopActive = (digitalRead(cfg.endstopPin) == (cfg.endstopActiveHigh ? HIGH : LOW));
+      if (_targetPercent == 0 || endstopActive) {
+        setPumpPwm(0);
+      } else {
+        setPumpPwm(cfg.pumpMaxPwm[0]);
+      }
     } else {
-      uint8_t pwm = cfg.pumpMinPwm + (uint16_t)(cfg.pumpMaxPwm - cfg.pumpMinPwm) * _targetPercent / 100;
-      setPumpPwm(pwm);
+      // PWM proportionnel direct a la cible
+      if (_targetPercent == 0) {
+        setPumpPwm(0);
+      } else {
+        uint8_t pwm = cfg.pumpMinPwm[0] + (uint16_t)(cfg.pumpMaxPwm[0] - cfg.pumpMinPwm[0]) * _targetPercent / 100;
+        setPumpPwm(pwm);
+      }
     }
     return;
   }
@@ -243,7 +265,7 @@ void PressureController::update() {
     // Hysteresis: pompe ON si remplissage < cible - 5%, OFF si >= cible
     if (_fillPercent < _targetPercent - 5) {
       // Pompe a PWM max pour gonfler
-      setPumpPwm(cfg.pumpMaxPwm);
+      setPumpPwm(cfg.pumpMaxPwm[0]);
     } else if (_fillPercent >= _targetPercent) {
       setPumpPwm(0);
     }
@@ -266,8 +288,14 @@ void PressureController::stop() {
 void PressureController::setPumpPwm(uint8_t pwm) {
   if (pwm != _currentPumpPwm) {
     _currentPumpPwm = pwm;
-    if (cfg.pumpEnabled) {
-      analogWrite(cfg.pumpPin, pwm);
+    if (cfg.airMode >= AIR_MODE_PUMP_VALVE) {
+      for (uint8_t i = 0; i < cfg.numPumps && i < MAX_PUMPS; i++) {
+        // Appliquer PWM min/max par pompe
+        uint8_t pumpVal = pwm;
+        if (pumpVal > 0 && pumpVal < cfg.pumpMinPwm[i]) pumpVal = cfg.pumpMinPwm[i];
+        if (pumpVal > cfg.pumpMaxPwm[i]) pumpVal = cfg.pumpMaxPwm[i];
+        analogWrite(cfg.pumpPins[i], pumpVal);
+      }
     }
   }
 }

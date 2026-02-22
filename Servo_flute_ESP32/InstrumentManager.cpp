@@ -40,7 +40,7 @@ void InstrumentManager::begin() {
   _airflowCtrl.begin();
 
   // Initialiser le controleur de pression (pompe/reservoir) si active
-  if (cfg.pumpEnabled || cfg.reservoirEnabled) {
+  if (cfg.airMode >= AIR_MODE_PUMP_VALVE) {
     bool sensorOk = _pressureCtrl.begin();
     if (DEBUG) {
       Serial.print("DEBUG: InstrumentManager - PressureController: ");
@@ -64,7 +64,7 @@ void InstrumentManager::begin() {
 void InstrumentManager::update() {
   _sequencer.update();
   _airflowCtrl.update();
-  if (cfg.pumpEnabled || cfg.reservoirEnabled) {
+  if (cfg.airMode >= AIR_MODE_PUMP_VALVE) {
     _pressureCtrl.update();
   }
   managePower();

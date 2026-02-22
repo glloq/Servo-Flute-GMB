@@ -48,20 +48,31 @@ AirflowController::AirflowController(Adafruit_PWMServoDriver& pwm)
 }
 
 void AirflowController::begin() {
-  pinMode(cfg.solenoidPin, OUTPUT);
-  closeSolenoid();
+  // Configurer GPIO solenoide si mode classique (mode 0)
+  if (cfg.airMode == AIR_MODE_SOLENOID_SERVO) {
+    pinMode(cfg.solenoidPin, OUTPUT);
+  }
+
+  // Mode servo-only (mode 2) : pas de valve, juste le servo flow
+  if (cfg.airMode == AIR_MODE_SERVO_ONLY) {
+    _solenoidOpen = true;  // Toujours "ouvert" car pas de valve
+  } else {
+    closeSolenoid();
+  }
   setAirflowToRest();
 
   if (DEBUG) {
-    Serial.println("DEBUG: AirflowController - Initialisation");
+    const char* modeNames[] = {"Classique", "Servo-valve", "Servo seul", "Ventilateur", "Pompe+valve", "Pompe+reservoir", "Pompe+endstop"};
+    Serial.print("DEBUG: AirflowController - Mode: ");
+    Serial.println(cfg.airMode < 7 ? modeNames[cfg.airMode] : "?");
     #if SOLENOID_USE_PWM
-    Serial.println("DEBUG: AirflowController - Mode PWM active");
-    Serial.print("DEBUG:   - PWM activation: ");
-    Serial.println(cfg.solenoidPwmActivation);
-    Serial.print("DEBUG:   - PWM maintien: ");
-    Serial.println(cfg.solenoidPwmHolding);
-    #else
-    Serial.println("DEBUG: AirflowController - Mode GPIO simple");
+    if (cfg.airMode == AIR_MODE_SOLENOID_SERVO) {
+      Serial.println("DEBUG: AirflowController - Mode PWM solenoide active");
+      Serial.print("DEBUG:   - PWM activation: ");
+      Serial.println(cfg.solenoidPwmActivation);
+      Serial.print("DEBUG:   - PWM maintien: ");
+      Serial.println(cfg.solenoidPwmHolding);
+    }
     #endif
   }
 }
@@ -229,7 +240,13 @@ void AirflowController::setAirflowForNote(byte midiNote, byte velocity) {
 }
 
 void AirflowController::openValve() {
-  if (cfg.valveUseServo) {
+  // Mode servo-only (mode 2) : pas de valve physique
+  if (cfg.airMode == AIR_MODE_SERVO_ONLY) {
+    _solenoidOpen = true;
+    return;
+  }
+
+  if (cfg.valveType == 1) {
     // Mode servo-valve : ouvrir via PCA9685
     setValveServoAngle(true);
   } else {
@@ -250,13 +267,19 @@ void AirflowController::openValve() {
 
   if (DEBUG) {
     Serial.print("DEBUG: AirflowController - Valve OUVERTE (");
-    Serial.print(cfg.valveUseServo ? "servo" : "solenoide");
+    Serial.print(cfg.valveType == 1 ? "servo" : "solenoide");
     Serial.println(")");
   }
 }
 
 void AirflowController::closeValve() {
-  if (cfg.valveUseServo) {
+  // Mode servo-only (mode 2) : pas de valve physique, juste mettre servo a off
+  if (cfg.airMode == AIR_MODE_SERVO_ONLY) {
+    _solenoidOpen = false;
+    return;
+  }
+
+  if (cfg.valveType == 1) {
     setValveServoAngle(false);
   } else {
     #if SOLENOID_USE_PWM
@@ -275,7 +298,7 @@ void AirflowController::closeValve() {
 
   if (DEBUG) {
     Serial.print("DEBUG: AirflowController - Valve FERMEE (");
-    Serial.print(cfg.valveUseServo ? "servo" : "solenoide");
+    Serial.print(cfg.valveType == 1 ? "servo" : "solenoide");
     Serial.println(")");
   }
 }

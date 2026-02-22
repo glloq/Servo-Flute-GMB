@@ -487,54 +487,50 @@ border-bottom:1px solid #1a4080;position:sticky;top:0;background:#16213e;z-index
   </div>
 </div>
 
-<!-- TAB: AIR MANAGEMENT -->
+<!-- TAB: AIR MANAGEMENT (adaptatif) -->
 <div class="tab" id="tab-air">
   <div class="section">
     <h3>Systeme d'air</h3>
     <div class="flute-box">
       <svg id="airSvgFull" viewBox="0 0 520 120" style="max-height:120px"></svg>
     </div>
-    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px">
-      <div><span style="font-size:.7em;color:#9aa">Pompe</span><div style="font-weight:bold" id="airPumpPwm">OFF</div></div>
-      <div><span style="font-size:.7em;color:#9aa">Reservoir</span><div style="font-weight:bold" id="airResPct">--%</div></div>
-      <div><span style="font-size:.7em;color:#9aa">Distance</span><div style="font-weight:bold" id="airResMm">--mm</div></div>
-      <div><span style="font-size:.7em;color:#9aa">Valve</span><div style="font-weight:bold" id="airValveState">--</div></div>
-      <div><span style="font-size:.7em;color:#9aa">Servo air</span><div style="font-weight:bold" id="airServoAngle">--°</div></div>
+    <div id="airLiveStats" style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px">
+      <div id="airStatPump" style="display:none"><span style="font-size:.7em;color:#9aa">Pompe</span><div style="font-weight:bold" id="airPumpPwm">OFF</div></div>
+      <div id="airStatFan" style="display:none"><span style="font-size:.7em;color:#9aa">Ventilateur</span><div style="font-weight:bold" id="airFanPwm">OFF</div></div>
+      <div id="airStatRes" style="display:none"><span style="font-size:.7em;color:#9aa">Reservoir</span><div style="font-weight:bold" id="airResPct">--%</div></div>
+      <div id="airStatDist" style="display:none"><span style="font-size:.7em;color:#9aa">Distance</span><div style="font-weight:bold" id="airResMm">--mm</div></div>
+      <div id="airStatEndstop" style="display:none"><span style="font-size:.7em;color:#9aa">Fin course</span><div style="font-weight:bold" id="airEndstopState">--</div></div>
+      <div id="airStatValve"><span style="font-size:.7em;color:#9aa">Valve</span><div style="font-weight:bold" id="airValveState">--</div></div>
+      <div><span style="font-size:.7em;color:#9aa">Servo air</span><div style="font-weight:bold" id="airServoAngle">--&deg;</div></div>
     </div>
   </div>
-  <div class="section">
-    <h3>Controle pompe</h3>
-    <div class="cfg-row"><label>Cible pression</label>
+  <div class="section" id="airCtrlSection" style="display:none">
+    <h3 id="airCtrlTitle">Controle</h3>
+    <div class="cfg-row"><label>Cible</label>
       <input type="range" min="0" max="100" value="0" id="pumpTarget" oninput="setPumpTarget(this.value)">
       <span id="pumpTargetVal" style="min-width:36px;text-align:right">0%</span>
     </div>
     <div class="btn-row">
-      <button class="btn btn-p" onclick="wsSend({t:'pump_stop'})">Arreter pompe</button>
-      <button class="btn btn-s" onclick="wsSend({t:'test_sol',o:1})">Ouvrir valve</button>
-      <button class="btn btn-s" onclick="wsSend({t:'test_sol',o:0})">Fermer valve</button>
+      <button class="btn btn-p" id="btnAirStop" onclick="wsSend({t:'pump_stop'})">Arreter</button>
+      <button class="btn btn-s" id="btnValveOpen" onclick="wsSend({t:'test_sol',o:1})">Ouvrir valve</button>
+      <button class="btn btn-s" id="btnValveClose" onclick="wsSend({t:'test_sol',o:0})">Fermer valve</button>
     </div>
   </div>
   <div class="section">
-    <h3>Parametres</h3>
+    <h3>Configuration</h3>
     <div class="cfg-row"><label>Mode air</label>
       <select id="airModeSelect" onchange="setAirMode(this.value)">
-        <option value="0">Classique (solenoide)</option>
-        <option value="1">Servo-valve</option>
-        <option value="2">Pompe directe</option>
-        <option value="3">Pompe + reservoir</option>
+        <option value="0">Solenoide + servo flow</option>
+        <option value="1">Servo-valve (PCA)</option>
+        <option value="2">Servo flow seul</option>
+        <option value="3">Ventilateur + servo flow</option>
+        <option value="4">Pompe(s) + valve</option>
+        <option value="5">Pompe(s) + reservoir (capteur)</option>
+        <option value="6">Pompe(s) + reservoir (fin course)</option>
       </select>
     </div>
-    <div id="airParamsPump" style="display:none">
-      <div class="cfg-row"><label>GPIO pompe</label>
-        <select id="airPumpPin"><option value="25">GPIO 25</option><option value="26">GPIO 26</option><option value="27">GPIO 27</option><option value="33">GPIO 33</option></select>
-      </div>
-      <div class="cfg-row"><label>PWM min</label>
-        <input type="number" id="airPumpMin" min="0" max="255" value="80">
-      </div>
-      <div class="cfg-row"><label>PWM max</label>
-        <input type="number" id="airPumpMax" min="0" max="255" value="255">
-      </div>
-    </div>
+    <div id="airModeDesc" style="font-size:.78em;color:#aaa;margin:4px 0 12px;padding:6px 10px;background:rgba(255,255,255,.04);border-radius:6px"></div>
+    <!-- Valve params (modes 0,4,5,6) -->
     <div id="airParamsValve" style="display:none">
       <div class="cfg-row"><label>Type valve</label>
         <select id="airValveType" onchange="toggleValveParams()">
@@ -548,6 +544,30 @@ border-bottom:1px solid #1a4080;position:sticky;top:0;background:#16213e;z-index
         </div>
       </div>
     </div>
+    <!-- Fan params (mode 3) -->
+    <div id="airParamsFan" style="display:none">
+      <div class="cfg-row"><label>GPIO ventilateur</label>
+        <select id="airFanPin"><option value="25">GPIO 25</option><option value="26">GPIO 26</option><option value="27">GPIO 27</option><option value="33">GPIO 33</option></select>
+      </div>
+      <div class="cfg-row"><label>PWM min</label>
+        <input type="number" id="airFanMin" min="0" max="255" value="60">
+      </div>
+      <div class="cfg-row"><label>PWM max</label>
+        <input type="number" id="airFanMax" min="0" max="255" value="255">
+      </div>
+    </div>
+    <!-- Pump params (modes 4-6) -->
+    <div id="airParamsPump" style="display:none">
+      <div class="cfg-row"><label>Nombre pompes</label>
+        <select id="airNumPumps" onchange="buildPumpRows()">
+          <option value="1">1 pompe</option>
+          <option value="2">2 pompes</option>
+          <option value="3">3 pompes</option>
+        </select>
+      </div>
+      <div id="airPumpRows"></div>
+    </div>
+    <!-- Reservoir sensor params (mode 5) -->
     <div id="airParamsRes" style="display:none">
       <div class="cfg-row"><label>Capteur</label>
         <select id="airSensorType"><option value="0">VL53L0X</option><option value="1">VL6180X</option></select>
@@ -566,6 +586,15 @@ border-bottom:1px solid #1a4080;position:sticky;top:0;background:#16213e;z-index
       </div>
       <div class="cfg-row"><label>PID Ki (x10)</label>
         <input type="number" id="airPidKi" min="0" max="50" value="5">
+      </div>
+    </div>
+    <!-- Endstop params (mode 6) -->
+    <div id="airParamsEndstop" style="display:none">
+      <div class="cfg-row"><label>GPIO fin course</label>
+        <select id="airEndstopPin"><option value="34">GPIO 34</option><option value="35">GPIO 35</option><option value="36">GPIO 36</option><option value="39">GPIO 39</option></select>
+      </div>
+      <div class="cfg-row"><label>Logique active</label>
+        <select id="airEndstopHigh"><option value="1">Actif HIGH</option><option value="0">Actif LOW</option></select>
       </div>
     </div>
     <div class="btn-row" style="margin-top:12px">
@@ -590,92 +619,21 @@ border-bottom:1px solid #1a4080;position:sticky;top:0;background:#16213e;z-index
   <div id="wizStep2" style="display:none">
     <h3 style="color:#e94560;margin:0 0 4px">Systeme d'air</h3>
     <p style="color:#9aa;font-size:.8em;margin:0 0 14px">Comment l'air est-il envoye dans la flute ?</p>
-    <div style="display:flex;flex-direction:column;gap:10px">
-      <label class="wiz-card" onclick="wizSetAir(0)" style="align-items:flex-start">
-        <input type="radio" name="wizAir" value="0" checked style="margin-top:4px">
-        <span style="flex:1">
-          <b>Solenoide</b>
-          <span style="font-size:.75em;color:#9aa;display:block;margin:4px 0">La valve solenoide ouvre/ferme un flux d'air externe (compresseur, soufflerie). Branchee sur un GPIO.</span>
-          <svg viewBox="0 0 220 48" width="220" height="48" style="display:block;margin-top:4px">
-            <rect x="1" y="14" width="50" height="20" rx="4" fill="#0f3460" stroke="#4ecca3" stroke-width="1.5"/>
-            <text x="26" y="28" text-anchor="middle" fill="#4ecca3" font-size="8">Air ext.</text>
-            <line x1="51" y1="24" x2="80" y2="24" stroke="#9aa" stroke-width="1.5"/>
-            <rect x="80" y="10" width="44" height="28" rx="4" fill="#16213e" stroke="#e94560" stroke-width="1.5"/>
-            <text x="102" y="22" text-anchor="middle" fill="#e94560" font-size="7">Solenoide</text>
-            <text x="102" y="32" text-anchor="middle" fill="#666" font-size="6">GPIO</text>
-            <line x1="124" y1="24" x2="155" y2="24" stroke="#9aa" stroke-width="1.5"/>
-            <polygon points="152,20 160,24 152,28" fill="#9aa"/>
-            <rect x="160" y="8" width="56" height="32" rx="10" fill="none" stroke="#4ecca3" stroke-width="1.5"/>
-            <text x="188" y="28" text-anchor="middle" fill="#4ecca3" font-size="8">Flute</text>
-          </svg>
-        </span>
-      </label>
-      <label class="wiz-card" onclick="wizSetAir(1)" style="align-items:flex-start">
-        <input type="radio" name="wizAir" value="1" style="margin-top:4px">
-        <span style="flex:1">
-          <b>Servo-valve</b>
-          <span style="font-size:.75em;color:#9aa;display:block;margin:4px 0">Un servo sur le bus PCA9685 controle l'ouverture de la valve. Permet un controle progressif du debit d'air.</span>
-          <svg viewBox="0 0 220 48" width="220" height="48" style="display:block;margin-top:4px">
-            <rect x="1" y="14" width="50" height="20" rx="4" fill="#0f3460" stroke="#4ecca3" stroke-width="1.5"/>
-            <text x="26" y="28" text-anchor="middle" fill="#4ecca3" font-size="8">Air ext.</text>
-            <line x1="51" y1="24" x2="80" y2="24" stroke="#9aa" stroke-width="1.5"/>
-            <rect x="80" y="10" width="44" height="28" rx="4" fill="#16213e" stroke="#e94560" stroke-width="1.5"/>
-            <text x="102" y="22" text-anchor="middle" fill="#e94560" font-size="7">Servo</text>
-            <text x="102" y="32" text-anchor="middle" fill="#666" font-size="6">PCA9685</text>
-            <line x1="124" y1="24" x2="155" y2="24" stroke="#9aa" stroke-width="1.5"/>
-            <polygon points="152,20 160,24 152,28" fill="#9aa"/>
-            <rect x="160" y="8" width="56" height="32" rx="10" fill="none" stroke="#4ecca3" stroke-width="1.5"/>
-            <text x="188" y="28" text-anchor="middle" fill="#4ecca3" font-size="8">Flute</text>
-          </svg>
-        </span>
-      </label>
-      <label class="wiz-card" onclick="wizSetAir(2)" style="align-items:flex-start">
-        <input type="radio" name="wizAir" value="2" style="margin-top:4px">
-        <span style="flex:1">
-          <b>Pompe directe</b>
-          <span style="font-size:.75em;color:#9aa;display:block;margin:4px 0">Une pompe PWM souffle directement dans la flute. La valve (solenoide ou servo) coupe l'air entre les notes.</span>
-          <svg viewBox="0 0 260 48" width="260" height="48" style="display:block;margin-top:4px">
-            <circle cx="24" cy="24" r="16" fill="#16213e" stroke="#e94560" stroke-width="1.5"/>
-            <text x="24" y="21" text-anchor="middle" fill="#e94560" font-size="7">Pompe</text>
-            <text x="24" y="31" text-anchor="middle" fill="#666" font-size="6">PWM</text>
-            <line x1="40" y1="24" x2="70" y2="24" stroke="#9aa" stroke-width="1.5"/>
-            <polygon points="67,20 75,24 67,28" fill="#9aa"/>
-            <rect x="76" y="10" width="44" height="28" rx="4" fill="#16213e" stroke="#e94560" stroke-width="1.5"/>
-            <text x="98" y="22" text-anchor="middle" fill="#e94560" font-size="7">Valve</text>
-            <text x="98" y="32" text-anchor="middle" fill="#666" font-size="6">ON/OFF</text>
-            <line x1="120" y1="24" x2="150" y2="24" stroke="#9aa" stroke-width="1.5"/>
-            <polygon points="147,20 155,24 147,28" fill="#9aa"/>
-            <rect x="156" y="8" width="56" height="32" rx="10" fill="none" stroke="#4ecca3" stroke-width="1.5"/>
-            <text x="184" y="28" text-anchor="middle" fill="#4ecca3" font-size="8">Flute</text>
-          </svg>
-        </span>
-      </label>
-      <label class="wiz-card" onclick="wizSetAir(3)" style="align-items:flex-start">
-        <input type="radio" name="wizAir" value="3" style="margin-top:4px">
-        <span style="flex:1">
-          <b>Pompe + reservoir</b>
-          <span style="font-size:.75em;color:#9aa;display:block;margin:4px 0">La pompe remplit un reservoir (ballon). Un capteur de distance mesure le niveau. PID pour reguler la pression.</span>
-          <svg viewBox="0 0 320 48" width="320" height="48" style="display:block;margin-top:4px">
-            <circle cx="24" cy="24" r="16" fill="#16213e" stroke="#e94560" stroke-width="1.5"/>
-            <text x="24" y="21" text-anchor="middle" fill="#e94560" font-size="7">Pompe</text>
-            <text x="24" y="31" text-anchor="middle" fill="#666" font-size="6">PWM</text>
-            <line x1="40" y1="24" x2="62" y2="24" stroke="#9aa" stroke-width="1.5"/>
-            <polygon points="59,20 67,24 59,28" fill="#9aa"/>
-            <ellipse cx="100" cy="24" rx="28" ry="16" fill="#16213e" stroke="#4ecca3" stroke-width="1.5"/>
-            <text x="100" y="21" text-anchor="middle" fill="#4ecca3" font-size="7">Reservoir</text>
-            <text x="100" y="31" text-anchor="middle" fill="#666" font-size="6">+ capteur</text>
-            <line x1="128" y1="24" x2="155" y2="24" stroke="#9aa" stroke-width="1.5"/>
-            <polygon points="152,20 160,24 152,28" fill="#9aa"/>
-            <rect x="160" y="10" width="44" height="28" rx="4" fill="#16213e" stroke="#e94560" stroke-width="1.5"/>
-            <text x="182" y="22" text-anchor="middle" fill="#e94560" font-size="7">Valve</text>
-            <text x="182" y="32" text-anchor="middle" fill="#666" font-size="6">ON/OFF</text>
-            <line x1="204" y1="24" x2="230" y2="24" stroke="#9aa" stroke-width="1.5"/>
-            <polygon points="227,20 235,24 227,28" fill="#9aa"/>
-            <rect x="236" y="8" width="56" height="32" rx="10" fill="none" stroke="#4ecca3" stroke-width="1.5"/>
-            <text x="264" y="28" text-anchor="middle" fill="#4ecca3" font-size="8">Flute</text>
-          </svg>
-        </span>
-      </label>
+    <div style="display:flex;flex-direction:column;gap:8px;max-height:55vh;overflow-y:auto">
+      <label class="wiz-card" onclick="wizSetAir(0)"><input type="radio" name="wizAir" value="0" checked>
+        <span><b>Solenoide + servo flow</b><br><span style="font-size:.75em;color:#9aa">Valve solenoide coupe l'air, servo flow regle le debit. Classique.</span></span></label>
+      <label class="wiz-card" onclick="wizSetAir(1)"><input type="radio" name="wizAir" value="1">
+        <span><b>Servo-valve (PCA)</b><br><span style="font-size:.75em;color:#9aa">Un servo PCA9685 remplace le solenoide pour couper l'air.</span></span></label>
+      <label class="wiz-card" onclick="wizSetAir(2)"><input type="radio" name="wizAir" value="2">
+        <span><b>Servo flow seul</b><br><span style="font-size:.75em;color:#9aa">Juste un servo flow, pas de valve. Le servo passe a l'angle off entre les notes.</span></span></label>
+      <label class="wiz-card" onclick="wizSetAir(3)"><input type="radio" name="wizAir" value="3">
+        <span><b>Ventilateur + servo flow</b><br><span style="font-size:.75em;color:#9aa">Ventilateur PWM souffle en continu, servo flow dirige vers le bec.</span></span></label>
+      <label class="wiz-card" onclick="wizSetAir(4)"><input type="radio" name="wizAir" value="4">
+        <span><b>Pompe(s) + valve</b><br><span style="font-size:.75em;color:#9aa">1 a 3 pompes PWM + valve ON/OFF. Souffle direct dans la flute.</span></span></label>
+      <label class="wiz-card" onclick="wizSetAir(5)"><input type="radio" name="wizAir" value="5">
+        <span><b>Pompe(s) + reservoir + capteur</b><br><span style="font-size:.75em;color:#9aa">Pompe remplit un ballon, capteur ToF mesure le niveau, PID regule.</span></span></label>
+      <label class="wiz-card" onclick="wizSetAir(6)"><input type="radio" name="wizAir" value="6">
+        <span><b>Pompe(s) + reservoir + fin course</b><br><span style="font-size:.75em;color:#9aa">Pompe remplit un reservoir, fin de course indique pression OK.</span></span></label>
     </div>
     <div class="btn-row" style="margin-top:16px">
       <button class="btn btn-s" onclick="wizNext(1)">Retour</button>
@@ -947,53 +905,116 @@ function showTab(id,btn){
   if(id==='calib'&&CFG)buildCalibUI();
   if(id==='air'&&CFG)buildAirUI();
 }
-// --- Air System ---
+// --- Air System (modulaire) ---
+const AIR_DESCS=[
+  'Solenoide GPIO coupe l\'air + servo flow regle le debit.',
+  'Servo PCA remplace le solenoide pour couper l\'air.',
+  'Pas de valve. Le servo flow se met a l\'angle off entre les notes.',
+  'Ventilateur souffle en continu, servo flow dirige le flux.',
+  'Pompe(s) PWM + valve coupe l\'air + servo flow.',
+  'Pompe(s) + reservoir (ballon) + capteur distance ToF + valve.',
+  'Pompe(s) + reservoir + fin de course indique pression OK + valve.'
+];
 function applyAirTabVisibility(){
   const airBtn=$('btnTabAir');
-  const hasAir=CFG&&(CFG.show_air||CFG.air_mode>=1||CFG.pump_on||CFG.res_on);
+  const hasAir=CFG&&(CFG.show_air||CFG.air_mode>=1);
   airBtn.style.display=hasAir?'':'none';
-  // Rebuild flute to show/hide integrated air overlay
   if(CFG)buildFlute(CFG,'fluteSvg',false);
 }
 function setPumpTarget(v){$('pumpTargetVal').textContent=v+'%';wsSend({t:'pump_target',v:parseInt(v)})}
 function setAirMode(v){
   const m=parseInt(v);
-  $('airParamsPump').style.display=m>=2?'':'none';
-  $('airParamsValve').style.display=m>=1?'':'none';
-  $('airParamsRes').style.display=m>=3?'':'none';
+  const hasPump=m>=4,hasFan=m===3,hasValve=(m===0||m>=4),hasServoValve=(m===1);
+  const hasRes=m===5,hasEndstop=m===6;
+  $('airParamsPump').style.display=hasPump?'':'none';
+  $('airParamsFan').style.display=hasFan?'':'none';
+  $('airParamsValve').style.display=(hasValve||hasServoValve)?'':'none';
+  $('airParamsRes').style.display=hasRes?'':'none';
+  const ep=$('airParamsEndstop');if(ep)ep.style.display=hasEndstop?'':'none';
+  // Live stats visibility
+  const sp=$('airStatPump');if(sp)sp.style.display=hasPump?'':'none';
+  const sf=$('airStatFan');if(sf)sf.style.display=hasFan?'':'none';
+  const sr=$('airStatRes');if(sr)sr.style.display=(hasRes||hasEndstop)?'':'none';
+  const sd=$('airStatDist');if(sd)sd.style.display=hasRes?'':'none';
+  const se=$('airStatEndstop');if(se)se.style.display=hasEndstop?'':'none';
+  const sv=$('airStatValve');if(sv)sv.style.display=(m!==2)?'':'none';
+  // Control section
+  const cs=$('airCtrlSection');if(cs){cs.style.display=(hasPump||hasFan)?'':'none';
+    $('airCtrlTitle').textContent=hasFan?'Controle ventilateur':'Controle pompe';
+    $('btnAirStop').textContent=hasFan?'Arreter ventilateur':'Arreter pompe';}
+  // Valve buttons visibility (hide if no valve)
+  const vo=$('btnValveOpen'),vc=$('btnValveClose');
+  if(vo)vo.style.display=(hasValve||hasServoValve)?'':'none';
+  if(vc)vc.style.display=(hasValve||hasServoValve)?'':'none';
+  // Auto-set valve type for servo-valve mode
+  if(m===1){$('airValveType').value='1';toggleValveParams()}
+  // Mode desc
+  const md=$('airModeDesc');if(md)md.textContent=AIR_DESCS[m]||'';
 }
 function toggleValveParams(){
   $('airValveServoParams').style.display=$('airValveType').value==='1'?'':'none';
 }
+function buildPumpRows(){
+  const n=parseInt($('airNumPumps').value)||1;
+  const c=$('airPumpRows');if(!c)return;
+  let h='';
+  const gpios=[25,26,27,33];
+  for(let i=0;i<n;i++){
+    const label=n>1?'Pompe '+(i+1)+' ':'';
+    h+='<div style="border-left:2px solid #0f3460;padding-left:8px;margin:8px 0">';
+    h+='<div class="cfg-row"><label>'+label+'GPIO</label><select id="airPumpPin'+i+'">';
+    gpios.forEach(g=>{h+='<option value="'+g+'">GPIO '+g+'</option>'});
+    h+='</select></div>';
+    h+='<div class="cfg-row"><label>'+label+'PWM min</label><input type="number" id="airPumpMin'+i+'" min="0" max="255" value="80"></div>';
+    h+='<div class="cfg-row"><label>'+label+'PWM max</label><input type="number" id="airPumpMax'+i+'" min="0" max="255" value="255"></div>';
+    h+='</div>';
+  }
+  c.innerHTML=h;
+  // Fill values from config
+  if(CFG){
+    const pins=CFG.pump_pins||[25,26,27],mins=CFG.pump_mins||[80,80,80],maxs=CFG.pump_maxs||[255,255,255];
+    for(let i=0;i<n;i++){
+      const pp=$('airPumpPin'+i);if(pp)pp.value=pins[i]||25;
+      const pm=$('airPumpMin'+i);if(pm)pm.value=mins[i]||80;
+      const px=$('airPumpMax'+i);if(px)px.value=maxs[i]||255;
+    }
+  }
+}
 function saveAirSettings(){
   const m=parseInt($('airModeSelect').value);
-  const d={air_mode:m,valve_servo:$('airValveType').value==='1',
-    valve_ch:parseInt($('airValveCh').value),
-    pump_on:m>=2,pump_pin:parseInt($('airPumpPin').value),
-    pump_min:parseInt($('airPumpMin').value),pump_max:parseInt($('airPumpMax').value),
-    res_on:m>=3,sens_type:parseInt($('airSensorType').value),
-    sens_target:parseInt($('airSensTarget').value),sens_min:parseInt($('airSensMin').value),
-    sens_max:parseInt($('airSensMax').value),pid_kp:parseInt($('airPidKp').value),
-    pid_ki:parseInt($('airPidKi').value),show_air:true};
+  const d={air_mode:m,valve_type:parseInt($('airValveType').value),
+    valve_ch:parseInt($('airValveCh').value),show_air:true};
+  if(m===3){d.fan_pin=parseInt($('airFanPin').value);d.fan_min=parseInt($('airFanMin').value);d.fan_max=parseInt($('airFanMax').value)}
+  if(m>=4){
+    const np=parseInt($('airNumPumps').value)||1;d.num_pumps=np;
+    d.pump_pins=[];d.pump_mins=[];d.pump_maxs=[];
+    for(let i=0;i<np;i++){
+      d.pump_pins.push(parseInt($('airPumpPin'+i).value)||25);
+      d.pump_mins.push(parseInt($('airPumpMin'+i).value)||80);
+      d.pump_maxs.push(parseInt($('airPumpMax'+i).value)||255);
+    }
+  }
+  if(m===5){d.sens_type=parseInt($('airSensorType').value);d.sens_target=parseInt($('airSensTarget').value);
+    d.sens_min=parseInt($('airSensMin').value);d.sens_max=parseInt($('airSensMax').value);
+    d.pid_kp=parseInt($('airPidKp').value);d.pid_ki=parseInt($('airPidKi').value)}
+  if(m===6){d.endstop_pin=parseInt($('airEndstopPin').value);d.endstop_high=$('airEndstopHigh').value==='1'}
   fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)})
     .then(r=>r.json()).then(j=>{$('airSettingsMsg').textContent=j.ok?'Sauvegarde OK':'Erreur';
-    if(j.ok){CFG.air_mode=m;CFG.pump_on=d.pump_on;CFG.res_on=d.res_on;CFG.show_air=true;applyAirTabVisibility()}
+    if(j.ok){CFG.air_mode=m;CFG.show_air=true;applyAirTabVisibility();buildAirSvg('airSvgFull',true)}
     setTimeout(()=>$('airSettingsMsg').textContent='',3000)})
 }
 function fillAirSettings(){
   if(!CFG)return;
   $('airModeSelect').value=CFG.air_mode||0;
-  $('airValveType').value=CFG.valve_servo?'1':'0';
+  $('airValveType').value=(CFG.valve_type||0).toString();
   $('airValveCh').value=CFG.valve_ch||11;
-  $('airPumpPin').value=CFG.pump_pin||25;
-  $('airPumpMin').value=CFG.pump_min||80;
-  $('airPumpMax').value=CFG.pump_max||255;
+  $('airFanPin').value=CFG.fan_pin||26;$('airFanMin').value=CFG.fan_min||60;$('airFanMax').value=CFG.fan_max||255;
+  $('airNumPumps').value=CFG.num_pumps||1;
   $('airSensorType').value=CFG.sens_type||1;
-  $('airSensTarget').value=CFG.sens_target||50;
-  $('airSensMin').value=CFG.sens_min||10;
-  $('airSensMax').value=CFG.sens_max||150;
-  $('airPidKp').value=CFG.pid_kp||30;
-  $('airPidKi').value=CFG.pid_ki||5;
+  $('airSensTarget').value=CFG.sens_target||50;$('airSensMin').value=CFG.sens_min||10;$('airSensMax').value=CFG.sens_max||150;
+  $('airPidKp').value=CFG.pid_kp||30;$('airPidKi').value=CFG.pid_ki||5;
+  $('airEndstopPin').value=CFG.endstop_pin||34;$('airEndstopHigh').value=(CFG.endstop_high?'1':'0');
+  buildPumpRows();
   setAirMode(CFG.air_mode||0);toggleValveParams();
 }
 function buildAirUI(){fillAirSettings();buildAirSvg('airSvgFull',true)}
@@ -1006,68 +1027,82 @@ function buildAirSvg(svgId,full){
     '<stop offset="0%" stop-color="#8899aa"/><stop offset="100%" stop-color="#556677"/></linearGradient>'+
     '<linearGradient id="agBalloon" x1="0" y1="0" x2="0" y2="1">'+
     '<stop offset="0%" stop-color="#e07050"/><stop offset="100%" stop-color="#a03020"/></linearGradient></defs>';
-  const cy=h/2,ox=10;
-  // Pompe (si mode>=2)
-  if(m>=2){
-    s+='<rect x="'+ox+'" y="'+(cy-20)+'" width="50" height="40" rx="5" fill="url(#agMetal)" stroke="#334" stroke-width="1.5"/>';
-    s+='<circle id="airPumpIcon" cx="'+(ox+25)+'" cy="'+cy+'" r="12" fill="none" stroke="#dde" stroke-width="1.5"/>';
-    s+='<line id="airPumpBlade" x1="'+(ox+25)+'" y1="'+(cy-10)+'" x2="'+(ox+25)+'" y2="'+(cy+10)+'" stroke="#dde" stroke-width="2"/>';
-    s+='<text x="'+(ox+25)+'" y="'+(cy+30)+'" text-anchor="middle" style="font-size:8px;fill:#9aa">Pompe</text>';
-    // Tuyau pompe -> reservoir/valve
-    const tx=m>=3?140:200;
-    s+='<line x1="'+(ox+50)+'" y1="'+cy+'" x2="'+tx+'" y2="'+cy+'" stroke="#7799bb" stroke-width="4" stroke-linecap="round"/>';
-    s+='<polygon points="'+(tx-6)+','+(cy-4)+' '+tx+','+cy+' '+(tx-6)+','+(cy+4)+'" fill="#7799bb"/>';
+  const cy=h/2;
+  // Build chain from left to right: [source] → [reservoir?] → [valve?] → [servo flow] → Flute
+  let cx_=10; // cursor X
+  const hasPump=m>=4,hasFan=m===3,hasValve=(m===0||m===1||m>=4),hasRes=(m===5||m===6);
+  const np=(hasPump&&CFG.num_pumps>1)?CFG.num_pumps:1;
+  // -- Source: pump(s), fan, or external --
+  if(hasPump){
+    for(let i=0;i<np;i++){
+      const py=cy-20+(i*12-(np-1)*6);
+      s+='<rect x="'+cx_+'" y="'+(py-12)+'" width="44" height="24" rx="5" fill="url(#agMetal)" stroke="#334" stroke-width="1.2"/>';
+      s+='<circle id="airPumpIcon" cx="'+(cx_+22)+'" cy="'+py+'" r="8" fill="none" stroke="#dde" stroke-width="1.2"/>';
+      s+='<line id="airPumpBlade" x1="'+(cx_+22)+'" y1="'+(py-6)+'" x2="'+(cx_+22)+'" y2="'+(py+6)+'" stroke="#dde" stroke-width="1.5"/>';
+      if(np>1)s+='<text x="'+(cx_+22)+'" y="'+(py+18)+'" text-anchor="middle" style="font-size:6px;fill:#9aa">P'+(i+1)+'</text>';
+    }
+    if(np===1)s+='<text x="'+(cx_+22)+'" y="'+(cy+28)+'" text-anchor="middle" style="font-size:8px;fill:#9aa">Pompe</text>';
+    cx_+=54;
+    s+='<line x1="'+(cx_-10)+'" y1="'+cy+'" x2="'+cx_+'" y2="'+cy+'" stroke="#7799bb" stroke-width="4"/>';
+    s+='<polygon points="'+(cx_-5)+','+(cy-3)+' '+cx_+','+cy+' '+(cx_-5)+','+(cy+3)+'" fill="#7799bb"/>';
+  }else if(hasFan){
+    s+='<rect x="'+cx_+'" y="'+(cy-20)+'" width="44" height="40" rx="5" fill="url(#agMetal)" stroke="#334" stroke-width="1.2"/>';
+    s+='<circle cx="'+(cx_+22)+'" cy="'+cy+'" r="14" fill="none" stroke="#dde" stroke-width="1.2"/>';
+    // Fan blades
+    for(let a=0;a<3;a++){const ra=a*120*Math.PI/180;
+      s+='<line x1="'+(cx_+22)+'" y1="'+cy+'" x2="'+(cx_+22+10*Math.cos(ra))+'" y2="'+(cy+10*Math.sin(ra))+'" stroke="#dde" stroke-width="2" stroke-linecap="round"/>';}
+    s+='<text x="'+(cx_+22)+'" y="'+(cy+28)+'" text-anchor="middle" style="font-size:7px;fill:#9aa">Ventilateur</text>';
+    cx_+=54;
+    s+='<line x1="'+(cx_-10)+'" y1="'+cy+'" x2="'+cx_+'" y2="'+cy+'" stroke="#7799bb" stroke-width="4"/>';
+    s+='<polygon points="'+(cx_-5)+','+(cy-3)+' '+cx_+','+cy+' '+(cx_-5)+','+(cy+3)+'" fill="#7799bb"/>';
   }
-  // Reservoir/ballon (si mode>=3)
-  if(m>=3){
-    const bx=175,by=cy;
-    s+='<ellipse id="airBalloon" cx="'+bx+'" cy="'+by+'" rx="30" ry="25" fill="url(#agBalloon)" stroke="#802010" stroke-width="1.5" opacity=".85"/>';
-    s+='<ellipse cx="'+(bx-8)+'" cy="'+(by-10)+'" rx="8" ry="5" fill="#fff" opacity=".15"/>';
-    s+='<text x="'+bx+'" y="'+(by+4)+'" text-anchor="middle" style="font-size:10px;fill:#fff;font-weight:bold" id="airBalloonPct">--%</text>';
-    s+='<text x="'+bx+'" y="'+(by+38)+'" text-anchor="middle" style="font-size:8px;fill:#9aa">Reservoir</text>';
-    // Capteur au-dessus
-    s+='<rect x="'+(bx-6)+'" y="'+(by-45)+'" width="12" height="8" rx="2" fill="#334" stroke="#556" stroke-width=".8"/>';
-    s+='<line x1="'+bx+'" y1="'+(by-37)+'" x2="'+bx+'" y2="'+(by-26)+'" stroke="#5af" stroke-width="1" stroke-dasharray="2,2"/>';
-    s+='<text x="'+(bx+10)+'" y="'+(by-38)+'" style="font-size:7px;fill:#5af">ToF</text>';
-    // Tuyau reservoir -> valve
-    s+='<line x1="'+(bx+30)+'" y1="'+by+'" x2="260" y2="'+cy+'" stroke="#7799bb" stroke-width="4" stroke-linecap="round"/>';
-    s+='<polygon points="254,'+(cy-4)+' 260,'+cy+' 254,'+(cy+4)+'" fill="#7799bb"/>';
+  // -- Reservoir --
+  if(hasRes){
+    const bx=cx_+30;
+    if(m===5){
+      // Balloon + ToF sensor
+      s+='<ellipse id="airBalloon" cx="'+bx+'" cy="'+cy+'" rx="25" ry="22" fill="url(#agBalloon)" stroke="#802010" stroke-width="1.2" opacity=".85"/>';
+      s+='<text x="'+bx+'" y="'+(cy+4)+'" text-anchor="middle" style="font-size:9px;fill:#fff;font-weight:bold" id="airBalloonPct">--%</text>';
+      s+='<rect x="'+(bx-5)+'" y="'+(cy-40)+'" width="10" height="7" rx="2" fill="#334" stroke="#556" stroke-width=".7"/>';
+      s+='<line x1="'+bx+'" y1="'+(cy-33)+'" x2="'+bx+'" y2="'+(cy-23)+'" stroke="#5af" stroke-width="1" stroke-dasharray="2,2"/>';
+      s+='<text x="'+(bx+8)+'" y="'+(cy-34)+'" style="font-size:6px;fill:#5af">ToF</text>';
+      s+='<text x="'+bx+'" y="'+(cy+32)+'" text-anchor="middle" style="font-size:7px;fill:#9aa">Reservoir</text>';
+    }else{
+      // Endstop tank
+      s+='<rect x="'+(bx-20)+'" y="'+(cy-18)+'" width="40" height="36" rx="6" fill="#334" stroke="#556" stroke-width="1.2"/>';
+      s+='<text x="'+bx+'" y="'+(cy+2)+'" text-anchor="middle" style="font-size:8px;fill:#dde">Tank</text>';
+      // Endstop switch
+      s+='<rect x="'+(bx+22)+'" y="'+(cy-8)+'" width="14" height="8" rx="2" fill="#556" stroke="#778" stroke-width=".8"/>';
+      s+='<circle cx="'+(bx+29)+'" cy="'+(cy-4)+'" r="3" fill="#4e4" id="airEndstopLed"/>';
+      s+='<text x="'+(bx+29)+'" y="'+(cy+14)+'" text-anchor="middle" style="font-size:6px;fill:#9aa">FC</text>';
+      s+='<text x="'+bx+'" y="'+(cy+32)+'" text-anchor="middle" style="font-size:7px;fill:#9aa">Reservoir</text>';
+    }
+    cx_=bx+35;
+    s+='<line x1="'+(cx_-5)+'" y1="'+cy+'" x2="'+cx_+'" y2="'+cy+'" stroke="#7799bb" stroke-width="4"/>';
+    s+='<polygon points="'+(cx_-5)+','+(cy-3)+' '+cx_+','+cy+' '+(cx_-5)+','+(cy+3)+'" fill="#7799bb"/>';
   }
-  // Valve (toujours si mode>=1)
-  if(m>=1){
-    const vx=m>=3?270:(m>=2?210:60);
-    s+='<rect id="airValveRect" x="'+vx+'" y="'+(cy-15)+'" width="30" height="30" rx="4" fill="#444" stroke="#667" stroke-width="1.5"/>';
-    s+='<rect id="airValveInd" x="'+(vx+10)+'" y="'+(cy-8)+'" width="10" height="16" rx="2" fill="#e44"/>';
-    s+='<text x="'+(vx+15)+'" y="'+(cy+26)+'" text-anchor="middle" style="font-size:8px;fill:#9aa">'+(CFG.valve_servo?'Servo':'Valve')+'</text>';
-    // Tuyau valve -> servo airflow
-    const ax=vx+70;
-    s+='<line x1="'+(vx+30)+'" y1="'+cy+'" x2="'+ax+'" y2="'+cy+'" stroke="#7799bb" stroke-width="4" stroke-linecap="round"/>';
-    s+='<polygon points="'+(ax-6)+','+(cy-4)+' '+ax+','+cy+' '+(ax-6)+','+(cy+4)+'" fill="#7799bb"/>';
-    // Servo airflow
-    s+='<rect x="'+ax+'" y="'+(cy-18)+'" width="40" height="36" rx="5" fill="url(#agMetal)" stroke="#334" stroke-width="1.5"/>';
-    s+='<path id="airServoNeedle" d="M'+(ax+20)+','+cy+' L'+(ax+20)+','+(cy-14)+'" stroke="#e94" stroke-width="2.5" stroke-linecap="round"/>';
-    s+='<circle cx="'+(ax+20)+'" cy="'+cy+'" r="3" fill="#e94"/>';
-    s+='<text x="'+(ax+20)+'" y="'+(cy+28)+'" text-anchor="middle" style="font-size:8px;fill:#9aa">Servo Air</text>';
-    // Tuyau -> flute
-    const fx=ax+80;
-    s+='<line x1="'+(ax+40)+'" y1="'+cy+'" x2="'+fx+'" y2="'+cy+'" stroke="#7799bb" stroke-width="4" stroke-linecap="round"/>';
-    s+='<polygon points="'+(fx-6)+','+(cy-4)+' '+fx+','+cy+' '+(fx-6)+','+(cy+4)+'" fill="#7799bb"/>';
-    s+='<text x="'+(fx+10)+'" y="'+(cy+4)+'" style="font-size:9px;fill:#bbc;font-style:italic">Flute</text>';
-  } else {
-    // Mode classique : juste solenoide + servo
-    s+='<rect x="20" y="'+(cy-15)+'" width="30" height="30" rx="4" fill="#444" stroke="#667" stroke-width="1.5"/>';
-    s+='<rect id="airValveInd" x="30" y="'+(cy-8)+'" width="10" height="16" rx="2" fill="#e44"/>';
-    s+='<text x="35" y="'+(cy+26)+'" text-anchor="middle" style="font-size:8px;fill:#9aa">Solenoide</text>';
-    s+='<line x1="50" y1="'+cy+'" x2="90" y2="'+cy+'" stroke="#7799bb" stroke-width="4" stroke-linecap="round"/>';
-    s+='<polygon points="84,'+(cy-4)+' 90,'+cy+' 84,'+(cy+4)+'" fill="#7799bb"/>';
-    s+='<rect x="90" y="'+(cy-18)+'" width="40" height="36" rx="5" fill="url(#agMetal)" stroke="#334" stroke-width="1.5"/>';
-    s+='<path id="airServoNeedle" d="M110,'+cy+' L110,'+(cy-14)+'" stroke="#e94" stroke-width="2.5" stroke-linecap="round"/>';
-    s+='<circle cx="110" cy="'+cy+'" r="3" fill="#e94"/>';
-    s+='<text x="110" y="'+(cy+28)+'" text-anchor="middle" style="font-size:8px;fill:#9aa">Servo Air</text>';
-    s+='<line x1="130" y1="'+cy+'" x2="170" y2="'+cy+'" stroke="#7799bb" stroke-width="4" stroke-linecap="round"/>';
-    s+='<polygon points="164,'+(cy-4)+' 170,'+cy+' 164,'+(cy+4)+'" fill="#7799bb"/>';
-    s+='<text x="180" y="'+(cy+4)+'" style="font-size:9px;fill:#bbc;font-style:italic">Flute</text>';
+  // -- Valve --
+  if(hasValve){
+    const vx=cx_+5;
+    s+='<rect id="airValveRect" x="'+vx+'" y="'+(cy-13)+'" width="26" height="26" rx="4" fill="#444" stroke="#667" stroke-width="1.2"/>';
+    s+='<rect id="airValveInd" x="'+(vx+8)+'" y="'+(cy-6)+'" width="10" height="12" rx="2" fill="#e44"/>';
+    const vl=m===0?'Solenoide':(CFG.valve_type===1?'Servo':'Valve');
+    s+='<text x="'+(vx+13)+'" y="'+(cy+22)+'" text-anchor="middle" style="font-size:7px;fill:#9aa">'+vl+'</text>';
+    cx_=vx+36;
+    s+='<line x1="'+(cx_-5)+'" y1="'+cy+'" x2="'+cx_+'" y2="'+cy+'" stroke="#7799bb" stroke-width="4"/>';
+    s+='<polygon points="'+(cx_-5)+','+(cy-3)+' '+cx_+','+cy+' '+(cx_-5)+','+(cy+3)+'" fill="#7799bb"/>';
   }
+  // -- Servo Flow (always) --
+  const ax=cx_+5;
+  s+='<rect x="'+ax+'" y="'+(cy-16)+'" width="36" height="32" rx="5" fill="url(#agMetal)" stroke="#334" stroke-width="1.2"/>';
+  s+='<path id="airServoNeedle" d="M'+(ax+18)+','+cy+' L'+(ax+18)+','+(cy-12)+'" stroke="#e94" stroke-width="2" stroke-linecap="round"/>';
+  s+='<circle cx="'+(ax+18)+'" cy="'+cy+'" r="2.5" fill="#e94"/>';
+  s+='<text x="'+(ax+18)+'" y="'+(cy+24)+'" text-anchor="middle" style="font-size:7px;fill:#9aa">Servo Air</text>';
+  cx_=ax+46;
+  s+='<line x1="'+(cx_-10)+'" y1="'+cy+'" x2="'+cx_+'" y2="'+cy+'" stroke="#7799bb" stroke-width="4"/>';
+  s+='<polygon points="'+(cx_-5)+','+(cy-3)+' '+cx_+','+cy+' '+(cx_-5)+','+(cy+3)+'" fill="#7799bb"/>';
+  // -- Flute --
+  s+='<text x="'+(cx_+5)+'" y="'+(cy+4)+'" style="font-size:9px;fill:#bbc;font-style:italic">Flute</text>';
   svg.innerHTML=s;
 }
 function updateAirDiagram(d){
@@ -1135,8 +1170,7 @@ function wizFinish(){
   let presetIdx=-1;
   radios.forEach(r=>{if(r.checked)presetIdx=parseInt(r.value)});
   // Build config body
-  const body={air_mode:wizAirMode,pump_on:wizAirMode>=2,res_on:wizAirMode>=3,
-    valve_servo:wizAirMode===1,show_air:true};
+  const body={air_mode:wizAirMode,valve_type:wizAirMode===1?1:0,show_air:true};
   // Apply preset if selected
   if(presetIdx>=0&&presetIdx<PR.length){
     const p=PR[presetIdx];
@@ -1410,118 +1444,110 @@ function fluteMouth(g,em,ty,by,th,cy,ox){
 function airSystemWidth(){
   if(!CFG||!CFG.show_air)return 0;
   const m=CFG.air_mode||0;
-  // servo air(40) + gap(10) + valve(30) + gap(10) = 90 base
-  let w=90;
-  if(m>=3)w+=50; // reservoir column (pump below, balloon above)
-  else if(m>=2)w+=45; // pump only
-  return w+10; // small margin
+  // servo air(40) + gap(10) = 50 base
+  let w=50;
+  if(m!==2)w+=40; // valve (30 + gap)
+  if(m>=4)w+=50; // pump(s) column
+  if(m===3)w+=50; // fan
+  if(m===5||m===6)w+=50; // reservoir column
+  return w+10;
 }
 
 // Draw integrated air system overlay inside the flute SVG
-// ox = x offset where air system starts, em = embouchure type
-// Returns SVG string. Connects to flute embouchure at (fluteX, connectY)
 function buildAirOverlay(g,em,ox,fluteX,ty,by,cy,svgH){
   if(!CFG||!CFG.show_air)return '';
   const m=CFG.air_mode||0;
   const isTrav=em==='trav';
+  const hasPump=m>=4,hasFan=m===3,hasValve=(m===0||m===1||m>=4),hasRes=(m===5||m===6);
   let s='<defs><linearGradient id="agMetal_'+g+'" x1="0" y1="0" x2="0" y2="1">'+
     '<stop offset="0%" stop-color="#8899aa"/><stop offset="100%" stop-color="#556677"/></linearGradient>'+
     '<linearGradient id="agBalloon_'+g+'" x1="0" y1="0" x2="0" y2="1">'+
     '<stop offset="0%" stop-color="#e07050"/><stop offset="100%" stop-color="#a03020"/></linearGradient></defs>';
-  // Layout: pump/balloon column on left, then valve, then servo air, then connects to flute
-  // Servo air box is always just before the flute embouchure
-  const saW=36,saH=30; // servo air box size
-  const vlW=26,vlH=26; // valve box size
-  let curX=fluteX; // build from right to left
+  const saW=36,saH=30,vlW=26,vlH=26;
+  let curX=fluteX; // build right to left
 
-  // -- Servo Airflow with 120° arc gauge (just before embouchure) --
-  const saX=curX-saW-8;
-  const saY=cy-saH/2;
+  // -- Servo Airflow (always, just before embouchure) --
+  const saX=curX-saW-8,saY=cy-saH/2;
   s+='<rect x="'+saX+'" y="'+saY+'" width="'+saW+'" height="'+saH+'" rx="4" fill="url(#agMetal_'+g+')" stroke="#334" stroke-width="1.2"/>';
-  // Arc gauge: 120° sweep from -150° to -30° (bottom-centered)
   const gcx=saX+saW/2,gcy=cy+2,gr=11;
   const a1=-150*Math.PI/180,a2=-30*Math.PI/180;
   s+='<path d="M'+(gcx+gr*Math.cos(a1))+','+(gcy+gr*Math.sin(a1))+' A'+gr+','+gr+' 0 0,1 '+(gcx+gr*Math.cos(a2))+','+(gcy+gr*Math.sin(a2))+'" fill="none" stroke="#556" stroke-width="1.5" stroke-linecap="round"/>';
-  // Tick marks at 0%, 50%, 100%
-  for(let t=0;t<=2;t++){const ta=a1+(a2-a1)*t/2;const tx1=gcx+(gr+2)*Math.cos(ta),ty1=gcy+(gr+2)*Math.sin(ta);
-    const tx2=gcx+(gr+4)*Math.cos(ta),ty2=gcy+(gr+4)*Math.sin(ta);
-    s+='<line x1="'+tx1+'" y1="'+ty1+'" x2="'+tx2+'" y2="'+ty2+'" stroke="#888" stroke-width=".8"/>';}
-  // Needle (default at 50% = -90°)
+  for(let t=0;t<=2;t++){const ta=a1+(a2-a1)*t/2;const tx1=gcx+(gr+2)*Math.cos(ta),ty1_=gcy+(gr+2)*Math.sin(ta);
+    const tx2=gcx+(gr+4)*Math.cos(ta),ty2_=gcy+(gr+4)*Math.sin(ta);
+    s+='<line x1="'+tx1+'" y1="'+ty1_+'" x2="'+tx2+'" y2="'+ty2_+'" stroke="#888" stroke-width=".8"/>';}
   s+='<path id="airServoNeedle" d="M'+gcx+','+gcy+' L'+gcx+','+(gcy-gr+1)+'" stroke="#e94" stroke-width="2" stroke-linecap="round"/>';
   s+='<circle cx="'+gcx+'" cy="'+gcy+'" r="2" fill="#e94"/>';
   s+='<text x="'+(saX+saW/2)+'" y="'+(saY+saH+10)+'" text-anchor="middle" style="font-size:7px;fill:#9aa">Servo Air</text>';
 
   // -- Tube: servo air -> flute embouchure --
   if(isTrav){
-    // Traversiere: air goes up from servo, across above the flute, then down into embouchure hole
-    const holeX=fluteX+28, holeY=ty+4;
-    const aboveY=ty-16; // tube runs above the flute
-    // Up from servo air to above level
+    const holeX=fluteX+28,holeY=ty+4,aboveY=ty-16;
     s+='<line x1="'+(saX+saW/2)+'" y1="'+saY+'" x2="'+(saX+saW/2)+'" y2="'+aboveY+'" stroke="#7799bb" stroke-width="3" stroke-linecap="round" opacity=".6"/>';
-    // Horizontal across above the flute to hole position
     s+='<line x1="'+(saX+saW/2)+'" y1="'+aboveY+'" x2="'+holeX+'" y2="'+aboveY+'" stroke="#7799bb" stroke-width="3" stroke-linecap="round" opacity=".6"/>';
-    // Down arrow into embouchure hole
     s+='<line x1="'+holeX+'" y1="'+aboveY+'" x2="'+holeX+'" y2="'+(holeY-7)+'" stroke="#7799bb" stroke-width="3" stroke-linecap="round" opacity=".6"/>';
     s+='<polygon points="'+(holeX-3)+','+(holeY-10)+' '+holeX+','+(holeY-5)+' '+(holeX+3)+','+(holeY-10)+'" fill="#7799bb" opacity=".6"/>';
   }else{
-    // Other types: air arrives horizontally from the left into the bec
     s+='<line x1="'+(saX+saW)+'" y1="'+cy+'" x2="'+(fluteX-2)+'" y2="'+cy+'" stroke="#7799bb" stroke-width="3" stroke-linecap="round" opacity=".6"/>';
     s+='<polygon points="'+(fluteX-7)+','+(cy-3)+' '+(fluteX-2)+','+cy+' '+(fluteX-7)+','+(cy+3)+'" fill="#7799bb" opacity=".6"/>';
   }
 
-  // -- Valve --
-  const vlX=saX-vlW-12;
-  const vlY=cy-vlH/2;
-  s+='<rect id="airValveRect" x="'+vlX+'" y="'+vlY+'" width="'+vlW+'" height="'+vlH+'" rx="3" fill="#444" stroke="#667" stroke-width="1.2"/>';
-  s+='<rect id="airValveInd" x="'+(vlX+8)+'" y="'+(vlY+5)+'" width="10" height="'+vlH*0.6+'" rx="2" fill="#e44"/>';
-  const vlLabel=m===0?'Solenoide':(CFG.valve_servo?'Servo':'Valve');
-  s+='<text x="'+(vlX+vlW/2)+'" y="'+(vlY+vlH+10)+'" text-anchor="middle" style="font-size:7px;fill:#9aa">'+vlLabel+'</text>';
-  // Tube: valve -> servo air
-  s+='<line x1="'+(vlX+vlW)+'" y1="'+cy+'" x2="'+saX+'" y2="'+cy+'" stroke="#7799bb" stroke-width="3" stroke-linecap="round" opacity=".6"/>';
-  s+='<polygon points="'+(saX-5)+','+(cy-3)+' '+saX+','+cy+' '+(saX-5)+','+(cy+3)+'" fill="#7799bb" opacity=".6"/>';
+  // -- Valve (if applicable) --
+  if(hasValve){
+    const vlX=saX-vlW-12,vlY_=cy-vlH/2;
+    s+='<rect id="airValveRect" x="'+vlX+'" y="'+vlY_+'" width="'+vlW+'" height="'+vlH+'" rx="3" fill="#444" stroke="#667" stroke-width="1.2"/>';
+    s+='<rect id="airValveInd" x="'+(vlX+8)+'" y="'+(vlY_+5)+'" width="10" height="'+vlH*0.6+'" rx="2" fill="#e44"/>';
+    const vlLabel=m===0?'Solenoide':((CFG.valve_type===1)?'Servo':'Valve');
+    s+='<text x="'+(vlX+vlW/2)+'" y="'+(vlY_+vlH+10)+'" text-anchor="middle" style="font-size:7px;fill:#9aa">'+vlLabel+'</text>';
+    s+='<line x1="'+(vlX+vlW)+'" y1="'+cy+'" x2="'+saX+'" y2="'+cy+'" stroke="#7799bb" stroke-width="3" stroke-linecap="round" opacity=".6"/>';
+    s+='<polygon points="'+(saX-5)+','+(cy-3)+' '+saX+','+cy+' '+(saX-5)+','+(cy+3)+'" fill="#7799bb" opacity=".6"/>';
+    curX=vlX;
+  }else{
+    curX=saX;
+  }
 
-  // -- Pump + Reservoir column --
-  if(m>=2){
-    // Pump at bottom-left (clickable to toggle on/off)
-    const pW=40,pH=32;
-    const pX=m>=3?ox:vlX-pW-12;
-    const pY=cy+8;
+  // -- Source: Pump(s), Fan --
+  if(hasPump){
+    const pW=40,pH=32,pX=curX-pW-12,pY=cy+8;
     s+='<g class="pump-toggle'+(pumpDisabled?' pump-off':'')+'" onclick="togglePump()">';
     s+='<rect x="'+pX+'" y="'+pY+'" width="'+pW+'" height="'+pH+'" rx="4" fill="url(#agMetal_'+g+')" stroke="#334" stroke-width="1.2"/>';
     s+='<circle id="airPumpIcon" cx="'+(pX+pW/2)+'" cy="'+(pY+pH/2)+'" r="10" fill="none" stroke="#dde" stroke-width="1.2"/>';
     s+='<line id="airPumpBlade" x1="'+(pX+pW/2)+'" y1="'+(pY+pH/2-8)+'" x2="'+(pX+pW/2)+'" y2="'+(pY+pH/2+8)+'" stroke="#dde" stroke-width="1.5"/>';
-    // Red cross when disabled
     s+='<g id="pumpCrossOff" style="display:'+(pumpDisabled?'':'none')+'">';
     s+='<line x1="'+(pX+8)+'" y1="'+(pY+6)+'" x2="'+(pX+pW-8)+'" y2="'+(pY+pH-6)+'" stroke="#e44" stroke-width="3" stroke-linecap="round"/>';
     s+='<line x1="'+(pX+pW-8)+'" y1="'+(pY+6)+'" x2="'+(pX+8)+'" y2="'+(pY+pH-6)+'" stroke="#e44" stroke-width="3" stroke-linecap="round"/>';
     s+='</g></g>';
     s+='<text x="'+(pX+pW/2)+'" y="'+(pY+pH+10)+'" text-anchor="middle" style="font-size:7px;fill:#9aa">Pompe</text>';
-
-    if(m>=3){
-      // Reservoir balloon above pump
-      const bx=pX+pW/2, ballY=cy-18;
-      const brx=22, bry=18;
-      s+='<ellipse id="airBalloon" cx="'+bx+'" cy="'+ballY+'" rx="'+brx+'" ry="'+bry+'" fill="url(#agBalloon_'+g+')" stroke="#802010" stroke-width="1.2" opacity=".85"/>';
-      s+='<ellipse cx="'+(bx-6)+'" cy="'+(ballY-7)+'" rx="6" ry="4" fill="#fff" opacity=".15"/>';
-      s+='<text x="'+bx+'" y="'+(ballY+4)+'" text-anchor="middle" style="font-size:9px;fill:#fff;font-weight:bold" id="airBalloonPct">--%</text>';
-      // ToF sensor above balloon
-      const tofY=ballY-bry-14;
-      s+='<rect x="'+(bx-5)+'" y="'+tofY+'" width="10" height="7" rx="2" fill="#334" stroke="#556" stroke-width=".7"/>';
-      s+='<line x1="'+bx+'" y1="'+(tofY+7)+'" x2="'+bx+'" y2="'+(ballY-bry+2)+'" stroke="#5af" stroke-width="1" stroke-dasharray="2,2"/>';
-      s+='<text x="'+(bx+8)+'" y="'+(tofY+5)+'" style="font-size:6px;fill:#5af">ToF</text>';
-      // Tube: pump -> balloon (vertical)
-      s+='<line x1="'+bx+'" y1="'+pY+'" x2="'+bx+'" y2="'+(ballY+bry)+'" stroke="#7799bb" stroke-width="3" stroke-linecap="round" opacity=".6"/>';
-      // Tube: balloon -> valve (horizontal)
-      s+='<line x1="'+(bx+brx)+'" y1="'+ballY+'" x2="'+(vlX+vlW/2)+'" y2="'+ballY+'" stroke="#7799bb" stroke-width="3" stroke-linecap="round" opacity=".6"/>';
-      // Bend down to valve center
-      s+='<line x1="'+(vlX+vlW/2)+'" y1="'+ballY+'" x2="'+(vlX+vlW/2)+'" y2="'+vlY+'" stroke="#7799bb" stroke-width="3" stroke-linecap="round" opacity=".6"/>';
-      s+='<polygon points="'+(vlX+vlW/2-3)+','+(vlY-1)+' '+(vlX+vlW/2)+','+(vlY+3)+' '+(vlX+vlW/2+3)+','+(vlY-1)+'" fill="#7799bb" opacity=".6"/>';
+    if(hasRes){
+      // Reservoir between pump and valve
+      const bx=pX+pW/2,ballY=cy-18;
+      if(m===5){
+        const brx=22,bry=18;
+        s+='<ellipse id="airBalloon" cx="'+bx+'" cy="'+ballY+'" rx="'+brx+'" ry="'+bry+'" fill="url(#agBalloon_'+g+')" stroke="#802010" stroke-width="1.2" opacity=".85"/>';
+        s+='<text x="'+bx+'" y="'+(ballY+4)+'" text-anchor="middle" style="font-size:9px;fill:#fff;font-weight:bold" id="airBalloonPct">--%</text>';
+        const tofY=ballY-bry-14;
+        s+='<rect x="'+(bx-5)+'" y="'+tofY+'" width="10" height="7" rx="2" fill="#334" stroke="#556" stroke-width=".7"/>';
+        s+='<line x1="'+bx+'" y1="'+(tofY+7)+'" x2="'+bx+'" y2="'+(ballY-bry+2)+'" stroke="#5af" stroke-width="1" stroke-dasharray="2,2"/>';
+        s+='<text x="'+(bx+8)+'" y="'+(tofY+5)+'" style="font-size:6px;fill:#5af">ToF</text>';
+      }else{
+        // Endstop mode
+        s+='<rect x="'+(bx-16)+'" y="'+(ballY-14)+'" width="32" height="28" rx="5" fill="#334" stroke="#556" stroke-width="1"/>';
+        s+='<text x="'+bx+'" y="'+(ballY+2)+'" text-anchor="middle" style="font-size:7px;fill:#dde">Tank</text>';
+        s+='<circle cx="'+(bx+14)+'" cy="'+(ballY-6)+'" r="3" fill="#4e4" id="airEndstopLed"/>';
+      }
       s+='<text x="'+bx+'" y="'+(ballY+bry+20)+'" text-anchor="middle" style="font-size:7px;fill:#9aa">Reservoir</text>';
+      s+='<line x1="'+bx+'" y1="'+pY+'" x2="'+bx+'" y2="'+(ballY+(m===5?18:14))+'" stroke="#7799bb" stroke-width="3" stroke-linecap="round" opacity=".6"/>';
+      s+='<line x1="'+(bx+(m===5?22:16))+'" y1="'+ballY+'" x2="'+curX+'" y2="'+cy+'" stroke="#7799bb" stroke-width="3" stroke-linecap="round" opacity=".6"/>';
     }else{
-      // Mode 2: pump direct to valve (horizontal tube)
-      s+='<line x1="'+(pX+pW)+'" y1="'+(pY+pH/2)+'" x2="'+vlX+'" y2="'+cy+'" stroke="#7799bb" stroke-width="3" stroke-linecap="round" opacity=".6"/>';
-      s+='<polygon points="'+(vlX-5)+','+(cy-3)+' '+vlX+','+cy+' '+(vlX-5)+','+(cy+3)+'" fill="#7799bb" opacity=".6"/>';
+      s+='<line x1="'+(pX+pW)+'" y1="'+(pY+pH/2)+'" x2="'+curX+'" y2="'+cy+'" stroke="#7799bb" stroke-width="3" stroke-linecap="round" opacity=".6"/>';
     }
+  }else if(hasFan){
+    const fW=40,fH=32,fX=curX-fW-12,fY=cy-fH/2;
+    s+='<rect x="'+fX+'" y="'+fY+'" width="'+fW+'" height="'+fH+'" rx="4" fill="url(#agMetal_'+g+')" stroke="#334" stroke-width="1.2"/>';
+    s+='<circle cx="'+(fX+fW/2)+'" cy="'+cy+'" r="12" fill="none" stroke="#dde" stroke-width="1.2"/>';
+    for(let a=0;a<3;a++){const ra=a*120*Math.PI/180;
+      s+='<line x1="'+(fX+fW/2)+'" y1="'+cy+'" x2="'+(fX+fW/2+8*Math.cos(ra))+'" y2="'+(cy+8*Math.sin(ra))+'" stroke="#dde" stroke-width="1.5" stroke-linecap="round"/>';}
+    s+='<text x="'+(fX+fW/2)+'" y="'+(fY+fH+10)+'" text-anchor="middle" style="font-size:7px;fill:#9aa">Ventil.</text>';
+    s+='<line x1="'+(fX+fW)+'" y1="'+cy+'" x2="'+curX+'" y2="'+cy+'" stroke="#7799bb" stroke-width="3" stroke-linecap="round" opacity=".6"/>';
   }
   return s;
 }
@@ -1540,7 +1566,7 @@ function buildFlute(cfg,svgId,showNums){
   const posBot=botHoles.map((_,i)=>sx+i*sp);
   const allX=[...posTop,...posBot,sx+200];
   const tw=Math.max(...allX)+60;
-  const svgH=CFG&&CFG.show_air&&(CFG.air_mode||0)>=3?130:100;
+  const svgH=CFG&&CFG.show_air&&(CFG.air_mode||0)>=4?130:100;
   const h_top=svgH===130?55:35,h_bot=svgH===130?85:65,cy=svgH===130?70:50;
   svg.setAttribute('viewBox','0 0 '+tw+' '+svgH);
   const g=svgId,ty=cy-16,by=cy+16,th=by-ty;
