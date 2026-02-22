@@ -1225,8 +1225,20 @@ function applyAirTabVisibility(){
 }
 function refreshKbdAir(){
   const box=$('kbdAirBox');if(!box)return;
-  if(CFG&&CFG.show_air){box.style.display='';buildAirSvg('kbdAirSvg',true)}
-  else box.style.display='none';
+  const fs=$('fluteSvg');
+  if(CFG&&CFG.show_air){
+    box.style.display='';buildAirSvg('kbdAirSvg',true);
+    // Align flute bec with servo flow air output
+    if(fs&&_kbdPipeExitRatio>0){
+      const fluteVB=fs.viewBox.baseVal;
+      const becX=fluteVB.width?4/fluteVB.width:0; // bec tip ratio in flute SVG
+      const off=Math.max(0,(_kbdPipeExitRatio-becX)*100);
+      fs.style.marginLeft=off+'%';fs.style.width=(100-off)+'%';
+    }
+  }else{
+    box.style.display='none';
+    if(fs){fs.style.marginLeft='';fs.style.width=''}
+  }
   refreshKbdPumpPanel();
 }
 let _kbdPumpOn=false;
@@ -1996,8 +2008,10 @@ function buildAirUI(){
   // Scroll to top on tab entry
   const tab=$('tab-air');if(tab)tab.scrollTop=0;
 }
+let _kbdPipeExitRatio=0;
 function buildAirSvg(svgId,full){
   const svg=$(svgId);if(!svg||!CFG)return;
+  const isKbd=(svgId==='kbdAirSvg');
   const m=CFG.air_mode||0;
   const hasPump=m>=4,hasFan=m===3,hasValve=(m===0||m>=4),hasRes=(m===5);
   const np=(hasPump&&CFG.num_pumps>1)?CFG.num_pumps:1;
@@ -2055,8 +2069,11 @@ function buildAirSvg(svgId,full){
     s+='<circle cx="'+gaugeX+'" cy="'+gaugeY+'" r="2.5" fill="#e94"/>';
     // Flute at right
     const flX=ductStartX+ductLen+24;
-    s+='<rect x="'+flX+'" y="'+(fanCy-12)+'" width="70" height="24" rx="10" fill="'+(CFG.color||'#D4B044')+'" stroke="#a89030" stroke-width="1" opacity=".8"/>';
-    s+='<text x="'+(flX+35)+'" y="'+(fanCy+4)+'" text-anchor="middle" style="font-size:9px;fill:#333;font-weight:bold">Flute</text>';
+    if(isKbd){_kbdPipeExitRatio=flX/w}
+    else{
+      s+='<rect x="'+flX+'" y="'+(fanCy-12)+'" width="70" height="24" rx="10" fill="'+(CFG.color||'#D4B044')+'" stroke="#a89030" stroke-width="1" opacity=".8"/>';
+      s+='<text x="'+(flX+35)+'" y="'+(fanCy+4)+'" text-anchor="middle" style="font-size:9px;fill:#333;font-weight:bold">Flute</text>';
+    }
     svg.innerHTML=s;
     return;
   }
@@ -2194,8 +2211,11 @@ function buildAirSvg(svgId,full){
     s+='<line class="airFlowAnim" x1="'+vx+'" y1="'+(vy-cylH/2)+'" x2="'+vx+'" y2="'+(svCy+svH/2)+'"/>';
     s+='<polygon points="'+(vx-3)+','+(svCy+svH/2+4)+' '+vx+','+(svCy+svH/2-1)+' '+(vx+3)+','+(svCy+svH/2+4)+'" fill="#7799bb"/>';
     // Flute (at servo flow height)
-    s+='<rect x="'+(flX+4)+'" y="'+(svCy-12)+'" width="70" height="24" rx="10" fill="'+(CFG.color||'#D4B044')+'" stroke="#a89030" stroke-width="1" opacity=".8"/>';
-    s+='<text x="'+(flX+39)+'" y="'+(svCy+4)+'" text-anchor="middle" style="font-size:9px;fill:#333;font-weight:bold">Flute</text>';
+    if(isKbd){_kbdPipeExitRatio=(flX+1)/w}
+    else{
+      s+='<rect x="'+(flX+4)+'" y="'+(svCy-12)+'" width="70" height="24" rx="10" fill="'+(CFG.color||'#D4B044')+'" stroke="#a89030" stroke-width="1" opacity=".8"/>';
+      s+='<text x="'+(flX+39)+'" y="'+(svCy+4)+'" text-anchor="middle" style="font-size:9px;fill:#333;font-weight:bold">Flute</text>';
+    }
   }else{
     // No valve (mode 2): T-connector goes directly to servo flow
     const svX=targetRight+8;
@@ -2209,8 +2229,11 @@ function buildAirSvg(svgId,full){
     s+='<line x1="'+(svX+36)+'" y1="'+teeY+'" x2="'+flX+'" y2="'+teeY+'" stroke="#7799bb" stroke-width="3"/>';
     s+='<line class="airFlowAnim" x1="'+(svX+36)+'" y1="'+teeY+'" x2="'+flX+'" y2="'+teeY+'"/>';
     s+='<polygon points="'+(flX-4)+','+(teeY-3)+' '+(flX+1)+','+teeY+' '+(flX-4)+','+(teeY+3)+'" fill="#7799bb"/>';
-    s+='<rect x="'+(flX+4)+'" y="'+(teeY-12)+'" width="70" height="24" rx="10" fill="'+(CFG.color||'#D4B044')+'" stroke="#a89030" stroke-width="1" opacity=".8"/>';
-    s+='<text x="'+(flX+39)+'" y="'+(teeY+4)+'" text-anchor="middle" style="font-size:9px;fill:#333;font-weight:bold">Flute</text>';
+    if(isKbd){_kbdPipeExitRatio=(flX+1)/w}
+    else{
+      s+='<rect x="'+(flX+4)+'" y="'+(teeY-12)+'" width="70" height="24" rx="10" fill="'+(CFG.color||'#D4B044')+'" stroke="#a89030" stroke-width="1" opacity=".8"/>';
+      s+='<text x="'+(flX+39)+'" y="'+(teeY+4)+'" text-anchor="middle" style="font-size:9px;fill:#333;font-weight:bold">Flute</text>';
+    }
   }
   svg.innerHTML=s;
 }
