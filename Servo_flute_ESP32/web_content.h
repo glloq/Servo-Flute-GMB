@@ -778,15 +778,17 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
 
     <!-- Options affichage -->
     <div style="margin-top:12px">
-      <div class="cfg-row"><label>Schema air (clavier)</label><input type="checkbox" id="cfgShowAir" style="width:auto;flex:0"></div>
+      <div class="cfg-row"><label>Schema air (clavier)</label><input type="checkbox" id="cfgShowAir" style="width:auto;flex:0" title="Affiche le schema de l'air en miniature sur l'onglet clavier"><span style="font-size:.65em;color:#888;margin-left:6px">Overlay sur le clavier MIDI</span></div>
     </div>
     <div id="airValidationMsg" style="display:none;font-size:.78em;color:#e94560;background:rgba(233,69,96,.08);border:1px solid rgba(233,69,96,.25);border-radius:6px;padding:8px 10px;margin:8px 0"></div>
     <div class="btn-row" style="margin-top:12px;gap:8px">
       <button class="btn btn-g" id="btnAirSave" onclick="saveAirSettings()">Sauvegarder</button>
       <button class="btn btn-s" onclick="resetAirDefaults()" style="font-size:.8em" title="Reinitialiser les valeurs par defaut pour le mode actuel">Defauts</button>
       <button class="btn btn-s" onclick="copyAirConfig()" style="font-size:.8em" title="Copier la configuration air au presse-papier (JSON)">Copier</button>
+      <button class="btn btn-s" onclick="importAirConfig()" style="font-size:.8em" title="Importer une configuration depuis le presse-papier (JSON)">Importer</button>
     </div>
     <div id="airSettingsMsg" style="font-size:.75em;color:#0f0;margin-top:6px"></div>
+    <div id="airConfigSummary" style="display:none;font-size:.7em;color:#888;margin-top:6px;padding:4px 8px;background:rgba(255,255,255,.02);border-radius:4px"></div>
   </div>
 </div>
 
@@ -1032,8 +1034,8 @@ function showToast(msg,type){type=type||'info';const c=$('toastContainer');
   t.innerHTML=(ic[type]||ic.info)+'<span>'+esc(msg)+'</span>';c.appendChild(t);
   requestAnimationFrame(()=>requestAnimationFrame(()=>t.classList.add('show')));
   setTimeout(()=>{t.classList.remove('show');setTimeout(()=>t.remove(),300)},3000)}
-function markDirty(){dirty=true;$('unsavedBadge').classList.add('show');updStepDots();const sb=$('btnAirSave');if(sb)sb.style.boxShadow='0 0 8px #4ecca3'}
-function markClean(){dirty=false;$('unsavedBadge').classList.remove('show');updStepDots();const sb=$('btnAirSave');if(sb)sb.style.boxShadow=''}
+function markDirty(){dirty=true;$('unsavedBadge').classList.add('show');updStepDots();const sb=$('btnAirSave');if(sb)sb.style.boxShadow='0 0 8px #4ecca3';updateConfigSummary()}
+function markClean(){dirty=false;$('unsavedBadge').classList.remove('show');updStepDots();const sb=$('btnAirSave');if(sb)sb.style.boxShadow='';const cs=$('airConfigSummary');if(cs)cs.style.display='none'}
 function btnLoad(id,on){const b=$(id);if(!b)return;if(on){b.classList.add('loading');b.disabled=true}else{b.classList.remove('loading');b.disabled=false}}
 function testPulse(el){el.classList.add('test-pulse');setTimeout(()=>el.classList.remove('test-pulse'),600)}
 function fpSnap(){if(!CFG)return;fpHistory.push(JSON.stringify(CFG.notes.map(n=>({midi:n.midi,fp:[...n.fp]}))));
@@ -1129,10 +1131,12 @@ function testSinglePump(idx){
   setTimeout(()=>wsSend({t:'pump_stop',pump:idx}),2000);
   showToast('Test pompe '+(idx+1)+' en cours...','success');
 }
+let _servoFlowTimer=null;
 function testServoFlow(v){
   const a=Math.max(0,Math.min(180,parseInt(v)||0));
   $('airFlowTestVal').textContent=a+'°';
-  wsSend({t:'test_air',a:a});
+  if(_servoFlowTimer)clearTimeout(_servoFlowTimer);
+  _servoFlowTimer=setTimeout(()=>{wsSend({t:'test_air',a:a});_servoFlowTimer=null},30);
 }
 function gotoServoAngle(inputId){
   const v=parseInt($(inputId).value)||0;
@@ -1384,8 +1388,9 @@ function validateAirConfig(){
       if(lo>=hi){warns.push('Hall: seuil bas >= haut');errBlocks.add('airBlockRes')}
     }
     if(st<=1){
-      const smin=parseInt($('airSensMin').value)||0,smax=parseInt($('airSensMax').value)||300;
+      const smin=parseInt($('airSensMin').value)||0,smax=parseInt($('airSensMax').value)||300,stgt=parseInt($('airSensTarget').value)||50;
       if(smin>=smax){warns.push('ToF: min >= max');errBlocks.add('airBlockRes')}
+      if(stgt<smin||stgt>smax){warns.push('ToF: cible hors plage min-max');errBlocks.add('airBlockRes')}
     }
   }
   // Highlight error blocks
@@ -1469,6 +1474,32 @@ function copyAirConfig(){
   const json=JSON.stringify(out,null,2);
   if(navigator.clipboard)navigator.clipboard.writeText(json).then(()=>showToast('Config copiee','success'));
   else{const ta=document.createElement('textarea');ta.value=json;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();showToast('Config copiee','success')}
+}
+function updateConfigSummary(){
+  const cs=$('airConfigSummary');if(!cs||!CFG)return;
+  const fields=[['air_mode','airModeSelect'],['air_off','cfgAirOff'],['air_min','cfgAirMin'],['air_max','cfgAirMax'],
+    ['fan_min','airFanMin'],['fan_max','airFanMax'],['pid_kp','airPidKp'],['pid_ki','airPidKi']];
+  let changes=0;
+  fields.forEach(([k,id])=>{
+    const el=$(id);if(!el)return;
+    const cur=el.type==='checkbox'?el.checked:parseFloat(el.value);
+    const saved=CFG[k];
+    if(saved!=null&&cur!=saved)changes++;
+  });
+  if(changes>0){cs.style.display='';cs.textContent=changes+' champ'+(changes>1?'s':'')+' modifie'+(changes>1?'s':'')+' (non sauvegarde'+(changes>1?'s':'')+')';}
+  else cs.style.display='none';
+}
+function importAirConfig(){
+  const input=prompt('Coller le JSON de configuration air:');
+  if(!input)return;
+  try{
+    const d=JSON.parse(input);
+    if(typeof d!=='object'||d===null){showToast('JSON invalide','error');return}
+    if(d.air_mode!=null&&(d.air_mode<0||d.air_mode>5)){showToast('Mode air invalide','error');return}
+    Object.assign(CFG,d);
+    fillAirSettings();buildAirUI();markDirty();
+    showToast('Config importee - Sauvegarder pour appliquer','success');
+  }catch(e){showToast('JSON invalide: '+e.message,'error')}
 }
 function fillAirSettings(){
   if(!CFG)return;
