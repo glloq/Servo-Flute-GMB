@@ -129,9 +129,8 @@ Modes modulaires de gestion d'air. L'interface s'adapte au mode choisi.
   1 = Servo-valve (servo PCA remplace solenoide)
   2 = Servo flow seul (pas de valve)
   3 = Ventilateur + servo flow
-  4 = Pompe(s) + valve + servo flow
-  5 = Pompe(s) + reservoir (capteur distance) + valve + servo flow
-  6 = Pompe(s) + reservoir (fin de course) + valve + servo flow
+  4 = Pompe(s) + valve + servo flow (direct, sans reservoir)
+  5 = Pompe(s) + reservoir + valve + servo flow (avec capteur)
 ******************************************************************************/
 // Modes
 #define AIR_MODE_SOLENOID_SERVO   0
@@ -140,12 +139,23 @@ Modes modulaires de gestion d'air. L'interface s'adapte au mode choisi.
 #define AIR_MODE_FAN_SERVO        3
 #define AIR_MODE_PUMP_VALVE       4
 #define AIR_MODE_PUMP_RESERVOIR   5
-#define AIR_MODE_PUMP_ENDSTOP     6
 
 // Legacy aliases
 #define AIR_MODE_CLASSIC          AIR_MODE_SOLENOID_SERVO
 #define AIR_MODE_PUMP             AIR_MODE_PUMP_VALVE
+#define AIR_MODE_PUMP_ENDSTOP     5  // Fusionne dans mode 5 (sensor_type selectionne endstop)
 #define AIR_MODE_PUMP_RESERVOIR_LEGACY AIR_MODE_PUMP_RESERVOIR
+
+// Types de moteur (pompe/ventilateur)
+#define MOTOR_TYPE_PWM    0     // Moteur PWM variable
+#define MOTOR_TYPE_ONOFF  1     // Moteur On/Off simple (GPIO HIGH/LOW)
+
+// Types de capteur reservoir (mode 5)
+#define SENSOR_TYPE_TOF_VL53L0X    0   // Capteur distance VL53L0X
+#define SENSOR_TYPE_TOF_VL6180X    1   // Capteur distance VL6180X
+#define SENSOR_TYPE_HALL_KY024     2   // Capteur effet Hall lineaire KY-024
+#define SENSOR_TYPE_ENDSTOP_MECH   3   // Fin de course mecanique
+#define SENSOR_TYPE_ENDSTOP_OPT    4   // Fin de course optique
 
 // Max pumps
 #define MAX_PUMPS 3
@@ -154,6 +164,7 @@ Modes modulaires de gestion d'air. L'interface s'adapte au mode choisi.
 #define DEFAULT_AIR_MODE            AIR_MODE_SOLENOID_SERVO
 #define DEFAULT_VALVE_TYPE          0      // 0=solenoide GPIO, 1=servo PCA
 #define DEFAULT_VALVE_SERVO_CH      11     // Canal PCA si valve=servo
+#define DEFAULT_MOTOR_TYPE          MOTOR_TYPE_PWM
 #define DEFAULT_NUM_PUMPS           1
 #define DEFAULT_PUMP_PIN            25     // GPIO25 (DAC capable)
 #define DEFAULT_PUMP_MIN_PWM        80     // Seuil demarrage moteur DC
@@ -163,8 +174,11 @@ Modes modulaires de gestion d'air. L'interface s'adapte au mode choisi.
 #define DEFAULT_FAN_MAX_PWM         255
 #define DEFAULT_ENDSTOP_PIN         34     // GPIO34 (input only)
 #define DEFAULT_ENDSTOP_ACTIVE_HIGH true
+#define DEFAULT_HALL_PIN            36     // GPIO36 (ADC, input only)
+#define DEFAULT_HALL_THRESHOLD_LOW  1500   // Seuil bas analogique Hall
+#define DEFAULT_HALL_THRESHOLD_HIGH 2500   // Seuil haut analogique Hall
 #define DEFAULT_RESERVOIR_ENABLED   false
-#define DEFAULT_SENSOR_TYPE         1      // 0=VL53L0X, 1=VL6180X
+#define DEFAULT_SENSOR_TYPE         SENSOR_TYPE_TOF_VL6180X
 #define DEFAULT_SENSOR_TARGET_MM    50     // Hauteur cible ballon (mm)
 #define DEFAULT_SENSOR_MIN_MM       10     // Hauteur min (vide)
 #define DEFAULT_SENSOR_MAX_MM       150    // Hauteur max (plein)

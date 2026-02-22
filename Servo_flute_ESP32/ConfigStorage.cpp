@@ -93,6 +93,7 @@ void ConfigStorage::initDefaults() {
   cfg.airMode = DEFAULT_AIR_MODE;
   cfg.valveType = DEFAULT_VALVE_TYPE;
   cfg.valveServoPcaChannel = DEFAULT_VALVE_SERVO_CH;
+  cfg.motorType = DEFAULT_MOTOR_TYPE;
   cfg.fanPin = DEFAULT_FAN_PIN;
   cfg.fanMinPwm = DEFAULT_FAN_MIN_PWM;
   cfg.fanMaxPwm = DEFAULT_FAN_MAX_PWM;
@@ -112,6 +113,9 @@ void ConfigStorage::initDefaults() {
   cfg.pidKi = DEFAULT_PID_KI;
   cfg.endstopPin = DEFAULT_ENDSTOP_PIN;
   cfg.endstopActiveHigh = DEFAULT_ENDSTOP_ACTIVE_HIGH;
+  cfg.hallPin = DEFAULT_HALL_PIN;
+  cfg.hallThresholdLow = DEFAULT_HALL_THRESHOLD_LOW;
+  cfg.hallThresholdHigh = DEFAULT_HALL_THRESHOLD_HIGH;
   cfg.showAirSystem = DEFAULT_SHOW_AIR_SYSTEM;
 
   // --- MIDI Storage ---
@@ -231,12 +235,18 @@ bool ConfigStorage::load() {
 
   // --- Air delivery system (modulaire) ---
   cfg.airMode = doc["air_mode"] | cfg.airMode;
+  // Retro-compat: ancien mode 6 (endstop) -> mode 5 avec sensorType=endstop meca
+  if (cfg.airMode == 6) {
+    cfg.airMode = AIR_MODE_PUMP_RESERVOIR;
+    if (!doc.containsKey("sens_type")) cfg.sensorType = SENSOR_TYPE_ENDSTOP_MECH;
+  }
   cfg.valveType = doc["valve_type"] | cfg.valveType;
   // Retro-compat: ancien champ valve_servo (bool) -> valveType
   if (doc.containsKey("valve_servo") && !doc.containsKey("valve_type")) {
     cfg.valveType = doc["valve_servo"].as<bool>() ? 1 : 0;
   }
   cfg.valveServoPcaChannel = doc["valve_ch"] | cfg.valveServoPcaChannel;
+  cfg.motorType = doc["motor_type"] | cfg.motorType;
   cfg.fanPin = doc["fan_pin"] | cfg.fanPin;
   cfg.fanMinPwm = doc["fan_min"] | cfg.fanMinPwm;
   cfg.fanMaxPwm = doc["fan_max"] | cfg.fanMaxPwm;
@@ -275,6 +285,9 @@ bool ConfigStorage::load() {
   cfg.pidKi = doc["pid_ki"] | cfg.pidKi;
   cfg.endstopPin = doc["endstop_pin"] | cfg.endstopPin;
   cfg.endstopActiveHigh = doc["endstop_high"] | (cfg.endstopActiveHigh ? 1 : 0);
+  cfg.hallPin = doc["hall_pin"] | cfg.hallPin;
+  cfg.hallThresholdLow = doc["hall_low"] | cfg.hallThresholdLow;
+  cfg.hallThresholdHigh = doc["hall_high"] | cfg.hallThresholdHigh;
   cfg.showAirSystem = doc["show_air"] | (cfg.showAirSystem ? 1 : 0);
 
   // --- MIDI Storage ---
@@ -373,6 +386,7 @@ bool ConfigStorage::save() {
   doc["air_mode"] = cfg.airMode;
   doc["valve_type"] = cfg.valveType;
   doc["valve_ch"] = cfg.valveServoPcaChannel;
+  doc["motor_type"] = cfg.motorType;
   doc["fan_pin"] = cfg.fanPin;
   doc["fan_min"] = cfg.fanMinPwm;
   doc["fan_max"] = cfg.fanMaxPwm;
@@ -393,6 +407,9 @@ bool ConfigStorage::save() {
   doc["pid_ki"] = cfg.pidKi;
   doc["endstop_pin"] = cfg.endstopPin;
   doc["endstop_high"] = cfg.endstopActiveHigh ? 1 : 0;
+  doc["hall_pin"] = cfg.hallPin;
+  doc["hall_low"] = cfg.hallThresholdLow;
+  doc["hall_high"] = cfg.hallThresholdHigh;
   doc["show_air"] = cfg.showAirSystem ? 1 : 0;
   doc["midi_limit"] = cfg.midiStorageLimitKb;
   doc["wifi_ssid"] = cfg.wifiSsid;

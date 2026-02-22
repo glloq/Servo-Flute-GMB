@@ -62,9 +62,9 @@ void AirflowController::begin() {
   setAirflowToRest();
 
   if (DEBUG) {
-    const char* modeNames[] = {"Classique", "Servo-valve", "Servo seul", "Ventilateur", "Pompe+valve", "Pompe+reservoir", "Pompe+endstop"};
+    const char* modeNames[] = {"Classique", "Servo-valve", "Servo seul", "Ventilateur", "Pompe+valve", "Pompe+reservoir"};
     Serial.print("DEBUG: AirflowController - Mode: ");
-    Serial.println(cfg.airMode < 7 ? modeNames[cfg.airMode] : "?");
+    Serial.println(cfg.airMode < 6 ? modeNames[cfg.airMode] : "?");
     #if SOLENOID_USE_PWM
     if (cfg.airMode == AIR_MODE_SOLENOID_SERVO) {
       Serial.println("DEBUG: AirflowController - Mode PWM solenoide active");
