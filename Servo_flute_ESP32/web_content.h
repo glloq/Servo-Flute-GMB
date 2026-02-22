@@ -315,8 +315,8 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
 <!-- TAB: KEYBOARD -->
 <div class="tab active" id="tab-keyboard">
   <div class="flute-box">
-    <div id="kbdAirBox" style="display:none"><svg id="kbdAirSvg" viewBox="0 0 520 280" style="width:100%;max-height:280px"></svg></div>
-    <svg id="fluteSvg" viewBox="0 0 400 100"></svg>
+    <div id="kbdAirBox" style="display:none"><svg id="kbdAirSvg" viewBox="0 0 520 280" style="width:100%" preserveAspectRatio="xMinYMid meet"></svg></div>
+    <svg id="fluteSvg" viewBox="0 0 400 100" preserveAspectRatio="xMinYMid meet"></svg>
     <div class="flute-info"><span id="fluteNote">-</span> <span id="fluteInfo" style="color:#555">Jouez une note</span></div>
     <div id="kbdAirStats" style="display:none;gap:8px;flex-wrap:wrap;font-size:.75em;padding:4px 8px;background:#0a0a1a;border-radius:0 0 8px 8px;justify-content:center">
       <span id="kbdStatPump" style="display:none;color:#9aa">Pompe <b id="kbdPumpVal">OFF</b></span>
@@ -1229,27 +1229,25 @@ function refreshKbdAir(){
   const airSvg=$('kbdAirSvg');
   if(CFG&&CFG.show_air){
     box.style.display='';buildAirSvg('kbdAirSvg',true);
-    // Align flute embouchure under the pipe exit by adjusting flute viewBox left padding.
-    // Both SVGs stay at width:100% — alignment is in SVG coordinate space, not CSS.
+    // Force both SVGs to identical rendering: block display, same width, left-aligned content
+    if(airSvg){airSvg.style.display='block';airSvg.style.maxWidth='none';airSvg.style.maxHeight='none'}
+    if(fs){fs.style.display='block';fs.style.maxWidth='none'}
+    // Align: adjust flute viewBox to add left padding so embouchure aligns with pipe exit
     if(fs&&airSvg&&_kbdPipeExitRatio>0){
-      const airVB=airSvg.viewBox.baseVal;
       const fluteVB=fs.viewBox.baseVal;
-      if(airVB.width>0&&fluteVB.width>0){
+      if(fluteVB.width>0){
         const em=CFG.embouchure||'bec';
         const becPx=(em==='trav')?36:(em==='oca')?21:4;
-        const tw=fluteVB.width; // original flute viewBox width
-        const th=fluteVB.height;
-        // padLeft = viewBox units of empty space added to the left of the flute,
-        // so that embouchure fraction of new viewBox == pipe exit fraction of air viewBox.
-        // Solve: (padLeft + becPx) / (tw + padLeft) = _kbdPipeExitRatio
+        const tw=fluteVB.width,th=fluteVB.height;
         const r=_kbdPipeExitRatio;
         const padLeft=Math.max(0,(r*tw-becPx)/(1-r||1));
-        const newW=tw+padLeft;
-        fs.setAttribute('viewBox',(-padLeft)+' 0 '+newW+' '+th);
+        fs.setAttribute('viewBox',(-padLeft)+' 0 '+(tw+padLeft)+' '+th);
       }
     }
   }else{
     box.style.display='none';
+    if(airSvg){airSvg.style.display='';airSvg.style.maxWidth='';airSvg.style.maxHeight=''}
+    if(fs){fs.style.display='';fs.style.maxWidth=''}
   }
   refreshKbdPumpPanel();
 }
