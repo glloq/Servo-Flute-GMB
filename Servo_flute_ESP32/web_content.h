@@ -264,7 +264,9 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
   #airCtrlSection .cfg-row label{flex:0 0 90px}
   #airSvgFull{max-height:220px}
 }
-@media(max-width:480px){#airLiveStats{gap:6px !important}#airLiveStats>div{min-width:45px;padding:3px 5px;font-size:.85em}
+@media(max-width:480px){#airLayoutSelect{flex-wrap:wrap}
+  .air-layout-btn{font-size:.7em;padding:5px 8px}
+  #airLiveStats{gap:6px !important}#airLiveStats>div{min-width:45px;padding:3px 5px;font-size:.85em}
   #airSvgFull{max-height:180px}
   .air-block .cfg-row label{flex:0 0 90px;font-size:.75em}
   .air-block .cfg-row input[type=number]{width:60px;font-size:.85em}
@@ -1163,8 +1165,8 @@ function showTab(id,btn){
   $('tab-'+id).classList.add('active');if(btn)btn.classList.add('active');
   if(id==='calib'&&CFG)buildCalibUI();
   if(id==='air'&&CFG)buildAirUI();
-  // Refresh compact flute air overlay on keyboard tab entry
-  if(id==='keyboard'&&lastAirData)updateAirDiagram(lastAirData);
+  // Refresh flute SVG + air overlay on keyboard tab entry
+  if(id==='keyboard'){if(CFG)buildFlute(CFG,'fluteSvg',false);if(lastAirData)updateAirDiagram(lastAirData);}
 }
 // --- Air System (modulaire) ---
 const AIR_LAYOUT_DESCS=[
@@ -2112,14 +2114,17 @@ function buildAirSvg(svgId,full){
     s+='<circle cx="'+vx+'" cy="'+svCy+'" r="2.5" fill="#e94"/>';
     s+='<text x="'+vx+'" y="'+(svCy-svH/2-4)+'" text-anchor="middle" style="font-size:7px;fill:#9aa">Servo Flow</text>';
     s+='<text x="'+(vx+svW/2+2)+'" y="'+(svCy-4)+'" style="font-size:5px;fill:#569">CH'+ach+'</text>';
-    // Pipe RIGHT from valve to flute
-    const flX=vx+cylW/2+16;
-    s+='<line x1="'+(vx+cylW/2)+'" y1="'+teeY+'" x2="'+flX+'" y2="'+teeY+'" stroke="#7799bb" stroke-width="3"/>';
-    s+='<line class="airFlowAnim" x1="'+(vx+cylW/2)+'" y1="'+teeY+'" x2="'+flX+'" y2="'+teeY+'"/>';
-    s+='<polygon points="'+(flX-4)+','+(teeY-3)+' '+(flX+1)+','+teeY+' '+(flX-4)+','+(teeY+3)+'" fill="#7799bb"/>';
-    // Flute
-    s+='<rect x="'+(flX+4)+'" y="'+(teeY-12)+'" width="70" height="24" rx="10" fill="'+(CFG.color||'#D4B044')+'" stroke="#a89030" stroke-width="1" opacity=".8"/>';
-    s+='<text x="'+(flX+39)+'" y="'+(teeY+4)+'" text-anchor="middle" style="font-size:9px;fill:#333;font-weight:bold">Flute</text>';
+    // Pipe from servo flow RIGHT to flute
+    const flX=vx+svW/2+16;
+    s+='<line x1="'+(vx+svW/2)+'" y1="'+svCy+'" x2="'+flX+'" y2="'+svCy+'" stroke="#7799bb" stroke-width="3"/>';
+    s+='<line class="airFlowAnim" x1="'+(vx+svW/2)+'" y1="'+svCy+'" x2="'+flX+'" y2="'+svCy+'"/>';
+    s+='<polygon points="'+(flX-4)+','+(svCy-3)+' '+(flX+1)+','+svCy+' '+(flX-4)+','+(svCy+3)+'" fill="#7799bb"/>';
+    // Flow animation valve -> servo flow (vertical)
+    s+='<line class="airFlowAnim" x1="'+vx+'" y1="'+(vy-cylH/2)+'" x2="'+vx+'" y2="'+(svCy+svH/2)+'"/>';
+    s+='<polygon points="'+(vx-3)+','+(svCy+svH/2+4)+' '+vx+','+(svCy+svH/2-1)+' '+(vx+3)+','+(svCy+svH/2+4)+'" fill="#7799bb"/>';
+    // Flute (at servo flow height)
+    s+='<rect x="'+(flX+4)+'" y="'+(svCy-12)+'" width="70" height="24" rx="10" fill="'+(CFG.color||'#D4B044')+'" stroke="#a89030" stroke-width="1" opacity=".8"/>';
+    s+='<text x="'+(flX+39)+'" y="'+(svCy+4)+'" text-anchor="middle" style="font-size:9px;fill:#333;font-weight:bold">Flute</text>';
   }else{
     // No valve (mode 2): T-connector goes directly to servo flow
     const svX=targetRight+8;
