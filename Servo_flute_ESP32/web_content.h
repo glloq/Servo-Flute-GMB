@@ -835,7 +835,7 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
 
     <!-- Options affichage -->
     <div style="margin-top:12px">
-      <div class="cfg-row"><label>Schema air (clavier)</label><input type="checkbox" id="cfgShowAir" style="width:auto;flex:0" title="Affiche le schema de l'air en miniature sur l'onglet clavier"><span style="font-size:.65em;color:#888;margin-left:6px">Overlay sur le clavier MIDI</span></div>
+      <div class="cfg-row"><label>Afficher schemas air dans onglet clavier</label><input type="checkbox" id="cfgShowAir" style="width:auto;flex:0" title="Affiche le schema pneumatique en miniature sur l'onglet clavier"></div>
     </div>
     <div id="airValidationMsg" style="display:none;font-size:.78em;color:#e94560;background:rgba(233,69,96,.08);border:1px solid rgba(233,69,96,.25);border-radius:6px;padding:8px 10px;margin:8px 0"></div>
     <div class="btn-row" style="margin-top:12px;gap:8px">
