@@ -553,6 +553,11 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
       <span id="airFlowTestVal" style="min-width:36px;text-align:right">20&deg;</span>
       <button class="btn btn-s" onclick="sweepServoFlow()" title="Balaye de min a max et retour au repos" style="padding:4px 8px;font-size:.7em">Sweep</button>
     </div>
+    <div style="display:flex;gap:4px;margin:-4px 0 4px;padding-left:148px">
+      <button class="btn btn-s" onclick="gotoServoAngle('cfgAirOff')" style="padding:2px 6px;font-size:.65em" title="Aller a l'angle repos">Off</button>
+      <button class="btn btn-s" onclick="gotoServoAngle('cfgAirMin')" style="padding:2px 6px;font-size:.65em" title="Aller a l'angle minimum">Min</button>
+      <button class="btn btn-s" onclick="gotoServoAngle('cfgAirMax')" style="padding:2px 6px;font-size:.65em" title="Aller a l'angle maximum">Max</button>
+    </div>
     <div class="btn-row">
       <button class="btn btn-p" id="btnAirStop" onclick="stopAirSource()">Arreter</button>
       <button class="btn btn-s" id="btnValveOpen" onclick="wsSend({t:'test_sol',o:1})">Ouvrir valve</button>
@@ -1091,6 +1096,10 @@ function testServoFlow(v){
   $('airFlowTestVal').textContent=v+'°';
   wsSend({t:'test_air',a:parseInt(v)});
 }
+function gotoServoAngle(inputId){
+  const v=parseInt($(inputId).value)||0;
+  $('airFlowTest').value=v;testServoFlow(v);
+}
 let sweepTimer=null;
 function sweepServoFlow(){
   if(sweepTimer){clearInterval(sweepTimer);sweepTimer=null;return}
@@ -1378,9 +1387,12 @@ function fillAirSettings(){
   $('cfgSolAct').value=CFG.sol_act!=null?CFG.sol_act:255;$('cfgSolHold').value=CFG.sol_hold!=null?CFG.sol_hold:80;$('cfgSolTime').value=CFG.sol_time!=null?CFG.sol_time:30;
   // Show air checkbox
   $('cfgShowAir').checked=!!CFG.show_air;
-  // Attach validation listeners
+  // Attach validation listeners + dirty tracking
   ['airFanMin','airFanMax','airHallLow','airHallHigh','airSensMin','airSensMax','cfgAirOff','cfgAirMin','cfgAirMax'].forEach(id=>{
-    const el=$(id);if(el)el.addEventListener('input',()=>{validateAirConfig();updateHallBar()})});
+    const el=$(id);if(el)el.addEventListener('input',()=>{validateAirConfig();updateHallBar();markDirty()})});
+  // Track changes on all Air tab selects and inputs
+  document.querySelectorAll('#tab-air select,#tab-air input[type=number],#tab-air input[type=checkbox]').forEach(el=>{
+    el.addEventListener('change',()=>markDirty())});
   buildPumpRows();
   _prevAirMode=CFG.air_mode||0;
   setAirMode(CFG.air_mode||0);toggleValveParams();toggleSensorParams();
@@ -1753,11 +1765,17 @@ function drawMiniChart(){
   }
   // Pressure line
   ctx.strokeStyle='#e94560';ctx.lineWidth=1.5;ctx.beginPath();
+  let lastY=h;
   for(let i=0;i<n;i++){
     const x=(chartData.max-n+i)*dx,y=h-chartData.pct[i]/100*h;
     i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+    lastY=y;
   }
   ctx.stroke();
+  // Current value label at right edge
+  const lastPct=chartData.pct[n-1];
+  ctx.fillStyle='#e94560';ctx.font='bold 9px sans-serif';ctx.textAlign='right';
+  ctx.fillText(lastPct+'%',w-2,lastY-4);
 }
 // Pump toggle from keyboard (click pump in SVG to disable/enable)
 let pumpDisabled=false;
