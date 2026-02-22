@@ -570,6 +570,8 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
       <button class="btn btn-s" id="btnValveOpen" onclick="wsSend({t:'test_sol',o:1})">Ouvrir valve</button>
       <button class="btn btn-s" id="btnValveClose" onclick="wsSend({t:'test_sol',o:0})">Fermer valve</button>
       <button class="btn btn-s" id="btnAirTest" onclick="testAirSystem()" style="display:none">Test rapide</button>
+      <select id="airTestDur" style="display:none;font-size:.7em;padding:2px;background:#1a1a2e;color:#eee;border:1px solid #333;border-radius:3px" title="Duree du test rapide">
+        <option value="1000">1s</option><option value="2000" selected>2s</option><option value="5000">5s</option><option value="10000">10s</option></select>
       <button class="btn btn-s" id="btnAirDiag" onclick="runAirDiagnostic()" title="Teste tous les composants en sequence">Diagnostic</button>
     </div>
     <div id="airDiagMsg" style="display:none;font-size:.75em;color:#9aa;margin-top:4px;padding:4px 8px;background:rgba(255,255,255,.03);border-radius:4px"></div>
@@ -752,9 +754,9 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
         <div class="cfg-row"><label>Angle min</label><input type="number" id="cfgAirMin" min="0" max="180" title="Angle minimal pour les notes les plus douces (pp). Typique: 5-15°"></div>
         <div class="cfg-row"><label>Angle max</label><input type="number" id="cfgAirMax" min="0" max="180" title="Angle maximal pour les notes les plus fortes (ff). Typique: 60-120°"></div>
         <div class="btn-row" style="margin-top:4px">
-          <button class="btn btn-s" onclick="$('cfgAirOff').value=20;$('cfgAirMin').value=5;$('cfgAirMax').value=60;markDirty();validateAirConfig()" style="font-size:.7em;padding:3px 8px" title="Souffle leger, ideal pour flute a bec">Doux</button>
-          <button class="btn btn-s" onclick="$('cfgAirOff').value=20;$('cfgAirMin').value=10;$('cfgAirMax').value=90;markDirty();validateAirConfig()" style="font-size:.7em;padding:3px 8px" title="Bon compromis pour la plupart des flutes">Standard</button>
-          <button class="btn btn-s" onclick="$('cfgAirOff').value=15;$('cfgAirMin').value=15;$('cfgAirMax').value=120;markDirty();validateAirConfig()" style="font-size:.7em;padding:3px 8px" title="Souffle fort, flute traversiere ou gros volume">Puissant</button>
+          <button class="btn btn-s" onclick="$('cfgAirOff').value=20;$('cfgAirMin').value=5;$('cfgAirMax').value=60;markDirty();validateAirConfig();buildAirSvg('airSvgFull',true)" style="font-size:.7em;padding:3px 8px" title="Souffle leger, ideal pour flute a bec">Doux</button>
+          <button class="btn btn-s" onclick="$('cfgAirOff').value=20;$('cfgAirMin').value=10;$('cfgAirMax').value=90;markDirty();validateAirConfig();buildAirSvg('airSvgFull',true)" style="font-size:.7em;padding:3px 8px" title="Bon compromis pour la plupart des flutes">Standard</button>
+          <button class="btn btn-s" onclick="$('cfgAirOff').value=15;$('cfgAirMin').value=15;$('cfgAirMax').value=120;markDirty();validateAirConfig();buildAirSvg('airSvgFull',true)" style="font-size:.7em;padding:3px 8px" title="Souffle fort, flute traversiere ou gros volume">Puissant</button>
         </div>
       </div>
     </div>
@@ -781,6 +783,7 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
     <div class="btn-row" style="margin-top:12px;gap:8px">
       <button class="btn btn-g" id="btnAirSave" onclick="saveAirSettings()">Sauvegarder</button>
       <button class="btn btn-s" onclick="resetAirDefaults()" style="font-size:.8em" title="Reinitialiser les valeurs par defaut pour le mode actuel">Defauts</button>
+      <button class="btn btn-s" onclick="copyAirConfig()" style="font-size:.8em" title="Copier la configuration air au presse-papier (JSON)">Copier</button>
     </div>
     <div id="airSettingsMsg" style="font-size:.75em;color:#0f0;margin-top:6px"></div>
   </div>
@@ -1105,12 +1108,12 @@ function stopAirSource(){
 }
 function testAirSystem(){
   const m=getAirMode();
-  // Quick test: ramp to 30% for 2s then stop
+  const dur=parseInt($('airTestDur').value)||2000;
   if(m===3)wsSend({t:'fan_target',v:30});
   else wsSend({t:'pump_target',v:30});
   $('pumpTarget').value=30;$('pumpTargetVal').textContent='30%';
   $('btnAirTest').classList.add('test-pulse');
-  setTimeout(()=>{stopAirSource();$('btnAirTest').classList.remove('test-pulse')},2000);
+  setTimeout(()=>{stopAirSource();$('btnAirTest').classList.remove('test-pulse')},dur);
 }
 function testServoFlow(v){
   const a=Math.max(0,Math.min(180,parseInt(v)||0));
@@ -1212,6 +1215,7 @@ function setAirMode(v){
   if(vo)vo.style.display=(hasValve)?'':'none';
   if(vc)vc.style.display=(hasValve)?'':'none';
   if(bt)bt.style.display=(hasPump||hasFan)?'':'none';
+  const td=$('airTestDur');if(td)td.style.display=(hasPump||hasFan)?'':'none';
   if(m===1){$('airValveType').value='1';toggleValveParams()}
   if(hasRes)toggleSensorParams();
   const md=$('airModeDesc');if(md)md.textContent=AIR_DESCS[m]||'';
@@ -1438,6 +1442,15 @@ function resetAirDefaults(){
   toggleValveParams();markDirty();validateAirConfig();
   showToast('Valeurs par defaut appliquees','success');
 }
+function copyAirConfig(){
+  const keys=['air_mode','valve_type','valve_ch','air_off','air_min','air_max','motor_type','num_pumps',
+    'fan_pin','fan_min','fan_max','sol_pin','sol_act','sol_hold','sol_time','sens_type','sens_target',
+    'sens_min','sens_max','pid_kp','pid_ki','hall_pin','hall_low','hall_high','endstop_pin','endstop_high','res_format','show_air'];
+  const out={};keys.forEach(k=>{if(CFG[k]!=null)out[k]=CFG[k]});
+  const json=JSON.stringify(out,null,2);
+  if(navigator.clipboard)navigator.clipboard.writeText(json).then(()=>showToast('Config copiee','success'));
+  else{const ta=document.createElement('textarea');ta.value=json;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();showToast('Config copiee','success')}
+}
 function fillAirSettings(){
   if(!CFG)return;
   $('airModeSelect').value=CFG.air_mode||0;
@@ -1471,6 +1484,13 @@ function fillAirSettings(){
   // Track changes on all Air tab selects and inputs
   document.querySelectorAll('#tab-air select,#tab-air input[type=number],#tab-air input[type=checkbox]').forEach(el=>{
     el.addEventListener('change',()=>markDirty())});
+  // Clamp number inputs on blur to enforce min/max
+  document.querySelectorAll('#tab-air input[type=number]').forEach(el=>{
+    el.addEventListener('blur',()=>{
+      const v=parseFloat(el.value),mn=parseFloat(el.min),mx=parseFloat(el.max);
+      if(!isNaN(v)&&!isNaN(mn)&&v<mn)el.value=mn;
+      if(!isNaN(v)&&!isNaN(mx)&&v>mx)el.value=mx;
+    })});
   buildPumpRows();
   _prevAirMode=CFG.air_mode||0;
   setAirMode(CFG.air_mode||0);toggleValveParams();toggleSensorParams();toggleMotorType();
@@ -1832,28 +1852,41 @@ function drawMiniChart(){
   const mc=$('airMiniChart');if(mc)mc.style.display=(CFG&&CFG.air_mode===5)?'':'none';
   if(!CFG||CFG.air_mode!==5)return;
   const ctx=cv.getContext('2d');
-  const w=cv.width,h=cv.height;
-  ctx.clearRect(0,0,w,h);
-  const n=chartData.pct.length;if(n<2)return;
-  const dx=w/(chartData.max-1);
+  // Retina scaling
+  const dpr=window.devicePixelRatio||1;
+  const rect=cv.getBoundingClientRect();
+  if(cv.width!==rect.width*dpr||cv.height!==rect.height*dpr){
+    cv.width=rect.width*dpr;cv.height=rect.height*dpr;
+    ctx.scale(dpr,dpr);
+  }
+  const w=rect.width,h=rect.height;
+  ctx.clearRect(0,0,w*dpr,h*dpr);
+  const n=chartData.pct.length;
+  // Y-axis labels
+  ctx.fillStyle='#555';ctx.font='7px sans-serif';ctx.textAlign='left';
+  ctx.fillText('100%',1,9);ctx.fillText('50%',1,h/2+3);ctx.fillText('0%',1,h-2);
+  if(n<2)return;
+  const lm=22;// left margin for labels
+  const pw=w-lm;
+  const dx=pw/(chartData.max-1);
   // Target line
   const target=CFG.sens_target||50;
   const tY=h-target/100*h;
   ctx.setLineDash([4,4]);ctx.strokeStyle='#4ecca355';ctx.lineWidth=1;
-  ctx.beginPath();ctx.moveTo(0,tY);ctx.lineTo(w,tY);ctx.stroke();ctx.setLineDash([]);
+  ctx.beginPath();ctx.moveTo(lm,tY);ctx.lineTo(w,tY);ctx.stroke();ctx.setLineDash([]);
   ctx.fillStyle='#4ecca355';ctx.font='7px sans-serif';ctx.textAlign='left';
-  ctx.fillText('cible '+target+'%',2,tY-2);
+  ctx.fillText('cible '+target+'%',lm+2,tY-2);
   // Pump PWM bars (background, faint)
   ctx.fillStyle='rgba(78,204,163,0.08)';
   for(let i=0;i<n;i++){
     const bh=chartData.pwm[i]/255*h;
-    ctx.fillRect((chartData.max-n+i)*dx,h-bh,dx,bh);
+    ctx.fillRect(lm+(chartData.max-n+i)*dx,h-bh,dx,bh);
   }
   // Pressure line
   ctx.strokeStyle='#e94560';ctx.lineWidth=1.5;ctx.beginPath();
   let lastY=h;
   for(let i=0;i<n;i++){
-    const x=(chartData.max-n+i)*dx,y=h-chartData.pct[i]/100*h;
+    const x=lm+(chartData.max-n+i)*dx,y=h-chartData.pct[i]/100*h;
     i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
     lastY=y;
   }
@@ -1862,6 +1895,10 @@ function drawMiniChart(){
   const lastPct=chartData.pct[n-1];
   ctx.fillStyle='#e94560';ctx.font='bold 9px sans-serif';ctx.textAlign='right';
   ctx.fillText(lastPct+'%',w-2,lastY-4);
+  // Legend
+  ctx.font='7px sans-serif';ctx.textAlign='right';
+  ctx.fillStyle='#e94560';ctx.fillText('Pression',w-2,9);
+  ctx.fillStyle='rgba(78,204,163,0.4)';ctx.fillText('Pompe PWM',w-2,18);
 }
 // Pump toggle from keyboard (click pump in SVG to disable/enable)
 let pumpDisabled=false;
