@@ -235,6 +235,7 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
 .air-block-hdr .air-block-toggle.on::after{background:#fff;left:18px}
 .air-block-body{padding:10px 12px;display:none;animation:airFadeIn .25s ease}
 @keyframes airFadeIn{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:translateY(0)}}
+@keyframes airShake{0%,100%{transform:translateX(0)}20%,60%{transform:translateX(-4px)}40%,80%{transform:translateX(4px)}}
 .air-block.active .air-block-body{display:block}
 .air-block.active{border-color:#1a5060}
 @keyframes pistonDown{0%{transform:translateY(0)}100%{transform:translateY(10px)}}
@@ -534,16 +535,16 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
       <svg id="airSvgFull" viewBox="0 0 520 280" style="width:100%;max-height:280px"></svg>
     </div>
     <div id="airLiveStats" style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px">
-      <div id="airStatPump" style="display:none"><span style="font-size:.7em;color:#9aa">Pompe</span><div style="font-weight:bold" id="airPumpPwm">OFF</div></div>
-      <div id="airStatFan" style="display:none"><span style="font-size:.7em;color:#9aa">Ventilateur</span><div style="font-weight:bold" id="airFanPwm">OFF</div></div>
-      <div id="airStatRes" style="display:none"><span style="font-size:.7em;color:#9aa">Reservoir</span><div style="font-weight:bold" id="airResPct">--%</div>
+      <div id="airStatPump" style="display:none" title="PWM actuel de la pompe (0-255). OFF = pompe arretee"><span style="font-size:.7em;color:#9aa">Pompe</span><div style="font-weight:bold" id="airPumpPwm">OFF</div></div>
+      <div id="airStatFan" style="display:none" title="Vitesse ventilateur. Orange = rampe en cours"><span style="font-size:.7em;color:#9aa">Ventilateur</span><div style="font-weight:bold" id="airFanPwm">OFF</div></div>
+      <div id="airStatRes" style="display:none" title="Remplissage reservoir (0-100%). Vert>80%, Orange>30%, Rouge<30%"><span style="font-size:.7em;color:#9aa">Reservoir</span><div style="font-weight:bold" id="airResPct">--%</div>
         <div style="width:40px;height:4px;background:#333;border-radius:2px;margin:2px auto 0"><div id="airResFillBar" style="height:100%;background:#e94560;border-radius:2px;width:0%;transition:width .3s"></div></div></div>
-      <div id="airStatDist" style="display:none"><span style="font-size:.7em;color:#9aa">Distance</span><div style="font-weight:bold" id="airResMm">--mm</div></div>
-      <div id="airStatHall" style="display:none"><span style="font-size:.7em;color:#9aa">Hall</span><div style="font-weight:bold" id="airHallVal">--</div></div>
-      <div id="airStatEndstop" style="display:none"><span style="font-size:.7em;color:#9aa">Fin course</span><div style="font-weight:bold" id="airEndstopState">--</div></div>
-      <div id="airStatSensor" style="display:none"><span style="font-size:.7em;color:#9aa">Capteur</span><div style="font-weight:bold" id="airSensorOk">--</div></div>
-      <div id="airStatValve"><span style="font-size:.7em;color:#9aa">Valve</span><div style="font-weight:bold" id="airValveState">--</div></div>
-      <div><span style="font-size:.7em;color:#9aa">Servo air</span><div style="font-weight:bold" id="airServoAngle">--&deg;</div></div>
+      <div id="airStatDist" style="display:none" title="Distance mesuree par le capteur ToF (mm)"><span style="font-size:.7em;color:#9aa">Distance</span><div style="font-weight:bold" id="airResMm">--mm</div></div>
+      <div id="airStatHall" style="display:none" title="Valeur brute du capteur Hall (0-4095)"><span style="font-size:.7em;color:#9aa">Hall</span><div style="font-weight:bold" id="airHallVal">--</div></div>
+      <div id="airStatEndstop" style="display:none" title="Etat du fin de course (actif/inactif)"><span style="font-size:.7em;color:#9aa">Fin course</span><div style="font-weight:bold" id="airEndstopState">--</div></div>
+      <div id="airStatSensor" style="display:none" title="Detecte si le capteur est connecte et repond"><span style="font-size:.7em;color:#9aa">Capteur</span><div style="font-weight:bold" id="airSensorOk">--</div></div>
+      <div id="airStatValve" title="Etat de la valve: ouvert = air circule"><span style="font-size:.7em;color:#9aa">Valve</span><div style="font-weight:bold" id="airValveState">--</div></div>
+      <div title="Angle actuel du servo flow. Gris=repos, Vert=actif, Rouge=max"><span style="font-size:.7em;color:#9aa">Servo air</span><div style="font-weight:bold" id="airServoAngle">--&deg;</div></div>
     </div>
     <div id="airMiniChart" style="display:none;margin-top:8px">
       <canvas id="airChartCanvas" width="400" height="60" style="width:100%;height:60px;background:#111;border-radius:4px"></canvas>
@@ -1138,6 +1139,11 @@ function testServoFlow(v){
   if(_servoFlowTimer)clearTimeout(_servoFlowTimer);
   _servoFlowTimer=setTimeout(()=>{wsSend({t:'test_air',a:a});_servoFlowTimer=null},30);
 }
+function flashSvgElement(id){
+  const el=document.getElementById(id);if(!el)return;
+  el.style.transition='opacity .15s';el.style.opacity='.4';
+  setTimeout(()=>{el.style.opacity='1'},150);
+}
 function gotoServoAngle(inputId){
   const v=parseInt($(inputId).value)||0;
   $('airFlowTest').value=v;testServoFlow(v);
@@ -1406,9 +1412,9 @@ function validateAirConfig(){
 }
 function saveAirSettings(){
   if(!validateAirConfig()){
-    $('airSettingsMsg').textContent='Corriger les erreurs avant de sauver';
-    $('airSettingsMsg').style.color='#e94560';
-    setTimeout(()=>{$('airSettingsMsg').textContent='';$('airSettingsMsg').style.color='#0f0'},3000);
+    const msg=$('airSettingsMsg');msg.textContent='Corriger les erreurs avant de sauver';msg.style.color='#e94560';
+    const vm=$('airValidationMsg');if(vm){vm.style.animation='airShake .4s';setTimeout(()=>vm.style.animation='',400)}
+    setTimeout(()=>{msg.textContent='';msg.style.color='#0f0'},3000);
     return;
   }
   const m=parseInt($('airModeSelect').value);
@@ -1449,7 +1455,8 @@ function saveAirSettings(){
     .then(r=>r.json()).then(j=>{
     if(sb){sb.disabled=false;sb.textContent='Sauvegarder'}
     if(j.ok){showToast('Configuration air sauvegardee','success');
-      Object.assign(CFG,d);markClean();applyAirTabVisibility();buildAirSvg('airSvgFull',true)}
+      Object.assign(CFG,d);markClean();applyAirTabVisibility();buildAirSvg('airSvgFull',true);
+      const ts=$('airSettingsMsg');if(ts){ts.textContent='Sauvegarde a '+new Date().toLocaleTimeString();ts.style.color='#4ecca3';setTimeout(()=>{ts.textContent=''},5000)}}
     else{showToast('Erreur sauvegarde air','error')}
     }).catch(()=>{if(sb){sb.disabled=false;sb.textContent='Sauvegarder'};showToast('Erreur reseau','error')})
 }
@@ -1547,13 +1554,13 @@ function fillAirSettings(){
 }
 function buildAirUI(){
   fillAirSettings();
-  // fillAirSettings already calls setAirMode which builds SVG and sets visibility
   // Set flow test slider to configured off angle
   const ft=$('airFlowTest');if(ft&&CFG){ft.value=CFG.air_off||20;$('airFlowTestVal').textContent=(CFG.air_off||20)+'°'}
   // Redraw diagram with last known data on tab re-entry
   if(lastAirData)updateAirDiagram(lastAirData);
-  // Redraw mini chart if data exists
   drawMiniChart();
+  // Scroll to top on tab entry
+  const tab=$('tab-air');if(tab)tab.scrollTop=0;
 }
 function buildAirSvg(svgId,full){
   const svg=$(svgId);if(!svg||!CFG)return;
