@@ -1250,7 +1250,7 @@ function testSinglePump(idx){
 function rotateServoNeedle(angle){
   const mn=CFG?(CFG.air_min||0):0,mx=CFG?(CFG.air_max||180):180;
   const pcta=Math.min(1,Math.max(0,(angle-mn)/(mx-mn||1)));
-  const deg=-150+pcta*120;
+  const deg=-60+pcta*120;
   document.querySelectorAll('[id=airServoNeedle]').forEach(nd=>{
     const dm=nd.getAttribute('d');
     const mp=dm?dm.match(/M([\d.]+),([\d.]+)/):null;
@@ -2192,7 +2192,7 @@ function updateAirDiagram(d){
   });
   // Update percentage text
   document.querySelectorAll('[id=airBalloonPct]').forEach(bp=>{bp.textContent=(d.res_pct!=null?d.res_pct:'--')+'%'});
-  // Update servo air needle rotation on 120 arc (mapped to configured min/max)
+  // Update servo air needle rotation on +/-60° arc centered at vertical (mapped to configured min/max)
   if(d.air_angle!=null)rotateServoNeedle(d.air_angle);
   // Fan blade animation
   document.querySelectorAll('[id=airFanBlades]').forEach(fb=>{
