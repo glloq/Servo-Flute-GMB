@@ -1142,8 +1142,7 @@ const PWM_GPIOS=[2,4,5,12,13,14,15,16,17,18,19,21,22,23,25,26,27,32,33];
 let lastAirData=null;
 function applyAirTabVisibility(){
   const airBtn=$('btnTabAir');
-  const hasAir=CFG&&(CFG.show_air||CFG.air_mode>=1);
-  airBtn.style.display=hasAir?'':'none';
+  airBtn.style.display='';
   if(CFG)buildFlute(CFG,'fluteSvg',false);
 }
 function getAirMode(){return parseInt($('airModeSelect').value)||0}
