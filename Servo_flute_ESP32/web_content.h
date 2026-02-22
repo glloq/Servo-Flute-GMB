@@ -515,6 +515,11 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
 
 <!-- TAB: AIR MANAGEMENT (adaptatif) -->
 <div class="tab" id="tab-air">
+  <div id="airStatusBar" style="background:#0d1b3e;border:1px solid #1a4080;border-radius:6px;padding:6px 12px;margin-bottom:8px;display:flex;align-items:center;gap:12px;font-size:.8em">
+    <span style="color:#e94560;font-weight:bold" id="airStatusMode">--</span>
+    <span id="airStatusInd" style="width:8px;height:8px;border-radius:50%;background:#555"></span>
+    <span id="airStatusText" style="color:#9aa">En attente</span>
+  </div>
   <div class="section">
     <h3>Systeme d'air</h3>
     <div class="flute-box">
@@ -553,7 +558,7 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
   <div class="section">
     <h3>Configuration</h3>
     <div class="cfg-row"><label>Mode air</label>
-      <select id="airModeSelect" onchange="setAirMode(this.value)">
+      <select id="airModeSelect" onchange="confirmAirModeChange(this)">
         <option value="0">Solenoide + servo flow</option>
         <option value="1">Servo-valve (PCA)</option>
         <option value="2">Servo flow seul</option>
@@ -717,6 +722,11 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
         <div class="cfg-row"><label>Angle repos</label><input type="number" id="cfgAirOff" min="0" max="180" title="Angle du servo quand aucune note ne joue. Typique: 15-25°"></div>
         <div class="cfg-row"><label>Angle min</label><input type="number" id="cfgAirMin" min="0" max="180" title="Angle minimal pour les notes les plus douces (pp). Typique: 5-15°"></div>
         <div class="cfg-row"><label>Angle max</label><input type="number" id="cfgAirMax" min="0" max="180" title="Angle maximal pour les notes les plus fortes (ff). Typique: 60-120°"></div>
+        <div class="btn-row" style="margin-top:4px">
+          <button class="btn btn-s" onclick="$('cfgAirOff').value=20;$('cfgAirMin').value=5;$('cfgAirMax').value=60;validateAirConfig()" style="font-size:.7em;padding:3px 8px" title="Souffle leger, ideal pour flute a bec">Doux</button>
+          <button class="btn btn-s" onclick="$('cfgAirOff').value=20;$('cfgAirMin').value=10;$('cfgAirMax').value=90;validateAirConfig()" style="font-size:.7em;padding:3px 8px" title="Bon compromis pour la plupart des flutes">Standard</button>
+          <button class="btn btn-s" onclick="$('cfgAirOff').value=15;$('cfgAirMin').value=15;$('cfgAirMax').value=120;validateAirConfig()" style="font-size:.7em;padding:3px 8px" title="Souffle fort, flute traversiere ou gros volume">Puissant</button>
+        </div>
       </div>
     </div>
 
@@ -1094,6 +1104,18 @@ function sweepServoFlow(){
     const a=steps[idx++];sl.value=a;testServoFlow(a);
   },stepMs);
 }
+let _prevAirMode=0;
+function confirmAirModeChange(sel){
+  const newM=parseInt(sel.value),oldM=_prevAirMode;
+  // Warn if leaving a complex mode with pump/reservoir config
+  if(oldM>=4&&newM<4){
+    if(!confirm('Changer de mode va masquer la configuration pompe/reservoir. Continuer ?')){
+      sel.value=oldM;return;
+    }
+  }
+  _prevAirMode=newM;
+  setAirMode(newM);
+}
 function setAirMode(v){
   const m=parseInt(v);
   const hasPump=m>=4,hasFan=m===3,hasValve=(m===0||m===1||m>=4),hasRes=m===5;
@@ -1130,6 +1152,9 @@ function setAirMode(v){
   if(m===1){$('airValveType').value='1';toggleValveParams()}
   if(hasRes)toggleSensorParams();
   const md=$('airModeDesc');if(md)md.textContent=AIR_DESCS[m]||'';
+  // Update status bar
+  const modeNames=['Solenoide','Servo-valve','Servo seul','Ventilateur','Pompe directe','Pompe+reservoir'];
+  const sm=$('airStatusMode');if(sm)sm.textContent='Mode '+(m)+': '+(modeNames[m]||'?');
   validateAirConfig();
   buildAirSvg('airSvgFull',true);
 }
@@ -1197,12 +1222,13 @@ function buildPumpRows(){
   for(let i=0;i<n;i++){
     const label=n>1?'Pompe '+(i+1)+' ':'';
     h+='<div style="border-left:2px solid #0f3460;padding-left:8px;margin:8px 0">';
+    if(n>1)h+='<div style="font-size:.78em;color:#e94560;font-weight:bold;margin-bottom:4px">Pompe '+(i+1)+'</div>';
     h+='<div class="cfg-row"><label>'+label+'GPIO</label><select id="airPumpPin'+i+'">';
     PWM_GPIOS.forEach(g=>{h+='<option value="'+g+'">GPIO '+g+'</option>'});
     h+='</select></div>';
     if(isPwm){
-      h+='<div class="cfg-row"><label>'+label+'PWM min</label><input type="number" id="airPumpMin'+i+'" min="0" max="255" value="80"></div>';
-      h+='<div class="cfg-row"><label>'+label+'PWM max</label><input type="number" id="airPumpMax'+i+'" min="0" max="255" value="255"></div>';
+      h+='<div class="cfg-row"><label>'+label+'PWM min</label><input type="number" id="airPumpMin'+i+'" min="0" max="255" value="80" title="PWM minimum pour demarrer la pompe (seuil de rotation)"></div>';
+      h+='<div class="cfg-row"><label>'+label+'PWM max</label><input type="number" id="airPumpMax'+i+'" min="0" max="255" value="255" title="PWM maximum (pleine puissance)"></div>';
     }
     h+='</div>';
   }
@@ -1349,6 +1375,7 @@ function fillAirSettings(){
   ['airFanMin','airFanMax','airHallLow','airHallHigh','airSensMin','airSensMax','cfgAirOff','cfgAirMin','cfgAirMax'].forEach(id=>{
     const el=$(id);if(el)el.addEventListener('input',()=>{validateAirConfig();updateHallBar()})});
   buildPumpRows();
+  _prevAirMode=CFG.air_mode||0;
   setAirMode(CFG.air_mode||0);toggleValveParams();toggleSensorParams();
 }
 function buildAirUI(){
@@ -1677,6 +1704,15 @@ function updateAirDiagram(d){
     else if(st===2&&d.hall_val!=null){slv.textContent=d.hall_val+' ('+d.res_pct+'%)';
       const hc=$('airHallCursor');if(hc)hc.style.left=(d.hall_val/4095*100)+'%'}
     else if(st>=3)slv.textContent=d.endstop_st?'ACTIF':'inactif';
+  }
+  // Status bar indicator
+  const si=$('airStatusInd'),stt=$('airStatusText');
+  if(si&&stt){
+    const active=(d.pump_pwm>0||d.fan_pwm>0||d.valve_open);
+    const warn=(d.sens_ok===false);
+    si.style.background=warn?'#e94560':active?'#4ecca3':'#555';
+    stt.textContent=warn?'Capteur absent':active?'Actif':'Repos';
+    stt.style.color=warn?'#e94560':active?'#4ecca3':'#9aa';
   }
 }
 // Pump toggle from keyboard (click pump in SVG to disable/enable)
