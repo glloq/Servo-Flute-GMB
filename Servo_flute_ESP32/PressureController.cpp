@@ -267,14 +267,28 @@ void PressureController::update() {
         _fillPercent = (uint8_t)(((uint32_t)(_hallValue - cfg.hallThresholdLow) * 100) / (cfg.hallThresholdHigh - cfg.hallThresholdLow));
       }
     }
-    // Hysteresis pompe
+    // PID control for Hall sensor
     if (now - _lastPidTime >= PRESSURE_PID_INTERVAL_MS) {
       _lastPidTime = now;
       if (_targetPercent == 0) { setPumpPwm(0); return; }
-      if (_fillPercent < _targetPercent - 5) {
-        setPumpPwm(cfg.pumpMaxPwm[0]);
-      } else if (_fillPercent >= _targetPercent) {
+
+      float error = (float)_targetPercent - (float)_fillPercent;
+      float dt = PRESSURE_PID_INTERVAL_MS / 1000.0f;
+      float kp = cfg.pidKp / 10.0f;
+      float ki = cfg.pidKi / 10.0f;
+
+      _pidIntegral += error * dt;
+      if (_pidIntegral > 100.0f) _pidIntegral = 100.0f;
+      if (_pidIntegral < -100.0f) _pidIntegral = -100.0f;
+
+      float output = kp * error + ki * _pidIntegral;
+      _pidLastError = error;
+
+      if (output <= 0) {
         setPumpPwm(0);
+      } else {
+        uint8_t pwm = (uint8_t)constrain(output * 2.55f, cfg.pumpMinPwm[0], cfg.pumpMaxPwm[0]);
+        setPumpPwm(pwm);
       }
     }
     return;
@@ -317,11 +331,25 @@ void PressureController::update() {
       return;
     }
 
-    // Hysteresis: pompe ON si remplissage < cible - 5%, OFF si >= cible
-    if (_fillPercent < _targetPercent - 5) {
-      setPumpPwm(cfg.pumpMaxPwm[0]);
-    } else if (_fillPercent >= _targetPercent) {
+    // PID control for smooth regulation
+    float error = (float)_targetPercent - (float)_fillPercent;
+    float dt = PRESSURE_PID_INTERVAL_MS / 1000.0f;
+    float kp = cfg.pidKp / 10.0f;
+    float ki = cfg.pidKi / 10.0f;
+
+    _pidIntegral += error * dt;
+    // Anti-windup: clamp integral
+    if (_pidIntegral > 100.0f) _pidIntegral = 100.0f;
+    if (_pidIntegral < -100.0f) _pidIntegral = -100.0f;
+
+    float output = kp * error + ki * _pidIntegral;
+    _pidLastError = error;
+
+    if (output <= 0) {
       setPumpPwm(0);
+    } else {
+      uint8_t pwm = (uint8_t)constrain(output * 2.55f, cfg.pumpMinPwm[0], cfg.pumpMaxPwm[0]);
+      setPumpPwm(pwm);
     }
   }
 }
@@ -344,13 +372,14 @@ void PressureController::setPumpPwm(uint8_t pwm) {
     if (cfg.airMode >= AIR_MODE_PUMP_VALVE) {
       for (uint8_t i = 0; i < cfg.numPumps && i < MAX_PUMPS; i++) {
         if (cfg.motorType == MOTOR_TYPE_ONOFF) {
-          // Moteur On/Off : GPIO HIGH si pwm > 0, LOW sinon
           digitalWrite(cfg.pumpPins[i], pwm > 0 ? HIGH : LOW);
         } else {
-          // Moteur PWM : appliquer min/max par pompe
-          uint8_t pumpVal = pwm;
-          if (pumpVal > 0 && pumpVal < cfg.pumpMinPwm[i]) pumpVal = cfg.pumpMinPwm[i];
-          if (pumpVal > cfg.pumpMaxPwm[i]) pumpVal = cfg.pumpMaxPwm[i];
+          // Per-pump PWM scaling: map global pwm to each pump's min/max range
+          uint8_t pumpVal = 0;
+          if (pwm > 0) {
+            pumpVal = cfg.pumpMinPwm[i] + (uint16_t)(cfg.pumpMaxPwm[i] - cfg.pumpMinPwm[i]) * pwm / 255;
+            if (pumpVal < cfg.pumpMinPwm[i]) pumpVal = cfg.pumpMinPwm[i];
+          }
           analogWrite(cfg.pumpPins[i], pumpVal);
         }
       }

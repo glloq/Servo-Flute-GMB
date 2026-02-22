@@ -1,5 +1,6 @@
 #include "WebConfigurator.h"
 #include "InstrumentManager.h"
+#include "FanController.h"
 #include "WirelessManager.h"
 #include "web_content.h"
 #include <WiFi.h>
@@ -1074,6 +1075,16 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
       // Enable/disable is handled by stop/resume - pump resumes on next target set
     }
 
+  } else if (type == "fan_target") {
+    int vIdx = msg.indexOf("\"v\":");
+    if (vIdx >= 0) {
+      uint8_t pct = (uint8_t)msg.substring(vIdx + 4).toInt();
+      _instrument->getFanCtrl().setSpeed(pct);
+    }
+
+  } else if (type == "fan_stop") {
+    _instrument->getFanCtrl().stop();
+
 #if MIC_ENABLED
   } else if (type == "mic_mon") {
     int oIdx = msg.indexOf("\"on\":");
@@ -1134,6 +1145,13 @@ void WebConfigurator::broadcastStatus() {
     json += ",\"hall_val\":" + String(pc.getHallValue());
     json += ",\"endstop_st\":" + String(pc.isEndstopActive() ? "true" : "false");
     json += ",\"sens_ok\":" + String(pc.isSensorDetected() ? "true" : "false");
+  }
+  // Fan live data
+  if (_instrument && cfg.airMode == AIR_MODE_FAN_SERVO) {
+    FanController& fc = _instrument->getFanCtrl();
+    json += ",\"fan_pwm\":" + String(fc.getPwm());
+    json += ",\"fan_speed\":" + String(fc.getSpeed());
+    json += ",\"fan_ready\":" + String(fc.isReady() ? "true" : "false");
   }
   if (_instrument) {
     json += ",\"valve_open\":" + String(_instrument->getAirflowCtrl().isValveOpen() ? "true" : "false");

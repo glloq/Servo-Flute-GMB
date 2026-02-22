@@ -148,6 +148,11 @@ void NoteSequencer::startNoteSequence(byte note, byte velocity, unsigned long sc
 }
 
 bool NoteSequencer::shouldCloseValveBetweenNotes() {
+  // Modes without physical valve: no need to close
+  if (cfg.airMode == AIR_MODE_SERVO_ONLY || cfg.airMode == AIR_MODE_FAN_SERVO) {
+    return true;  // Will call closeValve which is a no-op, but sets rest angle
+  }
+
   MidiEvent* nextEvent = _eventQueue.peek();
 
   if (nextEvent == nullptr || nextEvent->type != EVENT_NOTE_ON) {

@@ -53,9 +53,9 @@ void AirflowController::begin() {
     pinMode(cfg.solenoidPin, OUTPUT);
   }
 
-  // Mode servo-only (mode 2) : pas de valve, juste le servo flow
-  if (cfg.airMode == AIR_MODE_SERVO_ONLY) {
-    _solenoidOpen = true;  // Toujours "ouvert" car pas de valve
+  // Modes sans valve physique: toujours "ouvert"
+  if (cfg.airMode == AIR_MODE_SERVO_ONLY || cfg.airMode == AIR_MODE_FAN_SERVO) {
+    _solenoidOpen = true;
   } else {
     closeSolenoid();
   }
@@ -240,8 +240,8 @@ void AirflowController::setAirflowForNote(byte midiNote, byte velocity) {
 }
 
 void AirflowController::openValve() {
-  // Mode servo-only (mode 2) : pas de valve physique
-  if (cfg.airMode == AIR_MODE_SERVO_ONLY) {
+  // Modes sans valve physique: servo-only (2) et ventilateur (3)
+  if (cfg.airMode == AIR_MODE_SERVO_ONLY || cfg.airMode == AIR_MODE_FAN_SERVO) {
     _solenoidOpen = true;
     return;
   }
@@ -273,8 +273,8 @@ void AirflowController::openValve() {
 }
 
 void AirflowController::closeValve() {
-  // Mode servo-only (mode 2) : pas de valve physique, juste mettre servo a off
-  if (cfg.airMode == AIR_MODE_SERVO_ONLY) {
+  // Modes sans valve physique: servo-only (2) et ventilateur (3)
+  if (cfg.airMode == AIR_MODE_SERVO_ONLY || cfg.airMode == AIR_MODE_FAN_SERVO) {
     _solenoidOpen = false;
     return;
   }
