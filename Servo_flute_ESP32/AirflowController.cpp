@@ -308,8 +308,7 @@ bool AirflowController::isValveOpen() const {
 }
 
 void AirflowController::setValveServoAngle(bool open) {
-  // Servo-valve : 0° = ferme, 90° = ouvert
-  uint16_t angle = open ? 90 : 0;
+  uint16_t angle = open ? cfg.valveServoOpenAngle : cfg.valveServoCloseAngle;
   uint16_t pwmValue = angleToPWM(angle);
   _pwm.setPWM(cfg.valveServoPcaChannel, 0, pwmValue);
 }

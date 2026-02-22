@@ -407,6 +407,10 @@ void WebConfigurator::handleApiConfig(AsyncWebServerRequest* request) {
   json += ",\"air_mode\":" + String(cfg.airMode);
   json += ",\"valve_type\":" + String(cfg.valveType);
   json += ",\"valve_ch\":" + String(cfg.valveServoPcaChannel);
+  json += ",\"vlv_close\":" + String(cfg.valveServoCloseAngle);
+  json += ",\"vlv_open\":" + String(cfg.valveServoOpenAngle);
+  json += ",\"vlv_dir\":" + String(cfg.valveServoDir);
+  json += ",\"sol_inter\":" + String(cfg.solenoidInterNoteMs);
   json += ",\"motor_type\":" + String(cfg.motorType);
   json += ",\"fan_pin\":" + String(cfg.fanPin);
   json += ",\"fan_min\":" + String(cfg.fanMinPwm);
@@ -561,6 +565,10 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
       cfg.valveType = doc["valve_servo"].as<bool>() ? 1 : 0;
     }
     if (doc.containsKey("valve_ch")) cfg.valveServoPcaChannel = doc["valve_ch"];
+    if (doc.containsKey("vlv_close")) cfg.valveServoCloseAngle = doc["vlv_close"];
+    if (doc.containsKey("vlv_open")) cfg.valveServoOpenAngle = doc["vlv_open"];
+    if (doc.containsKey("vlv_dir")) cfg.valveServoDir = doc["vlv_dir"];
+    if (doc.containsKey("sol_inter")) cfg.solenoidInterNoteMs = doc["sol_inter"];
     if (doc.containsKey("motor_type")) cfg.motorType = doc["motor_type"];
     if (doc.containsKey("fan_pin")) cfg.fanPin = doc["fan_pin"];
     if (doc.containsKey("fan_min")) cfg.fanMinPwm = doc["fan_min"];
