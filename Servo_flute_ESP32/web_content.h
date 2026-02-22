@@ -242,7 +242,8 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
 @keyframes fanSpin{0%{transform:rotate(0deg)}100%{transform:rotate(360deg)}}
 @keyframes bellowsExpand{0%{transform:scaleY(0.3)}100%{transform:scaleY(1)}}
 @keyframes balloonGrow{0%{transform:scale(0.5)}100%{transform:scale(1)}}
-#airLiveStats>div{background:rgba(255,255,255,.03);border-radius:6px;padding:4px 10px;min-width:60px;text-align:center}
+#airLiveStats>div{background:rgba(255,255,255,.03);border-radius:6px;padding:4px 10px;min-width:60px;text-align:center;transition:border-color .3s,box-shadow .3s;border:1px solid transparent}
+#airLiveStats>div.active-stat{border-color:rgba(78,204,163,.3);box-shadow:0 0 6px rgba(78,204,163,.1)}
 #airLiveStats>div span{display:block}
 @media(max-width:480px){#airLiveStats{gap:6px !important}#airLiveStats>div{min-width:45px;padding:3px 5px;font-size:.85em}
   #airSvgFull{max-height:180px}
@@ -1085,6 +1086,14 @@ const AIR_DESCS=[
   'Pompe(s) directe(s) + valve. Souffle direct sans reservoir. 1-3 pompes en parallele.',
   'Pompe(s) + reservoir + capteur. Regulation PID automatique de la pression. Configuration la plus complete.'
 ];
+const AIR_PARTS=[
+  ['Servo flow PCA','Solenoide GPIO'],
+  ['Servo flow PCA','Servo valve PCA'],
+  ['Servo flow PCA'],
+  ['Servo flow PCA','Ventilateur PWM'],
+  ['Servo flow PCA','Pompe(s)','Valve servo/solenoide'],
+  ['Servo flow PCA','Pompe(s)','Valve','Reservoir','Capteur']
+];
 const PWM_GPIOS=[2,4,5,12,13,14,15,16,17,18,19,21,22,23,25,26,27,32,33];
 let lastAirData=null;
 function applyAirTabVisibility(){
@@ -1114,6 +1123,11 @@ function testAirSystem(){
   $('pumpTarget').value=30;$('pumpTargetVal').textContent='30%';
   $('btnAirTest').classList.add('test-pulse');
   setTimeout(()=>{stopAirSource();$('btnAirTest').classList.remove('test-pulse')},dur);
+}
+function testSinglePump(idx){
+  wsSend({t:'pump_target',v:30,pump:idx});
+  setTimeout(()=>wsSend({t:'pump_stop',pump:idx}),2000);
+  showToast('Test pompe '+(idx+1)+' en cours...','success');
 }
 function testServoFlow(v){
   const a=Math.max(0,Math.min(180,parseInt(v)||0));
@@ -1218,7 +1232,11 @@ function setAirMode(v){
   const td=$('airTestDur');if(td)td.style.display=(hasPump||hasFan)?'':'none';
   if(m===1){$('airValveType').value='1';toggleValveParams()}
   if(hasRes)toggleSensorParams();
-  const md=$('airModeDesc');if(md)md.textContent=AIR_DESCS[m]||'';
+  const md=$('airModeDesc');if(md){
+    const parts=AIR_PARTS[m]||[];
+    const badges=parts.map(p=>'<span style="display:inline-block;font-size:.7em;background:#0f3460;color:#4ecca3;padding:1px 6px;border-radius:8px;margin:2px 2px 0 0">'+p+'</span>').join('');
+    md.innerHTML=(AIR_DESCS[m]||'')+'<div style="margin-top:4px">'+badges+'</div>';
+  }
   // Update status bar
   const modeNames=['Solenoide','Servo-valve','Servo seul','Ventilateur','Pompe directe','Pompe+reservoir'];
   const sm=$('airStatusMode');if(sm)sm.textContent='Mode '+(m)+': '+(modeNames[m]||'?');
@@ -1310,6 +1328,7 @@ function buildPumpRows(){
       h+='<div class="cfg-row"><label>'+label+'PWM min</label><input type="number" id="airPumpMin'+i+'" min="0" max="255" value="80" title="PWM minimum pour demarrer la pompe (seuil de rotation)"></div>';
       h+='<div class="cfg-row"><label>'+label+'PWM max</label><input type="number" id="airPumpMax'+i+'" min="0" max="255" value="255" title="PWM maximum (pleine puissance)"></div>';
     }
+    if(n>1)h+='<button class="btn btn-s" onclick="testSinglePump('+i+')" style="font-size:.65em;padding:2px 8px;margin-top:4px" title="Teste cette pompe a 30% pendant 2s">Test pompe '+(i+1)+'</button>';
     h+='</div>';
   }
   c.innerHTML=h;
@@ -1796,22 +1815,27 @@ function updateAirDiagram(d){
       ic.setAttribute('stroke',d.pump_pwm>0?'#4ecca3':'#dde')});
   }
   // Update text stats in Air tab
-  const pp=$('airPumpPwm');if(pp){
-    if(d.pump_pwm>0){const pct=Math.round(d.pump_pwm/255*100);pp.textContent=pct+'% ('+d.pump_pwm+')';pp.style.color='#4ecca3'}
-    else{pp.textContent='OFF';pp.style.color=''}
+  const pp=$('airPumpPwm');const sp2=$('airStatPump');
+  if(pp){
+    if(d.pump_pwm>0){const pct=Math.round(d.pump_pwm/255*100);pp.textContent=pct+'% ('+d.pump_pwm+')';pp.style.color='#4ecca3';if(sp2)sp2.classList.add('active-stat')}
+    else{pp.textContent='OFF';pp.style.color='';if(sp2)sp2.classList.remove('active-stat')}
   }
-  const fp=$('airFanPwm');if(fp){
+  const fp=$('airFanPwm'),sf2=$('airStatFan');if(fp){
     if(d.fan_pwm>0){
       let t=d.fan_speed!=null?(d.fan_speed+'%'):d.fan_pwm;
       if(d.fan_ready===false)t+=' ...';
-      fp.textContent=t;fp.style.color=d.fan_ready===false?'#e9a645':'#4ecca3'}
-    else{fp.textContent='OFF';fp.style.color=''}
+      fp.textContent=t;fp.style.color=d.fan_ready===false?'#e9a645':'#4ecca3';if(sf2)sf2.classList.add('active-stat')}
+    else{fp.textContent='OFF';fp.style.color='';if(sf2)sf2.classList.remove('active-stat')}
   }
   const rp=$('airResPct');if(rp)rp.textContent=(d.res_pct!=null?d.res_pct:'-')+'%';
   const rfb=$('airResFillBar');if(rfb&&d.res_pct!=null){rfb.style.width=d.res_pct+'%';rfb.style.background=d.res_pct>80?'#4ecca3':d.res_pct>30?'#e9a645':'#e94560'}
   const rm=$('airResMm');if(rm)rm.textContent=(d.res_mm!=null?d.res_mm:'-')+'mm';
   const vs=$('airValveState');if(vs){vs.textContent=d.valve_open?'OUVERT':'FERME';vs.style.color=d.valve_open?'#4ecca3':'#e94560'}
-  const sa=$('airServoAngle');if(sa)sa.textContent=(d.air_angle!=null?d.air_angle:'-')+'°';
+  const sa=$('airServoAngle');if(sa){
+    sa.textContent=(d.air_angle!=null?d.air_angle:'-')+'°';
+    if(d.air_angle!=null&&CFG){const off=CFG.air_off||20,mn=CFG.air_min||0,mx=CFG.air_max||180;
+      sa.style.color=d.air_angle<=off?'#888':d.air_angle>=mx?'#e94560':'#4ecca3'}
+  }
   const hv=$('airHallVal');if(hv)hv.textContent=(d.hall_val!=null?d.hall_val:'--');
   const es=$('airEndstopState');if(es){es.textContent=(d.endstop_st?'ACTIF':'inactif');es.style.color=d.endstop_st?'#4ecca3':'#888'}
   document.querySelectorAll('[id=airEndstopLed]').forEach(el=>{el.setAttribute('fill',d.endstop_st?'#4e4':'#a33')});
