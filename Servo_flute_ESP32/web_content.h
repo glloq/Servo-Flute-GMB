@@ -785,9 +785,11 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
       </div>
       <div class="air-block-body">
         <div class="cfg-row"><label>GPIO Pin</label><select id="cfgSolPin" title="Pin GPIO connectee au MOSFET/relais du solenoide"></select></div>
-        <div class="cfg-row"><label>PWM activation</label><input type="number" id="cfgSolAct" min="0" max="255" title="PWM pour ouvrir la valve (180-255 typique)"></div>
-        <div class="cfg-row"><label>PWM maintien</label><input type="number" id="cfgSolHold" min="0" max="255" title="PWM pour maintenir ouvert (60-120 typique, economise courant)"></div>
+        <div class="cfg-row"><label>PWM activation</label><input type="number" id="cfgSolAct" min="0" max="255" title="PWM pour ouvrir la valve (180-255 typique)" oninput="updPwmPct(this)"><span class="pwm-pct" style="font-size:.65em;color:#888;min-width:30px;text-align:right"></span></div>
+        <div class="cfg-row"><label>PWM maintien</label><input type="number" id="cfgSolHold" min="0" max="255" title="PWM pour maintenir ouvert (60-120 typique, economise courant)" oninput="updPwmPct(this)"><span class="pwm-pct" style="font-size:.65em;color:#888;min-width:30px;text-align:right"></span></div>
         <div class="cfg-row"><label>Temps (ms)</label><input type="number" id="cfgSolTime" min="0" max="500" title="Duree en ms de la phase activation avant passage au maintien (20-50 typique)"></div>
+        <div style="font-size:.65em;color:#888;padding:2px 0">Activation: impulsion forte pour ouvrir. Maintien: courant reduit pour garder ouvert.</div>
+        <button class="btn btn-s" onclick="wsSend({t:'test_sol',o:1});setTimeout(()=>wsSend({t:'test_sol',o:0}),500)" style="font-size:.65em;padding:2px 8px;margin-top:4px" title="Ouvre le solenoide pendant 0.5s">Test solenoide</button>
       </div>
     </div>
 
@@ -1372,6 +1374,7 @@ function buildPumpRows(){
 function validateAirConfig(){
   const m=getAirMode();
   const warns=[];const errBlocks=new Set();
+  const hasValve=(m===0||m===1||m>=4);
   // Servo flow angle validation (all modes)
   const aOff=parseInt($('cfgAirOff').value),aMin=parseInt($('cfgAirMin').value),aMax=parseInt($('cfgAirMax').value);
   if(isNaN(aOff)||isNaN(aMin)||isNaN(aMax)){warns.push('Servo flow: angles manquants');errBlocks.add('airBlockServo')}
@@ -1401,6 +1404,12 @@ function validateAirConfig(){
     }
     if(m===3){const fp=parseInt($('airFanPin').value);if(usedPins.includes(fp)){warns.push('GPIO ventilateur en conflit');errBlocks.add('airBlockFan')}}
     if(m===0){const sp=parseInt($('cfgSolPin').value);if(usedPins.includes(sp)){warns.push('GPIO solenoide en conflit');errBlocks.add('airBlockSolenoid')}}
+  }
+  // Valve channel conflict with servo flow PCA channel
+  if(hasValve&&parseInt($('airValveType').value)===1){
+    const vch=parseInt($('airValveCh').value)||11;
+    const ach=CFG?CFG.air_pca||10:10;
+    if(vch===ach){warns.push('Valve: canal PCA '+vch+' deja utilise par servo flow');errBlocks.add('airBlockValve')}
   }
   // Reservoir sensor validation
   if(m===5){
@@ -1549,7 +1558,10 @@ function fillAirSettings(){
   [12,13,16,17,18,19,23,25,26,27,33].forEach(p=>{
     const o=document.createElement('option');o.value=p;o.textContent='GPIO '+p;sp.appendChild(o)});
   sp.value=CFG.sol_pin||13;
-  $('cfgSolAct').value=CFG.sol_act!=null?CFG.sol_act:255;$('cfgSolHold').value=CFG.sol_hold!=null?CFG.sol_hold:80;$('cfgSolTime').value=CFG.sol_time!=null?CFG.sol_time:30;
+  const sa=$('cfgSolAct'),sh=$('cfgSolHold');
+  sa.value=CFG.sol_act!=null?CFG.sol_act:255;updPwmPct(sa);
+  sh.value=CFG.sol_hold!=null?CFG.sol_hold:80;updPwmPct(sh);
+  $('cfgSolTime').value=CFG.sol_time!=null?CFG.sol_time:30;
   // Show air checkbox
   $('cfgShowAir').checked=!!CFG.show_air;
   // Attach validation listeners + dirty tracking
