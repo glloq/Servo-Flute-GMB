@@ -221,7 +221,7 @@ border-bottom:1px solid #1a4080;position:sticky;top:0;background:#16213e;z-index
 .pump-toggle{cursor:pointer;opacity:.9;transition:opacity .15s}
 .pump-toggle:hover{opacity:1}
 .pump-off{opacity:.4}
-.air-block{background:#0d1b3e;border:1px solid #1a4080;border-radius:8px;margin-bottom:10px;overflow:hidden;transition:border-color .2s}
+.air-block{background:#0d1b3e;border:1px solid #1a4080;border-radius:8px;margin-bottom:10px;overflow:hidden;transition:border-color .2s,opacity .3s}
 .air-block.disabled{opacity:.45;border-color:#333}
 .air-block-hdr{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;
 background:rgba(255,255,255,.03);cursor:pointer;user-select:none}
@@ -274,7 +274,7 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
 <div class="tabs">
   <button class="active" onclick="showTab('keyboard',this)"><svg viewBox="0 0 16 14" width="14" height="12"><rect x="1" y="1" width="14" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.2"/><rect x="3" y="4" width="2" height="2" rx=".5" fill="currentColor"/><rect x="7" y="4" width="2" height="2" rx=".5" fill="currentColor"/><rect x="11" y="4" width="2" height="2" rx=".5" fill="currentColor"/><rect x="4" y="8" width="8" height="2" rx=".5" fill="currentColor"/></svg>Clavier</button>
   <button onclick="showTab('midi',this)"><svg viewBox="0 0 14 16" width="12" height="14"><path d="M12 1v10.5a2.5 2.5 0 11-2-2.45V3.5L5 5v8a2.5 2.5 0 11-2-2.45V1l9-2z" fill="currentColor" opacity=".85"/></svg>MIDI</button>
-  <button id="btnTabAir" onclick="showTab('air',this)" style="display:none"><svg viewBox="0 0 16 16" width="14" height="14"><path d="M8 1C4.5 1 2 4 2 7c0 2 1 3.5 2.5 4.5L4 15h8l-.5-3.5C13 10.5 14 9 14 7c0-3-2.5-6-6-6z" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M6 7.5c0-1.5 1-2.5 2-2.5s2 1 2 2.5" fill="none" stroke="currentColor" stroke-width="1"/></svg>Air</button>
+  <button id="btnTabAir" onclick="showTab('air',this)" style="display:none;position:relative"><svg viewBox="0 0 16 16" width="14" height="14"><path d="M8 1C4.5 1 2 4 2 7c0 2 1 3.5 2.5 4.5L4 15h8l-.5-3.5C13 10.5 14 9 14 7c0-3-2.5-6-6-6z" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M6 7.5c0-1.5 1-2.5 2-2.5s2 1 2 2.5" fill="none" stroke="currentColor" stroke-width="1"/></svg>Air<span id="airWarnBadge" style="display:none;position:absolute;top:-2px;right:-2px;width:8px;height:8px;border-radius:50%;background:#e94560"></span></button>
   <button id="btnTabCalib" onclick="showTab('calib',this)"><svg viewBox="0 0 16 16" width="14" height="14"><path d="M6.5 1L7 4H5L2 8h3l-.5 7 6-9H7.5l2-5z" fill="currentColor" opacity=".85"/></svg>Calibration</button>
 </div>
 
@@ -1153,6 +1153,7 @@ function testServoFlow(v){
   if(_servoFlowTimer)clearTimeout(_servoFlowTimer);
   _servoFlowTimer=setTimeout(()=>{wsSend({t:'test_air',a:a});_servoFlowTimer=null},30);
 }
+function updPwmPct(el){const pct=el.nextElementSibling;if(pct)pct.textContent=Math.round(parseInt(el.value||0)/255*100)+'%'}
 function flashSvgElement(id){
   const el=document.getElementById(id);if(!el)return;
   el.style.transition='opacity .15s';el.style.opacity='.4';
@@ -1350,8 +1351,8 @@ function buildPumpRows(){
     PWM_GPIOS.forEach(g=>{h+='<option value="'+g+'">GPIO '+g+'</option>'});
     h+='</select></div>';
     if(isPwm){
-      h+='<div class="cfg-row"><label>'+label+'PWM min</label><input type="number" id="airPumpMin'+i+'" min="0" max="255" value="80" title="PWM minimum pour demarrer la pompe (seuil de rotation)"></div>';
-      h+='<div class="cfg-row"><label>'+label+'PWM max</label><input type="number" id="airPumpMax'+i+'" min="0" max="255" value="255" title="PWM maximum (pleine puissance)"></div>';
+      h+='<div class="cfg-row"><label>'+label+'PWM min</label><input type="number" id="airPumpMin'+i+'" min="0" max="255" value="80" title="PWM minimum pour demarrer la pompe (seuil de rotation)" oninput="updPwmPct(this)"><span class="pwm-pct" style="font-size:.65em;color:#888;min-width:30px;text-align:right">31%</span></div>';
+      h+='<div class="cfg-row"><label>'+label+'PWM max</label><input type="number" id="airPumpMax'+i+'" min="0" max="255" value="255" title="PWM maximum (pleine puissance)" oninput="updPwmPct(this)"><span class="pwm-pct" style="font-size:.65em;color:#888;min-width:30px;text-align:right">100%</span></div>';
     }
     if(n>1)h+='<button class="btn btn-s" onclick="testSinglePump('+i+')" style="font-size:.65em;padding:2px 8px;margin-top:4px" title="Teste cette pompe a 30% pendant 2s">Test pompe '+(i+1)+'</button>';
     h+='</div>';
@@ -1362,8 +1363,8 @@ function buildPumpRows(){
     const pins=CFG.pump_pins||[25,26,27],mins=CFG.pump_mins||[80,80,80],maxs=CFG.pump_maxs||[255,255,255];
     for(let i=0;i<n;i++){
       const pp=$('airPumpPin'+i);if(pp)pp.value=pins[i]||25;
-      const pm=$('airPumpMin'+i);if(pm)pm.value=mins[i]||80;
-      const px=$('airPumpMax'+i);if(px)px.value=maxs[i]||255;
+      const pm=$('airPumpMin'+i);if(pm){pm.value=mins[i]||80;updPwmPct(pm)}
+      const px=$('airPumpMax'+i);if(px){px.value=maxs[i]||255;updPwmPct(px)}
     }
   }
   validateAirConfig();
@@ -1423,6 +1424,7 @@ function validateAirConfig(){
     if(warns.length>0){box.style.display='';box.innerHTML=warns.join('<br>')}
     else{box.style.display='none';box.innerHTML=''}
   }
+  const wb=$('airWarnBadge');if(wb)wb.style.display=warns.length>0?'':'none';
   return warns.length===0;
 }
 function saveAirSettings(){
@@ -2049,8 +2051,11 @@ let wsRetry=0;
 function wsConnect(){
   const p=location.protocol==='https:'?'wss:':'ws:';
   ws=new WebSocket(p+'//'+location.host+'/ws');
-  ws.onopen=()=>{wsRetry=0;$('sDot').className='dot on';$('sText').textContent='Connecte';addLog('WS connecte')};
+  ws.onopen=()=>{wsRetry=0;$('sDot').className='dot on';$('sText').textContent='Connecte';addLog('WS connecte');
+    const si=$('airStatusInd');if(si)si.style.outline=''};
   ws.onclose=()=>{$('sDot').className='dot off';$('sText').textContent='Deconnecte';
+    const si=$('airStatusInd');if(si){si.style.background='#e94560';si.style.outline='2px solid rgba(233,69,96,.3)'}
+    const st=$('airStatusText');if(st){st.textContent='Deconnecte';st.style.color='#e94560'};
     const d=Math.min(30000,2000*Math.pow(1.5,wsRetry));wsRetry++;setTimeout(wsConnect,d)};
   ws.onerror=()=>{ws.close()};
   ws.onmessage=e=>{try{handleWs(JSON.parse(e.data))}catch(x){addLog('WS err: '+x.message)}};
