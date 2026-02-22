@@ -566,7 +566,10 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
     </div>
   </div>
   <div class="section">
-    <h3>Configuration</h3>
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <h3>Configuration</h3>
+      <button class="btn btn-s" onclick="toggleAllAirBlocks()" style="font-size:.65em;padding:2px 8px">Tout plier/deplier</button>
+    </div>
     <div class="cfg-row"><label>Mode air</label>
       <select id="airModeSelect" onchange="confirmAirModeChange(this)">
         <option value="0">Solenoide + servo flow</option>
@@ -1172,6 +1175,15 @@ function setAirMode(v){
   validateAirConfig();
   buildAirSvg('airSvgFull',true);
 }
+let _allBlocksExpanded=true;
+function toggleAllAirBlocks(){
+  _allBlocksExpanded=!_allBlocksExpanded;
+  document.querySelectorAll('.air-block').forEach(bl=>{
+    if(bl.style.display==='none'||bl.classList.contains('disabled'))return;
+    if(_allBlocksExpanded)bl.classList.add('active');
+    else bl.classList.remove('active');
+  });
+}
 function toggleAirBlock(id,e){
   if(e&&e.type==='keydown'&&e.key!=='Enter'&&e.key!==' ')return;
   if(e&&e.key===' ')e.preventDefault();
@@ -1701,7 +1713,10 @@ function updateAirDiagram(d){
     else{pp.textContent='OFF';pp.style.color=''}
   }
   const fp=$('airFanPwm');if(fp){
-    if(d.fan_pwm>0){fp.textContent=d.fan_speed!=null?(d.fan_speed+'% ('+d.fan_pwm+')'):d.fan_pwm;fp.style.color='#4ecca3'}
+    if(d.fan_pwm>0){
+      let t=d.fan_speed!=null?(d.fan_speed+'%'):d.fan_pwm;
+      if(d.fan_ready===false)t+=' ...';
+      fp.textContent=t;fp.style.color=d.fan_ready===false?'#e9a645':'#4ecca3'}
     else{fp.textContent='OFF';fp.style.color=''}
   }
   const rp=$('airResPct');if(rp)rp.textContent=(d.res_pct!=null?d.res_pct:'-')+'%';
