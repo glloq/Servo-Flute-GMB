@@ -1228,11 +1228,14 @@ function refreshKbdAir(){
   const fs=$('fluteSvg');
   if(CFG&&CFG.show_air){
     box.style.display='';buildAirSvg('kbdAirSvg',true);
-    // Align flute bec with servo flow air output
+    // Align flute embouchure with servo flow air output
     if(fs&&_kbdPipeExitRatio>0){
       const fluteVB=fs.viewBox.baseVal;
-      const becX=fluteVB.width?4/fluteVB.width:0; // bec tip ratio in flute SVG
-      const off=Math.max(0,(_kbdPipeExitRatio-becX)*100);
+      // Embouchure entry X depends on type: trav=blow hole at 36, oca=chanfrain ~21, others=tip ~4
+      const em=CFG.embouchure||'bec';
+      const becPx=(em==='trav')?36:(em==='oca')?21:4;
+      const becR=fluteVB.width?becPx/fluteVB.width:0;
+      const off=Math.max(0,(_kbdPipeExitRatio-becR)*100/(1-becR||1));
       fs.style.marginLeft=off+'%';fs.style.width=(100-off)+'%';
     }
   }else{
@@ -2082,30 +2085,30 @@ function buildAirSvg(svgId,full){
     const ductLen=80;
     const flX=pivotX+ductLen+16;
     const fluteW=70,fluteH=24;
-    if(isTrav){
-      // Traversiere: pipe horizontal then curves down above blow hole
+    if(isKbd){
+      // Kbd mode: horizontal pipe + arrow, flute is in separate SVG below
+      s+='<line x1="'+(pivotX+4)+'" y1="'+pivotY+'" x2="'+flX+'" y2="'+pivotY+'" stroke="#7799bb" stroke-width="3"/>';
+      s+='<line class="airFlowAnim" x1="'+(pivotX+ductLen)+'" y1="'+pivotY+'" x2="'+flX+'" y2="'+pivotY+'"/>';
+      s+='<polygon points="'+(flX-4)+','+(pivotY-3)+' '+(flX+1)+','+pivotY+' '+(flX-4)+','+(pivotY+3)+'" fill="#7799bb"/>';
+      _kbdPipeExitRatio=flX/w;
+    }else if(isTrav){
+      // Full mode + traversiere: pipe horizontal then curves down above blow hole
       const blowX=flX+4+Math.round(fluteW*0.35);
       const fluteY=pivotY+16;
       s+='<path d="M'+(pivotX+4)+','+pivotY+' L'+blowX+','+pivotY+' L'+blowX+','+(fluteY-1)+'" stroke="#7799bb" stroke-width="3" fill="none" stroke-linejoin="round"/>';
       s+='<line class="airFlowAnim" x1="'+(pivotX+ductLen)+'" y1="'+pivotY+'" x2="'+blowX+'" y2="'+pivotY+'"/>';
       s+='<line class="airFlowAnim" x1="'+blowX+'" y1="'+(pivotY+4)+'" x2="'+blowX+'" y2="'+(fluteY-2)+'"/>';
       s+='<polygon points="'+(blowX-3)+','+(fluteY-5)+' '+blowX+','+fluteY+' '+(blowX+3)+','+(fluteY-5)+'" fill="#7799bb"/>';
-      if(isKbd){_kbdPipeExitRatio=flX/w}
-      else{
-        s+='<rect x="'+(flX+4)+'" y="'+fluteY+'" width="'+fluteW+'" height="'+fluteH+'" rx="10" fill="'+(CFG.color||'#D4B044')+'" stroke="#a89030" stroke-width="1" opacity=".8"/>';
-        s+='<ellipse cx="'+blowX+'" cy="'+(fluteY+3)+'" rx="5" ry="2.5" fill="#5C4A0A" opacity=".6"/>';
-        s+='<text x="'+(flX+4+fluteW/2)+'" y="'+(fluteY+fluteH/2+4)+'" text-anchor="middle" style="font-size:9px;fill:#333;font-weight:bold">Flute</text>';
-      }
+      s+='<rect x="'+(flX+4)+'" y="'+fluteY+'" width="'+fluteW+'" height="'+fluteH+'" rx="10" fill="'+(CFG.color||'#D4B044')+'" stroke="#a89030" stroke-width="1" opacity=".8"/>';
+      s+='<ellipse cx="'+blowX+'" cy="'+(fluteY+3)+'" rx="5" ry="2.5" fill="#5C4A0A" opacity=".6"/>';
+      s+='<text x="'+(flX+4+fluteW/2)+'" y="'+(fluteY+fluteH/2+4)+'" text-anchor="middle" style="font-size:9px;fill:#333;font-weight:bold">Flute</text>';
     }else{
-      // Bec/Naf/Oca: horizontal pipe to flute left side
+      // Full mode + bec/naf/oca: horizontal pipe to flute left side
       s+='<line x1="'+(pivotX+4)+'" y1="'+pivotY+'" x2="'+flX+'" y2="'+pivotY+'" stroke="#7799bb" stroke-width="3"/>';
       s+='<line class="airFlowAnim" x1="'+(pivotX+ductLen)+'" y1="'+pivotY+'" x2="'+flX+'" y2="'+pivotY+'"/>';
       s+='<polygon points="'+(flX-4)+','+(pivotY-3)+' '+(flX+1)+','+pivotY+' '+(flX-4)+','+(pivotY+3)+'" fill="#7799bb"/>';
-      if(isKbd){_kbdPipeExitRatio=flX/w}
-      else{
-        s+='<rect x="'+(flX+4)+'" y="'+(pivotY-fluteH/2)+'" width="'+fluteW+'" height="'+fluteH+'" rx="10" fill="'+(CFG.color||'#D4B044')+'" stroke="#a89030" stroke-width="1" opacity=".8"/>';
-        s+='<text x="'+(flX+4+fluteW/2)+'" y="'+(pivotY+4)+'" text-anchor="middle" style="font-size:9px;fill:#333;font-weight:bold">Flute</text>';
-      }
+      s+='<rect x="'+(flX+4)+'" y="'+(pivotY-fluteH/2)+'" width="'+fluteW+'" height="'+fluteH+'" rx="10" fill="'+(CFG.color||'#D4B044')+'" stroke="#a89030" stroke-width="1" opacity=".8"/>';
+      s+='<text x="'+(flX+4+fluteW/2)+'" y="'+(pivotY+4)+'" text-anchor="middle" style="font-size:9px;fill:#333;font-weight:bold">Flute</text>';
     }
     // === Air duct (servo flow) - pivots at outlet, ON TOP of blue pipe ===
     s+='<g id="airFanDuct" style="transform-origin:'+pivotX+'px '+pivotY+'px">';
@@ -2251,27 +2254,27 @@ function buildAirSvg(svgId,full){
     // Pipe from servo flow RIGHT to flute (traversiere-aware)
     const flX=vx+svW/2+16;
     const _isTrav=(CFG.embouchure==='trav');
-    if(_isTrav){
+    if(isKbd){
+      // Kbd mode: horizontal pipe + arrow, flute is separate SVG below
+      s+='<line x1="'+(vx+svW/2)+'" y1="'+svCy+'" x2="'+flX+'" y2="'+svCy+'" stroke="#7799bb" stroke-width="3"/>';
+      s+='<line class="airFlowAnim" x1="'+(vx+svW/2)+'" y1="'+svCy+'" x2="'+flX+'" y2="'+svCy+'"/>';
+      s+='<polygon points="'+(flX-4)+','+(svCy-3)+' '+(flX+1)+','+svCy+' '+(flX-4)+','+(svCy+3)+'" fill="#7799bb"/>';
+      _kbdPipeExitRatio=(flX+1)/w;
+    }else if(_isTrav){
       const _bx=flX+4+Math.round(70*0.35),_fy=svCy+14;
       s+='<path d="M'+(vx+svW/2)+','+svCy+' L'+_bx+','+svCy+' L'+_bx+','+(_fy-1)+'" stroke="#7799bb" stroke-width="3" fill="none" stroke-linejoin="round"/>';
       s+='<line class="airFlowAnim" x1="'+(vx+svW/2)+'" y1="'+svCy+'" x2="'+_bx+'" y2="'+svCy+'"/>';
       s+='<line class="airFlowAnim" x1="'+_bx+'" y1="'+(svCy+4)+'" x2="'+_bx+'" y2="'+(_fy-2)+'"/>';
       s+='<polygon points="'+(_bx-3)+','+(_fy-5)+' '+_bx+','+_fy+' '+(_bx+3)+','+(_fy-5)+'" fill="#7799bb"/>';
-      if(isKbd){_kbdPipeExitRatio=(flX+1)/w}
-      else{
-        s+='<rect x="'+(flX+4)+'" y="'+_fy+'" width="70" height="24" rx="10" fill="'+(CFG.color||'#D4B044')+'" stroke="#a89030" stroke-width="1" opacity=".8"/>';
-        s+='<ellipse cx="'+_bx+'" cy="'+(_fy+3)+'" rx="5" ry="2.5" fill="#5C4A0A" opacity=".6"/>';
-        s+='<text x="'+(flX+39)+'" y="'+(_fy+16)+'" text-anchor="middle" style="font-size:9px;fill:#333;font-weight:bold">Flute</text>';
-      }
+      s+='<rect x="'+(flX+4)+'" y="'+_fy+'" width="70" height="24" rx="10" fill="'+(CFG.color||'#D4B044')+'" stroke="#a89030" stroke-width="1" opacity=".8"/>';
+      s+='<ellipse cx="'+_bx+'" cy="'+(_fy+3)+'" rx="5" ry="2.5" fill="#5C4A0A" opacity=".6"/>';
+      s+='<text x="'+(flX+39)+'" y="'+(_fy+16)+'" text-anchor="middle" style="font-size:9px;fill:#333;font-weight:bold">Flute</text>';
     }else{
       s+='<line x1="'+(vx+svW/2)+'" y1="'+svCy+'" x2="'+flX+'" y2="'+svCy+'" stroke="#7799bb" stroke-width="3"/>';
       s+='<line class="airFlowAnim" x1="'+(vx+svW/2)+'" y1="'+svCy+'" x2="'+flX+'" y2="'+svCy+'"/>';
       s+='<polygon points="'+(flX-4)+','+(svCy-3)+' '+(flX+1)+','+svCy+' '+(flX-4)+','+(svCy+3)+'" fill="#7799bb"/>';
-      if(isKbd){_kbdPipeExitRatio=(flX+1)/w}
-      else{
-        s+='<rect x="'+(flX+4)+'" y="'+(svCy-12)+'" width="70" height="24" rx="10" fill="'+(CFG.color||'#D4B044')+'" stroke="#a89030" stroke-width="1" opacity=".8"/>';
-        s+='<text x="'+(flX+39)+'" y="'+(svCy+4)+'" text-anchor="middle" style="font-size:9px;fill:#333;font-weight:bold">Flute</text>';
-      }
+      s+='<rect x="'+(flX+4)+'" y="'+(svCy-12)+'" width="70" height="24" rx="10" fill="'+(CFG.color||'#D4B044')+'" stroke="#a89030" stroke-width="1" opacity=".8"/>';
+      s+='<text x="'+(flX+39)+'" y="'+(svCy+4)+'" text-anchor="middle" style="font-size:9px;fill:#333;font-weight:bold">Flute</text>';
     }
   }else{
     // No valve (mode 2): T-connector goes directly to servo flow
@@ -2284,27 +2287,27 @@ function buildAirSvg(svgId,full){
     s+='<text x="'+(svX+36)+'" y="'+(teeY-6)+'" style="font-size:5px;fill:#569">CH'+ach+'</text>';
     const flX=svX+46;
     const _isTrav2=(CFG.embouchure==='trav');
-    if(_isTrav2){
+    if(isKbd){
+      // Kbd mode: horizontal pipe + arrow, flute is separate SVG below
+      s+='<line x1="'+(svX+36)+'" y1="'+teeY+'" x2="'+flX+'" y2="'+teeY+'" stroke="#7799bb" stroke-width="3"/>';
+      s+='<line class="airFlowAnim" x1="'+(svX+36)+'" y1="'+teeY+'" x2="'+flX+'" y2="'+teeY+'"/>';
+      s+='<polygon points="'+(flX-4)+','+(teeY-3)+' '+(flX+1)+','+teeY+' '+(flX-4)+','+(teeY+3)+'" fill="#7799bb"/>';
+      _kbdPipeExitRatio=(flX+1)/w;
+    }else if(_isTrav2){
       const _bx2=flX+4+Math.round(70*0.35),_fy2=teeY+14;
       s+='<path d="M'+(svX+36)+','+teeY+' L'+_bx2+','+teeY+' L'+_bx2+','+(_fy2-1)+'" stroke="#7799bb" stroke-width="3" fill="none" stroke-linejoin="round"/>';
       s+='<line class="airFlowAnim" x1="'+(svX+36)+'" y1="'+teeY+'" x2="'+_bx2+'" y2="'+teeY+'"/>';
       s+='<line class="airFlowAnim" x1="'+_bx2+'" y1="'+(teeY+4)+'" x2="'+_bx2+'" y2="'+(_fy2-2)+'"/>';
       s+='<polygon points="'+(_bx2-3)+','+(_fy2-5)+' '+_bx2+','+_fy2+' '+(_bx2+3)+','+(_fy2-5)+'" fill="#7799bb"/>';
-      if(isKbd){_kbdPipeExitRatio=(flX+1)/w}
-      else{
-        s+='<rect x="'+(flX+4)+'" y="'+_fy2+'" width="70" height="24" rx="10" fill="'+(CFG.color||'#D4B044')+'" stroke="#a89030" stroke-width="1" opacity=".8"/>';
-        s+='<ellipse cx="'+_bx2+'" cy="'+(_fy2+3)+'" rx="5" ry="2.5" fill="#5C4A0A" opacity=".6"/>';
-        s+='<text x="'+(flX+39)+'" y="'+(_fy2+16)+'" text-anchor="middle" style="font-size:9px;fill:#333;font-weight:bold">Flute</text>';
-      }
+      s+='<rect x="'+(flX+4)+'" y="'+_fy2+'" width="70" height="24" rx="10" fill="'+(CFG.color||'#D4B044')+'" stroke="#a89030" stroke-width="1" opacity=".8"/>';
+      s+='<ellipse cx="'+_bx2+'" cy="'+(_fy2+3)+'" rx="5" ry="2.5" fill="#5C4A0A" opacity=".6"/>';
+      s+='<text x="'+(flX+39)+'" y="'+(_fy2+16)+'" text-anchor="middle" style="font-size:9px;fill:#333;font-weight:bold">Flute</text>';
     }else{
       s+='<line x1="'+(svX+36)+'" y1="'+teeY+'" x2="'+flX+'" y2="'+teeY+'" stroke="#7799bb" stroke-width="3"/>';
       s+='<line class="airFlowAnim" x1="'+(svX+36)+'" y1="'+teeY+'" x2="'+flX+'" y2="'+teeY+'"/>';
       s+='<polygon points="'+(flX-4)+','+(teeY-3)+' '+(flX+1)+','+teeY+' '+(flX-4)+','+(teeY+3)+'" fill="#7799bb"/>';
-      if(isKbd){_kbdPipeExitRatio=(flX+1)/w}
-      else{
-        s+='<rect x="'+(flX+4)+'" y="'+(teeY-12)+'" width="70" height="24" rx="10" fill="'+(CFG.color||'#D4B044')+'" stroke="#a89030" stroke-width="1" opacity=".8"/>';
-        s+='<text x="'+(flX+39)+'" y="'+(teeY+4)+'" text-anchor="middle" style="font-size:9px;fill:#333;font-weight:bold">Flute</text>';
-      }
+      s+='<rect x="'+(flX+4)+'" y="'+(teeY-12)+'" width="70" height="24" rx="10" fill="'+(CFG.color||'#D4B044')+'" stroke="#a89030" stroke-width="1" opacity=".8"/>';
+      s+='<text x="'+(flX+39)+'" y="'+(teeY+4)+'" text-anchor="middle" style="font-size:9px;fill:#333;font-weight:bold">Flute</text>';
     }
   }
   svg.innerHTML=s;
