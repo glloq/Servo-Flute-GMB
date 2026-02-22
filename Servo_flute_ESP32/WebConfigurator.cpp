@@ -402,21 +402,38 @@ void WebConfigurator::handleApiConfig(AsyncWebServerRequest* request) {
   json += ",\"air_atk_ms\":" + String(cfg.airAttackMs);
   json += ",\"air_vel_resp\":" + String(cfg.airVelocityResponse);
 
-  // Air delivery system
+  // Air delivery system (modulaire)
   json += ",\"air_mode\":" + String(cfg.airMode);
-  json += ",\"valve_servo\":" + String(cfg.valveUseServo ? "true" : "false");
+  json += ",\"valve_type\":" + String(cfg.valveType);
   json += ",\"valve_ch\":" + String(cfg.valveServoPcaChannel);
-  json += ",\"pump_on\":" + String(cfg.pumpEnabled ? "true" : "false");
-  json += ",\"pump_pin\":" + String(cfg.pumpPin);
-  json += ",\"pump_min\":" + String(cfg.pumpMinPwm);
-  json += ",\"pump_max\":" + String(cfg.pumpMaxPwm);
-  json += ",\"res_on\":" + String(cfg.reservoirEnabled ? "true" : "false");
+  json += ",\"fan_pin\":" + String(cfg.fanPin);
+  json += ",\"fan_min\":" + String(cfg.fanMinPwm);
+  json += ",\"fan_max\":" + String(cfg.fanMaxPwm);
+  json += ",\"num_pumps\":" + String(cfg.numPumps);
+  json += ",\"pump_pins\":[";
+  for (int i = 0; i < MAX_PUMPS; i++) {
+    if (i > 0) json += ",";
+    json += String(cfg.pumpPins[i]);
+  }
+  json += "],\"pump_mins\":[";
+  for (int i = 0; i < MAX_PUMPS; i++) {
+    if (i > 0) json += ",";
+    json += String(cfg.pumpMinPwm[i]);
+  }
+  json += "],\"pump_maxs\":[";
+  for (int i = 0; i < MAX_PUMPS; i++) {
+    if (i > 0) json += ",";
+    json += String(cfg.pumpMaxPwm[i]);
+  }
+  json += "]";
   json += ",\"sens_type\":" + String(cfg.sensorType);
   json += ",\"sens_target\":" + String(cfg.sensorTargetMm);
   json += ",\"sens_min\":" + String(cfg.sensorMinMm);
   json += ",\"sens_max\":" + String(cfg.sensorMaxMm);
   json += ",\"pid_kp\":" + String(cfg.pidKp);
   json += ",\"pid_ki\":" + String(cfg.pidKi);
+  json += ",\"endstop_pin\":" + String(cfg.endstopPin);
+  json += ",\"endstop_high\":" + String(cfg.endstopActiveHigh ? "true" : "false");
   json += ",\"show_air\":" + String(cfg.showAirSystem ? "true" : "false");
   json += ",\"midi_limit\":" + String(cfg.midiStorageLimitKb);
 
@@ -524,21 +541,51 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
     if (doc.containsKey("air_atk_ms")) cfg.airAttackMs = doc["air_atk_ms"];
     if (doc.containsKey("air_vel_resp")) cfg.airVelocityResponse = doc["air_vel_resp"];
 
-    // Air delivery system
+    // Air delivery system (modulaire)
     if (doc.containsKey("air_mode")) cfg.airMode = doc["air_mode"];
-    if (doc.containsKey("valve_servo")) cfg.valveUseServo = doc["valve_servo"].as<bool>();
+    if (doc.containsKey("valve_type")) cfg.valveType = doc["valve_type"];
+    // Retro-compat: ancien champ valve_servo
+    if (doc.containsKey("valve_servo") && !doc.containsKey("valve_type")) {
+      cfg.valveType = doc["valve_servo"].as<bool>() ? 1 : 0;
+    }
     if (doc.containsKey("valve_ch")) cfg.valveServoPcaChannel = doc["valve_ch"];
-    if (doc.containsKey("pump_on")) cfg.pumpEnabled = doc["pump_on"].as<bool>();
-    if (doc.containsKey("pump_pin")) cfg.pumpPin = doc["pump_pin"];
-    if (doc.containsKey("pump_min")) cfg.pumpMinPwm = doc["pump_min"];
-    if (doc.containsKey("pump_max")) cfg.pumpMaxPwm = doc["pump_max"];
-    if (doc.containsKey("res_on")) cfg.reservoirEnabled = doc["res_on"].as<bool>();
+    if (doc.containsKey("fan_pin")) cfg.fanPin = doc["fan_pin"];
+    if (doc.containsKey("fan_min")) cfg.fanMinPwm = doc["fan_min"];
+    if (doc.containsKey("fan_max")) cfg.fanMaxPwm = doc["fan_max"];
+    if (doc.containsKey("num_pumps")) {
+      uint8_t np = doc["num_pumps"];
+      if (np >= 1 && np <= MAX_PUMPS) cfg.numPumps = np;
+    }
+    if (doc.containsKey("pump_pins")) {
+      JsonArray pp = doc["pump_pins"];
+      for (int i = 0; i < MAX_PUMPS && i < (int)pp.size(); i++) cfg.pumpPins[i] = pp[i];
+    }
+    if (doc.containsKey("pump_mins")) {
+      JsonArray pm = doc["pump_mins"];
+      for (int i = 0; i < MAX_PUMPS && i < (int)pm.size(); i++) cfg.pumpMinPwm[i] = pm[i];
+    }
+    if (doc.containsKey("pump_maxs")) {
+      JsonArray px = doc["pump_maxs"];
+      for (int i = 0; i < MAX_PUMPS && i < (int)px.size(); i++) cfg.pumpMaxPwm[i] = px[i];
+    }
+    // Retro-compat: ancien champ pump_pin unique
+    if (doc.containsKey("pump_pin") && !doc.containsKey("pump_pins")) {
+      cfg.pumpPins[0] = doc["pump_pin"];
+    }
+    if (doc.containsKey("pump_min") && !doc.containsKey("pump_mins")) {
+      cfg.pumpMinPwm[0] = doc["pump_min"];
+    }
+    if (doc.containsKey("pump_max") && !doc.containsKey("pump_maxs")) {
+      cfg.pumpMaxPwm[0] = doc["pump_max"];
+    }
     if (doc.containsKey("sens_type")) cfg.sensorType = doc["sens_type"];
     if (doc.containsKey("sens_target")) cfg.sensorTargetMm = doc["sens_target"];
     if (doc.containsKey("sens_min")) cfg.sensorMinMm = doc["sens_min"];
     if (doc.containsKey("sens_max")) cfg.sensorMaxMm = doc["sens_max"];
     if (doc.containsKey("pid_kp")) cfg.pidKp = doc["pid_kp"];
     if (doc.containsKey("pid_ki")) cfg.pidKi = doc["pid_ki"];
+    if (doc.containsKey("endstop_pin")) cfg.endstopPin = doc["endstop_pin"];
+    if (doc.containsKey("endstop_high")) cfg.endstopActiveHigh = doc["endstop_high"].as<bool>();
     if (doc.containsKey("show_air")) cfg.showAirSystem = doc["show_air"].as<bool>();
     if (doc.containsKey("midi_limit")) {
       uint16_t ml = doc["midi_limit"];
@@ -1066,7 +1113,7 @@ void WebConfigurator::broadcastStatus() {
   }
 
   // Air system live data
-  if (_instrument && (cfg.pumpEnabled || cfg.reservoirEnabled)) {
+  if (_instrument && cfg.airMode >= AIR_MODE_PUMP_VALVE) {
     PressureController& pc = _instrument->getPressureCtrl();
     json += ",\"pump_pwm\":" + String(pc.getPumpPwm());
     json += ",\"res_pct\":" + String(pc.getFillPercent());

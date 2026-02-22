@@ -124,23 +124,45 @@ Set MIC_ENABLED to false if no mic is connected.
 
 /*******************************************************************************
 -----------------------   AIR DELIVERY SYSTEM          ------------------------
-Modes : 0=classique (solenoide), 1=servo-valve, 2=pompe directe,
-        3=pompe + reservoir avec capteur distance
+Modes modulaires de gestion d'air. L'interface s'adapte au mode choisi.
+  0 = Classique (solenoide + servo flow)
+  1 = Servo-valve (servo PCA remplace solenoide)
+  2 = Servo flow seul (pas de valve)
+  3 = Ventilateur + servo flow
+  4 = Pompe(s) + valve + servo flow
+  5 = Pompe(s) + reservoir (capteur distance) + valve + servo flow
+  6 = Pompe(s) + reservoir (fin de course) + valve + servo flow
 ******************************************************************************/
 // Modes
-#define AIR_MODE_CLASSIC    0
-#define AIR_MODE_SERVO_VALVE 1
-#define AIR_MODE_PUMP       2
-#define AIR_MODE_PUMP_RESERVOIR 3
+#define AIR_MODE_SOLENOID_SERVO   0
+#define AIR_MODE_SERVO_VALVE      1
+#define AIR_MODE_SERVO_ONLY       2
+#define AIR_MODE_FAN_SERVO        3
+#define AIR_MODE_PUMP_VALVE       4
+#define AIR_MODE_PUMP_RESERVOIR   5
+#define AIR_MODE_PUMP_ENDSTOP     6
+
+// Legacy aliases
+#define AIR_MODE_CLASSIC          AIR_MODE_SOLENOID_SERVO
+#define AIR_MODE_PUMP             AIR_MODE_PUMP_VALVE
+#define AIR_MODE_PUMP_RESERVOIR_LEGACY AIR_MODE_PUMP_RESERVOIR
+
+// Max pumps
+#define MAX_PUMPS 3
 
 // Defaults
-#define DEFAULT_AIR_MODE            AIR_MODE_CLASSIC
-#define DEFAULT_VALVE_USE_SERVO     false
+#define DEFAULT_AIR_MODE            AIR_MODE_SOLENOID_SERVO
+#define DEFAULT_VALVE_TYPE          0      // 0=solenoide GPIO, 1=servo PCA
 #define DEFAULT_VALVE_SERVO_CH      11     // Canal PCA si valve=servo
-#define DEFAULT_PUMP_ENABLED        false
+#define DEFAULT_NUM_PUMPS           1
 #define DEFAULT_PUMP_PIN            25     // GPIO25 (DAC capable)
 #define DEFAULT_PUMP_MIN_PWM        80     // Seuil demarrage moteur DC
 #define DEFAULT_PUMP_MAX_PWM        255
+#define DEFAULT_FAN_PIN             26     // GPIO26 pour ventilateur
+#define DEFAULT_FAN_MIN_PWM         60     // Seuil demarrage ventilateur
+#define DEFAULT_FAN_MAX_PWM         255
+#define DEFAULT_ENDSTOP_PIN         34     // GPIO34 (input only)
+#define DEFAULT_ENDSTOP_ACTIVE_HIGH true
 #define DEFAULT_RESERVOIR_ENABLED   false
 #define DEFAULT_SENSOR_TYPE         1      // 0=VL53L0X, 1=VL6180X
 #define DEFAULT_SENSOR_TARGET_MM    50     // Hauteur cible ballon (mm)

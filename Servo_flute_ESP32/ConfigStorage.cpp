@@ -89,21 +89,29 @@ void ConfigStorage::initDefaults() {
   // --- Power ---
   cfg.timeUnpower = TIMEUNPOWER;
 
-  // --- Air delivery system ---
+  // --- Air delivery system (modulaire) ---
   cfg.airMode = DEFAULT_AIR_MODE;
-  cfg.valveUseServo = DEFAULT_VALVE_USE_SERVO;
+  cfg.valveType = DEFAULT_VALVE_TYPE;
   cfg.valveServoPcaChannel = DEFAULT_VALVE_SERVO_CH;
-  cfg.pumpEnabled = DEFAULT_PUMP_ENABLED;
-  cfg.pumpPin = DEFAULT_PUMP_PIN;
-  cfg.pumpMinPwm = DEFAULT_PUMP_MIN_PWM;
-  cfg.pumpMaxPwm = DEFAULT_PUMP_MAX_PWM;
-  cfg.reservoirEnabled = DEFAULT_RESERVOIR_ENABLED;
+  cfg.fanPin = DEFAULT_FAN_PIN;
+  cfg.fanMinPwm = DEFAULT_FAN_MIN_PWM;
+  cfg.fanMaxPwm = DEFAULT_FAN_MAX_PWM;
+  cfg.numPumps = DEFAULT_NUM_PUMPS;
+  cfg.pumpPins[0] = DEFAULT_PUMP_PIN;
+  cfg.pumpPins[1] = 26;
+  cfg.pumpPins[2] = 27;
+  for (uint8_t i = 0; i < MAX_PUMPS; i++) {
+    cfg.pumpMinPwm[i] = DEFAULT_PUMP_MIN_PWM;
+    cfg.pumpMaxPwm[i] = DEFAULT_PUMP_MAX_PWM;
+  }
   cfg.sensorType = DEFAULT_SENSOR_TYPE;
   cfg.sensorTargetMm = DEFAULT_SENSOR_TARGET_MM;
   cfg.sensorMinMm = DEFAULT_SENSOR_MIN_MM;
   cfg.sensorMaxMm = DEFAULT_SENSOR_MAX_MM;
   cfg.pidKp = DEFAULT_PID_KP;
   cfg.pidKi = DEFAULT_PID_KI;
+  cfg.endstopPin = DEFAULT_ENDSTOP_PIN;
+  cfg.endstopActiveHigh = DEFAULT_ENDSTOP_ACTIVE_HIGH;
   cfg.showAirSystem = DEFAULT_SHOW_AIR_SYSTEM;
 
   // --- MIDI Storage ---
@@ -221,21 +229,52 @@ bool ConfigStorage::load() {
   cfg.airAttackMs = doc["air_atk_ms"] | cfg.airAttackMs;
   cfg.airVelocityResponse = doc["air_vel_resp"] | cfg.airVelocityResponse;
 
-  // --- Air delivery system ---
+  // --- Air delivery system (modulaire) ---
   cfg.airMode = doc["air_mode"] | cfg.airMode;
-  cfg.valveUseServo = doc["valve_servo"] | (cfg.valveUseServo ? 1 : 0);
+  cfg.valveType = doc["valve_type"] | cfg.valveType;
+  // Retro-compat: ancien champ valve_servo (bool) -> valveType
+  if (doc.containsKey("valve_servo") && !doc.containsKey("valve_type")) {
+    cfg.valveType = doc["valve_servo"].as<bool>() ? 1 : 0;
+  }
   cfg.valveServoPcaChannel = doc["valve_ch"] | cfg.valveServoPcaChannel;
-  cfg.pumpEnabled = doc["pump_on"] | (cfg.pumpEnabled ? 1 : 0);
-  cfg.pumpPin = doc["pump_pin"] | cfg.pumpPin;
-  cfg.pumpMinPwm = doc["pump_min"] | cfg.pumpMinPwm;
-  cfg.pumpMaxPwm = doc["pump_max"] | cfg.pumpMaxPwm;
-  cfg.reservoirEnabled = doc["res_on"] | (cfg.reservoirEnabled ? 1 : 0);
+  cfg.fanPin = doc["fan_pin"] | cfg.fanPin;
+  cfg.fanMinPwm = doc["fan_min"] | cfg.fanMinPwm;
+  cfg.fanMaxPwm = doc["fan_max"] | cfg.fanMaxPwm;
+  cfg.numPumps = doc["num_pumps"] | cfg.numPumps;
+  if (cfg.numPumps < 1) cfg.numPumps = 1;
+  if (cfg.numPumps > MAX_PUMPS) cfg.numPumps = MAX_PUMPS;
+  // Retro-compat: ancien champ pump_pin unique -> pumpPins[0]
+  if (doc.containsKey("pump_pin") && !doc.containsKey("pump_pins")) {
+    cfg.pumpPins[0] = doc["pump_pin"] | cfg.pumpPins[0];
+    cfg.pumpMinPwm[0] = doc["pump_min"] | cfg.pumpMinPwm[0];
+    cfg.pumpMaxPwm[0] = doc["pump_max"] | cfg.pumpMaxPwm[0];
+  }
+  JsonArray pumpPins = doc["pump_pins"];
+  if (pumpPins) {
+    for (int i = 0; i < MAX_PUMPS && i < (int)pumpPins.size(); i++) {
+      cfg.pumpPins[i] = pumpPins[i] | cfg.pumpPins[i];
+    }
+  }
+  JsonArray pumpMins = doc["pump_mins"];
+  if (pumpMins) {
+    for (int i = 0; i < MAX_PUMPS && i < (int)pumpMins.size(); i++) {
+      cfg.pumpMinPwm[i] = pumpMins[i] | cfg.pumpMinPwm[i];
+    }
+  }
+  JsonArray pumpMaxs = doc["pump_maxs"];
+  if (pumpMaxs) {
+    for (int i = 0; i < MAX_PUMPS && i < (int)pumpMaxs.size(); i++) {
+      cfg.pumpMaxPwm[i] = pumpMaxs[i] | cfg.pumpMaxPwm[i];
+    }
+  }
   cfg.sensorType = doc["sens_type"] | cfg.sensorType;
   cfg.sensorTargetMm = doc["sens_target"] | cfg.sensorTargetMm;
   cfg.sensorMinMm = doc["sens_min"] | cfg.sensorMinMm;
   cfg.sensorMaxMm = doc["sens_max"] | cfg.sensorMaxMm;
   cfg.pidKp = doc["pid_kp"] | cfg.pidKp;
   cfg.pidKi = doc["pid_ki"] | cfg.pidKi;
+  cfg.endstopPin = doc["endstop_pin"] | cfg.endstopPin;
+  cfg.endstopActiveHigh = doc["endstop_high"] | (cfg.endstopActiveHigh ? 1 : 0);
   cfg.showAirSystem = doc["show_air"] | (cfg.showAirSystem ? 1 : 0);
 
   // --- MIDI Storage ---
@@ -330,21 +369,30 @@ bool ConfigStorage::save() {
   doc["air_atk_off"] = cfg.airAttackOffset;
   doc["air_atk_ms"] = cfg.airAttackMs;
   doc["air_vel_resp"] = cfg.airVelocityResponse;
-  // --- Air delivery system ---
+  // --- Air delivery system (modulaire) ---
   doc["air_mode"] = cfg.airMode;
-  doc["valve_servo"] = cfg.valveUseServo ? 1 : 0;
+  doc["valve_type"] = cfg.valveType;
   doc["valve_ch"] = cfg.valveServoPcaChannel;
-  doc["pump_on"] = cfg.pumpEnabled ? 1 : 0;
-  doc["pump_pin"] = cfg.pumpPin;
-  doc["pump_min"] = cfg.pumpMinPwm;
-  doc["pump_max"] = cfg.pumpMaxPwm;
-  doc["res_on"] = cfg.reservoirEnabled ? 1 : 0;
+  doc["fan_pin"] = cfg.fanPin;
+  doc["fan_min"] = cfg.fanMinPwm;
+  doc["fan_max"] = cfg.fanMaxPwm;
+  doc["num_pumps"] = cfg.numPumps;
+  JsonArray pumpPins = doc["pump_pins"].to<JsonArray>();
+  JsonArray pumpMins = doc["pump_mins"].to<JsonArray>();
+  JsonArray pumpMaxs = doc["pump_maxs"].to<JsonArray>();
+  for (int i = 0; i < MAX_PUMPS; i++) {
+    pumpPins.add(cfg.pumpPins[i]);
+    pumpMins.add(cfg.pumpMinPwm[i]);
+    pumpMaxs.add(cfg.pumpMaxPwm[i]);
+  }
   doc["sens_type"] = cfg.sensorType;
   doc["sens_target"] = cfg.sensorTargetMm;
   doc["sens_min"] = cfg.sensorMinMm;
   doc["sens_max"] = cfg.sensorMaxMm;
   doc["pid_kp"] = cfg.pidKp;
   doc["pid_ki"] = cfg.pidKi;
+  doc["endstop_pin"] = cfg.endstopPin;
+  doc["endstop_high"] = cfg.endstopActiveHigh ? 1 : 0;
   doc["show_air"] = cfg.showAirSystem ? 1 : 0;
   doc["midi_limit"] = cfg.midiStorageLimitKb;
   doc["wifi_ssid"] = cfg.wifiSsid;

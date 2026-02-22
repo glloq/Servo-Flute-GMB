@@ -103,21 +103,30 @@ struct RuntimeConfig {
   // --- Power ---
   uint16_t timeUnpower;
 
-  // --- Air delivery system ---
-  uint8_t airMode;                   // 0=classique, 1=servo-valve, 2=pompe, 3=pompe+reservoir
-  bool valveUseServo;                // true=servo PCA, false=solenoide GPIO
+  // --- Air delivery system (modulaire) ---
+  uint8_t airMode;                   // 0-6 (voir AIR_MODE_* dans settings.h)
+  uint8_t valveType;                 // 0=solenoide GPIO, 1=servo PCA
   uint8_t valveServoPcaChannel;      // Canal PCA9685 si valve=servo
-  bool pumpEnabled;                  // Pompe active
-  uint8_t pumpPin;                   // GPIO PWM pompe
-  uint8_t pumpMinPwm;               // PWM min (seuil demarrage moteur)
-  uint8_t pumpMaxPwm;               // PWM max
-  bool reservoirEnabled;             // Reservoir (ballon) avec capteur
+  // Ventilateur (mode 3)
+  uint8_t fanPin;                    // GPIO PWM ventilateur
+  uint8_t fanMinPwm;                // PWM min (seuil demarrage)
+  uint8_t fanMaxPwm;                // PWM max
+  // Pompes (modes 4-6, 1 a 3 pompes)
+  uint8_t numPumps;                  // 1-3
+  uint8_t pumpPins[MAX_PUMPS];       // GPIO PWM pour chaque pompe
+  uint8_t pumpMinPwm[MAX_PUMPS];    // PWM min par pompe
+  uint8_t pumpMaxPwm[MAX_PUMPS];    // PWM max par pompe
+  // Reservoir capteur distance (mode 5)
   uint8_t sensorType;               // 0=VL53L0X, 1=VL6180X
   uint16_t sensorTargetMm;          // Hauteur cible (mm)
   uint16_t sensorMinMm;             // Hauteur min (vide)
   uint16_t sensorMaxMm;             // Hauteur max (plein)
   uint8_t pidKp;                     // Gain proportionnel PID (x10)
   uint8_t pidKi;                     // Gain integral PID (x10)
+  // Reservoir fin de course (mode 6)
+  uint8_t endstopPin;               // GPIO fin de course
+  bool endstopActiveHigh;            // true = actif quand HIGH
+  // UI
   bool showAirSystem;                // Afficher schema pneumatique dans l'UI
 
   // --- MIDI Storage ---
