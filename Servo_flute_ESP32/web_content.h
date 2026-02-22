@@ -1932,7 +1932,7 @@ function buildAirSvg(svgId,full){
   const resFormat=(CFG.res_format||'balloon');
   const isServoValve=(CFG.valve_type===1);
   const w=full?480:440;
-  const h=full?280:180;
+  const h=full?240:155;
   svg.setAttribute('viewBox','0 0 '+w+' '+h);
   let s='<defs>'+
     '<linearGradient id="agMetal" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#8899aa"/><stop offset="100%" stop-color="#556677"/></linearGradient>'+
@@ -1990,9 +1990,9 @@ function buildAirSvg(svgId,full){
 
   // --- MODES 0,2,4,5: T-connector layout ---
   // Layout:
-  //        [Reservoir/Balloon]
-  //              |
-  //  [Pompe] -- T -- [Valve] --> [Servo Flow] --> [Flute]
+  //        [Reservoir/Balloon]     [Servo Flow]
+  //              |                      |
+  //  [Pompe] -- T --------[Valve] --> [Flute]
   //      or [Air] if no pump
   //
   // Positions:
@@ -2002,7 +2002,7 @@ function buildAirSvg(svgId,full){
 
   // ===== PUMP or AIR SOURCE (bottom-left) =====
   if(hasPump){
-    const pumpY=h-40;
+    const pumpY=h-32;
     for(let i=0;i<np;i++){
       const px=colX+(i*50-(np-1)*25);
       s+='<rect x="'+(px-22)+'" y="'+(pumpY-14)+'" width="44" height="28" rx="6" fill="url(#agMetal)" stroke="#334" stroke-width="1.5"/>';
@@ -2018,7 +2018,7 @@ function buildAirSvg(svgId,full){
     s+='<polygon points="'+(colX-3)+','+(teeY+10)+' '+colX+','+(teeY+4)+' '+(colX+3)+','+(teeY+10)+'" fill="#7799bb"/>';
   }else{
     // Air source label (modes 0, 2)
-    const airY=h-40;
+    const airY=h-32;
     s+='<text x="'+colX+'" y="'+(airY+4)+'" text-anchor="middle" style="font-size:9px;fill:#9aa">Air</text>';
     s+='<line x1="'+colX+'" y1="'+(airY-10)+'" x2="'+colX+'" y2="'+(teeY+6)+'" stroke="#7799bb" stroke-width="3"/>';
     s+='<line class="airFlowAnim" x1="'+colX+'" y1="'+(airY-10)+'" x2="'+colX+'" y2="'+(teeY+6)+'"/>';
@@ -2032,8 +2032,8 @@ function buildAirSvg(svgId,full){
 
   // ===== RESERVOIR (above T-connector) =====
   if(hasRes){
-    const resY=teeY-70;
-    const rW=50,rH=36;
+    const resY=teeY-50;
+    const rW=50,rH=30;
     // Pipe UP from T to reservoir
     s+='<line x1="'+teeX+'" y1="'+(teeY-tR)+'" x2="'+teeX+'" y2="'+(resY+rH/2)+'" stroke="#7799bb" stroke-width="3"/>';
     s+='<line class="airFlowAnim" x1="'+teeX+'" y1="'+(teeY-tR)+'" x2="'+teeX+'" y2="'+(resY+rH/2)+'"/>';
@@ -2052,7 +2052,7 @@ function buildAirSvg(svgId,full){
     }
     // Bellows/balloon ABOVE reservoir
     const vizTop=resY-rH/2-5;
-    const vizH=55;
+    const vizH=40;
     if(resFormat==='bellows'){
       s+='<g id="airBellowsGroup">';
       const bW=40,folds=5;
@@ -2079,51 +2079,43 @@ function buildAirSvg(svgId,full){
 
   // ===== Pipe RIGHT from T-connector =====
   let rightX=teeX+tR; // start of rightward pipe
-  const targetRight=hasValve?teeX+70:teeX+60; // where next element starts
+  const targetRight=hasValve?teeX+65:teeX+60; // where next element starts
   s+='<line x1="'+rightX+'" y1="'+teeY+'" x2="'+targetRight+'" y2="'+teeY+'" stroke="#7799bb" stroke-width="3"/>';
   s+='<line class="airFlowAnim" x1="'+rightX+'" y1="'+teeY+'" x2="'+targetRight+'" y2="'+teeY+'"/>';
   s+='<polygon points="'+(targetRight-4)+','+(teeY-3)+' '+(targetRight+1)+','+teeY+' '+(targetRight-4)+','+(teeY+3)+'" fill="#7799bb"/>';
 
-  // ===== VALVE (if applicable) =====
+  // ===== VALVE + SERVO FLOW (stacked vertically) =====
   if(hasValve){
-    const vx=teeX+85,vy=teeY;
-    const cylW=30,cylH=40;
+    const vx=teeX+80,vy=teeY;
+    const cylW=30,cylH=36;
     const cylStroke=isServoValve?'#569':'#556';
+    // Valve cylinder
     s+='<rect id="airValveRect" x="'+(vx-cylW/2)+'" y="'+(vy-cylH/2)+'" width="'+cylW+'" height="'+cylH+'" rx="3" fill="url(#agCylinder)" stroke="'+cylStroke+'" stroke-width="1.5"/>';
     s+='<rect x="'+(vx-cylW/2+4)+'" y="'+(vy-cylH/2+3)+'" width="'+(cylW-8)+'" height="'+(cylH-6)+'" rx="1" fill="#1a1a2e" opacity=".6"/>';
     s+='<g id="airPistonGroup">';
     const pistonFill=isServoValve?'url(#agMetal)':'url(#agPiston)';
     s+='<rect id="airPiston" x="'+(vx-cylW/2+5)+'" y="'+(vy-cylH/2+4)+'" width="'+(cylW-10)+'" height="12" rx="1.5" fill="'+pistonFill+'" stroke="'+(isServoValve?'#6688aa':'#8899bb')+'" stroke-width="1"/>';
     s+='<line x1="'+vx+'" y1="'+(vy-cylH/2-8)+'" x2="'+vx+'" y2="'+(vy-cylH/2+10)+'" stroke="'+(isServoValve?'#6688aa':'#8899bb')+'" stroke-width="2" stroke-linecap="round"/>';
-    if(isServoValve){
-      s+='<circle cx="'+vx+'" cy="'+(vy-cylH/2-9)+'" r="5" fill="url(#agMetal)" stroke="#569" stroke-width=".8"/>';
-      s+='<line x1="'+(vx-2)+'" y1="'+(vy-cylH/2-9)+'" x2="'+(vx+2)+'" y2="'+(vy-cylH/2-9)+'" stroke="#569" stroke-width="1"/>';
-    }else{
-      s+='<rect x="'+(vx-6)+'" y="'+(vy-cylH/2-12)+'" width="12" height="6" rx="2" fill="url(#agMetal)" stroke="#667" stroke-width=".8"/>';
-    }
     s+='</g>';
+    // Valve LED indicator
     s+='<rect id="airValveInd" x="'+(vx-cylW/2-3)+'" y="'+(vy+cylH/2-8)+'" width="6" height="6" rx="1" fill="#e44"/>';
     const vl=isServoValve?'Servo':'Solenoide';
-    s+='<text x="'+vx+'" y="'+(vy+cylH/2+14)+'" text-anchor="middle" style="font-size:7px;fill:#9aa">'+vl+'</text>';
+    s+='<text x="'+vx+'" y="'+(vy+cylH/2+12)+'" text-anchor="middle" style="font-size:7px;fill:#9aa">'+vl+'</text>';
     if(isServoValve){const vch=CFG.valve_ch||11;s+='<text x="'+(vx+cylW/2+2)+'" y="'+(vy-cylH/2+8)+'" style="font-size:5px;fill:#569">CH'+vch+'</text>'}
     else{const sp=CFG.sol_pin||13;s+='<text x="'+(vx+cylW/2+2)+'" y="'+(vy-cylH/2+8)+'" style="font-size:5px;fill:#e9a645">G'+sp+'</text>'}
-    // Pipe RIGHT from valve to servo flow
-    const pipeEndX=vx+cylW/2+10;
-    const svX=pipeEndX+30;
-    s+='<line x1="'+(vx+cylW/2)+'" y1="'+teeY+'" x2="'+svX+'" y2="'+teeY+'" stroke="#7799bb" stroke-width="3"/>';
-    s+='<line class="airFlowAnim" x1="'+(vx+cylW/2)+'" y1="'+teeY+'" x2="'+svX+'" y2="'+teeY+'"/>';
-    s+='<polygon points="'+(svX-4)+','+(teeY-3)+' '+(svX+1)+','+teeY+' '+(svX-4)+','+(teeY+3)+'" fill="#7799bb"/>';
-    // Servo Flow
+    // === Servo Flow ABOVE valve ===
     const ach=CFG.air_pca||10;
-    s+='<rect x="'+svX+'" y="'+(teeY-14)+'" width="36" height="28" rx="5" fill="url(#agMetal)" stroke="#334" stroke-width="1.2"/>';
-    s+='<path id="airServoNeedle" d="M'+(svX+18)+','+teeY+' L'+(svX+18)+','+(teeY-10)+'" stroke="#e94" stroke-width="2" stroke-linecap="round"/>';
-    s+='<circle cx="'+(svX+18)+'" cy="'+teeY+'" r="2.5" fill="#e94"/>';
-    s+='<text x="'+(svX+18)+'" y="'+(teeY-18)+'" text-anchor="middle" style="font-size:7px;fill:#9aa">Servo Flow</text>';
-    s+='<text x="'+(svX+36)+'" y="'+(teeY-6)+'" style="font-size:5px;fill:#569">CH'+ach+'</text>';
-    // Arrow right to flute
-    const flX=svX+46;
-    s+='<line x1="'+(svX+36)+'" y1="'+teeY+'" x2="'+flX+'" y2="'+teeY+'" stroke="#7799bb" stroke-width="3"/>';
-    s+='<line class="airFlowAnim" x1="'+(svX+36)+'" y1="'+teeY+'" x2="'+flX+'" y2="'+teeY+'"/>';
+    const svW=36,svH=26;
+    const svCy=vy-cylH/2-svH/2-12;
+    s+='<rect x="'+(vx-svW/2)+'" y="'+(svCy-svH/2)+'" width="'+svW+'" height="'+svH+'" rx="5" fill="url(#agMetal)" stroke="#334" stroke-width="1.2"/>';
+    s+='<path id="airServoNeedle" d="M'+vx+','+svCy+' L'+vx+','+(svCy-10)+'" stroke="#e94" stroke-width="2" stroke-linecap="round"/>';
+    s+='<circle cx="'+vx+'" cy="'+svCy+'" r="2.5" fill="#e94"/>';
+    s+='<text x="'+vx+'" y="'+(svCy-svH/2-4)+'" text-anchor="middle" style="font-size:7px;fill:#9aa">Servo Flow</text>';
+    s+='<text x="'+(vx+svW/2+2)+'" y="'+(svCy-4)+'" style="font-size:5px;fill:#569">CH'+ach+'</text>';
+    // Pipe RIGHT from valve to flute
+    const flX=vx+cylW/2+16;
+    s+='<line x1="'+(vx+cylW/2)+'" y1="'+teeY+'" x2="'+flX+'" y2="'+teeY+'" stroke="#7799bb" stroke-width="3"/>';
+    s+='<line class="airFlowAnim" x1="'+(vx+cylW/2)+'" y1="'+teeY+'" x2="'+flX+'" y2="'+teeY+'"/>';
     s+='<polygon points="'+(flX-4)+','+(teeY-3)+' '+(flX+1)+','+teeY+' '+(flX-4)+','+(teeY+3)+'" fill="#7799bb"/>';
     // Flute
     s+='<rect x="'+(flX+4)+'" y="'+(teeY-12)+'" width="70" height="24" rx="10" fill="'+(CFG.color||'#D4B044')+'" stroke="#a89030" stroke-width="1" opacity=".8"/>';
@@ -2167,18 +2159,18 @@ function updateAirDiagram(d){
   document.querySelectorAll('[id=airBalloon]').forEach(bl=>{
     const minScale=0.4,maxScale=1.0;
     const sc=minScale+(maxScale-minScale)*(pct/100);
-    bl.setAttribute('ry',Math.round((65/2)*sc));
-    bl.setAttribute('rx',Math.round(28*sc));
+    bl.setAttribute('ry',Math.round((45/2)*sc));
+    bl.setAttribute('rx',Math.round(24*sc));
   });
   // Bellows: adjust top plate position and fill height
   document.querySelectorAll('[id=airBellowsTop]').forEach(bt=>{
-    const maxShift=50;
+    const maxShift=35;
     const shift=maxShift*(1-pct/100);
     bt.style.transition='transform 0.3s ease';
     bt.style.transform='translateY('+shift+'px)';
   });
   document.querySelectorAll('[id=airBellowsFill]').forEach(bf=>{
-    const fullH=65;
+    const fullH=45;
     const fillH=Math.max(4,fullH*(pct/100));
     // Store original Y on first call to prevent drift on repeated updates
     if(!bf.dataset.origY)bf.dataset.origY=bf.getAttribute('y');
