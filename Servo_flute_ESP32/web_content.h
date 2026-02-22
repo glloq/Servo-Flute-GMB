@@ -225,6 +225,7 @@ border-bottom:1px solid #1a4080;position:sticky;top:0;background:#16213e;z-index
 .air-block.disabled{opacity:.45;border-color:#333}
 .air-block-hdr{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;
 background:rgba(255,255,255,.03);cursor:pointer;user-select:none}
+.air-block-hdr:focus{outline:2px solid #4ecca3;outline-offset:-2px;border-radius:7px}
 .air-block-hdr h4{font-size:.85em;color:#e94560;margin:0;display:flex;align-items:center;gap:6px}
 .air-block-hdr .air-block-toggle{position:relative;width:36px;height:20px;background:#333;border-radius:10px;
 cursor:pointer;transition:background .2s;flex-shrink:0}
@@ -536,6 +537,10 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
       <div id="airStatValve"><span style="font-size:.7em;color:#9aa">Valve</span><div style="font-weight:bold" id="airValveState">--</div></div>
       <div><span style="font-size:.7em;color:#9aa">Servo air</span><div style="font-weight:bold" id="airServoAngle">--&deg;</div></div>
     </div>
+    <div id="airMiniChart" style="display:none;margin-top:8px">
+      <canvas id="airChartCanvas" width="400" height="60" style="width:100%;height:60px;background:#111;border-radius:4px"></canvas>
+      <div style="display:flex;justify-content:space-between;font-size:.6em;color:#666;margin-top:2px"><span>-30s</span><span>maintenant</span></div>
+    </div>
   </div>
   <div class="section" id="airCtrlSection" style="display:none">
     <h3 id="airCtrlTitle">Controle</h3>
@@ -571,7 +576,7 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
 
     <!-- BLOCK: Pompe -->
     <div class="air-block" id="airBlockPump" style="display:none">
-      <div class="air-block-hdr" onclick="toggleAirBlock('airBlockPump')">
+      <div class="air-block-hdr" tabindex="0" role="button" onclick="toggleAirBlock('airBlockPump')" onkeydown="toggleAirBlock('airBlockPump',event)">
         <h4><svg viewBox="0 0 16 16" width="14" height="14"><circle cx="8" cy="8" r="5" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="8" y1="3" x2="8" y2="13" stroke="currentColor" stroke-width="1.5"/></svg>Pompe</h4>
         <div class="air-block-toggle on" id="airBlockPumpToggle" onclick="event.stopPropagation();toggleAirBlockEnable('airBlockPump')"></div>
       </div>
@@ -595,7 +600,7 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
 
     <!-- BLOCK: Ventilateur -->
     <div class="air-block" id="airBlockFan" style="display:none">
-      <div class="air-block-hdr" onclick="toggleAirBlock('airBlockFan')">
+      <div class="air-block-hdr" tabindex="0" role="button" onclick="toggleAirBlock('airBlockFan')" onkeydown="toggleAirBlock('airBlockFan',event)">
         <h4><svg viewBox="0 0 16 16" width="14" height="14"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M8 2C8 5 10 8 8 8S4 5 4 8 6 14 8 14" fill="none" stroke="currentColor" stroke-width="1"/></svg>Ventilateur</h4>
         <div class="air-block-toggle on" id="airBlockFanToggle" onclick="event.stopPropagation();toggleAirBlockEnable('airBlockFan')"></div>
       </div>
@@ -614,7 +619,7 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
 
     <!-- BLOCK: Reservoir -->
     <div class="air-block" id="airBlockRes" style="display:none">
-      <div class="air-block-hdr" onclick="toggleAirBlock('airBlockRes')">
+      <div class="air-block-hdr" tabindex="0" role="button" onclick="toggleAirBlock('airBlockRes')" onkeydown="toggleAirBlock('airBlockRes',event)">
         <h4><svg viewBox="0 0 16 16" width="14" height="14"><rect x="3" y="4" width="10" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M5 8h6" stroke="currentColor" stroke-width="1" stroke-dasharray="2,1"/></svg>Reservoir</h4>
         <div class="air-block-toggle on" id="airBlockResToggle" onclick="event.stopPropagation();toggleAirBlockEnable('airBlockRes')"></div>
       </div>
@@ -693,7 +698,7 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
 
     <!-- BLOCK: Valve -->
     <div class="air-block" id="airBlockValve">
-      <div class="air-block-hdr" onclick="toggleAirBlock('airBlockValve')">
+      <div class="air-block-hdr" tabindex="0" role="button" onclick="toggleAirBlock('airBlockValve')" onkeydown="toggleAirBlock('airBlockValve',event)">
         <h4><svg viewBox="0 0 16 16" width="14" height="14"><rect x="4" y="2" width="8" height="12" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/><rect x="6" y="4" width="4" height="4" rx="0.5" fill="currentColor" opacity=".5"/></svg>Valve (Servo)</h4>
         <div class="air-block-toggle on" id="airBlockValveToggle" onclick="event.stopPropagation();toggleAirBlockEnable('airBlockValve')"></div>
       </div>
@@ -714,7 +719,7 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
 
     <!-- BLOCK: Servo Flow -->
     <div class="air-block active" id="airBlockServo">
-      <div class="air-block-hdr" onclick="toggleAirBlock('airBlockServo')">
+      <div class="air-block-hdr" tabindex="0" role="button" onclick="toggleAirBlock('airBlockServo')" onkeydown="toggleAirBlock('airBlockServo',event)">
         <h4><svg viewBox="0 0 16 16" width="14" height="14"><rect x="2" y="5" width="12" height="6" rx="2" fill="none" stroke="currentColor" stroke-width="1.2"/><line x1="8" y1="5" x2="12" y2="2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>Servo Flow</h4>
         <div class="air-block-toggle on" id="airBlockServoToggle" onclick="event.stopPropagation();toggleAirBlockEnable('airBlockServo')"></div>
       </div>
@@ -732,7 +737,7 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
 
     <!-- BLOCK: Solenoide (legacy mode 0) -->
     <div class="air-block" id="airBlockSolenoid" style="display:none">
-      <div class="air-block-hdr" onclick="toggleAirBlock('airBlockSolenoid')">
+      <div class="air-block-hdr" tabindex="0" role="button" onclick="toggleAirBlock('airBlockSolenoid')" onkeydown="toggleAirBlock('airBlockSolenoid',event)">
         <h4><svg viewBox="0 0 16 16" width="14" height="14"><rect x="3" y="4" width="10" height="8" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/><line x1="6" y1="6" x2="6" y2="10" stroke="currentColor" stroke-width="1"/><line x1="10" y1="6" x2="10" y2="10" stroke="currentColor" stroke-width="1"/></svg>Solenoide</h4>
         <div class="air-block-toggle on" id="airBlockSolenoidToggle" onclick="event.stopPropagation();toggleAirBlockEnable('airBlockSolenoid')"></div>
       </div>
@@ -1158,7 +1163,9 @@ function setAirMode(v){
   validateAirConfig();
   buildAirSvg('airSvgFull',true);
 }
-function toggleAirBlock(id){
+function toggleAirBlock(id,e){
+  if(e&&e.type==='keydown'&&e.key!=='Enter'&&e.key!==' ')return;
+  if(e&&e.key===' ')e.preventDefault();
   const bl=$(id);if(!bl||bl.classList.contains('disabled'))return;
   bl.classList.toggle('active');
 }
@@ -1714,6 +1721,43 @@ function updateAirDiagram(d){
     stt.textContent=warn?'Capteur absent':active?'Actif':'Repos';
     stt.style.color=warn?'#e94560':active?'#4ecca3':'#9aa';
   }
+  // Mini chart for reservoir modes
+  if(d.res_pct!=null)pushChartData(d.res_pct,d.pump_pwm||0);
+}
+// Mini pressure history chart (rolling 30s)
+const chartData={pct:[],pwm:[],max:60};
+function pushChartData(pct,pwm){
+  chartData.pct.push(pct);chartData.pwm.push(pwm);
+  if(chartData.pct.length>chartData.max){chartData.pct.shift();chartData.pwm.shift()}
+  drawMiniChart();
+}
+function drawMiniChart(){
+  const cv=$('airChartCanvas');if(!cv)return;
+  const mc=$('airMiniChart');if(mc)mc.style.display=(CFG&&CFG.air_mode===5)?'':'none';
+  if(!CFG||CFG.air_mode!==5)return;
+  const ctx=cv.getContext('2d');
+  const w=cv.width,h=cv.height;
+  ctx.clearRect(0,0,w,h);
+  const n=chartData.pct.length;if(n<2)return;
+  const dx=w/(chartData.max-1);
+  // Target line
+  const target=CFG.sens_target||50;
+  const tY=h-target/100*h;
+  ctx.setLineDash([4,4]);ctx.strokeStyle='#4ecca355';ctx.lineWidth=1;
+  ctx.beginPath();ctx.moveTo(0,tY);ctx.lineTo(w,tY);ctx.stroke();ctx.setLineDash([]);
+  // Pump PWM bars (background, faint)
+  ctx.fillStyle='rgba(78,204,163,0.08)';
+  for(let i=0;i<n;i++){
+    const bh=chartData.pwm[i]/255*h;
+    ctx.fillRect((chartData.max-n+i)*dx,h-bh,dx,bh);
+  }
+  // Pressure line
+  ctx.strokeStyle='#e94560';ctx.lineWidth=1.5;ctx.beginPath();
+  for(let i=0;i<n;i++){
+    const x=(chartData.max-n+i)*dx,y=h-chartData.pct[i]/100*h;
+    i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+  }
+  ctx.stroke();
 }
 // Pump toggle from keyboard (click pump in SVG to disable/enable)
 let pumpDisabled=false;
