@@ -123,6 +123,9 @@ struct RuntimeConfig {
   uint8_t pumpPins[MAX_PUMPS];       // GPIO pour chaque pompe
   uint8_t pumpMinPwm[MAX_PUMPS];    // PWM min par pompe (si motorType=PWM)
   uint8_t pumpMaxPwm[MAX_PUMPS];    // PWM max par pompe (si motorType=PWM)
+  uint8_t pumpCascadeThreshold;     // Seuil cascade (%) : pompe N+1 demarre quand demande > seuil (0=parallele)
+  uint16_t pumpStaggerMs;           // Delai demarrage entre pompes (ms, anti-inrush)
+  uint8_t bangbangHysteresis;       // Hysteresis bang-bang (%) pour moteurs On/Off + capteur continu
   // Reservoir (mode 5) - capteur configurable
   uint8_t sensorType;               // 0=VL53L0X, 1=VL6180X, 2=Hall KY-024, 3=endstop meca, 4=endstop optique
   uint16_t sensorTargetMm;          // Hauteur cible (mm) - pour ToF

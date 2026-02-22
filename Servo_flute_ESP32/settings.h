@@ -188,6 +188,11 @@ Modes modulaires de gestion d'air. L'interface s'adapte au mode choisi.
 #define DEFAULT_PID_KI              5      // Gain integral (x10, soit 0.5)
 #define DEFAULT_SHOW_AIR_SYSTEM     false
 
+// Gestion multi-pompes
+#define DEFAULT_PUMP_CASCADE_THRESHOLD 80  // Seuil (%) pour activer pompe suivante (0=toutes en parallele)
+#define DEFAULT_PUMP_STAGGER_MS     150    // Delai entre demarrage de chaque pompe (anti-inrush)
+#define DEFAULT_BANGBANG_HYSTERESIS 5      // Bande hysteresis (%) pour moteurs On/Off avec capteur continu
+
 // Timing capteur / PID
 #define PRESSURE_READ_INTERVAL_MS   50     // Intervalle lecture capteur (ms)
 #define PRESSURE_PID_INTERVAL_MS    100    // Intervalle boucle PID (ms)

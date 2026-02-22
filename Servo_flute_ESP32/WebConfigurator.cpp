@@ -434,6 +434,9 @@ void WebConfigurator::handleApiConfig(AsyncWebServerRequest* request) {
     json += String(cfg.pumpMaxPwm[i]);
   }
   json += "]";
+  json += ",\"pump_cascade\":" + String(cfg.pumpCascadeThreshold);
+  json += ",\"pump_stagger\":" + String(cfg.pumpStaggerMs);
+  json += ",\"bb_hyst\":" + String(cfg.bangbangHysteresis);
   json += ",\"sens_type\":" + String(cfg.sensorType);
   json += ",\"sens_target\":" + String(cfg.sensorTargetMm);
   json += ",\"sens_min\":" + String(cfg.sensorMinMm);
@@ -600,6 +603,15 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
     }
     if (doc.containsKey("pump_max") && !doc.containsKey("pump_maxs")) {
       cfg.pumpMaxPwm[0] = doc["pump_max"];
+    }
+    if (doc.containsKey("pump_cascade")) {
+      uint8_t v = doc["pump_cascade"];
+      cfg.pumpCascadeThreshold = (v <= 100) ? v : 100;
+    }
+    if (doc.containsKey("pump_stagger")) cfg.pumpStaggerMs = doc["pump_stagger"];
+    if (doc.containsKey("bb_hyst")) {
+      uint8_t v = doc["bb_hyst"];
+      cfg.bangbangHysteresis = (v <= 50) ? v : 50;
     }
     if (doc.containsKey("sens_type")) cfg.sensorType = doc["sens_type"];
     if (doc.containsKey("sens_target")) cfg.sensorTargetMm = doc["sens_target"];
@@ -1157,6 +1169,8 @@ void WebConfigurator::broadcastStatus() {
     json += ",\"hall_val\":" + String(pc.getHallValue());
     json += ",\"endstop_st\":" + String(pc.isEndstopActive() ? "true" : "false");
     json += ",\"sens_ok\":" + String(pc.isSensorDetected() ? "true" : "false");
+    json += ",\"active_pumps\":" + String(pc.getActivePumpCount());
+    json += ",\"bb_on\":" + String(pc.isBangbangOn() ? "true" : "false");
   }
   // Fan live data
   if (_instrument && cfg.airMode == AIR_MODE_FAN_SERVO) {
