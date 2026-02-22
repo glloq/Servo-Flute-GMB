@@ -250,9 +250,12 @@ void PressureController::update() {
     _endstopActive = (digitalRead(cfg.endstopPin) == (cfg.endstopActiveHigh ? HIGH : LOW));
     if (_targetPercent == 0 || _endstopActive) {
       setPumpPwm(0);
+      _bangbangPumpOn = false;
       _fillPercent = _endstopActive ? 100 : 0;
     } else {
-      setPumpPwm(cfg.pumpMaxPwm[0]);
+      _bangbangPumpOn = true;
+      // Toutes les pompes via cascade (stagger gere dans setPumpPwm)
+      setPumpPwm(255);
       _fillPercent = 0;
     }
     return;
@@ -286,8 +289,15 @@ void PressureController::update() {
         } else if (_fillPercent > upper) {
           _bangbangPumpOn = false;
         }
-        // Dans la bande : maintenir etat courant (hysteresis)
-        setPumpPwm(_bangbangPumpOn ? 255 : 0);
+        // Multi-pompe On/Off : graduer la demande selon l'ecart
+        if (_bangbangPumpOn && cfg.numPumps > 1 && cfg.pumpCascadeThreshold > 0) {
+          int16_t error = (int16_t)_targetPercent - (int16_t)_fillPercent;
+          // Grand ecart (> 3x hysteresis) : toutes les pompes (cascade)
+          // Petit ecart : pompe principale seule (sous le seuil cascade)
+          setPumpPwm(error > (int16_t)(hyst * 3) ? 255 : 128);
+        } else {
+          setPumpPwm(_bangbangPumpOn ? 255 : 0);
+        }
       } else {
         // PID pour moteurs PWM
         float error = (float)_targetPercent - (float)_fillPercent;
