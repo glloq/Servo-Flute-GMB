@@ -225,6 +225,7 @@ border-bottom:1px solid #1a4080;position:sticky;top:0;background:#16213e;z-index
 .air-block.disabled{opacity:.45;border-color:#333}
 .air-block-hdr{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;
 background:rgba(255,255,255,.03);cursor:pointer;user-select:none}
+.air-block-hdr:hover{background:rgba(255,255,255,.06)}
 .air-block-hdr:focus{outline:2px solid #4ecca3;outline-offset:-2px;border-radius:7px}
 .air-block-hdr h4{font-size:.85em;color:#e94560;margin:0;display:flex;align-items:center;gap:6px}
 .air-block-hdr .air-block-toggle{position:relative;width:36px;height:20px;background:#333;border-radius:10px;
@@ -247,9 +248,18 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
 .airFlowAnim{stroke:#4ecca3;stroke-width:2;stroke-dasharray:4,8;fill:none;opacity:0;transition:opacity .3s}
 .airFlowAnim.flowing{opacity:.6;animation:airFlowDash .6s linear infinite}
 #airCtrlSection input[type=range]{accent-color:#4ecca3}
+#airAngleShortcuts{padding-left:148px}
+#airStatusInd,#airStatusText{transition:color .3s,background .3s}
+#airDiagMsg{transition:opacity .3s,max-height .3s;overflow:hidden}
 #airLiveStats>div{background:rgba(255,255,255,.03);border-radius:6px;padding:4px 10px;min-width:60px;text-align:center;transition:border-color .3s,box-shadow .3s;border:1px solid transparent}
 #airLiveStats>div.active-stat{border-color:rgba(78,204,163,.3);box-shadow:0 0 6px rgba(78,204,163,.1)}
 #airLiveStats>div span{display:block}
+@media(max-width:768px){
+  #airAngleShortcuts{padding-left:90px}
+  .air-block .cfg-row label{flex:0 0 110px;font-size:.78em}
+  #airCtrlSection .cfg-row label{flex:0 0 90px}
+  #airSvgFull{max-height:220px}
+}
 @media(max-width:480px){#airLiveStats{gap:6px !important}#airLiveStats>div{min-width:45px;padding:3px 5px;font-size:.85em}
   #airSvgFull{max-height:180px}
   .air-block .cfg-row label{flex:0 0 90px;font-size:.75em}
@@ -261,7 +271,7 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
   #airCtrlSection input[type=range]{max-width:120px}
   #airMiniChart{height:45px}
   #airMiniChart canvas{height:45px}
-  #airAngleShortcuts{padding-left:0 !important;flex-wrap:wrap}
+  #airAngleShortcuts{padding-left:0;flex-wrap:wrap}
   #airHelpPanel{font-size:.68em;padding:6px 8px}
   .air-block h4{font-size:.85em}
   #tab-air .section>div>button{font-size:.72em;padding:4px 8px}
@@ -577,7 +587,7 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
       <span id="airFlowTestVal" style="min-width:36px;text-align:right">20&deg;</span>
       <button class="btn btn-s" onclick="sweepServoFlow()" title="Balaye de min a max et retour au repos" style="padding:4px 8px;font-size:.7em">Sweep</button>
     </div>
-    <div id="airAngleShortcuts" style="display:flex;gap:4px;margin:-4px 0 4px;padding-left:148px">
+    <div id="airAngleShortcuts" style="display:flex;gap:4px;margin:-4px 0 4px">
       <button class="btn btn-s" onclick="gotoServoAngle('cfgAirOff')" style="padding:2px 6px;font-size:.65em" title="Aller a l'angle repos">Off</button>
       <button class="btn btn-s" onclick="gotoServoAngle('cfgAirMin')" style="padding:2px 6px;font-size:.65em" title="Aller a l'angle minimum">Min</button>
       <button class="btn btn-s" onclick="gotoServoAngle('cfgAirMax')" style="padding:2px 6px;font-size:.65em" title="Aller a l'angle maximum">Max</button>
@@ -1181,18 +1191,29 @@ function gotoServoAngle(inputId){
   const v=parseInt($(inputId).value)||0;
   $('airFlowTest').value=v;testServoFlow(v);
 }
-let _diagRunning=false;
+let _diagRunning=false,_diagTimeouts=[];
+function cancelDiagnostic(){
+  _diagTimeouts.forEach(id=>clearTimeout(id));_diagTimeouts=[];
+  _diagRunning=false;
+  const dm=$('airDiagMsg'),db=$('btnAirDiag'),dbar=$('airDiagBar');
+  if(dm){dm.textContent='Diagnostic annule';dm.style.color='#e9a645';
+    setTimeout(()=>{dm.style.opacity='0';setTimeout(()=>{dm.style.display='none';dm.style.opacity='1'},300)},2000)}
+  if(db){db.disabled=false;db.textContent='Diagnostic'}
+  if(dbar)dbar.style.display='none';
+  stopAirSource();
+}
 function runAirDiagnostic(){
-  if(_diagRunning){showToast('Diagnostic en cours...','info');return}
+  if(_diagRunning){cancelDiagnostic();return}
+  if(!(ws&&ws.readyState===1)){showToast('Non connecte - diagnostic impossible','error');return}
   const dm=$('airDiagMsg');if(!dm)return;
   const db=$('btnAirDiag'),dbar=$('airDiagBar'),dfill=$('airDiagFill');
-  _diagRunning=true;
-  dm.style.display='';dm.style.color='#9aa';
-  if(db)db.disabled=true;
+  _diagRunning=true;_diagTimeouts=[];
+  dm.style.display='';dm.style.opacity='1';dm.style.color='#9aa';
+  if(db){db.disabled=false;db.textContent='Annuler'}
   if(dbar)dbar.style.display='';
   if(dfill)dfill.style.width='0';
   const m=getAirMode();
-  const hasValve=(m===0||m===1||m>=4),hasPump=m>=4,hasFan=m===3;
+  const hasValve=(m===0||m===1||m>=4),hasPump=m>=4,hasFan=m===3,hasRes=m===5;
   const steps=[];
   // Build test sequence based on mode
   steps.push({t:0,msg:'Servo flow -> repos...',fn:()=>testServoFlow(parseInt($('cfgAirOff').value)||20)});
@@ -1213,16 +1234,29 @@ function runAirDiagnostic(){
     steps.push({t:ft,msg:'Ventilateur -> 30%...',fn:()=>{wsSend({t:'fan_target',v:30});const pt2=$('pumpTarget');if(pt2)pt2.value=30;const pv=$('pumpTargetVal');if(pv)pv.textContent='30%'}});
     steps.push({t:ft+1300,msg:'Ventilateur -> arret',fn:()=>stopAirSource()});
   }
+  if(hasRes){
+    const st=steps[steps.length-1].t+800;
+    steps.push({t:st,msg:'Capteur reservoir -> verification...',fn:()=>{
+      const sok=$('airSensorOk');
+      if(sok&&sok.textContent==='OK'){dm.style.color='#4ecca3'}
+      else{dm.style.color='#e9a645'}
+    }});
+  }
   const last=steps[steps.length-1];
   steps.push({t:last.t+800,msg:'Diagnostic termine !',fn:()=>{
-    dm.style.color='#4ecca3';_diagRunning=false;if(db)db.disabled=false;
-    setTimeout(()=>{dm.style.display='none';if(dbar)dbar.style.display='none'},3000)}});
+    dm.style.color='#4ecca3';_diagRunning=false;
+    if(db){db.disabled=false;db.textContent='Diagnostic'}
+    setTimeout(()=>{dm.style.opacity='0';setTimeout(()=>{dm.style.display='none';dm.style.opacity='1';if(dbar)dbar.style.display='none'},300)},5000)}});
   const total=steps.length;
-  steps.forEach((s,i)=>setTimeout(()=>{
-    dm.textContent='['+(i+1)+'/'+total+'] '+s.msg;
-    if(dfill)dfill.style.width=((i+1)/total*100)+'%';
-    s.fn();
-  },s.t));
+  steps.forEach((s,i)=>{
+    const tid=setTimeout(()=>{
+      if(!_diagRunning)return;
+      dm.textContent='['+(i+1)+'/'+total+'] '+s.msg;
+      if(dfill)dfill.style.width=((i+1)/total*100)+'%';
+      s.fn();
+    },s.t);
+    _diagTimeouts.push(tid);
+  });
 }
 let sweepTimer=null;
 function sweepServoFlow(){
@@ -2088,16 +2122,19 @@ function drawMiniChart(){
 let _chartHoverIdx=-1;
 function initChartTooltip(){
   const cv=$('airChartCanvas');if(!cv||cv._ttInit)return;cv._ttInit=true;
-  cv.addEventListener('mousemove',e=>{
+  function chartHover(mx){
     const rect=cv.getBoundingClientRect();
-    const mx=e.clientX-rect.left;const lm=22;const pw=rect.width-lm;
+    const lm=22;const pw=rect.width-lm;
     const n=chartData.pct.length;if(n<2){_chartHoverIdx=-1;return}
     const dx=pw/(chartData.max-1);
     const idx=Math.round((mx-lm)/dx-(chartData.max-n));
     _chartHoverIdx=Math.max(0,Math.min(n-1,idx));
     drawMiniChart();
-  });
+  }
+  cv.addEventListener('mousemove',e=>{chartHover(e.clientX-cv.getBoundingClientRect().left)});
   cv.addEventListener('mouseleave',()=>{_chartHoverIdx=-1;drawMiniChart()});
+  cv.addEventListener('touchmove',e=>{e.preventDefault();const t=e.touches[0];chartHover(t.clientX-cv.getBoundingClientRect().left)},{passive:false});
+  cv.addEventListener('touchend',()=>{_chartHoverIdx=-1;drawMiniChart()});
   cv.style.cursor='crosshair';
 }
 // Pump toggle from keyboard (click pump in SVG to disable/enable)
@@ -2155,7 +2192,8 @@ function wizFinish(){
     .then(r=>r.json()).then(d=>{
       $('wizardOverlay').classList.remove('open');
       if(d.ok){showToast('Configuration sauvegardee','success');loadConfig()}
-    }).catch(()=>{$('wizardOverlay').classList.remove('open')});
+      else{showToast('Erreur sauvegarde','error')}
+    }).catch(()=>{$('wizardOverlay').classList.remove('open');showToast('Erreur reseau','error')});
 }
 function toggleSettings(){$('settingsOverlay').classList.toggle('open');if($('settingsOverlay').classList.contains('open')&&CFG)fillSettings()}
 function applyCalibVisibility(){
@@ -2175,11 +2213,14 @@ function wsConnect(){
   ws.onclose=()=>{$('sDot').className='dot off';$('sText').textContent='Deconnecte';
     const si=$('airStatusInd');if(si){si.style.background='#e94560';si.style.outline='2px solid rgba(233,69,96,.3)'}
     const st=$('airStatusText');if(st){st.textContent='Deconnecte';st.style.color='#e94560'};
+    if(_diagRunning)cancelDiagnostic();
     const d=Math.min(30000,2000*Math.pow(1.5,wsRetry));wsRetry++;setTimeout(wsConnect,d)};
   ws.onerror=()=>{ws.close()};
   ws.onmessage=e=>{try{handleWs(JSON.parse(e.data))}catch(x){addLog('WS err: '+x.message)}};
 }
-function wsSend(o){if(ws&&ws.readyState===1)ws.send(JSON.stringify(o))}
+let _wsSendWarnT=0;
+function wsSend(o){if(ws&&ws.readyState===1){ws.send(JSON.stringify(o));return true}
+  const now=Date.now();if(now-_wsSendWarnT>3000){_wsSendWarnT=now;showToast('Non connecte - commande ignoree','error')}return false}
 
 function handleWs(d){
   if(d.t==='status'){
@@ -2254,9 +2295,10 @@ function buildKeyboard(){
 }
 function updKbdToggle(){const l=$('kbdModeLabel');if(l&&CFG)l.textContent=CFG.kbd_mode===1?'Flute':'Piano'}
 function toggleKbdMode(){
-  if(!CFG)return;CFG.kbd_mode=CFG.kbd_mode===1?0:1;
+  if(!CFG)return;const prev=CFG.kbd_mode;CFG.kbd_mode=CFG.kbd_mode===1?0:1;
   buildKeyboard();
   fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kbd_mode:CFG.kbd_mode})})
+    .catch(()=>{CFG.kbd_mode=prev;buildKeyboard();showToast('Erreur reseau','error')})
 }
 function addKeyEvents(el,midi){
   el.addEventListener('touchstart',e=>{e.preventDefault();e.stopPropagation();if(noteOn(midi))el.classList.add('pressed')},{passive:false});
