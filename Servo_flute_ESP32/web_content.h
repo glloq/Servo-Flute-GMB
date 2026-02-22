@@ -1229,23 +1229,27 @@ function refreshKbdAir(){
   const airSvg=$('kbdAirSvg');
   if(CFG&&CFG.show_air){
     box.style.display='';buildAirSvg('kbdAirSvg',true);
-    // Both SVGs: display:block avoids text-align:center offset
-    // Air SVG: remove max-width AND max-height so content fills element width (ratio formula needs this)
-    if(airSvg){airSvg.style.display='block';airSvg.style.maxWidth='none';airSvg.style.maxHeight='none'}
-    if(fs){fs.style.display='block';fs.style.maxWidth='none'}
-    // Simple ratio alignment works because both SVGs now fill the same container width
-    if(fs&&_kbdPipeExitRatio>0){
+    // Align flute embouchure under the pipe exit by adjusting flute viewBox left padding.
+    // Both SVGs stay at width:100% — alignment is in SVG coordinate space, not CSS.
+    if(fs&&airSvg&&_kbdPipeExitRatio>0){
+      const airVB=airSvg.viewBox.baseVal;
       const fluteVB=fs.viewBox.baseVal;
-      const em=CFG.embouchure||'bec';
-      const becPx=(em==='trav')?36:(em==='oca')?21:4;
-      const becR=fluteVB.width?becPx/fluteVB.width:0;
-      const off=Math.max(0,(_kbdPipeExitRatio-becR)*100/(1-becR||1));
-      fs.style.marginLeft=off+'%';fs.style.width=(100-off)+'%';
+      if(airVB.width>0&&fluteVB.width>0){
+        const em=CFG.embouchure||'bec';
+        const becPx=(em==='trav')?36:(em==='oca')?21:4;
+        const tw=fluteVB.width; // original flute viewBox width
+        const th=fluteVB.height;
+        // padLeft = viewBox units of empty space added to the left of the flute,
+        // so that embouchure fraction of new viewBox == pipe exit fraction of air viewBox.
+        // Solve: (padLeft + becPx) / (tw + padLeft) = _kbdPipeExitRatio
+        const r=_kbdPipeExitRatio;
+        const padLeft=Math.max(0,(r*tw-becPx)/(1-r||1));
+        const newW=tw+padLeft;
+        fs.setAttribute('viewBox',(-padLeft)+' 0 '+newW+' '+th);
+      }
     }
   }else{
     box.style.display='none';
-    if(airSvg){airSvg.style.display='';airSvg.style.maxWidth='';airSvg.style.maxHeight=''}
-    if(fs){fs.style.marginLeft='';fs.style.width='';fs.style.maxWidth='';fs.style.display=''}
   }
   refreshKbdPumpPanel();
 }
