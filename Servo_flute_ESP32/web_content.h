@@ -597,6 +597,25 @@ border-bottom:1px solid #1a4080;position:sticky;top:0;background:#16213e;z-index
         <select id="airEndstopHigh"><option value="1">Actif HIGH</option><option value="0">Actif LOW</option></select>
       </div>
     </div>
+    <!-- Servo Airflow params (modes 0-3) -->
+    <div id="airParamsServo">
+      <h4 style="color:#e94560;margin:12px 0 6px;font-size:.9em">Servo Airflow</h4>
+      <div class="cfg-row"><label>Angle repos</label><input type="number" id="cfgAirOff" min="0" max="180"></div>
+      <div class="cfg-row"><label>Angle min</label><input type="number" id="cfgAirMin" min="0" max="180"></div>
+      <div class="cfg-row"><label>Angle max</label><input type="number" id="cfgAirMax" min="0" max="180"></div>
+    </div>
+    <!-- Solenoide params (mode 0) -->
+    <div id="airParamsSolenoid" style="display:none">
+      <h4 style="color:#e94560;margin:12px 0 6px;font-size:.9em">Solenoide</h4>
+      <div class="cfg-row"><label>GPIO Pin</label><select id="cfgSolPin"></select></div>
+      <div class="cfg-row"><label>PWM activation</label><input type="number" id="cfgSolAct" min="0" max="255"></div>
+      <div class="cfg-row"><label>PWM maintien</label><input type="number" id="cfgSolHold" min="0" max="255"></div>
+      <div class="cfg-row"><label>Temps (ms)</label><input type="number" id="cfgSolTime" min="0" max="500"></div>
+    </div>
+    <!-- Options affichage -->
+    <div style="margin-top:12px">
+      <div class="cfg-row"><label>Schema air (clavier)</label><input type="checkbox" id="cfgShowAir" style="width:auto;flex:0"></div>
+    </div>
     <div class="btn-row" style="margin-top:12px">
       <button class="btn btn-g" onclick="saveAirSettings()">Sauvegarder</button>
     </div>
@@ -661,25 +680,12 @@ border-bottom:1px solid #1a4080;position:sticky;top:0;background:#16213e;z-index
     <div class="cfg-row"><label>Note min (ms)</label><input type="number" id="cfgMinNote" min="0" max="500"></div>
   </div>
 
-  <div class="section"><h3>Servo Airflow</h3>
-    <div class="cfg-row"><label>Angle repos</label><input type="number" id="cfgAirOff" min="0" max="180"></div>
-    <div class="cfg-row"><label>Angle min</label><input type="number" id="cfgAirMin" min="0" max="180"></div>
-    <div class="cfg-row"><label>Angle max</label><input type="number" id="cfgAirMax" min="0" max="180"></div>
-  </div>
-
   <div class="section"><h3>CC Defaults</h3>
     <div class="cfg-row"><label>Volume (CC7)</label><input type="number" id="cfgCCVol" min="0" max="127"></div>
     <div class="cfg-row"><label>Expression (CC11)</label><input type="number" id="cfgCCExpr" min="0" max="127"></div>
     <div class="cfg-row"><label>Modulation (CC1)</label><input type="number" id="cfgCCMod" min="0" max="127"></div>
     <div class="cfg-row"><label>Breath (CC2)</label><input type="number" id="cfgCCBreath" min="0" max="127"></div>
     <div class="cfg-row"><label>Brightness (CC74)</label><input type="number" id="cfgCCBright" min="0" max="127"></div>
-  </div>
-
-  <div class="section"><h3>Solenoide</h3>
-    <div class="cfg-row"><label>GPIO Pin</label><select id="cfgSolPin"></select></div>
-    <div class="cfg-row"><label>PWM activation</label><input type="number" id="cfgSolAct" min="0" max="255"></div>
-    <div class="cfg-row"><label>PWM maintien</label><input type="number" id="cfgSolHold" min="0" max="255"></div>
-    <div class="cfg-row"><label>Temps (ms)</label><input type="number" id="cfgSolTime" min="0" max="500"></div>
   </div>
 
   <div class="section"><h3>Power off servo</h3>
@@ -694,7 +700,6 @@ border-bottom:1px solid #1a4080;position:sticky;top:0;background:#16213e;z-index
     <div class="cfg-row"><label>Couleur instrument</label><input type="color" id="cfgColor" value="#D4B044" style="width:40px;height:28px;flex:0;padding:0;border:1px solid #555;border-radius:4px;cursor:pointer"></div>
     <div class="cfg-row"><label>Mode clavier</label><select id="cfgKbdMode"><option value="0">Flute</option><option value="1">Piano</option></select></div>
     <div class="cfg-row"><label>Cacher Calibration</label><input type="checkbox" id="cfgHideCalib" style="width:auto;flex:0"></div>
-    <div class="cfg-row"><label>Schema air (clavier)</label><input type="checkbox" id="cfgShowAir" style="width:auto;flex:0"></div>
   </div>
 
   <div class="section"><h3>WiFi</h3>
@@ -931,6 +936,11 @@ function setAirMode(v){
   $('airParamsValve').style.display=(hasValve||hasServoValve)?'':'none';
   $('airParamsRes').style.display=hasRes?'':'none';
   const ep=$('airParamsEndstop');if(ep)ep.style.display=hasEndstop?'':'none';
+  // Servo airflow params (modes 0-3 have servo flow)
+  const hasServoFlow=(m<=3);
+  const as=$('airParamsServo');if(as)as.style.display=hasServoFlow?'':'none';
+  // Solenoid params (mode 0 only with GPIO solenoid)
+  const asl=$('airParamsSolenoid');if(asl)asl.style.display=(m===0)?'':'none';
   // Live stats visibility
   const sp=$('airStatPump');if(sp)sp.style.display=hasPump?'':'none';
   const sf=$('airStatFan');if(sf)sf.style.display=hasFan?'':'none';
@@ -982,8 +992,12 @@ function buildPumpRows(){
 }
 function saveAirSettings(){
   const m=parseInt($('airModeSelect').value);
+  const showAir=$('cfgShowAir').checked;
   const d={air_mode:m,valve_type:parseInt($('airValveType').value),
-    valve_ch:parseInt($('airValveCh').value),show_air:true};
+    valve_ch:parseInt($('airValveCh').value),show_air:showAir,
+    air_off:parseInt($('cfgAirOff').value),air_min:parseInt($('cfgAirMin').value),air_max:parseInt($('cfgAirMax').value),
+    sol_pin:parseInt($('cfgSolPin').value),
+    sol_act:parseInt($('cfgSolAct').value),sol_hold:parseInt($('cfgSolHold').value),sol_time:parseInt($('cfgSolTime').value)};
   if(m===3){d.fan_pin=parseInt($('airFanPin').value);d.fan_min=parseInt($('airFanMin').value);d.fan_max=parseInt($('airFanMax').value)}
   if(m>=4){
     const np=parseInt($('airNumPumps').value)||1;d.num_pumps=np;
@@ -1000,7 +1014,7 @@ function saveAirSettings(){
   if(m===6){d.endstop_pin=parseInt($('airEndstopPin').value);d.endstop_high=$('airEndstopHigh').value==='1'}
   fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)})
     .then(r=>r.json()).then(j=>{$('airSettingsMsg').textContent=j.ok?'Sauvegarde OK':'Erreur';
-    if(j.ok){CFG.air_mode=m;CFG.show_air=true;applyAirTabVisibility();buildAirSvg('airSvgFull',true)}
+    if(j.ok){CFG.air_mode=m;CFG.show_air=showAir;applyAirTabVisibility();buildAirSvg('airSvgFull',true)}
     setTimeout(()=>$('airSettingsMsg').textContent='',3000)})
 }
 function fillAirSettings(){
@@ -1014,6 +1028,16 @@ function fillAirSettings(){
   $('airSensTarget').value=CFG.sens_target||50;$('airSensMin').value=CFG.sens_min||10;$('airSensMax').value=CFG.sens_max||150;
   $('airPidKp').value=CFG.pid_kp||30;$('airPidKi').value=CFG.pid_ki||5;
   $('airEndstopPin').value=CFG.endstop_pin||34;$('airEndstopHigh').value=(CFG.endstop_high?'1':'0');
+  // Servo airflow angles
+  $('cfgAirOff').value=CFG.air_off!=null?CFG.air_off:20;$('cfgAirMin').value=CFG.air_min;$('cfgAirMax').value=CFG.air_max;
+  // Solenoid settings
+  const sp=$('cfgSolPin');sp.innerHTML='';
+  [12,13,16,17,18,19,23,25,26,27,33].forEach(p=>{
+    const o=document.createElement('option');o.value=p;o.textContent='GPIO '+p;sp.appendChild(o)});
+  sp.value=CFG.sol_pin||13;
+  $('cfgSolAct').value=CFG.sol_act;$('cfgSolHold').value=CFG.sol_hold;$('cfgSolTime').value=CFG.sol_time;
+  // Show air checkbox
+  $('cfgShowAir').checked=!!CFG.show_air;
   buildPumpRows();
   setAirMode(CFG.air_mode||0);toggleValveParams();
 }
@@ -2157,22 +2181,14 @@ function fillSettings(){
   for(let i=1;i<=16;i++){const o=document.createElement('option');o.value=i;o.textContent='Canal '+i;sel.appendChild(o)}
   sel.value=CFG.midi_ch||0;
   $('cfgDelay').value=CFG.servo_delay;$('cfgValveInt').value=CFG.valve_interval;$('cfgMinNote').value=CFG.min_note_dur;
-  $('cfgAirOff').value=CFG.air_off!=null?CFG.air_off:20;$('cfgAirMin').value=CFG.air_min;$('cfgAirMax').value=CFG.air_max;
   $('cfgCCVol').value=CFG.cc_vol!=null?CFG.cc_vol:127;$('cfgCCExpr').value=CFG.cc_expr!=null?CFG.cc_expr:127;
   $('cfgCCMod').value=CFG.cc_mod!=null?CFG.cc_mod:0;$('cfgCCBreath').value=CFG.cc_breath!=null?CFG.cc_breath:127;
   $('cfgCCBright').value=CFG.cc_bright!=null?CFG.cc_bright:64;
-  // Solenoid pin dropdown (PWM-capable, non utilises par I2C/I2S/LED/boutons)
-  const sp=$('cfgSolPin');sp.innerHTML='';
-  [12,13,16,17,18,19,23,25,26,27,33].forEach(p=>{
-    const o=document.createElement('option');o.value=p;o.textContent='GPIO '+p;sp.appendChild(o)});
-  sp.value=CFG.sol_pin||13;
-  $('cfgSolAct').value=CFG.sol_act;$('cfgSolHold').value=CFG.sol_hold;$('cfgSolTime').value=CFG.sol_time;
   $('cfgUnpower').value=CFG.time_unpower;
   $('cfgMidiLimit').value=CFG.midi_limit||500;
   $('cfgColor').value=CFG.color||'#D4B044';
   $('cfgKbdMode').value=CFG.kbd_mode||0;
   $('cfgHideCalib').checked=!!CFG.hide_calib;
-  $('cfgShowAir').checked=!!CFG.show_air;
   // Appliquer visibilite onglets
   applyCalibVisibility();applyAirTabVisibility();
   $('wifiSsid').value=CFG.wifi_ssid||'';
@@ -2187,15 +2203,11 @@ function saveSettings(){
   const body={device:$('cfgDevice').value,midi_ch:parseInt($('cfgMidiCh').value),
     servo_delay:parseInt($('cfgDelay').value),valve_interval:parseInt($('cfgValveInt').value),
     min_note_dur:parseInt($('cfgMinNote').value),
-    air_off:parseInt($('cfgAirOff').value),air_min:parseInt($('cfgAirMin').value),air_max:parseInt($('cfgAirMax').value),
     cc_vol:parseInt($('cfgCCVol').value),cc_expr:parseInt($('cfgCCExpr').value),
     cc_mod:parseInt($('cfgCCMod').value),cc_breath:parseInt($('cfgCCBreath').value),cc_bright:parseInt($('cfgCCBright').value),
-    sol_pin:parseInt($('cfgSolPin').value),
-    sol_act:parseInt($('cfgSolAct').value),sol_hold:parseInt($('cfgSolHold').value),sol_time:parseInt($('cfgSolTime').value),
     time_unpower:parseInt($('cfgUnpower').value),midi_limit:parseInt($('cfgMidiLimit').value),
     color:$('cfgColor').value,kbd_mode:parseInt($('cfgKbdMode').value),
-    hide_calib:$('cfgHideCalib').checked,
-    show_air:$('cfgShowAir').checked};
+    hide_calib:$('cfgHideCalib').checked};
   fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
     .then(r=>r.json()).then(d=>{btnLoad('btnSaveSettings',false);
       if(d.ok){showToast('Parametres sauvegardes','success');markClean();loadConfig()}
