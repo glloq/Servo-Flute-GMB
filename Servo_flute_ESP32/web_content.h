@@ -244,10 +244,15 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
 @keyframes balloonGrow{0%{transform:scale(0.5)}100%{transform:scale(1)}}
 #airLiveStats>div{background:rgba(255,255,255,.03);border-radius:6px;padding:4px 10px;min-width:60px;text-align:center}
 #airLiveStats>div span{display:block}
-@media(max-width:480px){#airLiveStats{gap:8px !important}#airLiveStats>div{min-width:50px;padding:3px 6px;font-size:.9em}
-  #airSvgFull{max-height:200px}
-  .air-block .cfg-row label{flex:0 0 100px;font-size:.78em}
-  .air-block .btn-row{flex-wrap:wrap}}
+@media(max-width:480px){#airLiveStats{gap:6px !important}#airLiveStats>div{min-width:45px;padding:3px 5px;font-size:.85em}
+  #airSvgFull{max-height:180px}
+  .air-block .cfg-row label{flex:0 0 90px;font-size:.75em}
+  .air-block .cfg-row input[type=number]{width:60px;font-size:.85em}
+  .air-block .btn-row{flex-wrap:wrap;gap:4px}
+  #airStatusBar{flex-wrap:wrap;font-size:.72em;padding:4px 8px}
+  #airCtrlSection .cfg-row label{flex:0 0 70px}
+  #airMiniChart{height:45px}
+  #airMiniChart canvas{height:45px}}
 </style>
 </head>
 <body>
@@ -1448,6 +1453,8 @@ function buildAirUI(){
   const ft=$('airFlowTest');if(ft&&CFG){ft.value=CFG.air_off||20;$('airFlowTestVal').textContent=(CFG.air_off||20)+'°'}
   // Redraw diagram with last known data on tab re-entry
   if(lastAirData)updateAirDiagram(lastAirData);
+  // Redraw mini chart if data exists
+  drawMiniChart();
 }
 function buildAirSvg(svgId,full){
   const svg=$(svgId);if(!svg||!CFG)return;
@@ -1804,6 +1811,8 @@ function drawMiniChart(){
   const tY=h-target/100*h;
   ctx.setLineDash([4,4]);ctx.strokeStyle='#4ecca355';ctx.lineWidth=1;
   ctx.beginPath();ctx.moveTo(0,tY);ctx.lineTo(w,tY);ctx.stroke();ctx.setLineDash([]);
+  ctx.fillStyle='#4ecca355';ctx.font='7px sans-serif';ctx.textAlign='left';
+  ctx.fillText('cible '+target+'%',2,tY-2);
   // Pump PWM bars (background, faint)
   ctx.fillStyle='rgba(78,204,163,0.08)';
   for(let i=0;i<n;i++){
