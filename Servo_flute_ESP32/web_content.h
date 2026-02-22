@@ -221,6 +221,12 @@ border-bottom:1px solid #1a4080;position:sticky;top:0;background:#16213e;z-index
 .pump-toggle{cursor:pointer;opacity:.9;transition:opacity .15s}
 .pump-toggle:hover{opacity:1}
 .pump-off{opacity:.4}
+#kbdPumpPanel{display:none;background:#0d1b3e;border:1px solid #1a4080;border-radius:8px;padding:10px 14px;margin-top:6px}
+#kbdPumpBtn{width:100%;padding:14px;font-size:1.1em;font-weight:bold;border:none;border-radius:8px;cursor:pointer;transition:background .2s,box-shadow .2s}
+#kbdPumpBtn.off{background:linear-gradient(135deg,#1a6040,#2a9060);color:#fff;box-shadow:0 0 12px rgba(78,204,163,.3)}
+#kbdPumpBtn.off:hover{background:linear-gradient(135deg,#1a7048,#30a070)}
+#kbdPumpBtn.on{background:linear-gradient(135deg,#a02020,#e94560);color:#fff;box-shadow:0 0 12px rgba(233,69,96,.4)}
+#kbdPumpBtn.on:hover{background:linear-gradient(135deg,#b02828,#f05070)}
 .air-block{background:#0d1b3e;border:1px solid #1a4080;border-radius:8px;margin-bottom:10px;overflow:hidden;transition:border-color .2s,opacity .3s}
 .air-block.disabled{opacity:.45;border-color:#333}
 .air-block-hdr{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;
@@ -319,6 +325,19 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
       <span id="kbdStatServo" style="color:#9aa">Servo <b id="kbdServoVal">--</b></span>
       <span id="kbdStatRes" style="display:none;color:#9aa">Reservoir <b id="kbdResVal">--%</b></span>
     </div>
+  </div>
+  <div id="kbdPumpPanel">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <span style="font-size:.85em;font-weight:bold;color:#cde" id="kbdPumpTitle">Pompe</span>
+      <span style="font-size:.7em;color:#667;font-style:italic" id="kbdPumpMode"></span>
+    </div>
+    <button id="kbdPumpBtn" class="off" onclick="kbdTogglePump()">Demarrer pompe</button>
+    <div class="cfg-row" style="margin-top:8px">
+      <label id="kbdPumpTargetLabel" style="font-size:.8em">Cible</label>
+      <input type="range" min="0" max="100" value="50" id="kbdPumpTarget" oninput="kbdSetPumpTarget(this.value)">
+      <span id="kbdPumpTargetVal" style="min-width:36px;text-align:right;font-size:.85em">50%</span>
+    </div>
+    <div id="kbdPumpHint" style="font-size:.6em;color:#667;margin-top:-2px"></div>
   </div>
   <div class="section">
     <div class="cfg-row"><label>Velocity</label>
@@ -1208,6 +1227,45 @@ function refreshKbdAir(){
   const box=$('kbdAirBox');if(!box)return;
   if(CFG&&CFG.show_air){box.style.display='';buildAirSvg('kbdAirSvg',true)}
   else box.style.display='none';
+  refreshKbdPumpPanel();
+}
+let _kbdPumpOn=false;
+function refreshKbdPumpPanel(){
+  const p=$('kbdPumpPanel');if(!p||!CFG)return;
+  const m=CFG.air_mode||0;
+  if(m<4){p.style.display='none';return}
+  p.style.display='';
+  const hasRes=(m===5),st=CFG.sens_type||0,mt=CFG.motor_type||0;
+  const lbl=$('kbdPumpTargetLabel'),hint=$('kbdPumpHint'),mode=$('kbdPumpMode'),title=$('kbdPumpTitle');
+  if(hasRes){
+    if(st>=3){lbl.textContent='Remplissage';hint.textContent='Fin de course: pompe ON/OFF selon capteur';
+      mode.textContent='Endstop '+(st===3?'mecanique':'optique')}
+    else if(st===2){lbl.textContent='Niveau cible';hint.textContent='Hall: regulation '+(mt===0?'bang-bang':'PID');
+      mode.textContent='Hall + '+(mt===0?'Bang-bang':'PID')}
+    else{lbl.textContent='Hauteur cible';hint.textContent='ToF: regulation '+(mt===0?'bang-bang':'PID');
+      mode.textContent='ToF + '+(mt===0?'Bang-bang':'PID')}
+    title.textContent='Pompe + Reservoir';
+  }else{
+    lbl.textContent='Puissance pompe';hint.textContent='PWM proportionnel direct';
+    mode.textContent='Direct';title.textContent='Pompe directe';
+  }
+}
+function kbdTogglePump(){
+  const btn=$('kbdPumpBtn');if(!btn)return;
+  _kbdPumpOn=!_kbdPumpOn;
+  if(_kbdPumpOn){
+    const v=parseInt($('kbdPumpTarget').value)||50;
+    wsSend({t:'pump_target',v:v});
+    btn.textContent='Arreter pompe';btn.className='on';
+  }else{
+    wsSend({t:'pump_stop'});
+    btn.textContent='Demarrer pompe';btn.className='off';
+  }
+}
+function kbdSetPumpTarget(v){
+  const pv=$('kbdPumpTargetVal');pv.textContent=v+'%';
+  pv.style.color=v>70?'#e94560':v>30?'#e9a645':v>0?'#4ecca3':'';
+  if(_kbdPumpOn)wsSend({t:'pump_target',v:parseInt(v)});
 }
 // Compute firmware air_mode from layout + component toggles
 function getAirMode(){
