@@ -60,8 +60,13 @@ PressureController::PressureController()
   : _sensorDetected(false), _sensorType(0),
     _distanceMm(0), _hallValue(0), _endstopActive(false), _fillPercent(0),
     _targetPercent(0), _currentPumpPwm(0),
+    _activePumpCount(0), _bangbangPumpOn(false),
     _pidIntegral(0), _pidLastError(0),
     _lastPidTime(0), _lastReadTime(0) {
+  for (uint8_t i = 0; i < MAX_PUMPS; i++) {
+    _pumpActive[i] = false;
+    _pumpActivateTime[i] = 0;
+  }
 }
 
 bool PressureController::begin() {
@@ -258,7 +263,6 @@ void PressureController::update() {
     if (now - _lastReadTime >= PRESSURE_READ_INTERVAL_MS) {
       _hallValue = analogRead(cfg.hallPin);
       _lastReadTime = now;
-      // Calculer remplissage: valeur entre seuil bas et haut
       if (_hallValue <= cfg.hallThresholdLow) {
         _fillPercent = 0;
       } else if (_hallValue >= cfg.hallThresholdHigh) {
@@ -267,28 +271,40 @@ void PressureController::update() {
         _fillPercent = (uint8_t)(((uint32_t)(_hallValue - cfg.hallThresholdLow) * 100) / (cfg.hallThresholdHigh - cfg.hallThresholdLow));
       }
     }
-    // PID control for Hall sensor
+    // Controle selon type moteur
     if (now - _lastPidTime >= PRESSURE_PID_INTERVAL_MS) {
       _lastPidTime = now;
-      if (_targetPercent == 0) { setPumpPwm(0); return; }
+      if (_targetPercent == 0) { setPumpPwm(0); _bangbangPumpOn = false; return; }
 
-      float error = (float)_targetPercent - (float)_fillPercent;
-      float dt = PRESSURE_PID_INTERVAL_MS / 1000.0f;
-      float kp = cfg.pidKp / 10.0f;
-      float ki = cfg.pidKi / 10.0f;
-
-      _pidIntegral += error * dt;
-      if (_pidIntegral > 100.0f) _pidIntegral = 100.0f;
-      if (_pidIntegral < -100.0f) _pidIntegral = -100.0f;
-
-      float output = kp * error + ki * _pidIntegral;
-      _pidLastError = error;
-
-      if (output <= 0) {
-        setPumpPwm(0);
+      if (cfg.motorType == MOTOR_TYPE_ONOFF) {
+        // Bang-bang avec hysteresis pour moteurs On/Off
+        uint8_t hyst = cfg.bangbangHysteresis;
+        uint8_t lower = (_targetPercent > hyst) ? _targetPercent - hyst : 0;
+        uint8_t upper = (_targetPercent + hyst < 100) ? _targetPercent + hyst : 100;
+        if (_fillPercent < lower) {
+          _bangbangPumpOn = true;
+        } else if (_fillPercent > upper) {
+          _bangbangPumpOn = false;
+        }
+        // Dans la bande : maintenir etat courant (hysteresis)
+        setPumpPwm(_bangbangPumpOn ? 255 : 0);
       } else {
-        uint8_t pwm = (uint8_t)constrain(output * 2.55f, cfg.pumpMinPwm[0], cfg.pumpMaxPwm[0]);
-        setPumpPwm(pwm);
+        // PID pour moteurs PWM
+        float error = (float)_targetPercent - (float)_fillPercent;
+        float dt = PRESSURE_PID_INTERVAL_MS / 1000.0f;
+        float kp = cfg.pidKp / 10.0f;
+        float ki = cfg.pidKi / 10.0f;
+        _pidIntegral += error * dt;
+        if (_pidIntegral > 100.0f) _pidIntegral = 100.0f;
+        if (_pidIntegral < -100.0f) _pidIntegral = -100.0f;
+        float output = kp * error + ki * _pidIntegral;
+        _pidLastError = error;
+        if (output <= 0) {
+          setPumpPwm(0);
+        } else {
+          uint8_t pwm = (uint8_t)constrain(output * 2.55f, cfg.pumpMinPwm[0], cfg.pumpMaxPwm[0]);
+          setPumpPwm(pwm);
+        }
       }
     }
     return;
@@ -298,9 +314,6 @@ void PressureController::update() {
   if (now - _lastReadTime >= PRESSURE_READ_INTERVAL_MS) {
     _distanceMm = readSensor();
     _lastReadTime = now;
-
-    // Calculer pourcentage remplissage
-    // Distance courte = ballon gonfle = plein, distance grande = vide
     if (_distanceMm <= cfg.sensorMinMm) {
       _fillPercent = 100;
     } else if (_distanceMm >= cfg.sensorMaxMm) {
@@ -310,16 +323,17 @@ void PressureController::update() {
     }
   }
 
-  // Controle pompe par seuil de hauteur avec hysteresis
+  // Controle pompe selon type moteur
   if (now - _lastPidTime >= PRESSURE_PID_INTERVAL_MS) {
     _lastPidTime = now;
 
     if (_targetPercent == 0) {
       setPumpPwm(0);
+      _bangbangPumpOn = false;
       return;
     }
 
-    // Securite : distance > 300mm = capteur ne voit pas le ballon
+    // Securite : distance > 300mm = capteur hors portee
     if (_distanceMm > PUMP_SAFETY_MAX_DIST_MM) {
       setPumpPwm(0);
       return;
@@ -328,28 +342,38 @@ void PressureController::update() {
     // Securite : distance trop courte (surgonflage)
     if (_distanceMm <= PUMP_SAFETY_MIN_MM && _distanceMm > 0) {
       setPumpPwm(0);
+      _bangbangPumpOn = false;
       return;
     }
 
-    // PID control for smooth regulation
-    float error = (float)_targetPercent - (float)_fillPercent;
-    float dt = PRESSURE_PID_INTERVAL_MS / 1000.0f;
-    float kp = cfg.pidKp / 10.0f;
-    float ki = cfg.pidKi / 10.0f;
-
-    _pidIntegral += error * dt;
-    // Anti-windup: clamp integral
-    if (_pidIntegral > 100.0f) _pidIntegral = 100.0f;
-    if (_pidIntegral < -100.0f) _pidIntegral = -100.0f;
-
-    float output = kp * error + ki * _pidIntegral;
-    _pidLastError = error;
-
-    if (output <= 0) {
-      setPumpPwm(0);
+    if (cfg.motorType == MOTOR_TYPE_ONOFF) {
+      // Bang-bang avec hysteresis pour moteurs On/Off
+      uint8_t hyst = cfg.bangbangHysteresis;
+      uint8_t lower = (_targetPercent > hyst) ? _targetPercent - hyst : 0;
+      uint8_t upper = (_targetPercent + hyst < 100) ? _targetPercent + hyst : 100;
+      if (_fillPercent < lower) {
+        _bangbangPumpOn = true;
+      } else if (_fillPercent > upper) {
+        _bangbangPumpOn = false;
+      }
+      setPumpPwm(_bangbangPumpOn ? 255 : 0);
     } else {
-      uint8_t pwm = (uint8_t)constrain(output * 2.55f, cfg.pumpMinPwm[0], cfg.pumpMaxPwm[0]);
-      setPumpPwm(pwm);
+      // PID pour moteurs PWM
+      float error = (float)_targetPercent - (float)_fillPercent;
+      float dt = PRESSURE_PID_INTERVAL_MS / 1000.0f;
+      float kp = cfg.pidKp / 10.0f;
+      float ki = cfg.pidKi / 10.0f;
+      _pidIntegral += error * dt;
+      if (_pidIntegral > 100.0f) _pidIntegral = 100.0f;
+      if (_pidIntegral < -100.0f) _pidIntegral = -100.0f;
+      float output = kp * error + ki * _pidIntegral;
+      _pidLastError = error;
+      if (output <= 0) {
+        setPumpPwm(0);
+      } else {
+        uint8_t pwm = (uint8_t)constrain(output * 2.55f, cfg.pumpMinPwm[0], cfg.pumpMaxPwm[0]);
+        setPumpPwm(pwm);
+      }
     }
   }
 }
@@ -364,24 +388,84 @@ void PressureController::stop() {
   setPumpPwm(0);
   _pidIntegral = 0;
   _pidLastError = 0;
+  _bangbangPumpOn = false;
+  for (uint8_t i = 0; i < MAX_PUMPS; i++) {
+    _pumpActive[i] = false;
+    _pumpActivateTime[i] = 0;
+  }
+  _activePumpCount = 0;
+}
+
+void PressureController::writePumpHw(uint8_t index, uint8_t pwm) {
+  if (index >= cfg.numPumps || index >= MAX_PUMPS) return;
+  if (cfg.motorType == MOTOR_TYPE_ONOFF) {
+    digitalWrite(cfg.pumpPins[index], pwm > 0 ? HIGH : LOW);
+  } else {
+    uint8_t pumpVal = 0;
+    if (pwm > 0) {
+      pumpVal = cfg.pumpMinPwm[index] + (uint16_t)(cfg.pumpMaxPwm[index] - cfg.pumpMinPwm[index]) * pwm / 255;
+      if (pumpVal < cfg.pumpMinPwm[index]) pumpVal = cfg.pumpMinPwm[index];
+    }
+    analogWrite(cfg.pumpPins[index], pumpVal);
+  }
 }
 
 void PressureController::setPumpPwm(uint8_t pwm) {
-  if (pwm != _currentPumpPwm) {
-    _currentPumpPwm = pwm;
-    if (cfg.airMode >= AIR_MODE_PUMP_VALVE) {
-      for (uint8_t i = 0; i < cfg.numPumps && i < MAX_PUMPS; i++) {
-        if (cfg.motorType == MOTOR_TYPE_ONOFF) {
-          digitalWrite(cfg.pumpPins[i], pwm > 0 ? HIGH : LOW);
-        } else {
-          // Per-pump PWM scaling: map global pwm to each pump's min/max range
-          uint8_t pumpVal = 0;
-          if (pwm > 0) {
-            pumpVal = cfg.pumpMinPwm[i] + (uint16_t)(cfg.pumpMaxPwm[i] - cfg.pumpMinPwm[i]) * pwm / 255;
-            if (pumpVal < cfg.pumpMinPwm[i]) pumpVal = cfg.pumpMinPwm[i];
-          }
-          analogWrite(cfg.pumpPins[i], pumpVal);
+  _currentPumpPwm = pwm;
+  if (cfg.airMode < AIR_MODE_PUMP_VALVE) return;
+
+  unsigned long now = millis();
+
+  // === Mode parallele (1 pompe ou cascade desactivee) ===
+  if (cfg.numPumps <= 1 || cfg.pumpCascadeThreshold == 0) {
+    _activePumpCount = 0;
+    for (uint8_t i = 0; i < cfg.numPumps && i < MAX_PUMPS; i++) {
+      writePumpHw(i, pwm);
+      _pumpActive[i] = (pwm > 0);
+      if (pwm > 0) _activePumpCount++;
+    }
+    return;
+  }
+
+  // === Mode cascade : pompe 0 toujours active, les suivantes au seuil ===
+  uint8_t threshPwm = (uint16_t)cfg.pumpCascadeThreshold * 255 / 100;
+  _activePumpCount = 0;
+
+  for (uint8_t i = 0; i < cfg.numPumps && i < MAX_PUMPS; i++) {
+    if (i == 0) {
+      // Pompe principale : toujours proportionnelle a la demande
+      writePumpHw(0, pwm);
+      _pumpActive[0] = (pwm > 0);
+      if (pwm > 0) {
+        _activePumpCount++;
+        if (!_pumpActivateTime[0]) _pumpActivateTime[0] = now;
+      } else {
+        _pumpActivateTime[0] = 0;
+      }
+    } else {
+      // Pompes secondaires : cascade
+      if (pwm >= threshPwm && pwm > 0) {
+        // Demande depasse le seuil -> pompe i doit s'activer
+        if (!_pumpActive[i]) {
+          _pumpActive[i] = true;
+          _pumpActivateTime[i] = now;
         }
+        // Delai stagger : attendre avant de demarrer
+        unsigned long staggerDelay = (unsigned long)i * cfg.pumpStaggerMs;
+        if (now - _pumpActivateTime[i] >= staggerDelay) {
+          // PWM proportionnel au depassement du seuil
+          uint8_t overflow = pwm - threshPwm;
+          uint8_t pumpPwm = (uint8_t)((uint16_t)overflow * 255 / (255 - threshPwm));
+          writePumpHw(i, pumpPwm);
+          _activePumpCount++;
+        } else {
+          writePumpHw(i, 0); // En attente stagger
+        }
+      } else {
+        // Sous le seuil : pompe i arretee
+        _pumpActive[i] = false;
+        _pumpActivateTime[i] = 0;
+        writePumpHw(i, 0);
       }
     }
   }

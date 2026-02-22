@@ -41,6 +41,8 @@ public:
   uint8_t  getTargetPercent() const { return _targetPercent; }
   bool     isEndstopActive() const { return _endstopActive; }
   uint16_t getHallValue() const { return _hallValue; }
+  uint8_t  getActivePumpCount() const { return _activePumpCount; }
+  bool     isBangbangOn() const { return _bangbangPumpOn; }
 
 private:
   bool _sensorDetected;
@@ -54,7 +56,15 @@ private:
 
   // Etat pompe
   uint8_t _targetPercent;      // Cible demandee (0-100)
-  uint8_t _currentPumpPwm;    // PWM actuel envoye a la pompe
+  uint8_t _currentPumpPwm;    // PWM global (sortie PID, 0-255)
+
+  // Cascade multi-pompes
+  bool _pumpActive[MAX_PUMPS];           // Etat actif par pompe
+  unsigned long _pumpActivateTime[MAX_PUMPS]; // Timestamp activation par pompe (stagger)
+  uint8_t _activePumpCount;              // Nombre de pompes actives
+
+  // Bang-bang hysteresis (moteurs On/Off + capteur continu)
+  bool _bangbangPumpOn;                  // Etat courant bang-bang
 
   // PID state
   float _pidIntegral;
@@ -65,8 +75,11 @@ private:
   // Lecture capteur selon type
   uint16_t readSensor();
 
-  // Appliquer PWM pompe (respecte motorType On/Off vs PWM)
+  // Appliquer PWM global avec logique cascade multi-pompes
   void setPumpPwm(uint8_t pwm);
+
+  // Ecrire le signal physique sur une pompe individuelle
+  void writePumpHw(uint8_t index, uint8_t pwm);
 };
 
 #endif

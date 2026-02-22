@@ -111,6 +111,9 @@ void ConfigStorage::initDefaults() {
     cfg.pumpMinPwm[i] = DEFAULT_PUMP_MIN_PWM;
     cfg.pumpMaxPwm[i] = DEFAULT_PUMP_MAX_PWM;
   }
+  cfg.pumpCascadeThreshold = DEFAULT_PUMP_CASCADE_THRESHOLD;
+  cfg.pumpStaggerMs = DEFAULT_PUMP_STAGGER_MS;
+  cfg.bangbangHysteresis = DEFAULT_BANGBANG_HYSTERESIS;
   cfg.sensorType = DEFAULT_SENSOR_TYPE;
   cfg.sensorTargetMm = DEFAULT_SENSOR_TARGET_MM;
   cfg.sensorMinMm = DEFAULT_SENSOR_MIN_MM;
@@ -289,6 +292,11 @@ bool ConfigStorage::load() {
       cfg.pumpMaxPwm[i] = pumpMaxs[i] | cfg.pumpMaxPwm[i];
     }
   }
+  cfg.pumpCascadeThreshold = doc["pump_cascade"] | cfg.pumpCascadeThreshold;
+  if (cfg.pumpCascadeThreshold > 100) cfg.pumpCascadeThreshold = 100;
+  cfg.pumpStaggerMs = doc["pump_stagger"] | cfg.pumpStaggerMs;
+  cfg.bangbangHysteresis = doc["bb_hyst"] | cfg.bangbangHysteresis;
+  if (cfg.bangbangHysteresis > 50) cfg.bangbangHysteresis = 50;
   cfg.sensorType = doc["sens_type"] | cfg.sensorType;
   cfg.sensorTargetMm = doc["sens_target"] | cfg.sensorTargetMm;
   cfg.sensorMinMm = doc["sens_min"] | cfg.sensorMinMm;
@@ -417,6 +425,9 @@ bool ConfigStorage::save() {
     pumpMins.add(cfg.pumpMinPwm[i]);
     pumpMaxs.add(cfg.pumpMaxPwm[i]);
   }
+  doc["pump_cascade"] = cfg.pumpCascadeThreshold;
+  doc["pump_stagger"] = cfg.pumpStaggerMs;
+  doc["bb_hyst"] = cfg.bangbangHysteresis;
   doc["sens_type"] = cfg.sensorType;
   doc["sens_target"] = cfg.sensorTargetMm;
   doc["sens_min"] = cfg.sensorMinMm;

@@ -564,6 +564,7 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
     </div>
     <div id="airLiveStats" style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px">
       <div id="airStatPump" style="display:none" title="PWM actuel de la pompe (0-255). OFF = pompe arretee"><span style="font-size:.7em;color:#9aa">Pompe</span><div style="font-weight:bold" id="airPumpPwm">OFF</div></div>
+      <div id="airStatActivePumps" style="display:none" title="Nombre de pompes actives (mode cascade)"><span style="font-size:.7em;color:#9aa">Actives</span><div style="font-weight:bold" id="airActivePumps">0</div></div>
       <div id="airStatFan" style="display:none" title="Vitesse ventilateur. Orange = rampe en cours"><span style="font-size:.7em;color:#9aa">Ventilateur</span><div style="font-weight:bold" id="airFanPwm">OFF</div></div>
       <div id="airStatRes" style="display:none" title="Remplissage reservoir (0-100%). Vert>80%, Orange>30%, Rouge<30%"><span style="font-size:.7em;color:#9aa">Reservoir</span><div style="font-weight:bold" id="airResPct">--%</div>
         <div style="width:40px;height:4px;background:#333;border-radius:2px;margin:2px auto 0"><div id="airResFillBar" style="height:100%;background:#e94560;border-radius:2px;width:0%;transition:width .3s"></div></div></div>
@@ -659,11 +660,27 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
           <div id="airMotorHelp" style="font-size:.65em;color:#888;margin-top:2px"></div>
         </div>
         <div class="cfg-row"><label>Nombre pompes</label>
-          <select id="airNumPumps" onchange="buildPumpRows()">
+          <select id="airNumPumps" onchange="buildPumpRows();toggleCascadeRow()">
             <option value="1">1 pompe</option>
             <option value="2">2 pompes</option>
             <option value="3">3 pompes</option>
           </select>
+        </div>
+        <div id="airCascadeRow" style="display:none;border-left:2px solid #e94560;padding-left:8px;margin:8px 0">
+          <div style="font-size:.7em;color:#e94560;font-weight:bold;margin-bottom:4px">Gestion multi-pompes (cascade)</div>
+          <div class="cfg-row"><label>Seuil cascade (%)</label>
+            <input type="number" id="airCascadeThreshold" min="0" max="100" value="80" title="Seuil de demande (%) pour activer la pompe suivante. 0 = toutes en parallele">
+            <span style="font-size:.6em;color:#888;margin-left:4px">0=parallele</span>
+          </div>
+          <div class="cfg-row"><label>Delai stagger (ms)</label>
+            <input type="number" id="airStaggerMs" min="0" max="1000" value="150" title="Delai entre chaque demarrage de pompe (anti-pic courant)">
+          </div>
+        </div>
+        <div id="airBangbangRow" style="display:none;border-left:2px solid #4ecca3;padding-left:8px;margin:8px 0">
+          <div style="font-size:.7em;color:#4ecca3;font-weight:bold;margin-bottom:4px">Bang-bang (moteur On/Off + capteur continu)</div>
+          <div class="cfg-row"><label>Hysteresis (%)</label>
+            <input type="number" id="airBbHysteresis" min="1" max="50" value="5" title="Bande d'hysteresis autour de la cible. Pompe ON si fill < cible-hyst, OFF si fill > cible+hyst">
+          </div>
         </div>
         <div id="airPumpRows"></div>
       </div>
@@ -1506,7 +1523,16 @@ function toggleValveParams(noMark){
 }
 function toggleMotorType(){
   buildPumpRows();
+  toggleCascadeRow();
   const mh=$('airMotorHelp');if(mh)mh.textContent=$('airMotorType').value==='1'?'On/Off: pompe demarre/arrete uniquement':'PWM: controle vitesse 0-255';
+}
+function toggleCascadeRow(){
+  const np=parseInt($('airNumPumps').value)||1;
+  const mt=parseInt($('airMotorType').value)||0;
+  const m=getAirMode();
+  const cr=$('airCascadeRow');if(cr)cr.style.display=(np>1&&m>=4)?'':'none';
+  const br=$('airBangbangRow');if(br)br.style.display=(mt===1&&m===5)?'':'none';
+  const ap=$('airStatActivePumps');if(ap)ap.style.display=(np>1&&m>=4)?'':'none';
 }
 function toggleSensorParams(){
   const st=parseInt($('airSensorType').value);
@@ -1687,6 +1713,13 @@ function saveAirSettings(){
       d.pump_mins.push(pmn?parseInt(pmn.value)||80:80);
       d.pump_maxs.push(pmx?parseInt(pmx.value)||255:255);
     }
+    if(np>1){
+      d.pump_cascade=parseInt($('airCascadeThreshold').value)||80;
+      d.pump_stagger=parseInt($('airStaggerMs').value)||150;
+    }
+    if(d.motor_type===1&&m===5){
+      d.bb_hyst=parseInt($('airBbHysteresis').value)||5;
+    }
   }
   if(m===5){
     d.sens_type=parseInt($('airSensorType').value)||0;
@@ -1725,6 +1758,7 @@ function resetAirDefaults(){
     const bp=$('airBlockPump'),br=$('airBlockRes'),bv=$('airBlockValve');
     setBlockEnabled(bp,true);setBlockEnabled(br,true);setBlockEnabled(bv,true);
     $('airMotorType').value='0';$('airNumPumps').value=1;toggleMotorType();buildPumpRows();
+    $('airCascadeThreshold').value=80;$('airStaggerMs').value=150;$('airBbHysteresis').value=5;toggleCascadeRow();
     $('airSensorType').value='0';$('airSensTarget').value=50;$('airSensMin').value=10;$('airSensMax').value=150;
     $('airPidKp').value=30;$('airPidKi').value=5;toggleSensorParams();
   }
@@ -1791,6 +1825,9 @@ function fillAirSettings(){
   $('airFanIdlePct').value=CFG.fan_idle_pct!=null?CFG.fan_idle_pct:20;
   $('airFanIdleTimeout').value=CFG.fan_idle_timeout!=null?CFG.fan_idle_timeout:5000;
   $('airNumPumps').value=CFG.num_pumps||1;
+  $('airCascadeThreshold').value=CFG.pump_cascade!=null?CFG.pump_cascade:80;
+  $('airStaggerMs').value=CFG.pump_stagger!=null?CFG.pump_stagger:150;
+  $('airBbHysteresis').value=CFG.bb_hyst!=null?CFG.bb_hyst:5;
   $('airSensorType').value=CFG.sens_type!=null?CFG.sens_type:1;
   $('airSensTarget').value=CFG.sens_target||50;$('airSensMin').value=CFG.sens_min||10;$('airSensMax').value=CFG.sens_max||150;
   $('airPidKp').value=CFG.pid_kp||30;$('airPidKi').value=CFG.pid_ki||5;
@@ -1834,7 +1871,7 @@ function fillAirSettings(){
   }
   buildPumpRows();
   _prevAirMode=CFG.air_mode||0;
-  setAirMode(CFG.air_mode||0);toggleValveParams(true);toggleSensorParams();toggleMotorType();
+  setAirMode(CFG.air_mode||0);toggleValveParams(true);toggleSensorParams();toggleMotorType();toggleCascadeRow();
 }
 function buildAirUI(){
   fillAirSettings();
@@ -2158,6 +2195,10 @@ function updateAirDiagram(d){
   if(pp){
     if(d.pump_pwm>0){const pct=Math.round(d.pump_pwm/255*100);pp.textContent=pct+'% ('+d.pump_pwm+')';pp.style.color='#4ecca3';if(sp2)sp2.classList.add('active-stat')}
     else{pp.textContent='OFF';pp.style.color='';if(sp2)sp2.classList.remove('active-stat')}
+  }
+  const apEl=$('airActivePumps');if(apEl&&d.active_pumps!=null){
+    apEl.textContent=d.active_pumps+'/'+((CFG&&CFG.num_pumps)||1);
+    apEl.style.color=d.active_pumps>0?'#4ecca3':'';
   }
   const fp=$('airFanPwm'),sf2=$('airStatFan');if(fp){
     if(d.fan_pwm>0){
