@@ -243,6 +243,9 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
 @keyframes fanSpin{0%{transform:rotate(0deg)}100%{transform:rotate(360deg)}}
 @keyframes bellowsExpand{0%{transform:scaleY(0.3)}100%{transform:scaleY(1)}}
 @keyframes balloonGrow{0%{transform:scale(0.5)}100%{transform:scale(1)}}
+@keyframes airFlowDash{to{stroke-dashoffset:-12}}
+.airFlowAnim{stroke:#4ecca3;stroke-width:2;stroke-dasharray:4,8;fill:none;opacity:0;transition:opacity .3s}
+.airFlowAnim.flowing{opacity:.6;animation:airFlowDash .6s linear infinite}
 #airCtrlSection input[type=range]{accent-color:#4ecca3}
 #airLiveStats>div{background:rgba(255,255,255,.03);border-radius:6px;padding:4px 10px;min-width:60px;text-align:center;transition:border-color .3s,box-shadow .3s;border:1px solid transparent}
 #airLiveStats>div.active-stat{border-color:rgba(78,204,163,.3);box-shadow:0 0 6px rgba(78,204,163,.1)}
@@ -596,7 +599,8 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
       3. Utiliser les boutons de test pour verifier<br>
       4. Lancer le diagnostic pour valider le tout<br>
       5. Sauvegarder la configuration<br>
-      <span style="color:#888">Astuce: les badges sous le mode montrent les composants necessaires</span>
+      <span style="color:#888">Astuce: les badges sous le mode montrent les composants necessaires</span><br>
+      <span style="color:#888">Raccourcis clavier: <b>Ctrl+S</b>=Sauver, <b>T</b>=Test, <b>Esc</b>=Stop, <b>H</b>=Aide, <b>?</b>=Raccourcis</span>
     </div>
     <div class="cfg-row"><label>Mode air</label>
       <select id="airModeSelect" onchange="confirmAirModeChange(this)">
@@ -1682,6 +1686,7 @@ function buildAirSvg(svgId,full){
     if(np===1)s+='<text x="'+colX+'" y="'+(rowPump+24)+'" text-anchor="middle" style="font-size:8px;fill:#9aa">'+(CFG.motor_type===1?'On/Off':'Pompe')+'</text>';
     // Arrow UP from pump to reservoir area
     s+='<line x1="'+colX+'" y1="'+(rowPump-14)+'" x2="'+colX+'" y2="'+(rowRes+30)+'" stroke="#7799bb" stroke-width="3"/>';
+    s+='<line class="airFlowAnim" x1="'+colX+'" y1="'+(rowPump-14)+'" x2="'+colX+'" y2="'+(rowRes+30)+'"/>';
     s+='<polygon points="'+(colX-3)+','+(rowRes+34)+' '+colX+','+(rowRes+28)+' '+(colX+3)+','+(rowRes+34)+'" fill="#7799bb"/>';
   }
 
@@ -1736,6 +1741,7 @@ function buildAirSvg(svgId,full){
     }
     // Arrow RIGHT from reservoir to valve
     s+='<line x1="'+(colX+rW/2)+'" y1="'+rowRes+'" x2="'+(colX+90)+'" y2="'+rowRes+'" stroke="#7799bb" stroke-width="3"/>';
+    s+='<line class="airFlowAnim" x1="'+(colX+rW/2)+'" y1="'+rowRes+'" x2="'+(colX+90)+'" y2="'+rowRes+'"/>';
     s+='<polygon points="'+(colX+86)+','+(rowRes-3)+' '+(colX+91)+','+rowRes+' '+(colX+86)+','+(rowRes+3)+'" fill="#7799bb"/>';
   }
 
@@ -1770,6 +1776,7 @@ function buildAirSvg(svgId,full){
 
     // Pipe UP from valve to servo flow row
     s+='<line x1="'+vx+'" y1="'+(vy-cylH/2-12)+'" x2="'+vx+'" y2="'+(rowServo+18)+'" stroke="#7799bb" stroke-width="3"/>';
+    s+='<line class="airFlowAnim" x1="'+vx+'" y1="'+(vy-cylH/2-12)+'" x2="'+vx+'" y2="'+(rowServo+18)+'"/>';
     s+='<polygon points="'+(vx-3)+','+(rowServo+22)+' '+vx+','+(rowServo+16)+' '+(vx+3)+','+(rowServo+22)+'" fill="#7799bb"/>';
 
     // ===== SERVO FLOW (top) =====
@@ -1781,6 +1788,7 @@ function buildAirSvg(svgId,full){
     // Arrow right to flute
     const flX=svX+46;
     s+='<line x1="'+(svX+36)+'" y1="'+rowServo+'" x2="'+flX+'" y2="'+rowServo+'" stroke="#7799bb" stroke-width="3"/>';
+    s+='<line class="airFlowAnim" x1="'+(svX+36)+'" y1="'+rowServo+'" x2="'+flX+'" y2="'+rowServo+'"/>';
     s+='<polygon points="'+(flX-4)+','+(rowServo-3)+' '+(flX+1)+','+rowServo+' '+(flX-4)+','+(rowServo+3)+'" fill="#7799bb"/>';
     // Flute
     s+='<rect x="'+(flX+4)+'" y="'+(rowServo-12)+'" width="70" height="24" rx="10" fill="'+(CFG.color||'#D4B044')+'" stroke="#a89030" stroke-width="1" opacity=".8"/>';
@@ -1795,6 +1803,7 @@ function buildAirSvg(svgId,full){
       // Air input arrow
       s+='<text x="'+vx+'" y="'+(rowPump+4)+'" text-anchor="middle" style="font-size:8px;fill:#9aa">Air</text>';
       s+='<line x1="'+vx+'" y1="'+(rowPump-8)+'" x2="'+vx+'" y2="'+(rowServo+18)+'" stroke="#7799bb" stroke-width="3"/>';
+      s+='<line class="airFlowAnim" x1="'+vx+'" y1="'+(rowPump-8)+'" x2="'+vx+'" y2="'+(rowServo+18)+'"/>';
       s+='<polygon points="'+(vx-3)+','+(rowServo+22)+' '+vx+','+(rowServo+16)+' '+(vx+3)+','+(rowServo+22)+'" fill="#7799bb"/>';
     }
     // Servo Flow
@@ -1806,6 +1815,7 @@ function buildAirSvg(svgId,full){
     // Arrow right to flute
     const flX=svX+46;
     s+='<line x1="'+(svX+36)+'" y1="'+rowServo+'" x2="'+flX+'" y2="'+rowServo+'" stroke="#7799bb" stroke-width="3"/>';
+    s+='<line class="airFlowAnim" x1="'+(svX+36)+'" y1="'+rowServo+'" x2="'+flX+'" y2="'+rowServo+'"/>';
     s+='<polygon points="'+(flX-4)+','+(rowServo-3)+' '+(flX+1)+','+rowServo+' '+(flX-4)+','+(rowServo+3)+'" fill="#7799bb"/>';
     // Flute
     s+='<rect x="'+(flX+4)+'" y="'+(rowServo-12)+'" width="70" height="24" rx="10" fill="'+(CFG.color||'#D4B044')+'" stroke="#a89030" stroke-width="1" opacity=".8"/>';
@@ -1847,9 +1857,11 @@ function updateAirDiagram(d){
   document.querySelectorAll('[id=airBellowsFill]').forEach(bf=>{
     const fullH=65;
     const fillH=Math.max(4,fullH*(pct/100));
-    const baseY=parseFloat(bf.getAttribute('y'));
+    // Store original Y on first call to prevent drift on repeated updates
+    if(!bf.dataset.origY)bf.dataset.origY=bf.getAttribute('y');
+    const origY=parseFloat(bf.dataset.origY);
     bf.setAttribute('height',fillH);
-    bf.setAttribute('y',baseY+fullH-fillH);
+    bf.setAttribute('y',origY+fullH-fillH);
   });
   // Update percentage text
   document.querySelectorAll('[id=airBalloonPct]').forEach(bp=>{bp.textContent=(d.res_pct!=null?d.res_pct:'--')+'%'});
@@ -1858,8 +1870,11 @@ function updateAirDiagram(d){
     if(d.air_angle==null)return;
     const pcta=Math.min(1,Math.max(0,d.air_angle/180));
     const deg=-150+pcta*120;
-    const cx=nd.getAttribute('x1')||0;
-    const cy2=nd.getAttribute('y1')||0;
+    // Path d="Mcx,cy L..." - extract pivot from M command
+    const dm=nd.getAttribute('d');
+    const mp=dm?dm.match(/M([\d.]+),([\d.]+)/):null;
+    const cx=mp?parseFloat(mp[1]):0;
+    const cy2=mp?parseFloat(mp[2]):0;
     nd.setAttribute('transform','rotate('+deg+','+cx+','+cy2+')');
   });
   // Fan blade animation
@@ -1883,6 +1898,11 @@ function updateAirDiagram(d){
     document.querySelectorAll('[id=airPumpIcon]').forEach(ic=>{
       ic.setAttribute('stroke',d.pump_pwm>0?'#4ecca3':'#dde')});
   }
+  // Animate flow pipes when air is active
+  const airActive=(d.air_angle!=null&&d.air_angle>0)||(d.pump_pwm>0)||(d.fan_pwm>0)||(d.valve_open);
+  document.querySelectorAll('.airFlowAnim').forEach(fl=>{
+    if(airActive)fl.classList.add('flowing');else fl.classList.remove('flowing');
+  });
   // Update text stats in Air tab
   const pp=$('airPumpPwm');const sp2=$('airStatPump');
   if(pp){
@@ -1916,8 +1936,8 @@ function updateAirDiagram(d){
   const slv=$('airSensLiveVal');
   if(slv){
     const st=CFG?CFG.sens_type:0;
-    if(st<=1&&d.res_mm!=null)slv.textContent=d.res_mm+' mm ('+d.res_pct+'%)';
-    else if(st===2&&d.hall_val!=null){slv.textContent=d.hall_val+' ('+d.res_pct+'%)';
+    if(st<=1&&d.res_mm!=null)slv.textContent=d.res_mm+' mm ('+(d.res_pct!=null?d.res_pct:'--')+'%)';
+    else if(st===2&&d.hall_val!=null){slv.textContent=d.hall_val+' ('+(d.res_pct!=null?d.res_pct:'--')+'%)';
       const hc=$('airHallCursor');if(hc)hc.style.left=(d.hall_val/4095*100)+'%'}
     else if(st>=3)slv.textContent=d.endstop_st?'ACTIF':'inactif';
   }
@@ -1947,6 +1967,7 @@ function drawMiniChart(){
   const mc=$('airMiniChart');if(mc)mc.style.display=(CFG&&CFG.air_mode===5)?'':'none';
   if(!CFG||CFG.air_mode!==5)return;
   const ctx=cv.getContext('2d');if(!ctx)return;
+  initChartTooltip();
   // Retina scaling
   const dpr=window.devicePixelRatio||1;
   const rect=cv.getBoundingClientRect();
@@ -1994,6 +2015,33 @@ function drawMiniChart(){
   ctx.font='7px sans-serif';ctx.textAlign='right';
   ctx.fillStyle='#e94560';ctx.fillText('Pression',w-2,9);
   ctx.fillStyle='rgba(78,204,163,0.4)';ctx.fillText('Pompe PWM',w-2,18);
+  // Draw tooltip crosshair if hovering
+  if(_chartHoverIdx>=0&&_chartHoverIdx<n){
+    const hx=lm+(chartData.max-n+_chartHoverIdx)*dx;
+    ctx.strokeStyle='rgba(255,255,255,0.3)';ctx.lineWidth=1;ctx.setLineDash([2,2]);
+    ctx.beginPath();ctx.moveTo(hx,0);ctx.lineTo(hx,h);ctx.stroke();ctx.setLineDash([]);
+    const hp=chartData.pct[_chartHoverIdx],hw=chartData.pwm[_chartHoverIdx];
+    const hy=h-hp/100*h;
+    ctx.fillStyle='#fff';ctx.font='bold 8px sans-serif';ctx.textAlign='center';
+    ctx.fillStyle='rgba(0,0,0,0.7)';ctx.fillRect(hx-28,hy-22,56,20);
+    ctx.fillStyle='#e94560';ctx.fillText(hp+'%',hx,hy-14);
+    ctx.fillStyle='#4ecca3';ctx.fillText('PWM:'+hw,hx,hy-6);
+  }
+}
+let _chartHoverIdx=-1;
+function initChartTooltip(){
+  const cv=$('airChartCanvas');if(!cv||cv._ttInit)return;cv._ttInit=true;
+  cv.addEventListener('mousemove',e=>{
+    const rect=cv.getBoundingClientRect();
+    const mx=e.clientX-rect.left;const lm=22;const pw=rect.width-lm;
+    const n=chartData.pct.length;if(n<2){_chartHoverIdx=-1;return}
+    const dx=pw/(chartData.max-1);
+    const idx=Math.round((mx-lm)/dx-(chartData.max-n));
+    _chartHoverIdx=Math.max(0,Math.min(n-1,idx));
+    drawMiniChart();
+  });
+  cv.addEventListener('mouseleave',()=>{_chartHoverIdx=-1;drawMiniChart()});
+  cv.style.cursor='crosshair';
 }
 // Pump toggle from keyboard (click pump in SVG to disable/enable)
 let pumpDisabled=false;
@@ -2255,7 +2303,24 @@ document.addEventListener('keyup',e=>{const n=keyMap[e.key.toLowerCase()];if(n&&
     const el=document.querySelector('.key[data-midi="'+n+'"],.pkey[data-midi="'+n+'"]');if(el)el.classList.remove('pressed')}});
 document.addEventListener('keydown',e=>{if(!e.ctrlKey)return;
   if(e.key==='z'&&calibStep===2){e.preventDefault();undoFp()}
-  if(e.key==='y'&&calibStep===2){e.preventDefault();redoFp()}});
+  if(e.key==='y'&&calibStep===2){e.preventDefault();redoFp()}
+  // Ctrl+S on Air tab = save air settings
+  const airTab=$('tab-air');
+  if(e.key==='s'&&airTab&&airTab.classList.contains('active')){e.preventDefault();saveAirSettings()}
+});
+// Air tab keyboard shortcuts (no modifier keys, only when Air tab active)
+document.addEventListener('keydown',e=>{
+  if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT'||e.target.tagName==='TEXTAREA')return;
+  if(e.ctrlKey||e.altKey||e.metaKey)return;
+  const airTab=$('tab-air');if(!airTab||!airTab.classList.contains('active'))return;
+  const m=CFG?CFG.air_mode||0:0;
+  if(e.key==='Escape'){e.preventDefault();wsSend({t:'pump_stop'});wsSend({t:'fan_stop'});showToast('Arret envoye','info')}
+  if(e.key==='t'){e.preventDefault();const dur=parseInt(($('airTestDur')||{}).value)||2;
+    wsSend({t:'pump_target',v:50});setTimeout(()=>wsSend({t:'pump_stop'}),dur*1000);showToast('Test '+dur+'s','success')}
+  if(e.key==='h'){e.preventDefault();toggleAirHelp()}
+  if(e.key==='?'){e.preventDefault();
+    showToast('Raccourcis: Ctrl+S=Sauver, T=Test, Esc=Stop, H=Aide, ?=Info','info')}
+});
 
 // --- SVG FLUTE ---
 // Gradients for flute body materials
