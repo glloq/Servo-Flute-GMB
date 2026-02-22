@@ -534,7 +534,8 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
     <div id="airLiveStats" style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px">
       <div id="airStatPump" style="display:none"><span style="font-size:.7em;color:#9aa">Pompe</span><div style="font-weight:bold" id="airPumpPwm">OFF</div></div>
       <div id="airStatFan" style="display:none"><span style="font-size:.7em;color:#9aa">Ventilateur</span><div style="font-weight:bold" id="airFanPwm">OFF</div></div>
-      <div id="airStatRes" style="display:none"><span style="font-size:.7em;color:#9aa">Reservoir</span><div style="font-weight:bold" id="airResPct">--%</div></div>
+      <div id="airStatRes" style="display:none"><span style="font-size:.7em;color:#9aa">Reservoir</span><div style="font-weight:bold" id="airResPct">--%</div>
+        <div style="width:40px;height:4px;background:#333;border-radius:2px;margin:2px auto 0"><div id="airResFillBar" style="height:100%;background:#e94560;border-radius:2px;width:0%;transition:width .3s"></div></div></div>
       <div id="airStatDist" style="display:none"><span style="font-size:.7em;color:#9aa">Distance</span><div style="font-weight:bold" id="airResMm">--mm</div></div>
       <div id="airStatHall" style="display:none"><span style="font-size:.7em;color:#9aa">Hall</span><div style="font-weight:bold" id="airHallVal">--</div></div>
       <div id="airStatEndstop" style="display:none"><span style="font-size:.7em;color:#9aa">Fin course</span><div style="font-weight:bold" id="airEndstopState">--</div></div>
@@ -770,7 +771,7 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
     </div>
     <div id="airValidationMsg" style="display:none;font-size:.78em;color:#e94560;background:rgba(233,69,96,.08);border:1px solid rgba(233,69,96,.25);border-radius:6px;padding:8px 10px;margin:8px 0"></div>
     <div class="btn-row" style="margin-top:12px">
-      <button class="btn btn-g" onclick="saveAirSettings()">Sauvegarder</button>
+      <button class="btn btn-g" id="btnAirSave" onclick="saveAirSettings()">Sauvegarder</button>
     </div>
     <div id="airSettingsMsg" style="font-size:.75em;color:#0f0;margin-top:6px"></div>
   </div>
@@ -1018,8 +1019,8 @@ function showToast(msg,type){type=type||'info';const c=$('toastContainer');
   t.innerHTML=(ic[type]||ic.info)+'<span>'+esc(msg)+'</span>';c.appendChild(t);
   requestAnimationFrame(()=>requestAnimationFrame(()=>t.classList.add('show')));
   setTimeout(()=>{t.classList.remove('show');setTimeout(()=>t.remove(),300)},3000)}
-function markDirty(){dirty=true;$('unsavedBadge').classList.add('show');updStepDots()}
-function markClean(){dirty=false;$('unsavedBadge').classList.remove('show');updStepDots()}
+function markDirty(){dirty=true;$('unsavedBadge').classList.add('show');updStepDots();const sb=$('btnAirSave');if(sb)sb.style.boxShadow='0 0 8px #4ecca3'}
+function markClean(){dirty=false;$('unsavedBadge').classList.remove('show');updStepDots();const sb=$('btnAirSave');if(sb)sb.style.boxShadow=''}
 function btnLoad(id,on){const b=$(id);if(!b)return;if(on){b.classList.add('loading');b.disabled=true}else{b.classList.remove('loading');b.disabled=false}}
 function testPulse(el){el.classList.add('test-pulse');setTimeout(()=>el.classList.remove('test-pulse'),600)}
 function fpSnap(){if(!CFG)return;fpHistory.push(JSON.stringify(CFG.notes.map(n=>({midi:n.midi,fp:[...n.fp]}))));
@@ -1759,6 +1760,7 @@ function updateAirDiagram(d){
     else{fp.textContent='OFF';fp.style.color=''}
   }
   const rp=$('airResPct');if(rp)rp.textContent=(d.res_pct!=null?d.res_pct:'-')+'%';
+  const rfb=$('airResFillBar');if(rfb&&d.res_pct!=null){rfb.style.width=d.res_pct+'%';rfb.style.background=d.res_pct>80?'#4ecca3':d.res_pct>30?'#e9a645':'#e94560'}
   const rm=$('airResMm');if(rm)rm.textContent=(d.res_mm!=null?d.res_mm:'-')+'mm';
   const vs=$('airValveState');if(vs){vs.textContent=d.valve_open?'OUVERT':'FERME';vs.style.color=d.valve_open?'#4ecca3':'#e94560'}
   const sa=$('airServoAngle');if(sa)sa.textContent=(d.air_angle!=null?d.air_angle:'-')+'°';
