@@ -1229,27 +1229,41 @@ function refreshKbdAir(){
   const airSvg=$('kbdAirSvg');
   if(CFG&&CFG.show_air){
     box.style.display='';buildAirSvg('kbdAirSvg',true);
-    // Both SVGs must share the same width reference for alignment.
-    // Override .flute-box svg{max-width:600px} so both use 100% of container.
-    if(airSvg)airSvg.style.maxWidth='none';
-    if(fs)fs.style.maxWidth='none';
-    // Align flute embouchure with servo flow air output
-    if(fs&&_kbdPipeExitRatio>0){
-      const fluteVB=fs.viewBox.baseVal;
-      // Embouchure entry X depends on type: trav=blow hole at 36, oca=chanfrain ~21, others=tip ~4
-      const em=CFG.embouchure||'bec';
-      const becPx=(em==='trav')?36:(em==='oca')?21:4;
-      const becR=fluteVB.width?becPx/fluteVB.width:0;
-      const off=Math.max(0,(_kbdPipeExitRatio-becR)*100/(1-becR||1));
-      fs.style.marginLeft=off+'%';fs.style.width=(100-off)+'%';
-    }
+    // Flute SVG: block display avoids text-align:center offset; remove max-width for correct %-sizing
+    if(fs){fs.style.display='block';fs.style.maxWidth='none'}
+    // Defer alignment to next frame so getScreenCTM() reflects actual layout
+    requestAnimationFrame(function(){_alignFluteToAir(airSvg,fs)});
   }else{
     box.style.display='none';
-    if(airSvg)airSvg.style.maxWidth='';
-    if(fs){fs.style.marginLeft='';fs.style.width='';fs.style.maxWidth=''}
+    if(fs){fs.style.marginLeft='';fs.style.width='';fs.style.maxWidth='';fs.style.display=''}
   }
   refreshKbdPumpPanel();
 }
+function _alignFluteToAir(as,fs){
+  if(!as||!fs||!_kbdPipeExitRatio||!CFG)return;
+  var ctm=as.getScreenCTM();if(!ctm)return;
+  var vb=as.viewBox.baseVal;if(!vb||!vb.width)return;
+  // Convert pipe exit from viewBox coords to screen pixels
+  var pt=as.createSVGPoint();
+  pt.x=_kbdPipeExitRatio*vb.width;pt.y=0;
+  var sp=pt.matrixTransform(ctm);
+  // Reference: kbdAirBox fills .flute-box content area (same width baseline as flute SVG)
+  var box=as.parentElement;if(!box)return;
+  var br=box.getBoundingClientRect();
+  var cw=br.width;if(cw<=0)return;
+  var px=sp.x-br.left; // pipe exit pixels from content left
+  // Embouchure fraction in flute SVG viewBox
+  var em=CFG.embouchure||'bec';
+  var bpx=(em==='trav')?36:(em==='oca')?21:4;
+  var fvb=fs.viewBox.baseVal;
+  var bR=fvb.width?bpx/fvb.width:0;
+  // Solve: marginLeft + bR*(contentW - marginLeft) = pipeExitX
+  var ml=Math.max(0,(px-bR*cw)/(1-bR||1));
+  var pct=Math.min(75,ml/cw*100);
+  fs.style.marginLeft=pct+'%';fs.style.width=(100-pct)+'%';
+}
+var _alignTimer=0;
+window.addEventListener('resize',function(){clearTimeout(_alignTimer);_alignTimer=setTimeout(function(){var as=$('kbdAirSvg'),fs=$('fluteSvg');if(as&&fs)_alignFluteToAir(as,fs)},100)});
 let _kbdPumpOn=false;
 function refreshKbdPumpPanel(){
   const p=$('kbdPumpPanel');if(!p||!CFG)return;
