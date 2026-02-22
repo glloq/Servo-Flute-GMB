@@ -563,7 +563,9 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
       <button class="btn btn-s" id="btnValveOpen" onclick="wsSend({t:'test_sol',o:1})">Ouvrir valve</button>
       <button class="btn btn-s" id="btnValveClose" onclick="wsSend({t:'test_sol',o:0})">Fermer valve</button>
       <button class="btn btn-s" id="btnAirTest" onclick="testAirSystem()" style="display:none">Test rapide</button>
+      <button class="btn btn-s" id="btnAirDiag" onclick="runAirDiagnostic()" title="Teste tous les composants en sequence">Diagnostic</button>
     </div>
+    <div id="airDiagMsg" style="display:none;font-size:.75em;color:#9aa;margin-top:4px;padding:4px 8px;background:rgba(255,255,255,.03);border-radius:4px"></div>
   </div>
   <div class="section">
     <div style="display:flex;justify-content:space-between;align-items:center">
@@ -1103,6 +1105,33 @@ function gotoServoAngle(inputId){
   const v=parseInt($(inputId).value)||0;
   $('airFlowTest').value=v;testServoFlow(v);
 }
+function runAirDiagnostic(){
+  const dm=$('airDiagMsg');if(!dm)return;
+  dm.style.display='';dm.style.color='#9aa';
+  const m=getAirMode();
+  const hasValve=(m===0||m===1||m>=4),hasPump=m>=4,hasFan=m===3;
+  const steps=[];
+  // Build test sequence
+  steps.push({t:0,msg:'Servo flow -> repos...',fn:()=>testServoFlow(parseInt($('cfgAirOff').value)||20)});
+  steps.push({t:800,msg:'Servo flow -> min...',fn:()=>testServoFlow(parseInt($('cfgAirMin').value)||0)});
+  steps.push({t:1600,msg:'Servo flow -> max...',fn:()=>testServoFlow(parseInt($('cfgAirMax').value)||180)});
+  steps.push({t:2400,msg:'Servo flow -> repos',fn:()=>testServoFlow(parseInt($('cfgAirOff').value)||20)});
+  if(hasValve){
+    steps.push({t:3000,msg:'Valve -> ouvrir...',fn:()=>wsSend({t:'test_sol',o:1})});
+    steps.push({t:3800,msg:'Valve -> fermer',fn:()=>wsSend({t:'test_sol',o:0})});
+  }
+  if(hasPump){
+    steps.push({t:4200,msg:'Pompe -> 30%...',fn:()=>{wsSend({t:'pump_target',v:30});$('pumpTarget').value=30;$('pumpTargetVal').textContent='30%'}});
+    steps.push({t:5500,msg:'Pompe -> arret',fn:()=>stopAirSource()});
+  }
+  if(hasFan){
+    steps.push({t:4200,msg:'Ventilateur -> 30%...',fn:()=>{wsSend({t:'fan_target',v:30});$('pumpTarget').value=30;$('pumpTargetVal').textContent='30%'}});
+    steps.push({t:5500,msg:'Ventilateur -> arret',fn:()=>stopAirSource()});
+  }
+  const last=steps[steps.length-1];
+  steps.push({t:last.t+800,msg:'Diagnostic termine !',fn:()=>{dm.style.color='#4ecca3';setTimeout(()=>{dm.style.display='none'},3000)}});
+  steps.forEach(s=>setTimeout(()=>{dm.textContent=s.msg;s.fn()},s.t));
+}
 let sweepTimer=null;
 function sweepServoFlow(){
   if(sweepTimer){clearInterval(sweepTimer);sweepTimer=null;return}
@@ -1274,19 +1303,19 @@ function buildPumpRows(){
 }
 function validateAirConfig(){
   const m=getAirMode();
-  const warns=[];
+  const warns=[];const errBlocks=new Set();
   // Servo flow angle validation (all modes)
   const aOff=parseInt($('cfgAirOff').value),aMin=parseInt($('cfgAirMin').value),aMax=parseInt($('cfgAirMax').value);
-  if(isNaN(aOff)||isNaN(aMin)||isNaN(aMax))warns.push('Servo flow: angles manquants');
+  if(isNaN(aOff)||isNaN(aMin)||isNaN(aMax)){warns.push('Servo flow: angles manquants');errBlocks.add('airBlockServo')}
   else{
-    if(aOff<0||aOff>180||aMin<0||aMin>180||aMax<0||aMax>180)warns.push('Servo flow: angles doivent etre entre 0 et 180');
-    if(aMin>=aMax)warns.push('Servo flow: angle min doit etre inferieur a max');
+    if(aOff<0||aOff>180||aMin<0||aMin>180||aMax<0||aMax>180){warns.push('Servo flow: angles doivent etre entre 0 et 180');errBlocks.add('airBlockServo')}
+    if(aMin>=aMax){warns.push('Servo flow: angle min doit etre inferieur a max');errBlocks.add('airBlockServo')}
   }
   // Fan PWM validation
   if(m===3){
     const fmin=parseInt($('airFanMin').value)||0,fmax=parseInt($('airFanMax').value)||255;
-    if(fmin>=fmax)warns.push('Ventilateur: PWM min doit etre inferieur a max');
-    if(fmin<0||fmax>255)warns.push('Ventilateur: PWM doit etre entre 0 et 255');
+    if(fmin>=fmax){warns.push('Ventilateur: PWM min doit etre inferieur a max');errBlocks.add('airBlockFan')}
+    if(fmin<0||fmax>255){warns.push('Ventilateur: PWM doit etre entre 0 et 255');errBlocks.add('airBlockFan')}
   }
   // Pump validation
   if(m>=4){
@@ -1295,29 +1324,32 @@ function validateAirConfig(){
     const usedPins=[];
     for(let i=0;i<n;i++){
       const p=parseInt($('airPumpPin'+i).value);
-      if(usedPins.includes(p))warns.push('Pompe '+(i+1)+': GPIO '+p+' deja utilise par une autre pompe');
+      if(usedPins.includes(p)){warns.push('Pompe '+(i+1)+': GPIO '+p+' deja utilise');errBlocks.add('airBlockPump')}
       usedPins.push(p);
       if(mt===0){
         const mn=parseInt($('airPumpMin'+i).value)||0,mx=parseInt($('airPumpMax'+i).value)||255;
-        if(mn>=mx)warns.push('Pompe '+(i+1)+': PWM min doit etre inferieur a max');
+        if(mn>=mx){warns.push('Pompe '+(i+1)+': PWM min >= max');errBlocks.add('airBlockPump')}
       }
     }
-    // Cross-check pump pins with fan/solenoid pins
-    if(m===3){const fp=parseInt($('airFanPin').value);if(usedPins.includes(fp))warns.push('GPIO ventilateur en conflit avec une pompe')}
-    if(m===0){const sp=parseInt($('cfgSolPin').value);if(usedPins.includes(sp))warns.push('GPIO solenoide en conflit avec une pompe')}
+    if(m===3){const fp=parseInt($('airFanPin').value);if(usedPins.includes(fp)){warns.push('GPIO ventilateur en conflit');errBlocks.add('airBlockFan')}}
+    if(m===0){const sp=parseInt($('cfgSolPin').value);if(usedPins.includes(sp)){warns.push('GPIO solenoide en conflit');errBlocks.add('airBlockSolenoid')}}
   }
   // Reservoir sensor validation
   if(m===5){
     const st=parseInt($('airSensorType').value);
     if(st===2){
       const lo=parseInt($('airHallLow').value)||0,hi=parseInt($('airHallHigh').value)||4095;
-      if(lo>=hi)warns.push('Hall: seuil bas doit etre inferieur au seuil haut');
+      if(lo>=hi){warns.push('Hall: seuil bas >= haut');errBlocks.add('airBlockRes')}
     }
     if(st<=1){
       const smin=parseInt($('airSensMin').value)||0,smax=parseInt($('airSensMax').value)||300;
-      if(smin>=smax)warns.push('ToF: distance min doit etre inferieure a max');
+      if(smin>=smax){warns.push('ToF: min >= max');errBlocks.add('airBlockRes')}
     }
   }
+  // Highlight error blocks
+  document.querySelectorAll('.air-block').forEach(bl=>{
+    bl.style.borderColor=errBlocks.has(bl.id)?'#e94560':'';
+  });
   const box=$('airValidationMsg');
   if(box){
     if(warns.length>0){box.style.display='';box.innerHTML=warns.join('<br>')}
