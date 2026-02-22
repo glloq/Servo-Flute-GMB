@@ -93,6 +93,10 @@ void ConfigStorage::initDefaults() {
   cfg.airMode = DEFAULT_AIR_MODE;
   cfg.valveType = DEFAULT_VALVE_TYPE;
   cfg.valveServoPcaChannel = DEFAULT_VALVE_SERVO_CH;
+  cfg.valveServoCloseAngle = 0;
+  cfg.valveServoOpenAngle = 90;
+  cfg.valveServoDir = 0;
+  cfg.solenoidInterNoteMs = 0;
   cfg.motorType = DEFAULT_MOTOR_TYPE;
   cfg.fanPin = DEFAULT_FAN_PIN;
   cfg.fanMinPwm = DEFAULT_FAN_MIN_PWM;
@@ -248,6 +252,10 @@ bool ConfigStorage::load() {
     cfg.valveType = doc["valve_servo"].as<bool>() ? 1 : 0;
   }
   cfg.valveServoPcaChannel = doc["valve_ch"] | cfg.valveServoPcaChannel;
+  cfg.valveServoCloseAngle = doc["vlv_close"] | cfg.valveServoCloseAngle;
+  cfg.valveServoOpenAngle = doc["vlv_open"] | cfg.valveServoOpenAngle;
+  cfg.valveServoDir = doc["vlv_dir"] | cfg.valveServoDir;
+  cfg.solenoidInterNoteMs = doc["sol_inter"] | cfg.solenoidInterNoteMs;
   cfg.motorType = doc["motor_type"] | cfg.motorType;
   cfg.fanPin = doc["fan_pin"] | cfg.fanPin;
   cfg.fanMinPwm = doc["fan_min"] | cfg.fanMinPwm;
@@ -390,6 +398,10 @@ bool ConfigStorage::save() {
   doc["air_mode"] = cfg.airMode;
   doc["valve_type"] = cfg.valveType;
   doc["valve_ch"] = cfg.valveServoPcaChannel;
+  doc["vlv_close"] = cfg.valveServoCloseAngle;
+  doc["vlv_open"] = cfg.valveServoOpenAngle;
+  doc["vlv_dir"] = cfg.valveServoDir;
+  doc["sol_inter"] = cfg.solenoidInterNoteMs;
   doc["motor_type"] = cfg.motorType;
   doc["fan_pin"] = cfg.fanPin;
   doc["fan_min"] = cfg.fanMinPwm;

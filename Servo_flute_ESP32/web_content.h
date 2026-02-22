@@ -624,7 +624,7 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
     </div>
     <div class="cfg-row"><label>Mode air</label>
       <select id="airModeSelect" onchange="confirmAirModeChange(this)">
-        <option value="0">Solenoide + servo flow</option>
+        <option value="0">Valve + servo flow</option>
         <option value="2">Servo flow seul</option>
         <option value="3">Ventilateur + servo flow</option>
         <option value="4">Pompe(s) + valve</option>
@@ -779,20 +779,37 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
 
     <!-- BLOCK: Valve -->
     <div class="air-block" id="airBlockValve">
-      <div class="air-block-hdr" tabindex="0" role="button" aria-label="Configuration valve servo" onclick="toggleAirBlock('airBlockValve')" onkeydown="toggleAirBlock('airBlockValve',event)">
+      <div class="air-block-hdr" tabindex="0" role="button" aria-label="Configuration valve" onclick="toggleAirBlock('airBlockValve')" onkeydown="toggleAirBlock('airBlockValve',event)">
         <h4><svg viewBox="0 0 16 16" width="14" height="14"><rect x="4" y="2" width="8" height="12" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/><rect x="6" y="4" width="4" height="4" rx="0.5" fill="currentColor" opacity=".5"/></svg>Valve</h4>
         <div class="air-block-toggle on" id="airBlockValveToggle" role="switch" aria-checked="true" onclick="event.stopPropagation();toggleAirBlockEnable('airBlockValve')"></div>
       </div>
       <div class="air-block-body">
         <div class="cfg-row"><label>Type valve</label>
           <select id="airValveType" onchange="toggleValveParams()">
-            <option value="0">Solenoide GPIO</option>
-            <option value="1">Servo PCA</option>
+            <option value="0">Solenoide</option>
+            <option value="1">Servo</option>
           </select>
+        </div>
+        <div id="airValveSolParams">
+          <div class="cfg-row"><label>GPIO Pin</label><select id="cfgSolPin" title="Pin GPIO connectee au MOSFET/relais du solenoide"></select></div>
+          <div class="cfg-row"><label>PWM activation</label><input type="number" id="cfgSolAct" min="0" max="255" title="PWM pour ouvrir la valve (180-255 typique)" oninput="updPwmPct(this)"><span class="pwm-pct" style="font-size:.65em;color:#888;min-width:30px;text-align:right"></span></div>
+          <div class="cfg-row"><label>PWM maintien</label><input type="number" id="cfgSolHold" min="0" max="255" title="PWM pour maintenir ouvert (60-120 typique, economise courant)" oninput="updPwmPct(this)"><span class="pwm-pct" style="font-size:.65em;color:#888;min-width:30px;text-align:right"></span></div>
+          <div class="cfg-row"><label>Temps actif avant maintien (ms)</label><input type="number" id="cfgSolTime" min="0" max="500" title="Duree en ms de la phase activation avant passage au maintien (20-50 typique)"></div>
+          <div class="cfg-row"><label>Temps inter-note valve ouverte (ms)</label><input type="number" id="cfgSolInter" min="0" max="2000" value="0" title="Si l'ecart entre 2 notes est inferieur a cette valeur, la valve reste ouverte (0=toujours fermer)"></div>
+          <div style="font-size:.65em;color:#888;padding:2px 0">Activation: impulsion forte pour ouvrir. Maintien: courant reduit pour garder ouvert.</div>
+          <button class="btn btn-s" onclick="wsSend({t:'test_sol',o:1});setTimeout(()=>wsSend({t:'test_sol',o:0}),500)" style="font-size:.65em;padding:2px 8px;margin-top:4px" title="Ouvre le solenoide pendant 0.5s">Test solenoide</button>
         </div>
         <div id="airValveServoParams" style="display:none">
           <div class="cfg-row"><label>Canal PCA valve</label>
             <input type="number" id="airValveCh" min="0" max="15" value="11" title="Canal sur le PCA9685 (0-15). Ne pas utiliser le meme canal que le servo flow.">
+          </div>
+          <div class="cfg-row"><label>Angle ferme</label><input type="number" id="cfgVlvClose" min="0" max="180" value="0" title="Angle servo quand la valve est fermee"></div>
+          <div class="cfg-row"><label>Angle ouvert</label><input type="number" id="cfgVlvOpen" min="0" max="180" value="90" title="Angle servo quand la valve est ouverte"></div>
+          <div class="cfg-row"><label>Sens ouverture</label>
+            <select id="cfgVlvDir">
+              <option value="0">Horaire</option>
+              <option value="1">Anti-horaire</option>
+            </select>
           </div>
         </div>
       </div>
@@ -814,22 +831,6 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
           <button class="btn btn-s" onclick="applyServoPreset(10,90)" style="font-size:.7em;padding:3px 8px" title="Bon compromis pour la plupart des flutes">Standard</button>
           <button class="btn btn-s" onclick="applyServoPreset(15,120)" style="font-size:.7em;padding:3px 8px" title="Souffle fort, flute traversiere ou gros volume">Puissant</button>
         </div>
-      </div>
-    </div>
-
-    <!-- BLOCK: Solenoide (legacy mode 0) -->
-    <div class="air-block" id="airBlockSolenoid" style="display:none">
-      <div class="air-block-hdr" tabindex="0" role="button" aria-label="Configuration solenoide" onclick="toggleAirBlock('airBlockSolenoid')" onkeydown="toggleAirBlock('airBlockSolenoid',event)">
-        <h4><svg viewBox="0 0 16 16" width="14" height="14"><rect x="3" y="4" width="10" height="8" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/><line x1="6" y1="6" x2="6" y2="10" stroke="currentColor" stroke-width="1"/><line x1="10" y1="6" x2="10" y2="10" stroke="currentColor" stroke-width="1"/></svg>Solenoide</h4>
-        <div class="air-block-toggle on" id="airBlockSolenoidToggle" role="switch" aria-checked="true" onclick="event.stopPropagation();toggleAirBlockEnable('airBlockSolenoid')"></div>
-      </div>
-      <div class="air-block-body">
-        <div class="cfg-row"><label>GPIO Pin</label><select id="cfgSolPin" title="Pin GPIO connectee au MOSFET/relais du solenoide"></select></div>
-        <div class="cfg-row"><label>PWM activation</label><input type="number" id="cfgSolAct" min="0" max="255" title="PWM pour ouvrir la valve (180-255 typique)" oninput="updPwmPct(this)"><span class="pwm-pct" style="font-size:.65em;color:#888;min-width:30px;text-align:right"></span></div>
-        <div class="cfg-row"><label>PWM maintien</label><input type="number" id="cfgSolHold" min="0" max="255" title="PWM pour maintenir ouvert (60-120 typique, economise courant)" oninput="updPwmPct(this)"><span class="pwm-pct" style="font-size:.65em;color:#888;min-width:30px;text-align:right"></span></div>
-        <div class="cfg-row"><label>Temps (ms)</label><input type="number" id="cfgSolTime" min="0" max="500" title="Duree en ms de la phase activation avant passage au maintien (20-50 typique)"></div>
-        <div style="font-size:.65em;color:#888;padding:2px 0">Activation: impulsion forte pour ouvrir. Maintien: courant reduit pour garder ouvert.</div>
-        <button class="btn btn-s" onclick="wsSend({t:'test_sol',o:1});setTimeout(()=>wsSend({t:'test_sol',o:0}),500)" style="font-size:.65em;padding:2px 8px;margin-top:4px" title="Ouvre le solenoide pendant 0.5s">Test solenoide</button>
       </div>
     </div>
 
@@ -1138,7 +1139,7 @@ function showTab(id,btn){
 }
 // --- Air System (modulaire) ---
 const AIR_DESCS=[
-  'Solenoide GPIO coupe l\'air, servo flow regle le debit. Ideal pour alimentation externe (compresseur, bouche).',
+  'Valve (solenoide ou servo) coupe l\'air, servo flow regle le debit. Ideal pour alimentation externe (compresseur, bouche).',
   '', // reserved
   'Servo flow seul. L\'angle min coupe l\'air entre les notes. Simple, un seul servo suffit.',
   'Ventilateur PWM souffle en continu. Le servo flow dirige le flux vers la flute. Bonne puissance.',
@@ -1146,7 +1147,7 @@ const AIR_DESCS=[
   'Pompe(s) + reservoir + capteur. Regulation PID automatique de la pression. Configuration la plus complete.'
 ];
 const AIR_PARTS=[
-  ['Servo flow PCA','Solenoide GPIO'],
+  ['Servo flow PCA','Valve'],
   [], // reserved
   ['Servo flow PCA'],
   ['Servo flow PCA','Ventilateur PWM'],
@@ -1346,8 +1347,7 @@ function setAirMode(v){
   const mnLabel=$('cfgAirMinLabel');if(mnLabel)mnLabel.textContent=needsOff?'Position note On min':'Angle min';
   const mxLabel=$('cfgAirMaxLabel');if(mxLabel)mxLabel.textContent=needsOff?'Position note On max':'Angle max';
   const bgo=$('btnGotoOff');if(bgo)bgo.style.display=needsOff?'':'none';
-  // Solenoid block shown when valve type is solenoid (0) and valve is used
-  const bsol=$('airBlockSolenoid');if(bsol)bsol.style.display=(hasValve&&parseInt($('airValveType').value)===0)?'':'none';
+  toggleValveParams(true);
   // Live stats visibility
   const sp=$('airStatPump');if(sp)sp.style.display=hasPump?'':'none';
   const sf=$('airStatFan');if(sf)sf.style.display=hasFan?'':'none';
@@ -1372,7 +1372,6 @@ function setAirMode(v){
   if(vc)vc.style.display=(hasValve)?'':'none';
   if(bt)bt.style.display=(hasPump||hasFan)?'':'none';
   const td=$('airTestDur');if(td)td.style.display=(hasPump||hasFan)?'':'none';
-  toggleValveParams();
   if(hasRes)toggleSensorParams();
   const md=$('airModeDesc');if(md){
     const parts=AIR_PARTS[m]||[];
@@ -1380,7 +1379,7 @@ function setAirMode(v){
     md.innerHTML=(AIR_DESCS[m]||'')+'<div style="margin-top:4px">'+badges+'</div>';
   }
   // Update status bar
-  const modeNames=['Solenoide','','Servo seul','Ventilateur','Pompe directe','Pompe+reservoir'];
+  const modeNames=['Valve+flow','','Servo seul','Ventilateur','Pompe directe','Pompe+reservoir'];
   const sm=$('airStatusMode');if(sm)sm.textContent=modeNames[m]||'?';
   validateAirConfig();
   buildAirSvg('airSvgFull',true);
@@ -1413,10 +1412,8 @@ function toggleAirBlockEnable(id){
 }
 function toggleValveParams(noMark){
   const isSol=$('airValveType').value==='0';
-  $('airValveServoParams').style.display=isSol?'none':'';
-  // Show solenoid config block when valve type is solenoid and valve is used
-  const m=getAirMode();const hasValve=(m===0||m>=4);
-  const bsol=$('airBlockSolenoid');if(bsol){bsol.style.display=(hasValve&&isSol)?'':'none';if(hasValve&&isSol)bsol.classList.add('active')}
+  const solP=$('airValveSolParams');if(solP)solP.style.display=isSol?'':'none';
+  const srvP=$('airValveServoParams');if(srvP)srvP.style.display=isSol?'none':'';
   if(!noMark)markDirty();
 }
 function toggleMotorType(){
@@ -1579,14 +1576,17 @@ function saveAirSettings(){
   const vt=parseInt($('airValveType').value)||0;
   const hasValve=(m===0||m>=4);
   const needsOff=(m===2||m===3);
-  const d={air_mode:m,valve_type:vt,
-    valve_ch:parseInt($('airValveCh').value)||11,show_air:showAir,
+  const d={air_mode:m,valve_type:vt,show_air:showAir,
     res_format:rf?rf.value:'balloon',
     air_min:parseInt($('cfgAirMin').value)||0,air_max:parseInt($('cfgAirMax').value)||180};
   if(needsOff)d.air_off=parseInt($('cfgAirOff').value)||0;
-  // Solenoid params when valve type is solenoid GPIO
+  // Valve params depending on type
   if(hasValve&&vt===0){d.sol_pin=parseInt($('cfgSolPin').value)||13;
-    d.sol_act=parseInt($('cfgSolAct').value)||255;d.sol_hold=parseInt($('cfgSolHold').value)||80;d.sol_time=parseInt($('cfgSolTime').value)||30}
+    d.sol_act=parseInt($('cfgSolAct').value)||255;d.sol_hold=parseInt($('cfgSolHold').value)||80;
+    d.sol_time=parseInt($('cfgSolTime').value)||30;d.sol_inter=parseInt($('cfgSolInter').value)||0}
+  if(hasValve&&vt===1){d.valve_ch=parseInt($('airValveCh').value)||11;
+    d.vlv_close=parseInt($('cfgVlvClose').value)||0;d.vlv_open=parseInt($('cfgVlvOpen').value)||90;
+    d.vlv_dir=parseInt($('cfgVlvDir').value)||0}
   if(m===3){d.fan_pin=parseInt($('airFanPin').value)||26;d.fan_min=parseInt($('airFanMin').value)||60;d.fan_max=parseInt($('airFanMax').value)||255;
     d.fan_idle_pct=parseInt($('airFanIdlePct').value)||0;d.fan_idle_timeout=parseInt($('airFanIdleTimeout').value)||0}
   if(m>=4){
@@ -1626,8 +1626,9 @@ function resetAirDefaults(){
   if(m===2||m===3)$('cfgAirOff').value=5;
   $('cfgAirMin').value=10;$('cfgAirMax').value=90;
   $('airValveType').value='0';$('airValveCh').value=11;
+  $('cfgVlvClose').value=0;$('cfgVlvOpen').value=90;$('cfgVlvDir').value='0';
   // Solenoid defaults for modes with valve
-  if(m===0||m>=4){$('cfgSolPin').value=13;$('cfgSolAct').value=255;$('cfgSolHold').value=80;$('cfgSolTime').value=30}
+  if(m===0||m>=4){$('cfgSolPin').value=13;$('cfgSolAct').value=255;$('cfgSolHold').value=80;$('cfgSolTime').value=30;$('cfgSolInter').value=0}
   if(m===3){$('airFanMin').value=60;$('airFanMax').value=255;$('airFanIdlePct').value=20;$('airFanIdleTimeout').value=5000}
   if(m>=4){$('airMotorType').value='0';$('airNumPumps').value=1;toggleMotorType();buildPumpRows()}
   if(m===5){$('airSensorType').value='0';$('airSensTarget').value=50;$('airSensMin').value=10;$('airSensMax').value=150;
@@ -1636,8 +1637,8 @@ function resetAirDefaults(){
   showToast('Valeurs par defaut appliquees','success');
 }
 function copyAirConfig(){
-  const keys=['air_mode','valve_type','valve_ch','air_off','air_min','air_max','motor_type','num_pumps',
-    'fan_pin','fan_min','fan_max','fan_idle_pct','fan_idle_timeout','sol_pin','sol_act','sol_hold','sol_time','sens_type','sens_target',
+  const keys=['air_mode','valve_type','valve_ch','vlv_close','vlv_open','vlv_dir','air_off','air_min','air_max','motor_type','num_pumps',
+    'fan_pin','fan_min','fan_max','fan_idle_pct','fan_idle_timeout','sol_pin','sol_act','sol_hold','sol_time','sol_inter','sens_type','sens_target',
     'sens_min','sens_max','pid_kp','pid_ki','hall_pin','hall_low','hall_high','endstop_pin','endstop_high','endstop_pump_on','res_format','show_air'];
   const out={};keys.forEach(k=>{if(CFG[k]!=null)out[k]=CFG[k]});
   const json=JSON.stringify(out,null,2);
@@ -1645,13 +1646,15 @@ function copyAirConfig(){
   else{const ta=document.createElement('textarea');ta.value=json;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();showToast('Config copiee','success')}
 }
 const CFG_LABELS={air_mode:'Mode',air_off:'Off',air_min:'Min',air_max:'Max',fan_min:'Fan min',fan_max:'Fan max',fan_idle_pct:'Fan idle%',fan_idle_timeout:'Fan timeout',pid_kp:'Kp',pid_ki:'Ki',
-  valve_type:'Valve',valve_ch:'Canal valve',sol_pin:'Sol GPIO',sol_act:'Sol act',sol_hold:'Sol hold',sol_time:'Sol temps',
+  valve_type:'Valve',valve_ch:'Canal valve',vlv_close:'Vlv ferme',vlv_open:'Vlv ouvert',vlv_dir:'Vlv sens',
+  sol_pin:'Sol GPIO',sol_act:'Sol act',sol_hold:'Sol hold',sol_time:'Sol temps',sol_inter:'Sol inter-note',
   sens_type:'Capteur',sens_target:'Cible',sens_min:'Sens min',sens_max:'Sens max',show_air:'Afficher air'};
 function updateConfigSummary(){
   const cs=$('airConfigSummary');if(!cs||!CFG)return;
   const fields=[['air_mode','airModeSelect'],['air_off','cfgAirOff'],['air_min','cfgAirMin'],['air_max','cfgAirMax'],
     ['fan_min','airFanMin'],['fan_max','airFanMax'],['fan_idle_pct','airFanIdlePct'],['fan_idle_timeout','airFanIdleTimeout'],['pid_kp','airPidKp'],['pid_ki','airPidKi'],
-    ['valve_type','airValveType'],['valve_ch','airValveCh'],['sens_type','airSensorType'],['sens_target','airSensTarget'],
+    ['valve_type','airValveType'],['valve_ch','airValveCh'],['vlv_close','cfgVlvClose'],['vlv_open','cfgVlvOpen'],['vlv_dir','cfgVlvDir'],
+    ['sol_inter','cfgSolInter'],['sens_type','airSensorType'],['sens_target','airSensTarget'],
     ['show_air','cfgShowAir']];
   const changed=[];
   fields.forEach(([k,id])=>{
@@ -1712,6 +1715,11 @@ function fillAirSettings(){
   sa.value=CFG.sol_act!=null?CFG.sol_act:255;updPwmPct(sa);
   sh.value=CFG.sol_hold!=null?CFG.sol_hold:80;updPwmPct(sh);
   $('cfgSolTime').value=CFG.sol_time!=null?CFG.sol_time:30;
+  $('cfgSolInter').value=CFG.sol_inter!=null?CFG.sol_inter:0;
+  // Servo valve settings
+  $('cfgVlvClose').value=CFG.vlv_close!=null?CFG.vlv_close:0;
+  $('cfgVlvOpen').value=CFG.vlv_open!=null?CFG.vlv_open:90;
+  $('cfgVlvDir').value=(CFG.vlv_dir||0).toString();
   // Show air checkbox
   $('cfgShowAir').checked=!!CFG.show_air;
   // Attach validation listeners + dirty tracking (once only)
@@ -1924,7 +1932,7 @@ function buildAirSvg(svgId,full){
     s+='<text x="'+vx+'" y="'+(vy+cylH/2+14)+'" text-anchor="middle" style="font-size:7px;fill:#9aa">'+vl+'</text>';
     // Channel/pin badge on valve
     if(isServoValve){const vch=CFG.valve_ch||11;s+='<text x="'+(vx+cylW/2+2)+'" y="'+(vy-cylH/2+8)+'" style="font-size:5px;fill:#569">CH'+vch+'</text>'}
-    else if(m===0){const sp=CFG.sol_pin||13;s+='<text x="'+(vx+cylW/2+2)+'" y="'+(vy-cylH/2+8)+'" style="font-size:5px;fill:#e9a645">G'+sp+'</text>'}
+    else{const sp=CFG.sol_pin||13;s+='<text x="'+(vx+cylW/2+2)+'" y="'+(vy-cylH/2+8)+'" style="font-size:5px;fill:#e9a645">G'+sp+'</text>'}
 
     // Pipe UP from valve to servo flow row
     s+='<line x1="'+vx+'" y1="'+(vy-cylH/2-12)+'" x2="'+vx+'" y2="'+(rowServo+18)+'" stroke="#7799bb" stroke-width="3"/>';
@@ -2606,7 +2614,7 @@ function buildAirOverlay(g,em,ox,fluteX,ty,by,cy,svgH){
     const vlX=saX-vlW-12,vlY_=cy-vlH/2;
     s+='<rect id="airValveRect" x="'+vlX+'" y="'+vlY_+'" width="'+vlW+'" height="'+vlH+'" rx="3" fill="#444" stroke="#667" stroke-width="1.2"/>';
     s+='<rect id="airValveInd" x="'+(vlX+8)+'" y="'+(vlY_+5)+'" width="10" height="'+vlH*0.6+'" rx="2" fill="#e44"/>';
-    const vlLabel=m===0?'Solenoide':((CFG.valve_type===1)?'Servo':'Valve');
+    const vlLabel=(CFG.valve_type===1)?'Servo':'Solenoide';
     s+='<text x="'+(vlX+vlW/2)+'" y="'+(vlY_+vlH+10)+'" text-anchor="middle" style="font-size:7px;fill:#9aa">'+vlLabel+'</text>';
     s+='<line x1="'+(vlX+vlW)+'" y1="'+cy+'" x2="'+saX+'" y2="'+cy+'" stroke="#7799bb" stroke-width="3" stroke-linecap="round" opacity=".6"/>';
     s+='<polygon points="'+(saX-5)+','+(cy-3)+' '+saX+','+cy+' '+(saX-5)+','+(cy+3)+'" fill="#7799bb" opacity=".6"/>';

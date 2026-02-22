@@ -107,6 +107,10 @@ struct RuntimeConfig {
   uint8_t airMode;                   // 0-5 (voir AIR_MODE_* dans settings.h)
   uint8_t valveType;                 // 0=solenoide GPIO, 1=servo PCA
   uint8_t valveServoPcaChannel;      // Canal PCA9685 si valve=servo
+  uint8_t valveServoCloseAngle;      // Angle ferme servo valve (0-180)
+  uint8_t valveServoOpenAngle;       // Angle ouvert servo valve (0-180)
+  uint8_t valveServoDir;             // 0=horaire, 1=anti-horaire
+  uint16_t solenoidInterNoteMs;      // Temps min entre notes ou valve reste ouverte (ms)
   uint8_t motorType;                 // 0=PWM variable, 1=On/Off
   // Ventilateur (mode 3)
   uint8_t fanPin;                    // GPIO PWM ventilateur
