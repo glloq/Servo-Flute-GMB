@@ -97,6 +97,8 @@ void ConfigStorage::initDefaults() {
   cfg.fanPin = DEFAULT_FAN_PIN;
   cfg.fanMinPwm = DEFAULT_FAN_MIN_PWM;
   cfg.fanMaxPwm = DEFAULT_FAN_MAX_PWM;
+  cfg.fanIdlePercent = DEFAULT_FAN_IDLE_PERCENT;
+  cfg.fanIdleTimeoutMs = DEFAULT_FAN_IDLE_TIMEOUT_MS;
   cfg.numPumps = DEFAULT_NUM_PUMPS;
   cfg.pumpPins[0] = DEFAULT_PUMP_PIN;
   cfg.pumpPins[1] = 26;
@@ -250,6 +252,8 @@ bool ConfigStorage::load() {
   cfg.fanPin = doc["fan_pin"] | cfg.fanPin;
   cfg.fanMinPwm = doc["fan_min"] | cfg.fanMinPwm;
   cfg.fanMaxPwm = doc["fan_max"] | cfg.fanMaxPwm;
+  cfg.fanIdlePercent = doc["fan_idle_pct"] | cfg.fanIdlePercent;
+  cfg.fanIdleTimeoutMs = doc["fan_idle_timeout"] | cfg.fanIdleTimeoutMs;
   cfg.numPumps = doc["num_pumps"] | cfg.numPumps;
   if (cfg.numPumps < 1) cfg.numPumps = 1;
   if (cfg.numPumps > MAX_PUMPS) cfg.numPumps = MAX_PUMPS;
@@ -390,6 +394,8 @@ bool ConfigStorage::save() {
   doc["fan_pin"] = cfg.fanPin;
   doc["fan_min"] = cfg.fanMinPwm;
   doc["fan_max"] = cfg.fanMaxPwm;
+  doc["fan_idle_pct"] = cfg.fanIdlePercent;
+  doc["fan_idle_timeout"] = cfg.fanIdleTimeoutMs;
   doc["num_pumps"] = cfg.numPumps;
   JsonArray pumpPins = doc["pump_pins"].to<JsonArray>();
   JsonArray pumpMins = doc["pump_mins"].to<JsonArray>();

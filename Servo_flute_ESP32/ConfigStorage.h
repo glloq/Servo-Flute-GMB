@@ -112,6 +112,8 @@ struct RuntimeConfig {
   uint8_t fanPin;                    // GPIO PWM ventilateur
   uint8_t fanMinPwm;                // PWM min (seuil demarrage)
   uint8_t fanMaxPwm;                // PWM max
+  uint8_t fanIdlePercent;           // Vitesse idle entre notes (0-100%, 0=couper)
+  uint16_t fanIdleTimeoutMs;        // Delai sans note avant coupure totale (ms, 0=jamais couper)
   // Pompes (modes 4-5, 1 a 3 pompes)
   uint8_t numPumps;                  // 1-3
   uint8_t pumpPins[MAX_PUMPS];       // GPIO pour chaque pompe

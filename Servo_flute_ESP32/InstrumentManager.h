@@ -73,6 +73,9 @@ private:
   void managePower();
   void powerOnServos();
   void powerOffServos();
+
+  // Fan idle: track sequencer state transitions
+  NoteState _prevSequencerState;
 };
 
 #endif

@@ -674,6 +674,14 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
         <div class="cfg-row"><label>PWM max</label>
           <input type="number" id="airFanMax" min="0" max="255" value="255">
         </div>
+        <div style="font-size:.7em;color:#4ecca3;padding:6px 0 2px;font-weight:600">Mode idle (entre notes)</div>
+        <div class="cfg-row"><label>Vitesse idle (%)</label>
+          <input type="number" id="airFanIdlePct" min="0" max="100" value="20" title="Vitesse du ventilateur entre les notes (0=couper immediatement). Garder une rotation basse permet un redemarrage plus rapide.">
+        </div>
+        <div class="cfg-row"><label>Timeout idle (ms)</label>
+          <input type="number" id="airFanIdleTimeout" min="0" max="30000" value="5000" title="Couper le ventilateur apres ce delai sans note On (0=ne jamais couper, rester en idle)">
+        </div>
+        <div style="font-size:.65em;color:#888;padding:2px 0">Idle: reduit la vitesse a X% entre les notes. Apres le timeout sans note, coupe completement.</div>
       </div>
     </div>
 
@@ -1577,7 +1585,8 @@ function saveAirSettings(){
   // Solenoid params when valve type is solenoid GPIO
   if(hasValve&&vt===0){d.sol_pin=parseInt($('cfgSolPin').value)||13;
     d.sol_act=parseInt($('cfgSolAct').value)||255;d.sol_hold=parseInt($('cfgSolHold').value)||80;d.sol_time=parseInt($('cfgSolTime').value)||30}
-  if(m===3){d.fan_pin=parseInt($('airFanPin').value)||26;d.fan_min=parseInt($('airFanMin').value)||60;d.fan_max=parseInt($('airFanMax').value)||255}
+  if(m===3){d.fan_pin=parseInt($('airFanPin').value)||26;d.fan_min=parseInt($('airFanMin').value)||60;d.fan_max=parseInt($('airFanMax').value)||255;
+    d.fan_idle_pct=parseInt($('airFanIdlePct').value)||0;d.fan_idle_timeout=parseInt($('airFanIdleTimeout').value)||0}
   if(m>=4){
     d.motor_type=parseInt($('airMotorType').value)||0;
     const np=parseInt($('airNumPumps').value)||1;d.num_pumps=np;
@@ -1617,7 +1626,7 @@ function resetAirDefaults(){
   $('airValveType').value='0';$('airValveCh').value=11;
   // Solenoid defaults for modes with valve
   if(m===0||m>=4){$('cfgSolPin').value=13;$('cfgSolAct').value=255;$('cfgSolHold').value=80;$('cfgSolTime').value=30}
-  if(m===3){$('airFanMin').value=60;$('airFanMax').value=255}
+  if(m===3){$('airFanMin').value=60;$('airFanMax').value=255;$('airFanIdlePct').value=20;$('airFanIdleTimeout').value=5000}
   if(m>=4){$('airMotorType').value='0';$('airNumPumps').value=1;toggleMotorType();buildPumpRows()}
   if(m===5){$('airSensorType').value='0';$('airSensTarget').value=50;$('airSensMin').value=10;$('airSensMax').value=150;
     $('airPidKp').value=30;$('airPidKi').value=5;toggleSensorParams()}
@@ -1626,20 +1635,20 @@ function resetAirDefaults(){
 }
 function copyAirConfig(){
   const keys=['air_mode','valve_type','valve_ch','air_off','air_min','air_max','motor_type','num_pumps',
-    'fan_pin','fan_min','fan_max','sol_pin','sol_act','sol_hold','sol_time','sens_type','sens_target',
+    'fan_pin','fan_min','fan_max','fan_idle_pct','fan_idle_timeout','sol_pin','sol_act','sol_hold','sol_time','sens_type','sens_target',
     'sens_min','sens_max','pid_kp','pid_ki','hall_pin','hall_low','hall_high','endstop_pin','endstop_high','endstop_pump_on','res_format','show_air'];
   const out={};keys.forEach(k=>{if(CFG[k]!=null)out[k]=CFG[k]});
   const json=JSON.stringify(out,null,2);
   if(navigator.clipboard)navigator.clipboard.writeText(json).then(()=>showToast('Config copiee','success'));
   else{const ta=document.createElement('textarea');ta.value=json;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();showToast('Config copiee','success')}
 }
-const CFG_LABELS={air_mode:'Mode',air_off:'Off',air_min:'Min',air_max:'Max',fan_min:'Fan min',fan_max:'Fan max',pid_kp:'Kp',pid_ki:'Ki',
+const CFG_LABELS={air_mode:'Mode',air_off:'Off',air_min:'Min',air_max:'Max',fan_min:'Fan min',fan_max:'Fan max',fan_idle_pct:'Fan idle%',fan_idle_timeout:'Fan timeout',pid_kp:'Kp',pid_ki:'Ki',
   valve_type:'Valve',valve_ch:'Canal valve',sol_pin:'Sol GPIO',sol_act:'Sol act',sol_hold:'Sol hold',sol_time:'Sol temps',
   sens_type:'Capteur',sens_target:'Cible',sens_min:'Sens min',sens_max:'Sens max',show_air:'Afficher air'};
 function updateConfigSummary(){
   const cs=$('airConfigSummary');if(!cs||!CFG)return;
   const fields=[['air_mode','airModeSelect'],['air_off','cfgAirOff'],['air_min','cfgAirMin'],['air_max','cfgAirMax'],
-    ['fan_min','airFanMin'],['fan_max','airFanMax'],['pid_kp','airPidKp'],['pid_ki','airPidKi'],
+    ['fan_min','airFanMin'],['fan_max','airFanMax'],['fan_idle_pct','airFanIdlePct'],['fan_idle_timeout','airFanIdleTimeout'],['pid_kp','airPidKp'],['pid_ki','airPidKi'],
     ['valve_type','airValveType'],['valve_ch','airValveCh'],['sens_type','airSensorType'],['sens_target','airSensTarget'],
     ['show_air','cfgShowAir']];
   const changed=[];
@@ -1678,6 +1687,8 @@ function fillAirSettings(){
   // Fan GPIO (dynamic populate)
   populateGpioSelect($('airFanPin'),PWM_GPIOS,CFG.fan_pin||26);
   $('airFanMin').value=CFG.fan_min||60;$('airFanMax').value=CFG.fan_max||255;
+  $('airFanIdlePct').value=CFG.fan_idle_pct!=null?CFG.fan_idle_pct:20;
+  $('airFanIdleTimeout').value=CFG.fan_idle_timeout!=null?CFG.fan_idle_timeout:5000;
   $('airNumPumps').value=CFG.num_pumps||1;
   $('airSensorType').value=CFG.sens_type!=null?CFG.sens_type:1;
   $('airSensTarget').value=CFG.sens_target||50;$('airSensMin').value=CFG.sens_min||10;$('airSensMax').value=CFG.sens_max||150;
@@ -1704,7 +1715,7 @@ function fillAirSettings(){
   // Attach validation listeners + dirty tracking (once only)
   if(!window._airListenersAttached){
     window._airListenersAttached=true;
-    ['airFanMin','airFanMax','airHallLow','airHallHigh','airSensMin','airSensMax','cfgAirOff','cfgAirMin','cfgAirMax'].forEach(id=>{
+    ['airFanMin','airFanMax','airFanIdlePct','airFanIdleTimeout','airHallLow','airHallHigh','airSensMin','airSensMax','cfgAirOff','cfgAirMin','cfgAirMax'].forEach(id=>{
       const el=$(id);if(el)el.addEventListener('input',()=>{validateAirConfig();updateHallBar();markDirty()})});
     document.querySelectorAll('#tab-air select,#tab-air input[type=number],#tab-air input[type=checkbox]').forEach(el=>{
       el.addEventListener('change',()=>markDirty())});
@@ -2055,8 +2066,9 @@ function updateAirDiagram(d){
   const fp=$('airFanPwm'),sf2=$('airStatFan');if(fp){
     if(d.fan_pwm>0){
       let t=d.fan_speed!=null?(d.fan_speed+'%'):d.fan_pwm;
-      if(d.fan_ready===false)t+=' ...';
-      fp.textContent=t;fp.style.color=d.fan_ready===false?'#e9a645':'#4ecca3';if(sf2)sf2.classList.add('active-stat')}
+      if(d.fan_idle)t+=' (idle)';
+      else if(d.fan_ready===false)t+=' ...';
+      fp.textContent=t;fp.style.color=d.fan_idle?'#e9a645':d.fan_ready===false?'#e9a645':'#4ecca3';if(sf2)sf2.classList.add('active-stat')}
     else{fp.textContent='OFF';fp.style.color='';if(sf2)sf2.classList.remove('active-stat')}
   }
   const rp=$('airResPct');if(rp)rp.textContent=(d.res_pct!=null?d.res_pct:'-')+'%';

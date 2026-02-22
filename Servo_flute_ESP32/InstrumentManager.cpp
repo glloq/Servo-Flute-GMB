@@ -18,7 +18,8 @@ InstrumentManager::InstrumentManager()
     _ccCount(0),
     _ccWindowStart(0),
     _cc2Count(0),
-    _cc2WindowStart(0) {
+    _cc2WindowStart(0),
+    _prevSequencerState(STATE_IDLE) {
 }
 
 void InstrumentManager::begin() {
@@ -76,6 +77,18 @@ void InstrumentManager::update() {
     _pressureCtrl.update();
   }
   if (cfg.airMode == AIR_MODE_FAN_SERVO) {
+    // Detect sequencer state transitions for fan idle management
+    NoteState curState = _sequencer.getState();
+    if (curState != _prevSequencerState) {
+      if (curState == STATE_PLAYING && _prevSequencerState != STATE_PLAYING) {
+        // Transition vers jeu actif => signaler noteOn au ventilateur
+        _fanCtrl.onNoteOn();
+      } else if (_prevSequencerState == STATE_PLAYING && curState != STATE_PLAYING) {
+        // Transition depuis jeu actif => signaler noteOff au ventilateur
+        _fanCtrl.onNoteOff();
+      }
+      _prevSequencerState = curState;
+    }
     _fanCtrl.update();
   }
   managePower();
