@@ -1329,6 +1329,7 @@ function confirmAirModeChange(sel){
 }
 function setAirMode(v){
   const m=parseInt(v);
+  if(CFG)CFG.air_mode=m;
   const hasPump=m>=4,hasFan=m===3,hasValve=(m===0||m>=4),hasRes=m===5;
   const hasServo=true; // all modes have servo flow
   // Show/hide config blocks
@@ -1383,6 +1384,7 @@ function setAirMode(v){
   const sm=$('airStatusMode');if(sm)sm.textContent=modeNames[m]||'?';
   validateAirConfig();
   buildAirSvg('airSvgFull',true);
+  if(CFG)buildFlute(CFG,'fluteSvg',false);
 }
 let _allBlocksExpanded=true;
 function toggleAirHelp(){const hp=$('airHelpPanel');if(hp)hp.style.display=hp.style.display==='none'?'':'none'}
