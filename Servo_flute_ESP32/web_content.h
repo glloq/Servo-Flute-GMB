@@ -1242,31 +1242,48 @@ function refreshKbdAir(){
   refreshKbdPumpPanel();
 }
 function _pixelAlignFlute(as,fs){
-  if(!as||!fs||!_kbdPipeExitRatio||!CFG)return;
-  // Get pipe exit actual screen X via SVG coordinate transform
+  var dbg='align: ';
+  if(!as||!fs){_dbgAlign(as,'no svg refs');return}
+  if(!_kbdPipeExitRatio){_dbgAlign(as,'ratio=0');return}
+  if(!CFG){_dbgAlign(as,'no CFG');return}
   var ctm=as.getScreenCTM();
-  if(!ctm)return;
+  if(!ctm){_dbgAlign(as,'air CTM null');return}
   var vb=as.viewBox.baseVal;
-  if(!vb||!vb.width)return;
+  if(!vb||!vb.width){_dbgAlign(as,'air vb empty');return}
   var pt=as.createSVGPoint();
   pt.x=_kbdPipeExitRatio*vb.width;pt.y=0;
   var sp=pt.matrixTransform(ctm);
-  // Get embouchure actual screen X via SVG coordinate transform
   var fctm=fs.getScreenCTM();
-  if(!fctm)return;
+  if(!fctm){_dbgAlign(as,'flute CTM null, air.x='+Math.round(sp.x));return}
   var em=CFG.embouchure||'bec';
   var bpx=(em==='trav')?36:(em==='oca')?21:4;
   var fpt=fs.createSVGPoint();fpt.x=bpx;fpt.y=0;
   var fsp=fpt.matrixTransform(fctm);
-  // Apply pixel-exact horizontal shift
   var dx=Math.round(sp.x-fsp.x);
-  if(dx>1)fs.style.transform='translateX('+dx+'px)';
-  // Debug: add alignment marker line at pipe exit X in air SVG (temporary)
+  dbg+='r='+_kbdPipeExitRatio.toFixed(3)+' vb='+vb.width+'x'+vb.height+' pipe.sx='+Math.round(sp.x)+' emb.sx='+Math.round(fsp.x)+' dx='+dx;
+  // Apply shift regardless of sign (dx could be negative if embouchure is already right of pipe)
+  if(Math.abs(dx)>1){
+    fs.style.transform='translateX('+dx+'px)';
+    dbg+=' APPLIED';
+  }else{
+    dbg+=' skip(small)';
+  }
+  _dbgAlign(as,dbg);
+  // Debug marker line at pipe exit
   var mk=as.querySelector('#dbgAlignMark');
   if(!mk){mk=document.createElementNS('http://www.w3.org/2000/svg','line');mk.id='dbgAlignMark';as.appendChild(mk)}
   mk.setAttribute('x1',_kbdPipeExitRatio*vb.width);mk.setAttribute('y1','0');
   mk.setAttribute('x2',_kbdPipeExitRatio*vb.width);mk.setAttribute('y2',vb.height);
   mk.setAttribute('stroke','red');mk.setAttribute('stroke-width','2');mk.setAttribute('stroke-dasharray','4,4');
+}
+function _dbgAlign(as,msg){
+  // Show debug message as visible text on air SVG
+  if(!as)return;
+  var t=as.querySelector('#dbgAlignTxt');
+  if(!t){t=document.createElementNS('http://www.w3.org/2000/svg','text');t.id='dbgAlignTxt';as.appendChild(t)}
+  t.setAttribute('x','5');t.setAttribute('y','12');
+  t.setAttribute('style','font-size:10px;fill:#ff0;font-family:monospace');
+  t.textContent=msg;
 }
 let _kbdPumpOn=false;
 function refreshKbdPumpPanel(){
