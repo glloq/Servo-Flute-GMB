@@ -311,6 +311,13 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
   <div class="flute-box">
     <svg id="fluteSvg" viewBox="0 0 400 100"></svg>
     <div class="flute-info"><span id="fluteNote">-</span> <span id="fluteInfo" style="color:#555">Jouez une note</span></div>
+    <div id="kbdAirStats" style="display:none;gap:8px;flex-wrap:wrap;font-size:.75em;padding:4px 8px;background:#0a0a1a;border-radius:0 0 8px 8px;justify-content:center">
+      <span id="kbdStatPump" style="display:none;color:#9aa">Pompe <b id="kbdPumpVal">OFF</b></span>
+      <span id="kbdStatFan" style="display:none;color:#9aa">Ventil. <b id="kbdFanVal">OFF</b></span>
+      <span id="kbdStatValve" style="color:#9aa">Valve <b id="kbdValveVal">--</b></span>
+      <span id="kbdStatServo" style="color:#9aa">Servo <b id="kbdServoVal">--</b></span>
+      <span id="kbdStatRes" style="display:none;color:#9aa">Reservoir <b id="kbdResVal">--%</b></span>
+    </div>
   </div>
   <div class="section">
     <div class="cfg-row"><label>Velocity</label>
@@ -2274,6 +2281,21 @@ function updateAirDiagram(d){
     stt.textContent=warn?'Capteur absent':active?'Actif':'Repos';
     stt.style.color=warn?'#e94560':active?'#4ecca3':'#9aa';
   }
+  // Update keyboard tab compact air stats
+  const kas=$('kbdAirStats');
+  if(kas&&CFG&&CFG.show_air){
+    const m=CFG.air_mode||0;
+    kas.style.display='flex';
+    const ksp=$('kbdStatPump');if(ksp)ksp.style.display=(m>=4)?'':'none';
+    const ksf=$('kbdStatFan');if(ksf)ksf.style.display=(m===3)?'':'none';
+    const ksv=$('kbdStatValve');if(ksv)ksv.style.display=(m===0||m>=4)?'':'none';
+    const ksr=$('kbdStatRes');if(ksr)ksr.style.display=(m===5)?'':'none';
+    const kpv=$('kbdPumpVal');if(kpv){kpv.textContent=d.pump_pwm>0?Math.round(d.pump_pwm/255*100)+'%':'OFF';kpv.style.color=d.pump_pwm>0?'#4ecca3':''}
+    const kfv=$('kbdFanVal');if(kfv){kfv.textContent=d.fan_pwm>0?(d.fan_speed!=null?d.fan_speed+'%':d.fan_pwm):'OFF';kfv.style.color=d.fan_pwm>0?'#4ecca3':''}
+    const kvv=$('kbdValveVal');if(kvv){kvv.textContent=d.valve_open?'OUVERT':'FERME';kvv.style.color=d.valve_open?'#4ecca3':'#e94560'}
+    const ksv2=$('kbdServoVal');if(ksv2){ksv2.textContent=(d.air_angle!=null?d.air_angle:'--')+'°';ksv2.style.color=d.air_angle>0?'#4ecca3':'#888'}
+    const krv=$('kbdResVal');if(krv&&d.res_pct!=null){krv.textContent=d.res_pct+'%';krv.style.color=d.res_pct>80?'#4ecca3':d.res_pct>30?'#e9a645':'#e94560'}
+  }else if(kas){kas.style.display='none'}
   // Last update timestamp
   const lu=$('airLastUpdate');if(lu)lu.textContent=new Date().toLocaleTimeString();
   // Mini chart for reservoir modes
@@ -2309,13 +2331,17 @@ function drawMiniChart(){
   const lm=22;// left margin for labels
   const pw=w-lm;
   const dx=pw/(chartData.max-1);
-  // Target line
-  const target=CFG.sens_target||50;
-  const tY=h-target/100*h;
-  ctx.setLineDash([4,4]);ctx.strokeStyle='#4ecca355';ctx.lineWidth=1;
-  ctx.beginPath();ctx.moveTo(lm,tY);ctx.lineTo(w,tY);ctx.stroke();ctx.setLineDash([]);
-  ctx.fillStyle='#4ecca355';ctx.font='7px sans-serif';ctx.textAlign='left';
-  ctx.fillText('cible '+target+'%',lm+2,tY-2);
+  // Sensor type for labels
+  const st=CFG?CFG.sens_type||0:0;
+  // Target line (continuous sensors only)
+  if(st<3){
+    const target=CFG.sens_target||50;
+    const tY=h-target/100*h;
+    ctx.setLineDash([4,4]);ctx.strokeStyle='#4ecca355';ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(lm,tY);ctx.lineTo(w,tY);ctx.stroke();ctx.setLineDash([]);
+    ctx.fillStyle='#4ecca355';ctx.font='7px sans-serif';ctx.textAlign='left';
+    ctx.fillText('cible '+target+'%',lm+2,tY-2);
+  }
   // Pump PWM bars (background, faint)
   ctx.fillStyle='rgba(78,204,163,0.08)';
   for(let i=0;i<n;i++){
@@ -2337,8 +2363,10 @@ function drawMiniChart(){
   ctx.fillText(lastPct+'%',w-2,lastY-4);
   // Legend
   ctx.font='7px sans-serif';ctx.textAlign='right';
-  ctx.fillStyle='#e94560';ctx.fillText('Pression',w-2,9);
-  ctx.fillStyle='rgba(78,204,163,0.4)';ctx.fillText('Pompe PWM',w-2,18);
+  const sLabel=st>=3?'Etat':st===2?'Niveau Hall':'Remplissage';
+  const pLabel=(CFG&&CFG.motor_type===1)?'Pompe On/Off':'Pompe PWM';
+  ctx.fillStyle='#e94560';ctx.fillText(sLabel,w-2,9);
+  ctx.fillStyle='rgba(78,204,163,0.4)';ctx.fillText(pLabel,w-2,18);
   // Draw tooltip crosshair if hovering
   if(_chartHoverIdx>=0&&_chartHoverIdx<n){
     const hx=lm+(chartData.max-n+_chartHoverIdx)*dx;
