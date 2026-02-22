@@ -1396,7 +1396,8 @@ function validateAirConfig(){
     const mt=parseInt($('airMotorType').value)||0;
     const usedPins=[];
     for(let i=0;i<n;i++){
-      const p=parseInt($('airPumpPin'+i).value);
+      const pe=$('airPumpPin'+i);if(!pe)continue;
+      const p=parseInt(pe.value);
       if(usedPins.includes(p)){warns.push('Pompe '+(i+1)+': GPIO '+p+' deja utilise');errBlocks.add('airBlockPump')}
       usedPins.push(p);
       if(mt===0){
@@ -1404,8 +1405,6 @@ function validateAirConfig(){
         if(mn>=mx){warns.push('Pompe '+(i+1)+': PWM min >= max');errBlocks.add('airBlockPump')}
       }
     }
-    if(m===3){const fp=parseInt($('airFanPin').value);if(usedPins.includes(fp)){warns.push('GPIO ventilateur en conflit');errBlocks.add('airBlockFan')}}
-    if(m===0){const sp=parseInt($('cfgSolPin').value);if(usedPins.includes(sp)){warns.push('GPIO solenoide en conflit');errBlocks.add('airBlockSolenoid')}}
   }
   // Valve channel conflict with servo flow PCA channel
   if(hasValve&&parseInt($('airValveType').value)===1){
@@ -1440,9 +1439,9 @@ function validateAirConfig(){
 }
 function saveAirSettings(){
   if(!validateAirConfig()){
-    const msg=$('airSettingsMsg');msg.textContent='Corriger les erreurs avant de sauver';msg.style.color='#e94560';
+    const msg=$('airSettingsMsg');if(msg){msg.textContent='Corriger les erreurs avant de sauver';msg.style.color='#e94560';
+      setTimeout(()=>{msg.textContent='';msg.style.color='#0f0'},3000)}
     const vm=$('airValidationMsg');if(vm){vm.style.animation='airShake .4s';setTimeout(()=>vm.style.animation='',400)}
-    setTimeout(()=>{msg.textContent='';msg.style.color='#0f0'},3000);
     return;
   }
   const m=parseInt($('airModeSelect').value);
@@ -1566,19 +1565,20 @@ function fillAirSettings(){
   $('cfgSolTime').value=CFG.sol_time!=null?CFG.sol_time:30;
   // Show air checkbox
   $('cfgShowAir').checked=!!CFG.show_air;
-  // Attach validation listeners + dirty tracking
-  ['airFanMin','airFanMax','airHallLow','airHallHigh','airSensMin','airSensMax','cfgAirOff','cfgAirMin','cfgAirMax'].forEach(id=>{
-    const el=$(id);if(el)el.addEventListener('input',()=>{validateAirConfig();updateHallBar();markDirty()})});
-  // Track changes on all Air tab selects and inputs
-  document.querySelectorAll('#tab-air select,#tab-air input[type=number],#tab-air input[type=checkbox]').forEach(el=>{
-    el.addEventListener('change',()=>markDirty())});
-  // Clamp number inputs on blur to enforce min/max
-  document.querySelectorAll('#tab-air input[type=number]').forEach(el=>{
-    el.addEventListener('blur',()=>{
-      const v=parseFloat(el.value),mn=parseFloat(el.min),mx=parseFloat(el.max);
-      if(!isNaN(v)&&!isNaN(mn)&&v<mn)el.value=mn;
-      if(!isNaN(v)&&!isNaN(mx)&&v>mx)el.value=mx;
-    })});
+  // Attach validation listeners + dirty tracking (once only)
+  if(!window._airListenersAttached){
+    window._airListenersAttached=true;
+    ['airFanMin','airFanMax','airHallLow','airHallHigh','airSensMin','airSensMax','cfgAirOff','cfgAirMin','cfgAirMax'].forEach(id=>{
+      const el=$(id);if(el)el.addEventListener('input',()=>{validateAirConfig();updateHallBar();markDirty()})});
+    document.querySelectorAll('#tab-air select,#tab-air input[type=number],#tab-air input[type=checkbox]').forEach(el=>{
+      el.addEventListener('change',()=>markDirty())});
+    document.querySelectorAll('#tab-air input[type=number]').forEach(el=>{
+      el.addEventListener('blur',()=>{
+        const v=parseFloat(el.value),mn=parseFloat(el.min),mx=parseFloat(el.max);
+        if(!isNaN(v)&&!isNaN(mn)&&v<mn)el.value=mn;
+        if(!isNaN(v)&&!isNaN(mx)&&v>mx)el.value=mx;
+      })});
+  }
   buildPumpRows();
   _prevAirMode=CFG.air_mode||0;
   setAirMode(CFG.air_mode||0);toggleValveParams();toggleSensorParams();toggleMotorType();
@@ -1946,7 +1946,7 @@ function drawMiniChart(){
   const cv=$('airChartCanvas');if(!cv)return;
   const mc=$('airMiniChart');if(mc)mc.style.display=(CFG&&CFG.air_mode===5)?'':'none';
   if(!CFG||CFG.air_mode!==5)return;
-  const ctx=cv.getContext('2d');
+  const ctx=cv.getContext('2d');if(!ctx)return;
   // Retina scaling
   const dpr=window.devicePixelRatio||1;
   const rect=cv.getBoundingClientRect();
