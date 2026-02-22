@@ -243,6 +243,7 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
 @keyframes fanSpin{0%{transform:rotate(0deg)}100%{transform:rotate(360deg)}}
 @keyframes bellowsExpand{0%{transform:scaleY(0.3)}100%{transform:scaleY(1)}}
 @keyframes balloonGrow{0%{transform:scale(0.5)}100%{transform:scale(1)}}
+#airCtrlSection input[type=range]{accent-color:#4ecca3}
 #airLiveStats>div{background:rgba(255,255,255,.03);border-radius:6px;padding:4px 10px;min-width:60px;text-align:center;transition:border-color .3s,box-shadow .3s;border:1px solid transparent}
 #airLiveStats>div.active-stat{border-color:rgba(78,204,163,.3);box-shadow:0 0 6px rgba(78,204,163,.1)}
 #airLiveStats>div span{display:block}
@@ -1123,7 +1124,8 @@ function applyAirTabVisibility(){
 }
 function getAirMode(){return parseInt($('airModeSelect').value)||0}
 function setAirTarget(v){
-  $('pumpTargetVal').textContent=v+'%';
+  const pv=$('pumpTargetVal');pv.textContent=v+'%';
+  pv.style.color=v>70?'#e94560':v>30?'#e9a645':v>0?'#4ecca3':'';
   const m=getAirMode();
   if(m===3)wsSend({t:'fan_target',v:parseInt(v)});
   else wsSend({t:'pump_target',v:parseInt(v)});
@@ -1132,7 +1134,7 @@ function stopAirSource(){
   const m=getAirMode();
   if(m===3)wsSend({t:'fan_stop'});
   else wsSend({t:'pump_stop'});
-  $('pumpTarget').value=0;$('pumpTargetVal').textContent='0%';
+  $('pumpTarget').value=0;$('pumpTargetVal').textContent='0%';$('pumpTargetVal').style.color='';
 }
 function testAirSystem(){
   const m=getAirMode();
