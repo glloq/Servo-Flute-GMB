@@ -254,12 +254,20 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
   #airSvgFull{max-height:180px}
   .air-block .cfg-row label{flex:0 0 90px;font-size:.75em}
   .air-block .cfg-row input[type=number]{width:60px;font-size:.85em}
+  .air-block .cfg-row select{font-size:.8em;max-width:140px}
   .air-block .btn-row{flex-wrap:wrap;gap:4px}
   #airStatusBar{flex-wrap:wrap;font-size:.72em;padding:4px 8px}
   #airCtrlSection .cfg-row label{flex:0 0 70px}
+  #airCtrlSection input[type=range]{max-width:120px}
   #airMiniChart{height:45px}
   #airMiniChart canvas{height:45px}
-  #airAngleShortcuts{padding-left:0 !important;flex-wrap:wrap}}
+  #airAngleShortcuts{padding-left:0 !important;flex-wrap:wrap}
+  #airHelpPanel{font-size:.68em;padding:6px 8px}
+  .air-block h4{font-size:.85em}
+  #tab-air .section>div>button{font-size:.72em;padding:4px 8px}
+  #airDiagMsg{font-size:.68em}
+  #airValidationMsg{font-size:.7em}
+  #airConfigSummary{font-size:.68em}}
 </style>
 </head>
 <body>
@@ -549,6 +557,7 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
       <div id="airStatHall" style="display:none" title="Valeur brute du capteur Hall (0-4095)"><span style="font-size:.7em;color:#9aa">Hall</span><div style="font-weight:bold" id="airHallVal">--</div></div>
       <div id="airStatEndstop" style="display:none" title="Etat du fin de course (actif/inactif)"><span style="font-size:.7em;color:#9aa">Fin course</span><div style="font-weight:bold" id="airEndstopState">--</div></div>
       <div id="airStatSensor" style="display:none" title="Detecte si le capteur est connecte et repond"><span style="font-size:.7em;color:#9aa">Capteur</span><div style="font-weight:bold" id="airSensorOk">--</div></div>
+      <div id="airStatPidErr" style="display:none" title="Erreur PID: difference entre cible et mesure"><span style="font-size:.7em;color:#9aa">Erreur PID</span><div style="font-weight:bold" id="airPidErrVal">--</div></div>
       <div id="airStatValve" title="Etat de la valve: ouvert = air circule"><span style="font-size:.7em;color:#9aa">Valve</span><div style="font-weight:bold" id="airValveState">--</div></div>
       <div title="Angle actuel du servo flow. Gris=repos, Vert=actif, Rouge=max"><span style="font-size:.7em;color:#9aa">Servo air</span><div style="font-weight:bold" id="airServoAngle">--&deg;</div></div>
     </div>
@@ -583,6 +592,7 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
       <button class="btn btn-s" id="btnAirDiag" onclick="runAirDiagnostic()" title="Teste tous les composants en sequence">Diagnostic</button>
     </div>
     <div id="airDiagMsg" style="display:none;font-size:.75em;color:#9aa;margin-top:4px;padding:4px 8px;background:rgba(255,255,255,.03);border-radius:4px"></div>
+    <div id="airDiagBar" style="display:none;height:3px;background:#1a1a2e;border-radius:2px;margin-top:2px;overflow:hidden"><div id="airDiagFill" style="height:100%;width:0;background:#4ecca3;transition:width .3s ease;border-radius:2px"></div></div>
   </div>
   <div class="section">
     <div style="display:flex;justify-content:space-between;align-items:center">
@@ -1171,13 +1181,20 @@ function gotoServoAngle(inputId){
   const v=parseInt($(inputId).value)||0;
   $('airFlowTest').value=v;testServoFlow(v);
 }
+let _diagRunning=false;
 function runAirDiagnostic(){
+  if(_diagRunning){showToast('Diagnostic en cours...','info');return}
   const dm=$('airDiagMsg');if(!dm)return;
+  const db=$('btnAirDiag'),dbar=$('airDiagBar'),dfill=$('airDiagFill');
+  _diagRunning=true;
   dm.style.display='';dm.style.color='#9aa';
+  if(db)db.disabled=true;
+  if(dbar)dbar.style.display='';
+  if(dfill)dfill.style.width='0';
   const m=getAirMode();
   const hasValve=(m===0||m===1||m>=4),hasPump=m>=4,hasFan=m===3;
   const steps=[];
-  // Build test sequence
+  // Build test sequence based on mode
   steps.push({t:0,msg:'Servo flow -> repos...',fn:()=>testServoFlow(parseInt($('cfgAirOff').value)||20)});
   steps.push({t:800,msg:'Servo flow -> min...',fn:()=>testServoFlow(parseInt($('cfgAirMin').value)||0)});
   steps.push({t:1600,msg:'Servo flow -> max...',fn:()=>testServoFlow(parseInt($('cfgAirMax').value)||180)});
@@ -1187,17 +1204,25 @@ function runAirDiagnostic(){
     steps.push({t:3800,msg:'Valve -> fermer',fn:()=>wsSend({t:'test_sol',o:0})});
   }
   if(hasPump){
-    steps.push({t:4200,msg:'Pompe -> 30%...',fn:()=>{wsSend({t:'pump_target',v:30});$('pumpTarget').value=30;$('pumpTargetVal').textContent='30%'}});
-    steps.push({t:5500,msg:'Pompe -> arret',fn:()=>stopAirSource()});
+    const pt=hasValve?4600:3200;
+    steps.push({t:pt,msg:'Pompe -> 30%...',fn:()=>{wsSend({t:'pump_target',v:30});const pt2=$('pumpTarget');if(pt2)pt2.value=30;const pv=$('pumpTargetVal');if(pv)pv.textContent='30%'}});
+    steps.push({t:pt+1300,msg:'Pompe -> arret',fn:()=>stopAirSource()});
   }
   if(hasFan){
-    steps.push({t:4200,msg:'Ventilateur -> 30%...',fn:()=>{wsSend({t:'fan_target',v:30});$('pumpTarget').value=30;$('pumpTargetVal').textContent='30%'}});
-    steps.push({t:5500,msg:'Ventilateur -> arret',fn:()=>stopAirSource()});
+    const ft=hasValve?4600:3200;
+    steps.push({t:ft,msg:'Ventilateur -> 30%...',fn:()=>{wsSend({t:'fan_target',v:30});const pt2=$('pumpTarget');if(pt2)pt2.value=30;const pv=$('pumpTargetVal');if(pv)pv.textContent='30%'}});
+    steps.push({t:ft+1300,msg:'Ventilateur -> arret',fn:()=>stopAirSource()});
   }
   const last=steps[steps.length-1];
-  steps.push({t:last.t+800,msg:'Diagnostic termine !',fn:()=>{dm.style.color='#4ecca3';setTimeout(()=>{dm.style.display='none'},3000)}});
+  steps.push({t:last.t+800,msg:'Diagnostic termine !',fn:()=>{
+    dm.style.color='#4ecca3';_diagRunning=false;if(db)db.disabled=false;
+    setTimeout(()=>{dm.style.display='none';if(dbar)dbar.style.display='none'},3000)}});
   const total=steps.length;
-  steps.forEach((s,i)=>setTimeout(()=>{dm.textContent='['+( i+1)+'/'+total+'] '+s.msg;s.fn()},s.t));
+  steps.forEach((s,i)=>setTimeout(()=>{
+    dm.textContent='['+(i+1)+'/'+total+'] '+s.msg;
+    if(dfill)dfill.style.width=((i+1)/total*100)+'%';
+    s.fn();
+  },s.t));
 }
 let sweepTimer=null;
 function sweepServoFlow(){
@@ -1245,6 +1270,7 @@ function setAirMode(v){
   const sf=$('airStatFan');if(sf)sf.style.display=hasFan?'':'none';
   const sr=$('airStatRes');if(sr)sr.style.display=hasRes?'':'none';
   const ss=$('airStatSensor');if(ss)ss.style.display=hasRes?'':'none';
+  const spe=$('airStatPidErr');if(spe)spe.style.display=hasRes?'':'none';
   if(hasRes)toggleSensorStats();
   else{const sd=$('airStatDist');if(sd)sd.style.display='none';
     const sh=$('airStatHall');if(sh)sh.style.display='none';
@@ -1513,19 +1539,27 @@ function copyAirConfig(){
   if(navigator.clipboard)navigator.clipboard.writeText(json).then(()=>showToast('Config copiee','success'));
   else{const ta=document.createElement('textarea');ta.value=json;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();showToast('Config copiee','success')}
 }
+const CFG_LABELS={air_mode:'Mode',air_off:'Repos',air_min:'Min',air_max:'Max',fan_min:'Fan min',fan_max:'Fan max',pid_kp:'Kp',pid_ki:'Ki',
+  valve_type:'Valve',valve_ch:'Canal valve',sol_pin:'Sol GPIO',sol_act:'Sol act',sol_hold:'Sol hold',sol_time:'Sol temps',
+  sens_type:'Capteur',sens_target:'Cible',sens_min:'Sens min',sens_max:'Sens max',show_air:'Afficher air'};
 function updateConfigSummary(){
   const cs=$('airConfigSummary');if(!cs||!CFG)return;
   const fields=[['air_mode','airModeSelect'],['air_off','cfgAirOff'],['air_min','cfgAirMin'],['air_max','cfgAirMax'],
-    ['fan_min','airFanMin'],['fan_max','airFanMax'],['pid_kp','airPidKp'],['pid_ki','airPidKi']];
-  let changes=0;
+    ['fan_min','airFanMin'],['fan_max','airFanMax'],['pid_kp','airPidKp'],['pid_ki','airPidKi'],
+    ['valve_type','airValveType'],['valve_ch','airValveCh'],['sens_type','airSensorType'],['sens_target','airSensTarget'],
+    ['show_air','cfgShowAir']];
+  const changed=[];
   fields.forEach(([k,id])=>{
     const el=$(id);if(!el)return;
     const cur=el.type==='checkbox'?el.checked:parseFloat(el.value);
     const saved=CFG[k];
-    if(saved!=null&&cur!=saved)changes++;
+    if(saved!=null&&cur!=saved)changed.push(CFG_LABELS[k]||k);
   });
-  if(changes>0){cs.style.display='';cs.textContent=changes+' champ'+(changes>1?'s':'')+' modifie'+(changes>1?'s':'')+' (non sauvegarde'+(changes>1?'s':'')+')';}
-  else cs.style.display='none';
+  if(changed.length>0){
+    cs.style.display='';
+    const list=changed.length<=4?changed.join(', '):changed.slice(0,3).join(', ')+' +'+( changed.length-3);
+    cs.textContent=changed.length+' modif: '+list;
+  }else cs.style.display='none';
 }
 function importAirConfig(){
   const input=prompt('Coller le JSON de configuration air:');
@@ -1928,6 +1962,15 @@ function updateAirDiagram(d){
   const hv=$('airHallVal');if(hv)hv.textContent=(d.hall_val!=null?d.hall_val:'--');
   const es=$('airEndstopState');if(es){es.textContent=(d.endstop_st?'ACTIF':'inactif');es.style.color=d.endstop_st?'#4ecca3':'#888'}
   document.querySelectorAll('[id=airEndstopLed]').forEach(el=>{el.setAttribute('fill',d.endstop_st?'#4e4':'#a33')});
+  // PID error display (mode 5 with ToF or Hall)
+  const pidEv=$('airPidErrVal');
+  if(pidEv&&d.res_pct!=null&&CFG&&CFG.air_mode===5){
+    const target=CFG.sens_target||50;
+    const err=d.res_pct-target;
+    const absErr=Math.abs(err);
+    pidEv.textContent=(err>=0?'+':'')+err.toFixed(0)+'%';
+    pidEv.style.color=absErr<=5?'#4ecca3':absErr<=15?'#e9a645':'#e94560';
+  }
   // Sensor detected status
   const so=$('airSensorOk');
   if(so&&d.sens_ok!=null){so.textContent=d.sens_ok?'OK':'ABSENT';so.style.color=d.sens_ok?'#4ecca3':'#e94560'}
