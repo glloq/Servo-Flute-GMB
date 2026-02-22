@@ -1226,8 +1226,13 @@ function applyAirTabVisibility(){
 function refreshKbdAir(){
   const box=$('kbdAirBox');if(!box)return;
   const fs=$('fluteSvg');
+  const airSvg=$('kbdAirSvg');
   if(CFG&&CFG.show_air){
     box.style.display='';buildAirSvg('kbdAirSvg',true);
+    // Both SVGs must share the same width reference for alignment.
+    // Override .flute-box svg{max-width:600px} so both use 100% of container.
+    if(airSvg)airSvg.style.maxWidth='none';
+    if(fs)fs.style.maxWidth='none';
     // Align flute embouchure with servo flow air output
     if(fs&&_kbdPipeExitRatio>0){
       const fluteVB=fs.viewBox.baseVal;
@@ -1240,7 +1245,8 @@ function refreshKbdAir(){
     }
   }else{
     box.style.display='none';
-    if(fs){fs.style.marginLeft='';fs.style.width=''}
+    if(airSvg)airSvg.style.maxWidth='';
+    if(fs){fs.style.marginLeft='';fs.style.width='';fs.style.maxWidth=''}
   }
   refreshKbdPumpPanel();
 }
