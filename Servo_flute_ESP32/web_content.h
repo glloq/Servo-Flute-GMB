@@ -587,9 +587,10 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
       <input type="range" min="0" max="100" value="0" id="pumpTarget" oninput="setAirTarget(this.value)">
       <span id="pumpTargetVal" style="min-width:36px;text-align:right">0%</span>
     </div>
-    <div class="cfg-row"><label>Servo flow</label>
+    <div id="airTargetHint" style="font-size:.6em;color:#667;margin:-4px 0 4px;display:none"></div>
+    <div class="cfg-row"><label>Ouverture flow</label>
       <input type="range" min="0" max="180" value="10" id="airFlowTest" oninput="testServoFlow(this.value)">
-      <span id="airFlowTestVal" style="min-width:36px;text-align:right">10&deg;</span>
+      <span id="airFlowTestVal" style="min-width:36px;text-align:right">0%</span>
       <button class="btn btn-s" onclick="sweepServoFlow()" title="Balaye de min a max et retour" style="padding:4px 8px;font-size:.7em">Sweep</button>
     </div>
     <div id="airAngleShortcuts" style="display:flex;gap:4px;margin:-4px 0 4px">
@@ -1237,10 +1238,26 @@ function testSinglePump(idx){
   setTimeout(()=>wsSend({t:'pump_stop',pump:idx}),2000);
   showToast('Test pompe '+(idx+1)+' en cours...','success');
 }
+function rotateServoNeedle(angle){
+  const mn=CFG?(CFG.air_min||0):0,mx=CFG?(CFG.air_max||180):180;
+  const pcta=Math.min(1,Math.max(0,(angle-mn)/(mx-mn||1)));
+  const deg=-150+pcta*120;
+  document.querySelectorAll('[id=airServoNeedle]').forEach(nd=>{
+    const dm=nd.getAttribute('d');
+    const mp=dm?dm.match(/M([\d.]+),([\d.]+)/):null;
+    const cx=mp?parseFloat(mp[1]):0;
+    const cy2=mp?parseFloat(mp[2]):0;
+    nd.setAttribute('transform','rotate('+deg+','+cx+','+cy2+')');
+  });
+}
 let _servoFlowTimer=null;
 function testServoFlow(v){
-  const a=Math.max(0,Math.min(180,parseInt(v)||0));
-  $('airFlowTestVal').textContent=a+'°';
+  const sl=$('airFlowTest');if(!sl)return;
+  const mn=parseInt(sl.min)||0,mx=parseInt(sl.max)||180;
+  const a=Math.max(mn,Math.min(mx,parseInt(v)||0));
+  const pct=Math.round((a-mn)/(mx-mn||1)*100);
+  $('airFlowTestVal').textContent=pct+'%';
+  rotateServoNeedle(a);
   if(_servoFlowTimer)clearTimeout(_servoFlowTimer);
   _servoFlowTimer=setTimeout(()=>{wsSend({t:'test_air',a:a});_servoFlowTimer=null},30);
 }
@@ -1410,6 +1427,8 @@ function setBlockEnabled(bl,enabled){
     else{tg.classList.remove('on');tg.setAttribute('aria-checked','false')}
   }
   bl.classList.toggle('disabled',!enabled);
+  if(!enabled)bl.classList.remove('active');
+  else bl.classList.add('active');
 }
 // Recompute firmware air_mode from layout + toggles, update all dependent UI
 function syncAirModeFromToggles(){
@@ -1442,7 +1461,24 @@ function syncAirModeFromToggles(){
     $('airCtrlTitle').textContent=(hasPump||hasFan)?
       (hasFan?'Controle ventilateur':'Controle pompe'):'Controle servo flow';
     $('btnAirStop').textContent=hasFan?'Arreter ventilateur':'Arreter pompe';
-    $('airTargetLabel').textContent=hasFan?'Vitesse':'Pression cible';
+    // Adapter label slider selon contexte mesure
+    if(hasFan){$('airTargetLabel').textContent='Vitesse'}
+    else if(hasRes){
+      const st=CFG?CFG.sens_type:0;
+      if(st>=3)$('airTargetLabel').textContent='Remplissage';
+      else if(st===2)$('airTargetLabel').textContent='Niveau cible';
+      else $('airTargetLabel').textContent='Hauteur cible';
+    }else if(hasPump){$('airTargetLabel').textContent='Puissance pompe'}
+    // Hint contextuel sous le slider
+    const th=$('airTargetHint');if(th){
+      if(hasRes){const st=CFG?CFG.sens_type:0;
+        if(st>=3){th.textContent='Fin de course: pompe ON tant que non declenche';th.style.display=''}
+        else if(st===2){th.textContent='Capteur Hall: regulation niveau par bang-bang ou PID';th.style.display=''}
+        else{th.textContent='Capteur ToF: regulation distance par bang-bang ou PID';th.style.display=''}
+      }else if(hasPump){th.textContent='Mode direct: PWM proportionnel a la demande';th.style.display=''}
+      else if(hasFan){th.textContent='PWM ventilateur proportionnel';th.style.display=''}
+      else{th.style.display='none'}
+    }
     $('btnAirStop').style.display=(hasPump||hasFan)?'':'none';
     const pr=$('airCtrlPumpRow');if(pr)pr.style.display=(hasPump||hasFan)?'':'none';}
   const vo=$('btnValveOpen'),vc=$('btnValveClose'),bt=$('btnAirTest');
@@ -2152,18 +2188,8 @@ function updateAirDiagram(d){
   });
   // Update percentage text
   document.querySelectorAll('[id=airBalloonPct]').forEach(bp=>{bp.textContent=(d.res_pct!=null?d.res_pct:'--')+'%'});
-  // Update servo air needle rotation on 120 arc
-  document.querySelectorAll('[id=airServoNeedle]').forEach(nd=>{
-    if(d.air_angle==null)return;
-    const pcta=Math.min(1,Math.max(0,d.air_angle/180));
-    const deg=-150+pcta*120;
-    // Path d="Mcx,cy L..." - extract pivot from M command
-    const dm=nd.getAttribute('d');
-    const mp=dm?dm.match(/M([\d.]+),([\d.]+)/):null;
-    const cx=mp?parseFloat(mp[1]):0;
-    const cy2=mp?parseFloat(mp[2]):0;
-    nd.setAttribute('transform','rotate('+deg+','+cx+','+cy2+')');
-  });
+  // Update servo air needle rotation on 120 arc (mapped to configured min/max)
+  if(d.air_angle!=null)rotateServoNeedle(d.air_angle);
   // Fan blade animation
   document.querySelectorAll('[id=airFanBlades]').forEach(fb=>{
     if(d.fan_pwm>0||d.pump_pwm>0){
