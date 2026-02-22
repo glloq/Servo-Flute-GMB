@@ -583,12 +583,12 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
       <span id="pumpTargetVal" style="min-width:36px;text-align:right">0%</span>
     </div>
     <div class="cfg-row"><label>Servo flow</label>
-      <input type="range" min="0" max="180" value="20" id="airFlowTest" oninput="testServoFlow(this.value)">
-      <span id="airFlowTestVal" style="min-width:36px;text-align:right">20&deg;</span>
-      <button class="btn btn-s" onclick="sweepServoFlow()" title="Balaye de min a max et retour au repos" style="padding:4px 8px;font-size:.7em">Sweep</button>
+      <input type="range" min="0" max="180" value="10" id="airFlowTest" oninput="testServoFlow(this.value)">
+      <span id="airFlowTestVal" style="min-width:36px;text-align:right">10&deg;</span>
+      <button class="btn btn-s" onclick="sweepServoFlow()" title="Balaye de min a max et retour" style="padding:4px 8px;font-size:.7em">Sweep</button>
     </div>
     <div id="airAngleShortcuts" style="display:flex;gap:4px;margin:-4px 0 4px">
-      <button class="btn btn-s" onclick="gotoServoAngle('cfgAirOff')" style="padding:2px 6px;font-size:.65em" title="Aller a l'angle repos">Off</button>
+      <button class="btn btn-s" id="btnGotoOff" onclick="gotoServoAngle('cfgAirOff')" style="padding:2px 6px;font-size:.65em;display:none" title="Aller a la position note Off">Off</button>
       <button class="btn btn-s" onclick="gotoServoAngle('cfgAirMin')" style="padding:2px 6px;font-size:.65em" title="Aller a l'angle minimum">Min</button>
       <button class="btn btn-s" onclick="gotoServoAngle('cfgAirMax')" style="padding:2px 6px;font-size:.65em" title="Aller a l'angle maximum">Max</button>
     </div>
@@ -625,7 +625,6 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
     <div class="cfg-row"><label>Mode air</label>
       <select id="airModeSelect" onchange="confirmAirModeChange(this)">
         <option value="0">Solenoide + servo flow</option>
-        <option value="1">Servo-valve (PCA)</option>
         <option value="2">Servo flow seul</option>
         <option value="3">Ventilateur + servo flow</option>
         <option value="4">Pompe(s) + valve</option>
@@ -675,6 +674,14 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
         <div class="cfg-row"><label>PWM max</label>
           <input type="number" id="airFanMax" min="0" max="255" value="255">
         </div>
+        <div style="font-size:.7em;color:#4ecca3;padding:6px 0 2px;font-weight:600">Mode idle (entre notes)</div>
+        <div class="cfg-row"><label>Vitesse idle (%)</label>
+          <input type="number" id="airFanIdlePct" min="0" max="100" value="20" title="Vitesse du ventilateur entre les notes (0=couper immediatement). Garder une rotation basse permet un redemarrage plus rapide.">
+        </div>
+        <div class="cfg-row"><label>Timeout idle (ms)</label>
+          <input type="number" id="airFanIdleTimeout" min="0" max="30000" value="5000" title="Couper le ventilateur apres ce delai sans note On (0=ne jamais couper, rester en idle)">
+        </div>
+        <div style="font-size:.65em;color:#888;padding:2px 0">Idle: reduit la vitesse a X% entre les notes. Apres le timeout sans note, coupe completement.</div>
       </div>
     </div>
 
@@ -743,8 +750,15 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
             <select id="airEndstopPin"><option value="34">GPIO 34</option><option value="35">GPIO 35</option><option value="36">GPIO 36</option><option value="39">GPIO 39</option></select>
           </div>
           <div class="cfg-row"><label>Logique active</label>
-            <select id="airEndstopHigh"><option value="1">Actif HIGH</option><option value="0">Actif LOW</option></select>
+            <select id="airEndstopHigh"><option value="0">Actif LOW (NC recommande)</option><option value="1">Actif HIGH</option></select>
           </div>
+          <div class="cfg-row"><label>Pompe si capteur</label>
+            <select id="airEndstopPumpOn" title="Quand activer/arreter la pompe par rapport au capteur">
+              <option value="0">Pompe ON quand capteur inactif (remplir)</option>
+              <option value="1">Pompe ON quand capteur actif (vider)</option>
+            </select>
+          </div>
+          <div style="font-size:.65em;color:#888;padding:2px 0">NC (normalement ferme) recommande pour les endstops mecaniques/optiques : detecte aussi le fil coupe.</div>
         </div>
         <div id="airSensParamsPid" style="display:none">
           <div class="cfg-row"><label>PID Kp (x10)</label>
@@ -766,7 +780,7 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
     <!-- BLOCK: Valve -->
     <div class="air-block" id="airBlockValve">
       <div class="air-block-hdr" tabindex="0" role="button" aria-label="Configuration valve servo" onclick="toggleAirBlock('airBlockValve')" onkeydown="toggleAirBlock('airBlockValve',event)">
-        <h4><svg viewBox="0 0 16 16" width="14" height="14"><rect x="4" y="2" width="8" height="12" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/><rect x="6" y="4" width="4" height="4" rx="0.5" fill="currentColor" opacity=".5"/></svg>Valve (Servo)</h4>
+        <h4><svg viewBox="0 0 16 16" width="14" height="14"><rect x="4" y="2" width="8" height="12" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/><rect x="6" y="4" width="4" height="4" rx="0.5" fill="currentColor" opacity=".5"/></svg>Valve</h4>
         <div class="air-block-toggle on" id="airBlockValveToggle" role="switch" aria-checked="true" onclick="event.stopPropagation();toggleAirBlockEnable('airBlockValve')"></div>
       </div>
       <div class="air-block-body">
@@ -791,13 +805,14 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
         <div class="air-block-toggle on" id="airBlockServoToggle" role="switch" aria-checked="true" onclick="event.stopPropagation();toggleAirBlockEnable('airBlockServo')"></div>
       </div>
       <div class="air-block-body">
-        <div class="cfg-row"><label>Angle repos</label><input type="number" id="cfgAirOff" min="0" max="180" title="Angle du servo quand aucune note ne joue. Typique: 15-25°"></div>
-        <div class="cfg-row"><label>Angle min</label><input type="number" id="cfgAirMin" min="0" max="180" title="Angle minimal pour les notes les plus douces (pp). Typique: 5-15°"></div>
-        <div class="cfg-row"><label>Angle max</label><input type="number" id="cfgAirMax" min="0" max="180" title="Angle maximal pour les notes les plus fortes (ff). Typique: 60-120°"></div>
+        <div class="cfg-row" id="cfgAirOffRow" style="display:none"><label>Position note Off</label><input type="number" id="cfgAirOff" min="0" max="180" title="Angle quand aucune note ne joue (coupe l'air). Typique: 0-20°" oninput="updateFlowSliderRange()"></div>
+        <div class="cfg-row"><label id="cfgAirMinLabel">Angle min</label><input type="number" id="cfgAirMin" min="0" max="180" title="Angle minimal pour les notes les plus douces (pp). Typique: 5-15°" oninput="updateFlowSliderRange()"></div>
+        <div class="cfg-row"><label id="cfgAirMaxLabel">Angle max</label><input type="number" id="cfgAirMax" min="0" max="180" title="Angle maximal pour les notes les plus fortes (ff). Typique: 60-120°" oninput="updateFlowSliderRange()"></div>
+        <div id="airServoOffHint" style="font-size:.65em;color:#888;padding:2px 0"></div>
         <div class="btn-row" style="margin-top:4px">
-          <button class="btn btn-s" onclick="$('cfgAirOff').value=20;$('cfgAirMin').value=5;$('cfgAirMax').value=60;markDirty();validateAirConfig();buildAirSvg('airSvgFull',true)" style="font-size:.7em;padding:3px 8px" title="Souffle leger, ideal pour flute a bec">Doux</button>
-          <button class="btn btn-s" onclick="$('cfgAirOff').value=20;$('cfgAirMin').value=10;$('cfgAirMax').value=90;markDirty();validateAirConfig();buildAirSvg('airSvgFull',true)" style="font-size:.7em;padding:3px 8px" title="Bon compromis pour la plupart des flutes">Standard</button>
-          <button class="btn btn-s" onclick="$('cfgAirOff').value=15;$('cfgAirMin').value=15;$('cfgAirMax').value=120;markDirty();validateAirConfig();buildAirSvg('airSvgFull',true)" style="font-size:.7em;padding:3px 8px" title="Souffle fort, flute traversiere ou gros volume">Puissant</button>
+          <button class="btn btn-s" onclick="applyServoPreset(5,60)" style="font-size:.7em;padding:3px 8px" title="Souffle leger, ideal pour flute a bec">Doux</button>
+          <button class="btn btn-s" onclick="applyServoPreset(10,90)" style="font-size:.7em;padding:3px 8px" title="Bon compromis pour la plupart des flutes">Standard</button>
+          <button class="btn btn-s" onclick="applyServoPreset(15,120)" style="font-size:.7em;padding:3px 8px" title="Souffle fort, flute traversiere ou gros volume">Puissant</button>
         </div>
       </div>
     </div>
@@ -820,7 +835,7 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
 
     <!-- Options affichage -->
     <div style="margin-top:12px">
-      <div class="cfg-row"><label>Schema air (clavier)</label><input type="checkbox" id="cfgShowAir" style="width:auto;flex:0" title="Affiche le schema de l'air en miniature sur l'onglet clavier"><span style="font-size:.65em;color:#888;margin-left:6px">Overlay sur le clavier MIDI</span></div>
+      <div class="cfg-row"><label>Afficher schemas air dans onglet clavier</label><input type="checkbox" id="cfgShowAir" style="width:auto;flex:0" title="Affiche le schema pneumatique en miniature sur l'onglet clavier"></div>
     </div>
     <div id="airValidationMsg" style="display:none;font-size:.78em;color:#e94560;background:rgba(233,69,96,.08);border:1px solid rgba(233,69,96,.25);border-radius:6px;padding:8px 10px;margin:8px 0"></div>
     <div class="btn-row" style="margin-top:12px;gap:8px">
@@ -1124,18 +1139,18 @@ function showTab(id,btn){
 // --- Air System (modulaire) ---
 const AIR_DESCS=[
   'Solenoide GPIO coupe l\'air, servo flow regle le debit. Ideal pour alimentation externe (compresseur, bouche).',
-  'Servo PCA remplace le solenoide pour couper l\'air. Plus silencieux, temps de reponse reglable.',
-  'Servo flow seul. L\'angle "off" coupe l\'air entre les notes. Simple, un seul servo suffit.',
+  '', // reserved
+  'Servo flow seul. L\'angle min coupe l\'air entre les notes. Simple, un seul servo suffit.',
   'Ventilateur PWM souffle en continu. Le servo flow dirige le flux vers la flute. Bonne puissance.',
   'Pompe(s) directe(s) + valve. Souffle direct sans reservoir. 1-3 pompes en parallele.',
   'Pompe(s) + reservoir + capteur. Regulation PID automatique de la pression. Configuration la plus complete.'
 ];
 const AIR_PARTS=[
   ['Servo flow PCA','Solenoide GPIO'],
-  ['Servo flow PCA','Servo valve PCA'],
+  [], // reserved
   ['Servo flow PCA'],
   ['Servo flow PCA','Ventilateur PWM'],
-  ['Servo flow PCA','Pompe(s)','Valve servo/solenoide'],
+  ['Servo flow PCA','Pompe(s)','Valve'],
   ['Servo flow PCA','Pompe(s)','Valve','Reservoir','Capteur']
 ];
 const PWM_GPIOS=[2,4,5,12,13,14,15,16,17,18,19,21,22,23,25,26,27,32,33];
@@ -1180,6 +1195,24 @@ function testServoFlow(v){
   if(_servoFlowTimer)clearTimeout(_servoFlowTimer);
   _servoFlowTimer=setTimeout(()=>{wsSend({t:'test_air',a:a});_servoFlowTimer=null},30);
 }
+function updateFlowSliderRange(){
+  const sl=$('airFlowTest');if(!sl)return;
+  const m=getAirMode();const needsOff=(m===2||m===3);
+  const off=needsOff?(parseInt($('cfgAirOff').value)||0):0;
+  const mn=parseInt($('cfgAirMin').value)||0,mx=parseInt($('cfgAirMax').value)||180;
+  const lo=needsOff?Math.min(off,mn):mn;
+  sl.min=lo;sl.max=mx;
+  const cur=parseInt(sl.value)||0;
+  if(cur<lo){sl.value=lo;testServoFlow(lo)}
+  else if(cur>mx){sl.value=mx;testServoFlow(mx)}
+}
+function applyServoPreset(mn,mx){
+  const m=getAirMode();const needsOff=(m===2||m===3);
+  const offEl=$('cfgAirOff');
+  if(needsOff&&offEl)offEl.value=Math.max(0,mn-5);
+  $('cfgAirMin').value=mn;$('cfgAirMax').value=mx;
+  markDirty();validateAirConfig();updateFlowSliderRange();buildAirSvg('airSvgFull',true);
+}
 function updPwmPct(el){const pct=el.nextElementSibling;if(pct)pct.textContent=Math.round(parseInt(el.value||0)/255*100)+'%'}
 function flashSvgElement(id){
   const el=document.getElementById(id);if(!el)return;
@@ -1212,30 +1245,34 @@ function runAirDiagnostic(){
   if(dbar)dbar.style.display='';
   if(dfill)dfill.style.width='0';
   const m=getAirMode();
-  const hasValve=(m===0||m===1||m>=4),hasPump=m>=4,hasFan=m===3,hasRes=m===5;
-  const steps=[];
+  const hasValve=(m===0||m>=4),hasPump=m>=4,hasFan=m===3,hasRes=m===5;
+  const needsOff=(m===2||m===3);
+  const steps=[];let t=0;
   // Build test sequence based on mode
-  steps.push({t:0,msg:'Servo flow -> repos...',fn:()=>testServoFlow(parseInt($('cfgAirOff').value)||20)});
-  steps.push({t:800,msg:'Servo flow -> min...',fn:()=>testServoFlow(parseInt($('cfgAirMin').value)||0)});
-  steps.push({t:1600,msg:'Servo flow -> max...',fn:()=>testServoFlow(parseInt($('cfgAirMax').value)||180)});
-  steps.push({t:2400,msg:'Servo flow -> repos',fn:()=>testServoFlow(parseInt($('cfgAirOff').value)||20)});
+  if(needsOff){
+    steps.push({t:t,msg:'Servo flow -> Off...',fn:()=>testServoFlow(parseInt($('cfgAirOff').value)||0)});t+=800;
+  }
+  steps.push({t:t,msg:'Servo flow -> min...',fn:()=>testServoFlow(parseInt($('cfgAirMin').value)||0)});t+=800;
+  steps.push({t:t,msg:'Servo flow -> max...',fn:()=>testServoFlow(parseInt($('cfgAirMax').value)||180)});t+=800;
+  if(needsOff){
+    steps.push({t:t,msg:'Servo flow -> Off',fn:()=>testServoFlow(parseInt($('cfgAirOff').value)||0)});t+=800;
+  }else{
+    steps.push({t:t,msg:'Servo flow -> min',fn:()=>testServoFlow(parseInt($('cfgAirMin').value)||0)});t+=800;
+  }
   if(hasValve){
-    steps.push({t:3000,msg:'Valve -> ouvrir...',fn:()=>wsSend({t:'test_sol',o:1})});
-    steps.push({t:3800,msg:'Valve -> fermer',fn:()=>wsSend({t:'test_sol',o:0})});
+    steps.push({t:t,msg:'Valve -> ouvrir...',fn:()=>wsSend({t:'test_sol',o:1})});t+=800;
+    steps.push({t:t,msg:'Valve -> fermer',fn:()=>wsSend({t:'test_sol',o:0})});t+=800;
   }
   if(hasPump){
-    const pt=hasValve?4600:3200;
-    steps.push({t:pt,msg:'Pompe -> 30%...',fn:()=>{wsSend({t:'pump_target',v:30});const pt2=$('pumpTarget');if(pt2)pt2.value=30;const pv=$('pumpTargetVal');if(pv)pv.textContent='30%'}});
-    steps.push({t:pt+1300,msg:'Pompe -> arret',fn:()=>stopAirSource()});
+    steps.push({t:t,msg:'Pompe -> 30%...',fn:()=>{wsSend({t:'pump_target',v:30});const pt2=$('pumpTarget');if(pt2)pt2.value=30;const pv=$('pumpTargetVal');if(pv)pv.textContent='30%'}});
+    steps.push({t:t+1300,msg:'Pompe -> arret',fn:()=>stopAirSource()});t+=2100;
   }
   if(hasFan){
-    const ft=hasValve?4600:3200;
-    steps.push({t:ft,msg:'Ventilateur -> 30%...',fn:()=>{wsSend({t:'fan_target',v:30});const pt2=$('pumpTarget');if(pt2)pt2.value=30;const pv=$('pumpTargetVal');if(pv)pv.textContent='30%'}});
-    steps.push({t:ft+1300,msg:'Ventilateur -> arret',fn:()=>stopAirSource()});
+    steps.push({t:t,msg:'Ventilateur -> 30%...',fn:()=>{wsSend({t:'fan_target',v:30});const pt2=$('pumpTarget');if(pt2)pt2.value=30;const pv=$('pumpTargetVal');if(pv)pv.textContent='30%'}});
+    steps.push({t:t+1300,msg:'Ventilateur -> arret',fn:()=>stopAirSource()});t+=2100;
   }
   if(hasRes){
-    const st=steps[steps.length-1].t+800;
-    steps.push({t:st,msg:'Capteur reservoir -> verification...',fn:()=>{
+    steps.push({t:t,msg:'Capteur reservoir -> verification...',fn:()=>{
       const sok=$('airSensorOk');
       if(sok&&sok.textContent==='OK'){dm.style.color='#4ecca3'}
       else{dm.style.color='#e9a645'}
@@ -1263,13 +1300,16 @@ function sweepServoFlow(){
   if(sweepTimer){clearInterval(sweepTimer);sweepTimer=null;if(btn)btn.style.background='';return}
   const sl=$('airFlowTest');if(!sl)return;
   if(btn)btn.style.background='rgba(78,204,163,.25)';
-  const aMin=parseInt($('cfgAirMin').value)||0,aMax=parseInt($('cfgAirMax').value)||180,aOff=parseInt($('cfgAirOff').value)||20;
+  const m=getAirMode();const needsOff=(m===2||m===3);
+  const aOff=needsOff?(parseInt($('cfgAirOff').value)||0):null;
+  const aMin=parseInt($('cfgAirMin').value)||0,aMax=parseInt($('cfgAirMax').value)||180;
   const steps=[],stepMs=80,range=aMax-aMin;
   const nUp=Math.max(1,Math.round(range/4)),nDown=nUp;
-  steps.push(aOff);
+  const startEnd=aOff!=null?aOff:aMin;
+  steps.push(startEnd);
   for(let i=0;i<=nUp;i++)steps.push(aMin+Math.round(range*i/nUp));
   for(let i=nDown-1;i>=0;i--)steps.push(aMin+Math.round(range*i/nDown));
-  steps.push(aOff);
+  steps.push(startEnd);
   let idx=0;
   sweepTimer=setInterval(()=>{
     if(idx>=steps.length){clearInterval(sweepTimer);sweepTimer=null;if(btn)btn.style.background='';return}
@@ -1289,7 +1329,7 @@ function confirmAirModeChange(sel){
 }
 function setAirMode(v){
   const m=parseInt(v);
-  const hasPump=m>=4,hasFan=m===3,hasValve=(m===0||m===1||m>=4),hasRes=m===5;
+  const hasPump=m>=4,hasFan=m===3,hasValve=(m===0||m>=4),hasRes=m===5;
   const hasServo=true; // all modes have servo flow
   // Show/hide config blocks
   const bp=$('airBlockPump');if(bp){bp.style.display=hasPump?'':'none';if(hasPump)bp.classList.add('active')}
@@ -1297,7 +1337,16 @@ function setAirMode(v){
   const br=$('airBlockRes');if(br){br.style.display=hasRes?'':'none';if(hasRes)br.classList.add('active')}
   const bv=$('airBlockValve');if(bv){bv.style.display=(hasValve)?'':'none';if(hasValve)bv.classList.add('active')}
   const bs=$('airBlockServo');if(bs){bs.style.display=hasServo?'':'none';bs.classList.add('active')}
-  const bsol=$('airBlockSolenoid');if(bsol)bsol.style.display=(m===0)?'':'none';
+  // Servo flow: show note Off angle only for modes without valve (servo flow cuts the air)
+  const needsOff=!hasValve; // modes 2,3: servo flow must cut air itself
+  const offRow=$('cfgAirOffRow');if(offRow)offRow.style.display=needsOff?'':'none';
+  const offHint=$('airServoOffHint');
+  if(offHint)offHint.textContent=needsOff?'Position Off = coupure d\'air entre les notes. Min/Max = plage souffle note active.':'La valve coupe l\'air. Min/Max = plage de debit du servo flow.';
+  const mnLabel=$('cfgAirMinLabel');if(mnLabel)mnLabel.textContent=needsOff?'Position note On min':'Angle min';
+  const mxLabel=$('cfgAirMaxLabel');if(mxLabel)mxLabel.textContent=needsOff?'Position note On max':'Angle max';
+  const bgo=$('btnGotoOff');if(bgo)bgo.style.display=needsOff?'':'none';
+  // Solenoid block shown when valve type is solenoid (0) and valve is used
+  const bsol=$('airBlockSolenoid');if(bsol)bsol.style.display=(hasValve&&parseInt($('airValveType').value)===0)?'':'none';
   // Live stats visibility
   const sp=$('airStatPump');if(sp)sp.style.display=hasPump?'':'none';
   const sf=$('airStatFan');if(sf)sf.style.display=hasFan?'':'none';
@@ -1308,7 +1357,7 @@ function setAirMode(v){
   else{const sd=$('airStatDist');if(sd)sd.style.display='none';
     const sh=$('airStatHall');if(sh)sh.style.display='none';
     const se=$('airStatEndstop');if(se)se.style.display='none';}
-  const sv=$('airStatValve');if(sv)sv.style.display=(m!==2&&m!==3)?'':'none';
+  const sv=$('airStatValve');if(sv)sv.style.display=(hasValve)?'':'none';
   // Control section - always visible (all modes have at least servo flow test)
   const cs=$('airCtrlSection');if(cs){cs.style.display='';
     $('airCtrlTitle').textContent=(hasPump||hasFan)?
@@ -1322,7 +1371,7 @@ function setAirMode(v){
   if(vc)vc.style.display=(hasValve)?'':'none';
   if(bt)bt.style.display=(hasPump||hasFan)?'':'none';
   const td=$('airTestDur');if(td)td.style.display=(hasPump||hasFan)?'':'none';
-  if(m===1){$('airValveType').value='1';toggleValveParams()}
+  toggleValveParams();
   if(hasRes)toggleSensorParams();
   const md=$('airModeDesc');if(md){
     const parts=AIR_PARTS[m]||[];
@@ -1330,8 +1379,8 @@ function setAirMode(v){
     md.innerHTML=(AIR_DESCS[m]||'')+'<div style="margin-top:4px">'+badges+'</div>';
   }
   // Update status bar
-  const modeNames=['Solenoide','Servo-valve','Servo seul','Ventilateur','Pompe directe','Pompe+reservoir'];
-  const sm=$('airStatusMode');if(sm)sm.textContent='Mode '+(m)+': '+(modeNames[m]||'?');
+  const modeNames=['Solenoide','','Servo seul','Ventilateur','Pompe directe','Pompe+reservoir'];
+  const sm=$('airStatusMode');if(sm)sm.textContent=modeNames[m]||'?';
   validateAirConfig();
   buildAirSvg('airSvgFull',true);
 }
@@ -1360,8 +1409,13 @@ function toggleAirBlockEnable(id){
   if(!on)bl.classList.remove('active');
   else bl.classList.add('active');
 }
-function toggleValveParams(){
-  $('airValveServoParams').style.display=$('airValveType').value==='1'?'':'none';
+function toggleValveParams(noMark){
+  const isSol=$('airValveType').value==='0';
+  $('airValveServoParams').style.display=isSol?'none':'';
+  // Show solenoid config block when valve type is solenoid and valve is used
+  const m=getAirMode();const hasValve=(m===0||m>=4);
+  const bsol=$('airBlockSolenoid');if(bsol){bsol.style.display=(hasValve&&isSol)?'':'none';if(hasValve&&isSol)bsol.classList.add('active')}
+  if(!noMark)markDirty();
 }
 function toggleMotorType(){
   buildPumpRows();
@@ -1439,12 +1493,15 @@ function buildPumpRows(){
 function validateAirConfig(){
   const m=getAirMode();
   const warns=[];const errBlocks=new Set();
-  const hasValve=(m===0||m===1||m>=4);
+  const hasValve=(m===0||m>=4);
   // Servo flow angle validation (all modes)
-  const aOff=parseInt($('cfgAirOff').value),aMin=parseInt($('cfgAirMin').value),aMax=parseInt($('cfgAirMax').value);
-  if(isNaN(aOff)||isNaN(aMin)||isNaN(aMax)){warns.push('Servo flow: angles manquants');errBlocks.add('airBlockServo')}
+  const needsOff=(m===2||m===3);
+  const aOff=needsOff?parseInt($('cfgAirOff').value):0;
+  const aMin=parseInt($('cfgAirMin').value),aMax=parseInt($('cfgAirMax').value);
+  if(isNaN(aMin)||isNaN(aMax)||(needsOff&&isNaN(aOff))){warns.push('Servo flow: angles manquants');errBlocks.add('airBlockServo')}
   else{
-    if(aOff<0||aOff>180||aMin<0||aMin>180||aMax<0||aMax>180){warns.push('Servo flow: angles doivent etre entre 0 et 180');errBlocks.add('airBlockServo')}
+    if(aMin<0||aMin>180||aMax<0||aMax>180){warns.push('Servo flow: angles doivent etre entre 0 et 180');errBlocks.add('airBlockServo')}
+    if(needsOff&&(aOff<0||aOff>180)){warns.push('Servo flow: angle Off doit etre entre 0 et 180');errBlocks.add('airBlockServo')}
     if(aMin>=aMax){warns.push('Servo flow: angle min doit etre inferieur a max');errBlocks.add('airBlockServo')}
   }
   // Fan PWM validation
@@ -1517,16 +1574,19 @@ function saveAirSettings(){
   const m=parseInt($('airModeSelect').value);
   const showAir=$('cfgShowAir').checked;
   const rf=$('airResFormat');
-  const d={air_mode:m,valve_type:parseInt($('airValveType').value)||0,
+  const vt=parseInt($('airValveType').value)||0;
+  const hasValve=(m===0||m>=4);
+  const needsOff=(m===2||m===3);
+  const d={air_mode:m,valve_type:vt,
     valve_ch:parseInt($('airValveCh').value)||11,show_air:showAir,
     res_format:rf?rf.value:'balloon',
-    air_off:parseInt($('cfgAirOff').value)||20,air_min:parseInt($('cfgAirMin').value)||0,air_max:parseInt($('cfgAirMax').value)||180};
-  // Solenoid only for mode 0
-  if(m===0){d.sol_pin=parseInt($('cfgSolPin').value)||13;
+    air_min:parseInt($('cfgAirMin').value)||0,air_max:parseInt($('cfgAirMax').value)||180};
+  if(needsOff)d.air_off=parseInt($('cfgAirOff').value)||0;
+  // Solenoid params when valve type is solenoid GPIO
+  if(hasValve&&vt===0){d.sol_pin=parseInt($('cfgSolPin').value)||13;
     d.sol_act=parseInt($('cfgSolAct').value)||255;d.sol_hold=parseInt($('cfgSolHold').value)||80;d.sol_time=parseInt($('cfgSolTime').value)||30}
-  // Valve servo for modes 1,4,5
-  if(m===1||m>=4){d.valve_type=parseInt($('airValveType').value)||0}
-  if(m===3){d.fan_pin=parseInt($('airFanPin').value)||26;d.fan_min=parseInt($('airFanMin').value)||60;d.fan_max=parseInt($('airFanMax').value)||255}
+  if(m===3){d.fan_pin=parseInt($('airFanPin').value)||26;d.fan_min=parseInt($('airFanMin').value)||60;d.fan_max=parseInt($('airFanMax').value)||255;
+    d.fan_idle_pct=parseInt($('airFanIdlePct').value)||0;d.fan_idle_timeout=parseInt($('airFanIdleTimeout').value)||0}
   if(m>=4){
     d.motor_type=parseInt($('airMotorType').value)||0;
     const np=parseInt($('airNumPumps').value)||1;d.num_pumps=np;
@@ -1545,7 +1605,8 @@ function saveAirSettings(){
       d.sens_max=parseInt($('airSensMax').value)||150}
     if(st<=2){d.pid_kp=parseFloat($('airPidKp').value)||30;d.pid_ki=parseFloat($('airPidKi').value)||5}
     if(st===2){d.hall_pin=parseInt($('airHallPin').value)||36;d.hall_low=parseInt($('airHallLow').value)||1500;d.hall_high=parseInt($('airHallHigh').value)||2500}
-    if(st>=3){d.endstop_pin=parseInt($('airEndstopPin').value)||34;d.endstop_high=$('airEndstopHigh').value==='1'}
+    if(st>=3){d.endstop_pin=parseInt($('airEndstopPin').value)||34;d.endstop_high=$('airEndstopHigh').value==='1';
+      d.endstop_pump_on=$('airEndstopPumpOn').value==='1'}
   }
   const sb=$('btnAirSave');if(sb){sb.disabled=true;sb.textContent='Sauvegarde...'}
   fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)})
@@ -1560,10 +1621,12 @@ function saveAirSettings(){
 function resetAirDefaults(){
   if(!confirm('Reinitialiser les valeurs par defaut pour le mode actuel ?'))return;
   const m=getAirMode();
-  $('cfgAirOff').value=20;$('cfgAirMin').value=10;$('cfgAirMax').value=90;
+  if(m===2||m===3)$('cfgAirOff').value=5;
+  $('cfgAirMin').value=10;$('cfgAirMax').value=90;
   $('airValveType').value='0';$('airValveCh').value=11;
-  if(m===0){$('cfgSolPin').value=13;$('cfgSolAct').value=255;$('cfgSolHold').value=80;$('cfgSolTime').value=30}
-  if(m===3){$('airFanMin').value=60;$('airFanMax').value=255}
+  // Solenoid defaults for modes with valve
+  if(m===0||m>=4){$('cfgSolPin').value=13;$('cfgSolAct').value=255;$('cfgSolHold').value=80;$('cfgSolTime').value=30}
+  if(m===3){$('airFanMin').value=60;$('airFanMax').value=255;$('airFanIdlePct').value=20;$('airFanIdleTimeout').value=5000}
   if(m>=4){$('airMotorType').value='0';$('airNumPumps').value=1;toggleMotorType();buildPumpRows()}
   if(m===5){$('airSensorType').value='0';$('airSensTarget').value=50;$('airSensMin').value=10;$('airSensMax').value=150;
     $('airPidKp').value=30;$('airPidKi').value=5;toggleSensorParams()}
@@ -1572,20 +1635,20 @@ function resetAirDefaults(){
 }
 function copyAirConfig(){
   const keys=['air_mode','valve_type','valve_ch','air_off','air_min','air_max','motor_type','num_pumps',
-    'fan_pin','fan_min','fan_max','sol_pin','sol_act','sol_hold','sol_time','sens_type','sens_target',
-    'sens_min','sens_max','pid_kp','pid_ki','hall_pin','hall_low','hall_high','endstop_pin','endstop_high','res_format','show_air'];
+    'fan_pin','fan_min','fan_max','fan_idle_pct','fan_idle_timeout','sol_pin','sol_act','sol_hold','sol_time','sens_type','sens_target',
+    'sens_min','sens_max','pid_kp','pid_ki','hall_pin','hall_low','hall_high','endstop_pin','endstop_high','endstop_pump_on','res_format','show_air'];
   const out={};keys.forEach(k=>{if(CFG[k]!=null)out[k]=CFG[k]});
   const json=JSON.stringify(out,null,2);
   if(navigator.clipboard)navigator.clipboard.writeText(json).then(()=>showToast('Config copiee','success'));
   else{const ta=document.createElement('textarea');ta.value=json;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();showToast('Config copiee','success')}
 }
-const CFG_LABELS={air_mode:'Mode',air_off:'Repos',air_min:'Min',air_max:'Max',fan_min:'Fan min',fan_max:'Fan max',pid_kp:'Kp',pid_ki:'Ki',
+const CFG_LABELS={air_mode:'Mode',air_off:'Off',air_min:'Min',air_max:'Max',fan_min:'Fan min',fan_max:'Fan max',fan_idle_pct:'Fan idle%',fan_idle_timeout:'Fan timeout',pid_kp:'Kp',pid_ki:'Ki',
   valve_type:'Valve',valve_ch:'Canal valve',sol_pin:'Sol GPIO',sol_act:'Sol act',sol_hold:'Sol hold',sol_time:'Sol temps',
   sens_type:'Capteur',sens_target:'Cible',sens_min:'Sens min',sens_max:'Sens max',show_air:'Afficher air'};
 function updateConfigSummary(){
   const cs=$('airConfigSummary');if(!cs||!CFG)return;
   const fields=[['air_mode','airModeSelect'],['air_off','cfgAirOff'],['air_min','cfgAirMin'],['air_max','cfgAirMax'],
-    ['fan_min','airFanMin'],['fan_max','airFanMax'],['pid_kp','airPidKp'],['pid_ki','airPidKi'],
+    ['fan_min','airFanMin'],['fan_max','airFanMax'],['fan_idle_pct','airFanIdlePct'],['fan_idle_timeout','airFanIdleTimeout'],['pid_kp','airPidKp'],['pid_ki','airPidKi'],
     ['valve_type','airValveType'],['valve_ch','airValveCh'],['sens_type','airSensorType'],['sens_target','airSensTarget'],
     ['show_air','cfgShowAir']];
   const changed=[];
@@ -1615,6 +1678,8 @@ function importAirConfig(){
 }
 function fillAirSettings(){
   if(!CFG)return;
+  // Remap legacy mode 1 (servo-valve) to mode 0 with valve_type=1
+  if(CFG.air_mode===1){CFG.air_mode=0;CFG.valve_type=1}
   $('airModeSelect').value=CFG.air_mode||0;
   $('airValveType').value=(CFG.valve_type||0).toString();
   $('airValveCh').value=CFG.valve_ch||11;
@@ -1622,16 +1687,20 @@ function fillAirSettings(){
   // Fan GPIO (dynamic populate)
   populateGpioSelect($('airFanPin'),PWM_GPIOS,CFG.fan_pin||26);
   $('airFanMin').value=CFG.fan_min||60;$('airFanMax').value=CFG.fan_max||255;
+  $('airFanIdlePct').value=CFG.fan_idle_pct!=null?CFG.fan_idle_pct:20;
+  $('airFanIdleTimeout').value=CFG.fan_idle_timeout!=null?CFG.fan_idle_timeout:5000;
   $('airNumPumps').value=CFG.num_pumps||1;
   $('airSensorType').value=CFG.sens_type!=null?CFG.sens_type:1;
   $('airSensTarget').value=CFG.sens_target||50;$('airSensMin').value=CFG.sens_min||10;$('airSensMax').value=CFG.sens_max||150;
   $('airPidKp').value=CFG.pid_kp||30;$('airPidKi').value=CFG.pid_ki||5;
   $('airEndstopPin').value=CFG.endstop_pin||34;$('airEndstopHigh').value=(CFG.endstop_high?'1':'0');
+  $('airEndstopPumpOn').value=(CFG.endstop_pump_on?'1':'0');
   $('airHallPin').value=CFG.hall_pin||36;$('airHallLow').value=CFG.hall_low||1500;$('airHallHigh').value=CFG.hall_high||2500;
   // Reservoir format
   const rf=$('airResFormat');if(rf)rf.value=CFG.res_format||'balloon';
   // Servo airflow angles
-  $('cfgAirOff').value=CFG.air_off!=null?CFG.air_off:20;$('cfgAirMin').value=CFG.air_min!=null?CFG.air_min:0;$('cfgAirMax').value=CFG.air_max!=null?CFG.air_max:180;
+  $('cfgAirOff').value=CFG.air_off!=null?CFG.air_off:0;
+  $('cfgAirMin').value=CFG.air_min!=null?CFG.air_min:0;$('cfgAirMax').value=CFG.air_max!=null?CFG.air_max:180;
   // Solenoid settings
   const sp=$('cfgSolPin');sp.innerHTML='';
   [12,13,16,17,18,19,23,25,26,27,33].forEach(p=>{
@@ -1646,7 +1715,7 @@ function fillAirSettings(){
   // Attach validation listeners + dirty tracking (once only)
   if(!window._airListenersAttached){
     window._airListenersAttached=true;
-    ['airFanMin','airFanMax','airHallLow','airHallHigh','airSensMin','airSensMax','cfgAirOff','cfgAirMin','cfgAirMax'].forEach(id=>{
+    ['airFanMin','airFanMax','airFanIdlePct','airFanIdleTimeout','airHallLow','airHallHigh','airSensMin','airSensMax','cfgAirOff','cfgAirMin','cfgAirMax'].forEach(id=>{
       const el=$(id);if(el)el.addEventListener('input',()=>{validateAirConfig();updateHallBar();markDirty()})});
     document.querySelectorAll('#tab-air select,#tab-air input[type=number],#tab-air input[type=checkbox]').forEach(el=>{
       el.addEventListener('change',()=>markDirty())});
@@ -1659,12 +1728,16 @@ function fillAirSettings(){
   }
   buildPumpRows();
   _prevAirMode=CFG.air_mode||0;
-  setAirMode(CFG.air_mode||0);toggleValveParams();toggleSensorParams();toggleMotorType();
+  setAirMode(CFG.air_mode||0);toggleValveParams(true);toggleSensorParams();toggleMotorType();
 }
 function buildAirUI(){
   fillAirSettings();
-  // Set flow test slider to configured off angle
-  const ft=$('airFlowTest');if(ft&&CFG){ft.value=CFG.air_off||20;$('airFlowTestVal').textContent=(CFG.air_off||20)+'°'}
+  // Set flow test slider: start at off angle (modes 2,3) or min angle
+  updateFlowSliderRange();
+  const ft=$('airFlowTest');if(ft&&CFG){
+    const m=CFG.air_mode||0;const needsOff=(m===2||m===3);
+    const startA=needsOff?(CFG.air_off!=null?CFG.air_off:0):(CFG.air_min!=null?CFG.air_min:0);
+    ft.value=startA;$('airFlowTestVal').textContent=startA+'°'}
   // Redraw diagram with last known data on tab re-entry
   if(lastAirData)updateAirDiagram(lastAirData);
   drawMiniChart();
@@ -1674,7 +1747,7 @@ function buildAirUI(){
 function buildAirSvg(svgId,full){
   const svg=$(svgId);if(!svg||!CFG)return;
   const m=CFG.air_mode||0;
-  const hasPump=m>=4,hasFan=m===3,hasValve=(m===0||m===1||m>=4),hasRes=(m===5);
+  const hasPump=m>=4,hasFan=m===3,hasValve=(m===0||m>=4),hasRes=(m===5);
   const np=(hasPump&&CFG.num_pumps>1)?CFG.num_pumps:1;
   const st=CFG.sens_type||0;
   const resFormat=(CFG.res_format||'balloon');
@@ -1993,8 +2066,9 @@ function updateAirDiagram(d){
   const fp=$('airFanPwm'),sf2=$('airStatFan');if(fp){
     if(d.fan_pwm>0){
       let t=d.fan_speed!=null?(d.fan_speed+'%'):d.fan_pwm;
-      if(d.fan_ready===false)t+=' ...';
-      fp.textContent=t;fp.style.color=d.fan_ready===false?'#e9a645':'#4ecca3';if(sf2)sf2.classList.add('active-stat')}
+      if(d.fan_idle)t+=' (idle)';
+      else if(d.fan_ready===false)t+=' ...';
+      fp.textContent=t;fp.style.color=d.fan_idle?'#e9a645':d.fan_ready===false?'#e9a645':'#4ecca3';if(sf2)sf2.classList.add('active-stat')}
     else{fp.textContent='OFF';fp.style.color='';if(sf2)sf2.classList.remove('active-stat')}
   }
   const rp=$('airResPct');if(rp)rp.textContent=(d.res_pct!=null?d.res_pct:'-')+'%';
@@ -2003,7 +2077,7 @@ function updateAirDiagram(d){
   const vs=$('airValveState');if(vs){vs.textContent=d.valve_open?'OUVERT':'FERME';vs.style.color=d.valve_open?'#4ecca3':'#e94560'}
   const sa=$('airServoAngle');if(sa){
     sa.textContent=(d.air_angle!=null?d.air_angle:'-')+'°';
-    if(d.air_angle!=null&&CFG){const off=CFG.air_off||20,mn=CFG.air_min||0,mx=CFG.air_max||180;
+    if(d.air_angle!=null&&CFG){const m=CFG.air_mode||0;const off=(m===2||m===3)?(CFG.air_off||0):(CFG.air_min||0);const mx=CFG.air_max||180;
       sa.style.color=d.air_angle<=off?'#888':d.air_angle>=mx?'#e94560':'#4ecca3'}
   }
   const hv=$('airHallVal');if(hv)hv.textContent=(d.hall_val!=null?d.hall_val:'--');
@@ -2176,7 +2250,7 @@ function wizFinish(){
   let presetIdx=-1;
   radios.forEach(r=>{if(r.checked)presetIdx=parseInt(r.value)});
   // Build config body
-  const body={air_mode:wizAirMode,valve_type:wizAirMode===1?1:0,show_air:true};
+  const body={air_mode:wizAirMode,valve_type:0,show_air:true};
   // Apply preset if selected
   if(presetIdx>=0&&presetIdx<PR.length){
     const p=PR[presetIdx];
@@ -2492,7 +2566,7 @@ function buildAirOverlay(g,em,ox,fluteX,ty,by,cy,svgH){
   if(!CFG||!CFG.show_air)return '';
   const m=CFG.air_mode||0;
   const isTrav=em==='trav';
-  const hasPump=m>=4,hasFan=m===3,hasValve=(m===0||m===1||m>=4),hasRes=(m===5);
+  const hasPump=m>=4,hasFan=m===3,hasValve=(m===0||m>=4),hasRes=(m===5);
   let s='<defs><linearGradient id="agMetal_'+g+'" x1="0" y1="0" x2="0" y2="1">'+
     '<stop offset="0%" stop-color="#8899aa"/><stop offset="100%" stop-color="#556677"/></linearGradient>'+
     '<linearGradient id="agBalloon_'+g+'" x1="0" y1="0" x2="0" y2="1">'+

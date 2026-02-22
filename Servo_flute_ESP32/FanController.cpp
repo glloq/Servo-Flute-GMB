@@ -6,7 +6,8 @@
 
 FanController::FanController()
   : _speedPercent(0), _currentPwm(0), _targetPwm(0),
-    _ready(false), _rampStartTime(0), _rampStartPwm(0) {
+    _ready(false), _rampStartTime(0), _rampStartPwm(0),
+    _idleActive(false), _lastNoteOffTime(0), _notePlaying(false) {
 }
 
 void FanController::begin() {
@@ -21,7 +22,12 @@ void FanController::begin() {
     Serial.print(" | PWM min=");
     Serial.print(cfg.fanMinPwm);
     Serial.print(" max=");
-    Serial.println(cfg.fanMaxPwm);
+    Serial.print(cfg.fanMaxPwm);
+    Serial.print(" | idle=");
+    Serial.print(cfg.fanIdlePercent);
+    Serial.print("% timeout=");
+    Serial.print(cfg.fanIdleTimeoutMs);
+    Serial.println("ms");
   }
 }
 
@@ -54,12 +60,54 @@ void FanController::stop() {
   _targetPwm = 0;
   _currentPwm = 0;
   _ready = false;
+  _idleActive = false;
+  _notePlaying = false;
   analogWrite(cfg.fanPin, 0);
+}
+
+void FanController::onNoteOn() {
+  _notePlaying = true;
+  _idleActive = false;
+}
+
+void FanController::onNoteOff() {
+  _notePlaying = false;
+  _lastNoteOffTime = millis();
+
+  // Passer en idle: reduire a la vitesse idle configuree
+  if (cfg.fanIdlePercent > 0) {
+    _idleActive = true;
+    setSpeed(cfg.fanIdlePercent);
+    if (DEBUG) {
+      Serial.print("DEBUG: FanController - Idle -> ");
+      Serial.print(cfg.fanIdlePercent);
+      Serial.println("%");
+    }
+  } else {
+    // Idle = 0% => couper directement
+    _idleActive = false;
+    setSpeed(0);
+  }
 }
 
 void FanController::update() {
   if (cfg.airMode != AIR_MODE_FAN_SERVO) return;
 
+  // Gestion du timeout idle: couper apres N secondes sans noteOn
+  if (_idleActive && !_notePlaying && cfg.fanIdleTimeoutMs > 0) {
+    unsigned long elapsed = millis() - _lastNoteOffTime;
+    if (elapsed >= cfg.fanIdleTimeoutMs) {
+      _idleActive = false;
+      setSpeed(0);
+      if (DEBUG) {
+        Serial.print("DEBUG: FanController - Idle timeout (");
+        Serial.print(cfg.fanIdleTimeoutMs);
+        Serial.println("ms) -> ARRET");
+      }
+    }
+  }
+
+  // Rampe PWM
   if (_currentPwm == _targetPwm) {
     _ready = true;
     return;

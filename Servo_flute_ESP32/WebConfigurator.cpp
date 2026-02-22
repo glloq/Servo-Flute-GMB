@@ -411,6 +411,8 @@ void WebConfigurator::handleApiConfig(AsyncWebServerRequest* request) {
   json += ",\"fan_pin\":" + String(cfg.fanPin);
   json += ",\"fan_min\":" + String(cfg.fanMinPwm);
   json += ",\"fan_max\":" + String(cfg.fanMaxPwm);
+  json += ",\"fan_idle_pct\":" + String(cfg.fanIdlePercent);
+  json += ",\"fan_idle_timeout\":" + String(cfg.fanIdleTimeoutMs);
   json += ",\"num_pumps\":" + String(cfg.numPumps);
   json += ",\"pump_pins\":[";
   for (int i = 0; i < MAX_PUMPS; i++) {
@@ -563,6 +565,8 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
     if (doc.containsKey("fan_pin")) cfg.fanPin = doc["fan_pin"];
     if (doc.containsKey("fan_min")) cfg.fanMinPwm = doc["fan_min"];
     if (doc.containsKey("fan_max")) cfg.fanMaxPwm = doc["fan_max"];
+    if (doc.containsKey("fan_idle_pct")) cfg.fanIdlePercent = doc["fan_idle_pct"];
+    if (doc.containsKey("fan_idle_timeout")) cfg.fanIdleTimeoutMs = doc["fan_idle_timeout"];
     if (doc.containsKey("num_pumps")) {
       uint8_t np = doc["num_pumps"];
       if (np >= 1 && np <= MAX_PUMPS) cfg.numPumps = np;
@@ -1152,6 +1156,7 @@ void WebConfigurator::broadcastStatus() {
     json += ",\"fan_pwm\":" + String(fc.getPwm());
     json += ",\"fan_speed\":" + String(fc.getSpeed());
     json += ",\"fan_ready\":" + String(fc.isReady() ? "true" : "false");
+    json += ",\"fan_idle\":" + String(fc.isIdle() ? "true" : "false");
   }
   if (_instrument) {
     json += ",\"valve_open\":" + String(_instrument->getAirflowCtrl().isValveOpen() ? "true" : "false");
