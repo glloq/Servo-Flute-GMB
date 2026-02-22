@@ -136,12 +136,14 @@ struct RuntimeConfig {
   // Endstop (sensorType 3 ou 4)
   uint8_t endstopPin;               // GPIO fin de course
   bool endstopActiveHigh;            // true = actif quand HIGH
+  bool endstopPumpOn;                // true = pompe ON quand capteur actif (vider), false = remplir
   // Hall effect (sensorType 2)
   uint8_t hallPin;                   // GPIO analogique capteur Hall
   uint16_t hallThresholdLow;        // Seuil bas analogique
   uint16_t hallThresholdHigh;       // Seuil haut analogique
   // UI
   bool showAirSystem;                // Afficher schema pneumatique dans l'UI
+  char resFormat[9];                 // "balloon" ou "bellows" (format visuel reservoir)
 
   // --- MIDI Storage ---
   uint16_t midiStorageLimitKb;       // Limite stockage total MIDI en Ko (defaut 500)

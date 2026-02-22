@@ -445,10 +445,12 @@ void WebConfigurator::handleApiConfig(AsyncWebServerRequest* request) {
   json += ",\"pid_ki\":" + String(cfg.pidKi);
   json += ",\"endstop_pin\":" + String(cfg.endstopPin);
   json += ",\"endstop_high\":" + String(cfg.endstopActiveHigh ? "true" : "false");
+  json += ",\"endstop_pump_on\":" + String(cfg.endstopPumpOn ? "true" : "false");
   json += ",\"hall_pin\":" + String(cfg.hallPin);
   json += ",\"hall_low\":" + String(cfg.hallThresholdLow);
   json += ",\"hall_high\":" + String(cfg.hallThresholdHigh);
   json += ",\"show_air\":" + String(cfg.showAirSystem ? "true" : "false");
+  json += ",\"res_format\":\"" + String(cfg.resFormat) + "\"";
   json += ",\"midi_limit\":" + String(cfg.midiStorageLimitKb);
 
 #if MIC_ENABLED
@@ -621,10 +623,15 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
     if (doc.containsKey("pid_ki")) cfg.pidKi = doc["pid_ki"];
     if (doc.containsKey("endstop_pin")) cfg.endstopPin = doc["endstop_pin"];
     if (doc.containsKey("endstop_high")) cfg.endstopActiveHigh = doc["endstop_high"].as<bool>();
+    if (doc.containsKey("endstop_pump_on")) cfg.endstopPumpOn = doc["endstop_pump_on"].as<bool>();
     if (doc.containsKey("hall_pin")) cfg.hallPin = doc["hall_pin"];
     if (doc.containsKey("hall_low")) cfg.hallThresholdLow = doc["hall_low"];
     if (doc.containsKey("hall_high")) cfg.hallThresholdHigh = doc["hall_high"];
     if (doc.containsKey("show_air")) cfg.showAirSystem = doc["show_air"].as<bool>();
+    if (doc.containsKey("res_format")) {
+      const char* rf = doc["res_format"];
+      if (rf) strlcpy(cfg.resFormat, rf, sizeof(cfg.resFormat));
+    }
     if (doc.containsKey("midi_limit")) {
       uint16_t ml = doc["midi_limit"];
       if (ml >= 50 && ml <= 2000) cfg.midiStorageLimitKb = ml;

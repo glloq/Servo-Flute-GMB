@@ -122,10 +122,12 @@ void ConfigStorage::initDefaults() {
   cfg.pidKi = DEFAULT_PID_KI;
   cfg.endstopPin = DEFAULT_ENDSTOP_PIN;
   cfg.endstopActiveHigh = DEFAULT_ENDSTOP_ACTIVE_HIGH;
+  cfg.endstopPumpOn = false;
   cfg.hallPin = DEFAULT_HALL_PIN;
   cfg.hallThresholdLow = DEFAULT_HALL_THRESHOLD_LOW;
   cfg.hallThresholdHigh = DEFAULT_HALL_THRESHOLD_HIGH;
   cfg.showAirSystem = DEFAULT_SHOW_AIR_SYSTEM;
+  strlcpy(cfg.resFormat, "balloon", sizeof(cfg.resFormat));
 
   // --- MIDI Storage ---
   cfg.midiStorageLimitKb = DEFAULT_MIDI_STORAGE_LIMIT_KB;
@@ -305,10 +307,13 @@ bool ConfigStorage::load() {
   cfg.pidKi = doc["pid_ki"] | cfg.pidKi;
   cfg.endstopPin = doc["endstop_pin"] | cfg.endstopPin;
   cfg.endstopActiveHigh = doc["endstop_high"] | (cfg.endstopActiveHigh ? 1 : 0);
+  cfg.endstopPumpOn = doc["endstop_pump_on"] | (cfg.endstopPumpOn ? 1 : 0);
   cfg.hallPin = doc["hall_pin"] | cfg.hallPin;
   cfg.hallThresholdLow = doc["hall_low"] | cfg.hallThresholdLow;
   cfg.hallThresholdHigh = doc["hall_high"] | cfg.hallThresholdHigh;
   cfg.showAirSystem = doc["show_air"] | (cfg.showAirSystem ? 1 : 0);
+  const char* rf = doc["res_format"];
+  if (rf) { strlcpy(cfg.resFormat, rf, sizeof(cfg.resFormat)); }
 
   // --- MIDI Storage ---
   cfg.midiStorageLimitKb = doc["midi_limit"] | cfg.midiStorageLimitKb;
@@ -436,10 +441,12 @@ bool ConfigStorage::save() {
   doc["pid_ki"] = cfg.pidKi;
   doc["endstop_pin"] = cfg.endstopPin;
   doc["endstop_high"] = cfg.endstopActiveHigh ? 1 : 0;
+  doc["endstop_pump_on"] = cfg.endstopPumpOn ? 1 : 0;
   doc["hall_pin"] = cfg.hallPin;
   doc["hall_low"] = cfg.hallThresholdLow;
   doc["hall_high"] = cfg.hallThresholdHigh;
   doc["show_air"] = cfg.showAirSystem ? 1 : 0;
+  doc["res_format"] = cfg.resFormat;
   doc["midi_limit"] = cfg.midiStorageLimitKb;
   doc["wifi_ssid"] = cfg.wifiSsid;
   doc["wifi_pass"] = cfg.wifiPassword;

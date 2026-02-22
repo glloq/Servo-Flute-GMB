@@ -246,17 +246,18 @@ void PressureController::update() {
   // --- Mode reservoir avec capteur ---
 
   // Endstop (mecanique ou optique): controle ON/OFF simple
+  // endstopPumpOn: false = pompe ON quand capteur inactif (remplir), true = pompe ON quand capteur actif (vider)
   if (_sensorType == SENSOR_TYPE_ENDSTOP_MECH || _sensorType == SENSOR_TYPE_ENDSTOP_OPT) {
     _endstopActive = (digitalRead(cfg.endstopPin) == (cfg.endstopActiveHigh ? HIGH : LOW));
-    if (_targetPercent == 0 || _endstopActive) {
+    bool shouldPump = cfg.endstopPumpOn ? _endstopActive : !_endstopActive;
+    if (_targetPercent == 0 || !shouldPump) {
       setPumpPwm(0);
       _bangbangPumpOn = false;
       _fillPercent = _endstopActive ? 100 : 0;
     } else {
       _bangbangPumpOn = true;
-      // Toutes les pompes via cascade (stagger gere dans setPumpPwm)
       setPumpPwm(255);
-      _fillPercent = 0;
+      _fillPercent = cfg.endstopPumpOn ? 100 : 0;
     }
     return;
   }
