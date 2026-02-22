@@ -252,7 +252,8 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
   #airStatusBar{flex-wrap:wrap;font-size:.72em;padding:4px 8px}
   #airCtrlSection .cfg-row label{flex:0 0 70px}
   #airMiniChart{height:45px}
-  #airMiniChart canvas{height:45px}}
+  #airMiniChart canvas{height:45px}
+  #airAngleShortcuts{padding-left:0 !important;flex-wrap:wrap}}
 </style>
 </head>
 <body>
@@ -559,7 +560,7 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
       <span id="airFlowTestVal" style="min-width:36px;text-align:right">20&deg;</span>
       <button class="btn btn-s" onclick="sweepServoFlow()" title="Balaye de min a max et retour au repos" style="padding:4px 8px;font-size:.7em">Sweep</button>
     </div>
-    <div style="display:flex;gap:4px;margin:-4px 0 4px;padding-left:148px">
+    <div id="airAngleShortcuts" style="display:flex;gap:4px;margin:-4px 0 4px;padding-left:148px">
       <button class="btn btn-s" onclick="gotoServoAngle('cfgAirOff')" style="padding:2px 6px;font-size:.65em" title="Aller a l'angle repos">Off</button>
       <button class="btn btn-s" onclick="gotoServoAngle('cfgAirMin')" style="padding:2px 6px;font-size:.65em" title="Aller a l'angle minimum">Min</button>
       <button class="btn btn-s" onclick="gotoServoAngle('cfgAirMax')" style="padding:2px 6px;font-size:.65em" title="Aller a l'angle maximum">Max</button>
@@ -592,9 +593,9 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
 
     <!-- BLOCK: Pompe -->
     <div class="air-block" id="airBlockPump" style="display:none">
-      <div class="air-block-hdr" tabindex="0" role="button" onclick="toggleAirBlock('airBlockPump')" onkeydown="toggleAirBlock('airBlockPump',event)">
+      <div class="air-block-hdr" tabindex="0" role="button" aria-label="Configuration pompe" onclick="toggleAirBlock('airBlockPump')" onkeydown="toggleAirBlock('airBlockPump',event)">
         <h4><svg viewBox="0 0 16 16" width="14" height="14"><circle cx="8" cy="8" r="5" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="8" y1="3" x2="8" y2="13" stroke="currentColor" stroke-width="1.5"/></svg>Pompe</h4>
-        <div class="air-block-toggle on" id="airBlockPumpToggle" onclick="event.stopPropagation();toggleAirBlockEnable('airBlockPump')"></div>
+        <div class="air-block-toggle on" id="airBlockPumpToggle" role="switch" aria-checked="true" onclick="event.stopPropagation();toggleAirBlockEnable('airBlockPump')"></div>
       </div>
       <div class="air-block-body">
         <div class="cfg-row"><label>Type moteur</label>
@@ -602,6 +603,7 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
             <option value="0">PWM variable</option>
             <option value="1">On/Off simple</option>
           </select>
+          <div id="airMotorHelp" style="font-size:.65em;color:#888;margin-top:2px"></div>
         </div>
         <div class="cfg-row"><label>Nombre pompes</label>
           <select id="airNumPumps" onchange="buildPumpRows()">
@@ -616,9 +618,9 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
 
     <!-- BLOCK: Ventilateur -->
     <div class="air-block" id="airBlockFan" style="display:none">
-      <div class="air-block-hdr" tabindex="0" role="button" onclick="toggleAirBlock('airBlockFan')" onkeydown="toggleAirBlock('airBlockFan',event)">
+      <div class="air-block-hdr" tabindex="0" role="button" aria-label="Configuration ventilateur" onclick="toggleAirBlock('airBlockFan')" onkeydown="toggleAirBlock('airBlockFan',event)">
         <h4><svg viewBox="0 0 16 16" width="14" height="14"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M8 2C8 5 10 8 8 8S4 5 4 8 6 14 8 14" fill="none" stroke="currentColor" stroke-width="1"/></svg>Ventilateur</h4>
-        <div class="air-block-toggle on" id="airBlockFanToggle" onclick="event.stopPropagation();toggleAirBlockEnable('airBlockFan')"></div>
+        <div class="air-block-toggle on" id="airBlockFanToggle" role="switch" aria-checked="true" onclick="event.stopPropagation();toggleAirBlockEnable('airBlockFan')"></div>
       </div>
       <div class="air-block-body">
         <div class="cfg-row"><label>GPIO ventilateur</label>
@@ -635,9 +637,9 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
 
     <!-- BLOCK: Reservoir -->
     <div class="air-block" id="airBlockRes" style="display:none">
-      <div class="air-block-hdr" tabindex="0" role="button" onclick="toggleAirBlock('airBlockRes')" onkeydown="toggleAirBlock('airBlockRes',event)">
+      <div class="air-block-hdr" tabindex="0" role="button" aria-label="Configuration reservoir" onclick="toggleAirBlock('airBlockRes')" onkeydown="toggleAirBlock('airBlockRes',event)">
         <h4><svg viewBox="0 0 16 16" width="14" height="14"><rect x="3" y="4" width="10" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M5 8h6" stroke="currentColor" stroke-width="1" stroke-dasharray="2,1"/></svg>Reservoir</h4>
-        <div class="air-block-toggle on" id="airBlockResToggle" onclick="event.stopPropagation();toggleAirBlockEnable('airBlockRes')"></div>
+        <div class="air-block-toggle on" id="airBlockResToggle" role="switch" aria-checked="true" onclick="event.stopPropagation();toggleAirBlockEnable('airBlockRes')"></div>
       </div>
       <div class="air-block-body">
         <div class="cfg-row"><label>Format</label>
@@ -648,11 +650,17 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
         </div>
         <div class="cfg-row"><label>Capteur reservoir</label>
           <select id="airSensorType" onchange="toggleSensorParams()">
-            <option value="0">ToF VL53L0X</option>
-            <option value="1">ToF VL6180X</option>
-            <option value="2">Hall KY-024</option>
-            <option value="3">Endstop mecanique</option>
-            <option value="4">Endstop optique</option>
+            <optgroup label="Distance (I2C)">
+              <option value="0">VL53L0X (50-1200mm)</option>
+              <option value="1">VL6180X (10-300mm)</option>
+            </optgroup>
+            <optgroup label="Analogique">
+              <option value="2">Hall KY-024</option>
+            </optgroup>
+            <optgroup label="Contact">
+              <option value="3">Endstop mecanique</option>
+              <option value="4">Endstop optique</option>
+            </optgroup>
           </select>
         </div>
         <div id="airSensLive" style="display:none;background:rgba(78,204,163,.08);border:1px solid rgba(78,204,163,.2);border-radius:6px;padding:6px 10px;margin:6px 0">
@@ -676,10 +684,10 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
             <select id="airHallPin"><option value="34">GPIO 34</option><option value="35">GPIO 35</option><option value="36">GPIO 36</option><option value="39">GPIO 39</option></select>
           </div>
           <div class="cfg-row"><label>Seuil bas</label>
-            <input type="number" id="airHallLow" min="0" max="4095" value="1500" title="Lecture Hall = vide. Ajuster quand le reservoir est vide.">
+            <input type="number" id="airHallLow" min="0" max="4095" value="1500" title="Lecture Hall = vide. Ajuster quand le reservoir est vide." oninput="updateHallBar()">
           </div>
           <div class="cfg-row"><label>Seuil haut</label>
-            <input type="number" id="airHallHigh" min="0" max="4095" value="2500" title="Lecture Hall = plein. Ajuster quand le reservoir est plein.">
+            <input type="number" id="airHallHigh" min="0" max="4095" value="2500" title="Lecture Hall = plein. Ajuster quand le reservoir est plein." oninput="updateHallBar()">
           </div>
           <div id="airHallBar" style="margin:4px 0;height:12px;background:#222;border-radius:6px;position:relative;overflow:hidden">
             <div id="airHallThreshLow" style="position:absolute;top:0;height:100%;width:1px;background:#e94560"></div>
@@ -704,9 +712,9 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
           </div>
           <div style="font-size:.7em;color:#888;padding:2px 0">Kp: reactivite, Ki: precision long terme. Valeurs /10 (ex: 30 = 3.0)</div>
           <div class="btn-row" style="margin-top:4px">
-            <button class="btn btn-s" onclick="$('airPidKp').value=45;$('airPidKi').value=8" style="font-size:.7em;padding:3px 8px" title="Reponse rapide, risque leger depassement">Rapide</button>
-            <button class="btn btn-s" onclick="$('airPidKp').value=30;$('airPidKi').value=5" style="font-size:.7em;padding:3px 8px" title="Bon compromis reactivite/stabilite">Equilibre</button>
-            <button class="btn btn-s" onclick="$('airPidKp').value=15;$('airPidKi').value=2" style="font-size:.7em;padding:3px 8px" title="Montee lente et stable, sans depassement">Doux</button>
+            <button class="btn btn-s" onclick="$('airPidKp').value=45;$('airPidKi').value=8;markDirty();validateAirConfig()" style="font-size:.7em;padding:3px 8px" title="Reponse rapide, risque leger depassement">Rapide</button>
+            <button class="btn btn-s" onclick="$('airPidKp').value=30;$('airPidKi').value=5;markDirty();validateAirConfig()" style="font-size:.7em;padding:3px 8px" title="Bon compromis reactivite/stabilite">Equilibre</button>
+            <button class="btn btn-s" onclick="$('airPidKp').value=15;$('airPidKi').value=2;markDirty();validateAirConfig()" style="font-size:.7em;padding:3px 8px" title="Montee lente et stable, sans depassement">Doux</button>
           </div>
         </div>
       </div>
@@ -714,9 +722,9 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
 
     <!-- BLOCK: Valve -->
     <div class="air-block" id="airBlockValve">
-      <div class="air-block-hdr" tabindex="0" role="button" onclick="toggleAirBlock('airBlockValve')" onkeydown="toggleAirBlock('airBlockValve',event)">
+      <div class="air-block-hdr" tabindex="0" role="button" aria-label="Configuration valve servo" onclick="toggleAirBlock('airBlockValve')" onkeydown="toggleAirBlock('airBlockValve',event)">
         <h4><svg viewBox="0 0 16 16" width="14" height="14"><rect x="4" y="2" width="8" height="12" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/><rect x="6" y="4" width="4" height="4" rx="0.5" fill="currentColor" opacity=".5"/></svg>Valve (Servo)</h4>
-        <div class="air-block-toggle on" id="airBlockValveToggle" onclick="event.stopPropagation();toggleAirBlockEnable('airBlockValve')"></div>
+        <div class="air-block-toggle on" id="airBlockValveToggle" role="switch" aria-checked="true" onclick="event.stopPropagation();toggleAirBlockEnable('airBlockValve')"></div>
       </div>
       <div class="air-block-body">
         <div class="cfg-row"><label>Type valve</label>
@@ -735,27 +743,27 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
 
     <!-- BLOCK: Servo Flow -->
     <div class="air-block active" id="airBlockServo">
-      <div class="air-block-hdr" tabindex="0" role="button" onclick="toggleAirBlock('airBlockServo')" onkeydown="toggleAirBlock('airBlockServo',event)">
+      <div class="air-block-hdr" tabindex="0" role="button" aria-label="Configuration servo flow" onclick="toggleAirBlock('airBlockServo')" onkeydown="toggleAirBlock('airBlockServo',event)">
         <h4><svg viewBox="0 0 16 16" width="14" height="14"><rect x="2" y="5" width="12" height="6" rx="2" fill="none" stroke="currentColor" stroke-width="1.2"/><line x1="8" y1="5" x2="12" y2="2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>Servo Flow</h4>
-        <div class="air-block-toggle on" id="airBlockServoToggle" onclick="event.stopPropagation();toggleAirBlockEnable('airBlockServo')"></div>
+        <div class="air-block-toggle on" id="airBlockServoToggle" role="switch" aria-checked="true" onclick="event.stopPropagation();toggleAirBlockEnable('airBlockServo')"></div>
       </div>
       <div class="air-block-body">
         <div class="cfg-row"><label>Angle repos</label><input type="number" id="cfgAirOff" min="0" max="180" title="Angle du servo quand aucune note ne joue. Typique: 15-25°"></div>
         <div class="cfg-row"><label>Angle min</label><input type="number" id="cfgAirMin" min="0" max="180" title="Angle minimal pour les notes les plus douces (pp). Typique: 5-15°"></div>
         <div class="cfg-row"><label>Angle max</label><input type="number" id="cfgAirMax" min="0" max="180" title="Angle maximal pour les notes les plus fortes (ff). Typique: 60-120°"></div>
         <div class="btn-row" style="margin-top:4px">
-          <button class="btn btn-s" onclick="$('cfgAirOff').value=20;$('cfgAirMin').value=5;$('cfgAirMax').value=60;validateAirConfig()" style="font-size:.7em;padding:3px 8px" title="Souffle leger, ideal pour flute a bec">Doux</button>
-          <button class="btn btn-s" onclick="$('cfgAirOff').value=20;$('cfgAirMin').value=10;$('cfgAirMax').value=90;validateAirConfig()" style="font-size:.7em;padding:3px 8px" title="Bon compromis pour la plupart des flutes">Standard</button>
-          <button class="btn btn-s" onclick="$('cfgAirOff').value=15;$('cfgAirMin').value=15;$('cfgAirMax').value=120;validateAirConfig()" style="font-size:.7em;padding:3px 8px" title="Souffle fort, flute traversiere ou gros volume">Puissant</button>
+          <button class="btn btn-s" onclick="$('cfgAirOff').value=20;$('cfgAirMin').value=5;$('cfgAirMax').value=60;markDirty();validateAirConfig()" style="font-size:.7em;padding:3px 8px" title="Souffle leger, ideal pour flute a bec">Doux</button>
+          <button class="btn btn-s" onclick="$('cfgAirOff').value=20;$('cfgAirMin').value=10;$('cfgAirMax').value=90;markDirty();validateAirConfig()" style="font-size:.7em;padding:3px 8px" title="Bon compromis pour la plupart des flutes">Standard</button>
+          <button class="btn btn-s" onclick="$('cfgAirOff').value=15;$('cfgAirMin').value=15;$('cfgAirMax').value=120;markDirty();validateAirConfig()" style="font-size:.7em;padding:3px 8px" title="Souffle fort, flute traversiere ou gros volume">Puissant</button>
         </div>
       </div>
     </div>
 
     <!-- BLOCK: Solenoide (legacy mode 0) -->
     <div class="air-block" id="airBlockSolenoid" style="display:none">
-      <div class="air-block-hdr" tabindex="0" role="button" onclick="toggleAirBlock('airBlockSolenoid')" onkeydown="toggleAirBlock('airBlockSolenoid',event)">
+      <div class="air-block-hdr" tabindex="0" role="button" aria-label="Configuration solenoide" onclick="toggleAirBlock('airBlockSolenoid')" onkeydown="toggleAirBlock('airBlockSolenoid',event)">
         <h4><svg viewBox="0 0 16 16" width="14" height="14"><rect x="3" y="4" width="10" height="8" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/><line x1="6" y1="6" x2="6" y2="10" stroke="currentColor" stroke-width="1"/><line x1="10" y1="6" x2="10" y2="10" stroke="currentColor" stroke-width="1"/></svg>Solenoide</h4>
-        <div class="air-block-toggle on" id="airBlockSolenoidToggle" onclick="event.stopPropagation();toggleAirBlockEnable('airBlockSolenoid')"></div>
+        <div class="air-block-toggle on" id="airBlockSolenoidToggle" role="switch" aria-checked="true" onclick="event.stopPropagation();toggleAirBlockEnable('airBlockSolenoid')"></div>
       </div>
       <div class="air-block-body">
         <div class="cfg-row"><label>GPIO Pin</label><select id="cfgSolPin" title="Pin GPIO connectee au MOSFET/relais du solenoide"></select></div>
@@ -770,8 +778,9 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
       <div class="cfg-row"><label>Schema air (clavier)</label><input type="checkbox" id="cfgShowAir" style="width:auto;flex:0"></div>
     </div>
     <div id="airValidationMsg" style="display:none;font-size:.78em;color:#e94560;background:rgba(233,69,96,.08);border:1px solid rgba(233,69,96,.25);border-radius:6px;padding:8px 10px;margin:8px 0"></div>
-    <div class="btn-row" style="margin-top:12px">
+    <div class="btn-row" style="margin-top:12px;gap:8px">
       <button class="btn btn-g" id="btnAirSave" onclick="saveAirSettings()">Sauvegarder</button>
+      <button class="btn btn-s" onclick="resetAirDefaults()" style="font-size:.8em" title="Reinitialiser les valeurs par defaut pour le mode actuel">Defauts</button>
     </div>
     <div id="airSettingsMsg" style="font-size:.75em;color:#0f0;margin-top:6px"></div>
   </div>
@@ -1104,8 +1113,9 @@ function testAirSystem(){
   setTimeout(()=>{stopAirSource();$('btnAirTest').classList.remove('test-pulse')},2000);
 }
 function testServoFlow(v){
-  $('airFlowTestVal').textContent=v+'°';
-  wsSend({t:'test_air',a:parseInt(v)});
+  const a=Math.max(0,Math.min(180,parseInt(v)||0));
+  $('airFlowTestVal').textContent=a+'°';
+  wsSend({t:'test_air',a:a});
 }
 function gotoServoAngle(inputId){
   const v=parseInt($(inputId).value)||0;
@@ -1136,15 +1146,17 @@ function runAirDiagnostic(){
   }
   const last=steps[steps.length-1];
   steps.push({t:last.t+800,msg:'Diagnostic termine !',fn:()=>{dm.style.color='#4ecca3';setTimeout(()=>{dm.style.display='none'},3000)}});
-  steps.forEach(s=>setTimeout(()=>{dm.textContent=s.msg;s.fn()},s.t));
+  const total=steps.length;
+  steps.forEach((s,i)=>setTimeout(()=>{dm.textContent='['+( i+1)+'/'+total+'] '+s.msg;s.fn()},s.t));
 }
 let sweepTimer=null;
 function sweepServoFlow(){
-  if(sweepTimer){clearInterval(sweepTimer);sweepTimer=null;return}
+  const btn=event&&event.target;
+  if(sweepTimer){clearInterval(sweepTimer);sweepTimer=null;if(btn)btn.style.background='';return}
   const sl=$('airFlowTest');if(!sl)return;
+  if(btn)btn.style.background='rgba(78,204,163,.25)';
   const aMin=parseInt($('cfgAirMin').value)||0,aMax=parseInt($('cfgAirMax').value)||180,aOff=parseInt($('cfgAirOff').value)||20;
   const steps=[],stepMs=80,range=aMax-aMin;
-  // Sweep: off -> min -> max -> off over ~4s
   const nUp=Math.max(1,Math.round(range/4)),nDown=nUp;
   steps.push(aOff);
   for(let i=0;i<=nUp;i++)steps.push(aMin+Math.round(range*i/nUp));
@@ -1152,21 +1164,20 @@ function sweepServoFlow(){
   steps.push(aOff);
   let idx=0;
   sweepTimer=setInterval(()=>{
-    if(idx>=steps.length){clearInterval(sweepTimer);sweepTimer=null;return}
+    if(idx>=steps.length){clearInterval(sweepTimer);sweepTimer=null;if(btn)btn.style.background='';return}
     const a=steps[idx++];sl.value=a;testServoFlow(a);
   },stepMs);
 }
 let _prevAirMode=0;
 function confirmAirModeChange(sel){
   const newM=parseInt(sel.value),oldM=_prevAirMode;
-  // Warn if leaving a complex mode with pump/reservoir config
   if(oldM>=4&&newM<4){
-    if(!confirm('Changer de mode va masquer la configuration pompe/reservoir. Continuer ?')){
-      sel.value=oldM;return;
-    }
+    if(!confirm('Changer de mode va masquer la configuration pompe/reservoir. Continuer ?')){sel.value=oldM;return}
+  }else if(oldM<4&&newM>=4){
+    if(!confirm('Ce mode necessite une pompe et des composants supplementaires. Continuer ?')){sel.value=oldM;return}
   }
   _prevAirMode=newM;
-  setAirMode(newM);
+  setAirMode(newM);markDirty();
 }
 function setAirMode(v){
   const m=parseInt(v);
@@ -1229,6 +1240,7 @@ function toggleAirBlockEnable(id){
   const bl=$(id);if(!bl)return;
   const tg=bl.querySelector('.air-block-toggle');if(!tg)return;
   const on=tg.classList.toggle('on');
+  tg.setAttribute('aria-checked',on?'true':'false');
   bl.classList.toggle('disabled',!on);
   if(!on)bl.classList.remove('active');
   else bl.classList.add('active');
@@ -1238,6 +1250,7 @@ function toggleValveParams(){
 }
 function toggleMotorType(){
   buildPumpRows();
+  const mh=$('airMotorHelp');if(mh)mh.textContent=$('airMotorType').value==='1'?'On/Off: pompe demarre/arrete uniquement':'PWM: controle vitesse 0-255';
 }
 function toggleSensorParams(){
   const st=parseInt($('airSensorType').value);
@@ -1403,12 +1416,27 @@ function saveAirSettings(){
     if(st===2){d.hall_pin=parseInt($('airHallPin').value)||36;d.hall_low=parseInt($('airHallLow').value)||1500;d.hall_high=parseInt($('airHallHigh').value)||2500}
     if(st>=3){d.endstop_pin=parseInt($('airEndstopPin').value)||34;d.endstop_high=$('airEndstopHigh').value==='1'}
   }
+  const sb=$('btnAirSave');if(sb){sb.disabled=true;sb.textContent='Sauvegarde...'}
   fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)})
     .then(r=>r.json()).then(j=>{
+    if(sb){sb.disabled=false;sb.textContent='Sauvegarder'}
     if(j.ok){showToast('Configuration air sauvegardee','success');
       Object.assign(CFG,d);markClean();applyAirTabVisibility();buildAirSvg('airSvgFull',true)}
     else{showToast('Erreur sauvegarde air','error')}
-    }).catch(()=>showToast('Erreur reseau','error'))
+    }).catch(()=>{if(sb){sb.disabled=false;sb.textContent='Sauvegarder'};showToast('Erreur reseau','error')})
+}
+function resetAirDefaults(){
+  if(!confirm('Reinitialiser les valeurs par defaut pour le mode actuel ?'))return;
+  const m=getAirMode();
+  $('cfgAirOff').value=20;$('cfgAirMin').value=10;$('cfgAirMax').value=90;
+  $('airValveType').value='0';$('airValveCh').value=11;
+  if(m===0){$('cfgSolPin').value=13;$('cfgSolAct').value=255;$('cfgSolHold').value=80;$('cfgSolTime').value=30}
+  if(m===3){$('airFanMin').value=60;$('airFanMax').value=255}
+  if(m>=4){$('airMotorType').value='0';$('airNumPumps').value=1;toggleMotorType();buildPumpRows()}
+  if(m===5){$('airSensorType').value='0';$('airSensTarget').value=50;$('airSensMin').value=10;$('airSensMax').value=150;
+    $('airPidKp').value=30;$('airPidKi').value=5;toggleSensorParams()}
+  toggleValveParams();markDirty();validateAirConfig();
+  showToast('Valeurs par defaut appliquees','success');
 }
 function fillAirSettings(){
   if(!CFG)return;
@@ -1445,7 +1473,7 @@ function fillAirSettings(){
     el.addEventListener('change',()=>markDirty())});
   buildPumpRows();
   _prevAirMode=CFG.air_mode||0;
-  setAirMode(CFG.air_mode||0);toggleValveParams();toggleSensorParams();
+  setAirMode(CFG.air_mode||0);toggleValveParams();toggleSensorParams();toggleMotorType();
 }
 function buildAirUI(){
   fillAirSettings();
