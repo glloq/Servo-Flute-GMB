@@ -1455,10 +1455,17 @@ function validateAirConfig(){
       if(stgt<smin||stgt>smax){warns.push('ToF: cible hors plage min-max');errBlocks.add('airBlockRes')}
     }
   }
-  // Highlight error blocks
+  // Highlight error blocks and auto-scroll to first error
+  let firstErrBlock=null;
   document.querySelectorAll('.air-block').forEach(bl=>{
-    bl.style.borderColor=errBlocks.has(bl.id)?'#e94560':'';
+    const isErr=errBlocks.has(bl.id);
+    bl.style.borderColor=isErr?'#e94560':'';
+    if(isErr&&!firstErrBlock)firstErrBlock=bl;
   });
+  if(firstErrBlock&&warns.length>0){
+    firstErrBlock.classList.add('active');
+    firstErrBlock.scrollIntoView({behavior:'smooth',block:'center'});
+  }
   const box=$('airValidationMsg');
   if(box){
     if(warns.length>0){box.style.display='';box.innerHTML=warns.join('<br>')}
@@ -1807,6 +1814,9 @@ function buildAirSvg(svgId,full){
     s+='<rect id="airValveInd" x="'+(vx-cylW/2-3)+'" y="'+(vy+cylH/2-8)+'" width="6" height="6" rx="1" fill="#e44"/>';
     const vl=isServoValve?'Servo-valve':'Solenoide';
     s+='<text x="'+vx+'" y="'+(vy+cylH/2+14)+'" text-anchor="middle" style="font-size:7px;fill:#9aa">'+vl+'</text>';
+    // Channel/pin badge on valve
+    if(isServoValve){const vch=CFG.valve_ch||11;s+='<text x="'+(vx+cylW/2+2)+'" y="'+(vy-cylH/2+8)+'" style="font-size:5px;fill:#569">CH'+vch+'</text>'}
+    else if(m===0){const sp=CFG.sol_pin||13;s+='<text x="'+(vx+cylW/2+2)+'" y="'+(vy-cylH/2+8)+'" style="font-size:5px;fill:#e9a645">G'+sp+'</text>'}
 
     // Pipe UP from valve to servo flow row
     s+='<line x1="'+vx+'" y1="'+(vy-cylH/2-12)+'" x2="'+vx+'" y2="'+(rowServo+18)+'" stroke="#7799bb" stroke-width="3"/>';
@@ -1815,10 +1825,12 @@ function buildAirSvg(svgId,full){
 
     // ===== SERVO FLOW (top) =====
     const svX=vx-18;
+    const ach=CFG.air_pca||10;
     s+='<rect x="'+svX+'" y="'+(rowServo-14)+'" width="36" height="28" rx="5" fill="url(#agMetal)" stroke="#334" stroke-width="1.2"/>';
     s+='<path id="airServoNeedle" d="M'+(svX+18)+','+rowServo+' L'+(svX+18)+','+(rowServo-10)+'" stroke="#e94" stroke-width="2" stroke-linecap="round"/>';
     s+='<circle cx="'+(svX+18)+'" cy="'+rowServo+'" r="2.5" fill="#e94"/>';
     s+='<text x="'+(svX+18)+'" y="'+(rowServo-18)+'" text-anchor="middle" style="font-size:7px;fill:#9aa">Servo Flow</text>';
+    s+='<text x="'+(svX+36)+'" y="'+(rowServo-6)+'" style="font-size:5px;fill:#569">CH'+ach+'</text>';
     // Arrow right to flute
     const flX=svX+46;
     s+='<line x1="'+(svX+36)+'" y1="'+rowServo+'" x2="'+flX+'" y2="'+rowServo+'" stroke="#7799bb" stroke-width="3"/>';
@@ -1842,10 +1854,12 @@ function buildAirSvg(svgId,full){
     }
     // Servo Flow
     const svX=vx-18;
+    const ach2=CFG.air_pca||10;
     s+='<rect x="'+svX+'" y="'+(rowServo-14)+'" width="36" height="28" rx="5" fill="url(#agMetal)" stroke="#334" stroke-width="1.2"/>';
     s+='<path id="airServoNeedle" d="M'+(svX+18)+','+rowServo+' L'+(svX+18)+','+(rowServo-10)+'" stroke="#e94" stroke-width="2" stroke-linecap="round"/>';
     s+='<circle cx="'+(svX+18)+'" cy="'+rowServo+'" r="2.5" fill="#e94"/>';
     s+='<text x="'+(svX+18)+'" y="'+(rowServo-18)+'" text-anchor="middle" style="font-size:7px;fill:#9aa">Servo Flow</text>';
+    s+='<text x="'+(svX+36)+'" y="'+(rowServo-6)+'" style="font-size:5px;fill:#569">CH'+ach2+'</text>';
     // Arrow right to flute
     const flX=svX+46;
     s+='<line x1="'+(svX+36)+'" y1="'+rowServo+'" x2="'+flX+'" y2="'+rowServo+'" stroke="#7799bb" stroke-width="3"/>';
