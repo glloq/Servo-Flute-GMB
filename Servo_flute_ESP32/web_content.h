@@ -528,6 +528,8 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
     <span style="color:#e94560;font-weight:bold" id="airStatusMode">--</span>
     <span id="airStatusInd" style="width:8px;height:8px;border-radius:50%;background:#555"></span>
     <span id="airStatusText" style="color:#9aa">En attente</span>
+    <span style="margin-left:auto;font-size:.75em;color:#666" id="airLastUpdate" title="Derniere mise a jour recue">--</span>
+    <span style="font-size:.7em;color:#555" id="airHeapInfo" title="Memoire libre ESP32"></span>
   </div>
   <div class="section">
     <h3>Systeme d'air</h3>
@@ -581,7 +583,19 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
   <div class="section">
     <div style="display:flex;justify-content:space-between;align-items:center">
       <h3>Configuration</h3>
-      <button class="btn btn-s" onclick="toggleAllAirBlocks()" style="font-size:.65em;padding:2px 8px">Tout plier/deplier</button>
+      <div style="display:flex;gap:4px">
+        <button class="btn btn-s" onclick="toggleAirHelp()" style="font-size:.65em;padding:2px 8px" title="Aide rapide">?</button>
+        <button class="btn btn-s" onclick="toggleAllAirBlocks()" style="font-size:.65em;padding:2px 8px">Tout plier/deplier</button>
+      </div>
+    </div>
+    <div id="airHelpPanel" style="display:none;font-size:.75em;color:#aaa;background:rgba(78,204,163,.05);border:1px solid rgba(78,204,163,.15);border-radius:6px;padding:8px 12px;margin:6px 0;line-height:1.5">
+      <b style="color:#4ecca3">Guide rapide</b><br>
+      1. Choisir le mode correspondant au materiel<br>
+      2. Configurer les parametres dans chaque bloc<br>
+      3. Utiliser les boutons de test pour verifier<br>
+      4. Lancer le diagnostic pour valider le tout<br>
+      5. Sauvegarder la configuration<br>
+      <span style="color:#888">Astuce: les badges sous le mode montrent les composants necessaires</span>
     </div>
     <div class="cfg-row"><label>Mode air</label>
       <select id="airModeSelect" onchange="confirmAirModeChange(this)">
@@ -1254,6 +1268,7 @@ function setAirMode(v){
   buildAirSvg('airSvgFull',true);
 }
 let _allBlocksExpanded=true;
+function toggleAirHelp(){const hp=$('airHelpPanel');if(hp)hp.style.display=hp.style.display==='none'?'':'none'}
 function toggleAllAirBlocks(){
   _allBlocksExpanded=!_allBlocksExpanded;
   document.querySelectorAll('.air-block').forEach(bl=>{
@@ -1899,6 +1914,8 @@ function updateAirDiagram(d){
     stt.textContent=warn?'Capteur absent':active?'Actif':'Repos';
     stt.style.color=warn?'#e94560':active?'#4ecca3':'#9aa';
   }
+  // Last update timestamp
+  const lu=$('airLastUpdate');if(lu)lu.textContent=new Date().toLocaleTimeString();
   // Mini chart for reservoir modes
   if(d.res_pct!=null)pushChartData(d.res_pct,d.pump_pwm||0);
 }
@@ -2044,7 +2061,8 @@ function handleWs(d){
   if(d.t==='status'){
     $('monState').textContent=STATES[d.state]||'?';
     $('monState').style.color=d.playing?'#e94560':'#4ecca3';
-    if(d.heap){$('monHeap').textContent=(d.heap/1024|0)+'KB';$('heapBar').textContent=(d.heap/1024|0)+'KB'}
+    if(d.heap){$('monHeap').textContent=(d.heap/1024|0)+'KB';$('heapBar').textContent=(d.heap/1024|0)+'KB';
+      const ah=$('airHeapInfo');if(ah){const kb=d.heap/1024|0;ah.textContent=kb+'KB';ah.style.color=kb<30?'#e94560':kb<60?'#e9a645':'#555'}}
     updateCC(1,d.cc1);updateCC(2,d.cc2);updateCC(7,d.cc7);updateCC(11,d.cc11);
     if(d.pp!==undefined)$('progressFill').style.width=d.pp+'%';
     if(d.ppos!==undefined)$('progressText').textContent=fmt(d.ppos)+' / '+fmt(playerDuration);
