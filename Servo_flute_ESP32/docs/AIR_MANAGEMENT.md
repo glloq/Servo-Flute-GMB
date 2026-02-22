@@ -232,10 +232,13 @@ Layout (modes simples) :
 - [x] Wizard first-boot mis a jour avec tous les modes
 - [x] Documentation AIR_MANAGEMENT.md
 
-## Phase 2 - Hardware controllers (futur)
-- [ ] FanController : gestion moteur ventilateur PWM
-- [ ] Refactoring PressureController pour multi-pompe
-- [ ] Integration AirflowController avec tous les modes
+## Phase 2 - Hardware controllers (completee)
+- [x] FanController : gestion moteur ventilateur PWM (rampe douce 300ms, mapping percent→PWM)
+- [x] Refactoring PressureController pour multi-pompe (PID remplace hysteresis, per-pump PWM scaling)
+- [x] Integration AirflowController avec tous les modes (fan mode 3, servo-only mode 2)
+- [x] InstrumentManager : orchestration FanController (init, update, allSoundOff)
+- [x] NoteSequencer : conscience des modes (valve virtuelle modes 2-3)
+- [x] WebConfigurator : broadcast fan_pwm/fan_speed/fan_ready, commandes WS fan_target/fan_stop
 
 ## Phase 3 - Optimisations (futur)
 - [ ] Profils de pression par note (PID adaptatif)

@@ -48,6 +48,14 @@ void InstrumentManager::begin() {
     }
   }
 
+  // Initialiser le ventilateur si mode 3
+  if (cfg.airMode == AIR_MODE_FAN_SERVO) {
+    _fanCtrl.begin();
+    if (DEBUG) {
+      Serial.println("DEBUG: InstrumentManager - FanController initialise");
+    }
+  }
+
   // Initialiser les valeurs CC dans AirflowController
   _airflowCtrl.setCCValues(_ccVolume, _ccExpression, _ccModulation);
 
@@ -66,6 +74,9 @@ void InstrumentManager::update() {
   _airflowCtrl.update();
   if (cfg.airMode >= AIR_MODE_PUMP_VALVE) {
     _pressureCtrl.update();
+  }
+  if (cfg.airMode == AIR_MODE_FAN_SERVO) {
+    _fanCtrl.update();
   }
   managePower();
 }
@@ -264,6 +275,9 @@ void InstrumentManager::allSoundOff() {
   _airflowCtrl.closeSolenoid();
   _airflowCtrl.setAirflowToRest();
   _fingerCtrl.closeAllFingers();
+  if (cfg.airMode == AIR_MODE_FAN_SERVO) {
+    _fanCtrl.stop();
+  }
 
   if (DEBUG) {
     Serial.println("DEBUG: InstrumentManager - All Sound Off");

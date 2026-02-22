@@ -7,6 +7,7 @@
 #include "FingerController.h"
 #include "AirflowController.h"
 #include "PressureController.h"
+#include "FanController.h"
 #include "NoteSequencer.h"
 #include "settings.h"
 
@@ -41,6 +42,7 @@ public:
   FingerController& getFingerCtrl() { return _fingerCtrl; }
   AirflowController& getAirflowCtrl() { return _airflowCtrl; }
   PressureController& getPressureCtrl() { return _pressureCtrl; }
+  FanController& getFanCtrl() { return _fanCtrl; }
 
 private:
   Adafruit_PWMServoDriver _pwm;
@@ -48,6 +50,7 @@ private:
   FingerController _fingerCtrl;
   AirflowController _airflowCtrl;
   PressureController _pressureCtrl;
+  FanController _fanCtrl;
   NoteSequencer _sequencer;
 
   unsigned long _lastActivityTime;
