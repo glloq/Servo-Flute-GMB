@@ -19,6 +19,8 @@
 
 #if MIC_ENABLED
 
+#include <driver/i2s_std.h>
+
 class AudioAnalyzer {
 public:
   AudioAnalyzer();
@@ -51,6 +53,8 @@ private:
   float _pitchHz;
   int _pitchMidi;
   float _pitchCents;
+
+  i2s_chan_handle_t _rxHandle;
 
   int32_t _rawBuffer[MIC_BUFFER_SIZE];
   float _analysisBuffer[MIC_BUFFER_SIZE];

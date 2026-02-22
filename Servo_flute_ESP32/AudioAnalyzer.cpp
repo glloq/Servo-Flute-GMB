@@ -2,56 +2,75 @@
 
 #if MIC_ENABLED
 
-#include <driver/i2s.h>
 #include <math.h>
 
 AudioAnalyzer::AudioAnalyzer()
   : _active(false), _initialized(false), _micDetected(false),
     _soundDetected(false), _rms(0), _pitchHz(0), _pitchMidi(0),
-    _pitchCents(0), _validSamples(0), _lastUpdate(0) {
+    _pitchCents(0), _rxHandle(NULL), _validSamples(0), _lastUpdate(0) {
 }
 
 bool AudioAnalyzer::begin() {
-  // Configure I2S for INMP441 (RX only, 32-bit, left channel)
-  i2s_config_t i2s_config = {};
-  i2s_config.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX);
-  i2s_config.sample_rate = MIC_SAMPLE_RATE;
-  i2s_config.bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT;
-  i2s_config.channel_format = I2S_CHANNEL_FMT_ONLY_LEFT;
-  i2s_config.communication_format = I2S_COMM_FORMAT_STAND_I2S;
-  i2s_config.intr_alloc_flags = ESP_INTR_FLAG_LEVEL1;
-  i2s_config.dma_buf_count = MIC_DMA_BUF_COUNT;
-  i2s_config.dma_buf_len = MIC_DMA_BUF_LEN;
-  i2s_config.use_apll = false;
-  i2s_config.tx_desc_auto_clear = false;
-  i2s_config.fixed_mclk = 0;
+  // --- New I2S standard driver (ESP-IDF 5.x) ---
+  // Replaces legacy <driver/i2s.h> to avoid ADC driver conflict with analogRead()
 
-  i2s_pin_config_t pin_config = {};
-  pin_config.bck_io_num = MIC_PIN_BCLK;
-  pin_config.ws_io_num = MIC_PIN_LRCLK;
-  pin_config.data_out_num = I2S_PIN_NO_CHANGE;
-  pin_config.data_in_num = MIC_PIN_DIN;
+  // 1. Create RX channel
+  i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(MIC_I2S_PORT, I2S_ROLE_MASTER);
+  chan_cfg.dma_desc_num = MIC_DMA_BUF_COUNT;
+  chan_cfg.dma_frame_num = MIC_DMA_BUF_LEN;
 
-  esp_err_t err = i2s_driver_install(MIC_I2S_PORT, &i2s_config, 0, NULL);
+  esp_err_t err = i2s_new_channel(&chan_cfg, NULL, &_rxHandle);
   if (err != ESP_OK) {
     if (DEBUG) {
-      Serial.print("ERREUR: AudioAnalyzer - i2s_driver_install: ");
+      Serial.print("ERREUR: AudioAnalyzer - i2s_new_channel: ");
       Serial.println(err);
     }
     return false;
   }
 
-  err = i2s_set_pin(MIC_I2S_PORT, &pin_config);
+  // 2. Configure standard mode (Philips I2S for INMP441)
+  i2s_std_config_t std_cfg = {};
+
+  // Clock config
+  std_cfg.clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(MIC_SAMPLE_RATE);
+
+  // Slot config: 32-bit, mono left
+  std_cfg.slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_MONO);
+  std_cfg.slot_cfg.slot_mask = I2S_STD_SLOT_LEFT;
+
+  // GPIO config
+  std_cfg.gpio_cfg.mclk = I2S_GPIO_UNUSED;
+  std_cfg.gpio_cfg.bclk = (gpio_num_t)MIC_PIN_BCLK;
+  std_cfg.gpio_cfg.ws = (gpio_num_t)MIC_PIN_LRCLK;
+  std_cfg.gpio_cfg.dout = I2S_GPIO_UNUSED;
+  std_cfg.gpio_cfg.din = (gpio_num_t)MIC_PIN_DIN;
+  std_cfg.gpio_cfg.invert_flags.mclk_inv = false;
+  std_cfg.gpio_cfg.invert_flags.bclk_inv = false;
+  std_cfg.gpio_cfg.invert_flags.ws_inv = false;
+
+  err = i2s_channel_init_std_mode(_rxHandle, &std_cfg);
   if (err != ESP_OK) {
     if (DEBUG) {
-      Serial.print("ERREUR: AudioAnalyzer - i2s_set_pin: ");
+      Serial.print("ERREUR: AudioAnalyzer - i2s_channel_init_std_mode: ");
       Serial.println(err);
     }
-    i2s_driver_uninstall(MIC_I2S_PORT);
+    i2s_del_channel(_rxHandle);
+    _rxHandle = NULL;
     return false;
   }
 
-  i2s_zero_dma_buffer(MIC_I2S_PORT);
+  // 3. Enable the channel
+  err = i2s_channel_enable(_rxHandle);
+  if (err != ESP_OK) {
+    if (DEBUG) {
+      Serial.print("ERREUR: AudioAnalyzer - i2s_channel_enable: ");
+      Serial.println(err);
+    }
+    i2s_del_channel(_rxHandle);
+    _rxHandle = NULL;
+    return false;
+  }
+
   delay(100);  // Let I2S stabilize
 
   _initialized = true;
@@ -64,7 +83,9 @@ bool AudioAnalyzer::begin() {
 
   if (!_micDetected) {
     // Free resources if no mic
-    i2s_driver_uninstall(MIC_I2S_PORT);
+    i2s_channel_disable(_rxHandle);
+    i2s_del_channel(_rxHandle);
+    _rxHandle = NULL;
     _initialized = false;
   }
 
@@ -72,8 +93,10 @@ bool AudioAnalyzer::begin() {
 }
 
 void AudioAnalyzer::end() {
-  if (_initialized) {
-    i2s_driver_uninstall(MIC_I2S_PORT);
+  if (_initialized && _rxHandle) {
+    i2s_channel_disable(_rxHandle);
+    i2s_del_channel(_rxHandle);
+    _rxHandle = NULL;
     _initialized = false;
   }
   _active = false;
@@ -84,7 +107,7 @@ bool AudioAnalyzer::detectMicrophone() {
   size_t bytesRead = 0;
   int32_t testBuf[256];
 
-  esp_err_t err = i2s_read(MIC_I2S_PORT, testBuf, sizeof(testBuf), &bytesRead, 500);
+  esp_err_t err = i2s_channel_read(_rxHandle, testBuf, sizeof(testBuf), &bytesRead, 500);
   if (err != ESP_OK || bytesRead == 0) return false;
 
   size_t samples = bytesRead / sizeof(int32_t);
@@ -116,7 +139,7 @@ void AudioAnalyzer::update() {
 
 void AudioAnalyzer::readI2S() {
   size_t bytesRead = 0;
-  esp_err_t err = i2s_read(MIC_I2S_PORT, _rawBuffer,
+  esp_err_t err = i2s_channel_read(_rxHandle, _rawBuffer,
                             MIC_BUFFER_SIZE * sizeof(int32_t),
                             &bytesRead, 0);  // Non-blocking
 
