@@ -232,7 +232,8 @@ cursor:pointer;transition:background .2s;flex-shrink:0}
 border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
 .air-block-hdr .air-block-toggle.on{background:#4ecca3}
 .air-block-hdr .air-block-toggle.on::after{background:#fff;left:18px}
-.air-block-body{padding:10px 12px;display:none}
+.air-block-body{padding:10px 12px;display:none;animation:airFadeIn .25s ease}
+@keyframes airFadeIn{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:translateY(0)}}
 .air-block.active .air-block-body{display:block}
 .air-block.active{border-color:#1a5060}
 @keyframes pistonDown{0%{transform:translateY(0)}100%{transform:translateY(10px)}}
@@ -540,6 +541,7 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
     <div class="cfg-row"><label>Servo flow</label>
       <input type="range" min="0" max="180" value="20" id="airFlowTest" oninput="testServoFlow(this.value)">
       <span id="airFlowTestVal" style="min-width:36px;text-align:right">20&deg;</span>
+      <button class="btn btn-s" onclick="sweepServoFlow()" title="Balaye de min a max et retour au repos" style="padding:4px 8px;font-size:.7em">Sweep</button>
     </div>
     <div class="btn-row">
       <button class="btn btn-p" id="btnAirStop" onclick="stopAirSource()">Arreter</button>
@@ -634,13 +636,13 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
         </div>
         <div id="airSensParamsTof">
           <div class="cfg-row"><label>Cible (mm)</label>
-            <input type="number" id="airSensTarget" min="1" max="300" value="50">
+            <input type="number" id="airSensTarget" min="1" max="300" value="50" title="Distance cible du capteur ToF. La pompe maintient cette distance. Typique: 30-80mm">
           </div>
           <div class="cfg-row"><label>Min (mm)</label>
-            <input type="number" id="airSensMin" min="1" max="300" value="10">
+            <input type="number" id="airSensMin" min="1" max="300" value="10" title="Distance = reservoir plein. Pompe s'arrete a cette distance.">
           </div>
           <div class="cfg-row"><label>Max (mm)</label>
-            <input type="number" id="airSensMax" min="1" max="300" value="150">
+            <input type="number" id="airSensMax" min="1" max="300" value="150" title="Distance = reservoir vide. Pompe demarre a cette distance.">
           </div>
         </div>
         <div id="airSensParamsHall" style="display:none">
@@ -648,10 +650,10 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
             <select id="airHallPin"><option value="34">GPIO 34</option><option value="35">GPIO 35</option><option value="36">GPIO 36</option><option value="39">GPIO 39</option></select>
           </div>
           <div class="cfg-row"><label>Seuil bas</label>
-            <input type="number" id="airHallLow" min="0" max="4095" value="1500">
+            <input type="number" id="airHallLow" min="0" max="4095" value="1500" title="Lecture Hall = vide. Ajuster quand le reservoir est vide.">
           </div>
           <div class="cfg-row"><label>Seuil haut</label>
-            <input type="number" id="airHallHigh" min="0" max="4095" value="2500">
+            <input type="number" id="airHallHigh" min="0" max="4095" value="2500" title="Lecture Hall = plein. Ajuster quand le reservoir est plein.">
           </div>
           <div id="airHallBar" style="margin:4px 0;height:12px;background:#222;border-radius:6px;position:relative;overflow:hidden">
             <div id="airHallThreshLow" style="position:absolute;top:0;height:100%;width:1px;background:#e94560"></div>
@@ -669,12 +671,17 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
         </div>
         <div id="airSensParamsPid" style="display:none">
           <div class="cfg-row"><label>PID Kp (x10)</label>
-            <input type="number" id="airPidKp" min="1" max="100" value="30">
+            <input type="number" id="airPidKp" min="1" max="100" value="30" title="Proportionnel: reactivite aux ecarts. Plus haut = correction rapide mais risque oscillation">
           </div>
           <div class="cfg-row"><label>PID Ki (x10)</label>
-            <input type="number" id="airPidKi" min="0" max="50" value="5">
+            <input type="number" id="airPidKi" min="0" max="50" value="5" title="Integral: corrige les erreurs persistantes. Plus haut = plus precis mais risque depassement">
           </div>
           <div style="font-size:.7em;color:#888;padding:2px 0">Kp: reactivite, Ki: precision long terme. Valeurs /10 (ex: 30 = 3.0)</div>
+          <div class="btn-row" style="margin-top:4px">
+            <button class="btn btn-s" onclick="$('airPidKp').value=45;$('airPidKi').value=8" style="font-size:.7em;padding:3px 8px" title="Reponse rapide, risque leger depassement">Rapide</button>
+            <button class="btn btn-s" onclick="$('airPidKp').value=30;$('airPidKi').value=5" style="font-size:.7em;padding:3px 8px" title="Bon compromis reactivite/stabilite">Equilibre</button>
+            <button class="btn btn-s" onclick="$('airPidKp').value=15;$('airPidKi').value=2" style="font-size:.7em;padding:3px 8px" title="Montee lente et stable, sans depassement">Doux</button>
+          </div>
         </div>
       </div>
     </div>
@@ -694,7 +701,7 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
         </div>
         <div id="airValveServoParams" style="display:none">
           <div class="cfg-row"><label>Canal PCA valve</label>
-            <input type="number" id="airValveCh" min="0" max="15" value="11">
+            <input type="number" id="airValveCh" min="0" max="15" value="11" title="Canal sur le PCA9685 (0-15). Ne pas utiliser le meme canal que le servo flow.">
           </div>
         </div>
       </div>
@@ -707,9 +714,9 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
         <div class="air-block-toggle on" id="airBlockServoToggle" onclick="event.stopPropagation();toggleAirBlockEnable('airBlockServo')"></div>
       </div>
       <div class="air-block-body">
-        <div class="cfg-row"><label>Angle repos</label><input type="number" id="cfgAirOff" min="0" max="180"></div>
-        <div class="cfg-row"><label>Angle min</label><input type="number" id="cfgAirMin" min="0" max="180"></div>
-        <div class="cfg-row"><label>Angle max</label><input type="number" id="cfgAirMax" min="0" max="180"></div>
+        <div class="cfg-row"><label>Angle repos</label><input type="number" id="cfgAirOff" min="0" max="180" title="Angle du servo quand aucune note ne joue. Typique: 15-25°"></div>
+        <div class="cfg-row"><label>Angle min</label><input type="number" id="cfgAirMin" min="0" max="180" title="Angle minimal pour les notes les plus douces (pp). Typique: 5-15°"></div>
+        <div class="cfg-row"><label>Angle max</label><input type="number" id="cfgAirMax" min="0" max="180" title="Angle maximal pour les notes les plus fortes (ff). Typique: 60-120°"></div>
       </div>
     </div>
 
@@ -720,10 +727,10 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
         <div class="air-block-toggle on" id="airBlockSolenoidToggle" onclick="event.stopPropagation();toggleAirBlockEnable('airBlockSolenoid')"></div>
       </div>
       <div class="air-block-body">
-        <div class="cfg-row"><label>GPIO Pin</label><select id="cfgSolPin"></select></div>
-        <div class="cfg-row"><label>PWM activation</label><input type="number" id="cfgSolAct" min="0" max="255"></div>
-        <div class="cfg-row"><label>PWM maintien</label><input type="number" id="cfgSolHold" min="0" max="255"></div>
-        <div class="cfg-row"><label>Temps (ms)</label><input type="number" id="cfgSolTime" min="0" max="500"></div>
+        <div class="cfg-row"><label>GPIO Pin</label><select id="cfgSolPin" title="Pin GPIO connectee au MOSFET/relais du solenoide"></select></div>
+        <div class="cfg-row"><label>PWM activation</label><input type="number" id="cfgSolAct" min="0" max="255" title="PWM pour ouvrir la valve (180-255 typique)"></div>
+        <div class="cfg-row"><label>PWM maintien</label><input type="number" id="cfgSolHold" min="0" max="255" title="PWM pour maintenir ouvert (60-120 typique, economise courant)"></div>
+        <div class="cfg-row"><label>Temps (ms)</label><input type="number" id="cfgSolTime" min="0" max="500" title="Duree en ms de la phase activation avant passage au maintien (20-50 typique)"></div>
       </div>
     </div>
 
@@ -731,7 +738,7 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
     <div style="margin-top:12px">
       <div class="cfg-row"><label>Schema air (clavier)</label><input type="checkbox" id="cfgShowAir" style="width:auto;flex:0"></div>
     </div>
-    <div id="airValidationMsg" style="display:none;font-size:.78em;color:#e9a645;background:rgba(233,165,69,.08);border:1px solid rgba(233,165,69,.2);border-radius:6px;padding:6px 10px;margin:8px 0"></div>
+    <div id="airValidationMsg" style="display:none;font-size:.78em;color:#e94560;background:rgba(233,69,96,.08);border:1px solid rgba(233,69,96,.25);border-radius:6px;padding:8px 10px;margin:8px 0"></div>
     <div class="btn-row" style="margin-top:12px">
       <button class="btn btn-g" onclick="saveAirSettings()">Sauvegarder</button>
     </div>
@@ -1069,6 +1076,24 @@ function testServoFlow(v){
   $('airFlowTestVal').textContent=v+'°';
   wsSend({t:'test_air',a:parseInt(v)});
 }
+let sweepTimer=null;
+function sweepServoFlow(){
+  if(sweepTimer){clearInterval(sweepTimer);sweepTimer=null;return}
+  const sl=$('airFlowTest');if(!sl)return;
+  const aMin=parseInt($('cfgAirMin').value)||0,aMax=parseInt($('cfgAirMax').value)||180,aOff=parseInt($('cfgAirOff').value)||20;
+  const steps=[],stepMs=80,range=aMax-aMin;
+  // Sweep: off -> min -> max -> off over ~4s
+  const nUp=Math.max(1,Math.round(range/4)),nDown=nUp;
+  steps.push(aOff);
+  for(let i=0;i<=nUp;i++)steps.push(aMin+Math.round(range*i/nUp));
+  for(let i=nDown-1;i>=0;i--)steps.push(aMin+Math.round(range*i/nDown));
+  steps.push(aOff);
+  let idx=0;
+  sweepTimer=setInterval(()=>{
+    if(idx>=steps.length){clearInterval(sweepTimer);sweepTimer=null;return}
+    const a=steps[idx++];sl.value=a;testServoFlow(a);
+  },stepMs);
+}
 function setAirMode(v){
   const m=parseInt(v);
   const hasPump=m>=4,hasFan=m===3,hasValve=(m===0||m===1||m>=4),hasRes=m===5;
@@ -1288,10 +1313,10 @@ function saveAirSettings(){
   }
   fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)})
     .then(r=>r.json()).then(j=>{
-    $('airSettingsMsg').style.color=j.ok?'#0f0':'#e94560';
-    $('airSettingsMsg').textContent=j.ok?'Sauvegarde OK':'Erreur sauvegarde';
-    if(j.ok){CFG.air_mode=m;CFG.show_air=showAir;CFG.res_format=d.res_format;applyAirTabVisibility();buildAirSvg('airSvgFull',true)}
-    setTimeout(()=>$('airSettingsMsg').textContent='',3000)})
+    if(j.ok){showToast('Configuration air sauvegardee','success');
+      Object.assign(CFG,d);markClean();applyAirTabVisibility();buildAirSvg('airSvgFull',true)}
+    else{showToast('Erreur sauvegarde air','error')}
+    }).catch(()=>showToast('Erreur reseau','error'))
 }
 function fillAirSettings(){
   if(!CFG)return;
@@ -1625,7 +1650,10 @@ function updateAirDiagram(d){
       ic.setAttribute('stroke',d.pump_pwm>0?'#4ecca3':'#dde')});
   }
   // Update text stats in Air tab
-  const pp=$('airPumpPwm');if(pp)pp.textContent=d.pump_pwm>0?d.pump_pwm:'OFF';
+  const pp=$('airPumpPwm');if(pp){
+    if(d.pump_pwm>0){const pct=Math.round(d.pump_pwm/255*100);pp.textContent=pct+'% ('+d.pump_pwm+')';pp.style.color='#4ecca3'}
+    else{pp.textContent='OFF';pp.style.color=''}
+  }
   const fp=$('airFanPwm');if(fp){
     if(d.fan_pwm>0){fp.textContent=d.fan_speed!=null?(d.fan_speed+'% ('+d.fan_pwm+')'):d.fan_pwm;fp.style.color='#4ecca3'}
     else{fp.textContent='OFF';fp.style.color=''}
