@@ -406,6 +406,7 @@ void WebConfigurator::handleApiConfig(AsyncWebServerRequest* request) {
   json += ",\"air_mode\":" + String(cfg.airMode);
   json += ",\"valve_type\":" + String(cfg.valveType);
   json += ",\"valve_ch\":" + String(cfg.valveServoPcaChannel);
+  json += ",\"motor_type\":" + String(cfg.motorType);
   json += ",\"fan_pin\":" + String(cfg.fanPin);
   json += ",\"fan_min\":" + String(cfg.fanMinPwm);
   json += ",\"fan_max\":" + String(cfg.fanMaxPwm);
@@ -434,6 +435,9 @@ void WebConfigurator::handleApiConfig(AsyncWebServerRequest* request) {
   json += ",\"pid_ki\":" + String(cfg.pidKi);
   json += ",\"endstop_pin\":" + String(cfg.endstopPin);
   json += ",\"endstop_high\":" + String(cfg.endstopActiveHigh ? "true" : "false");
+  json += ",\"hall_pin\":" + String(cfg.hallPin);
+  json += ",\"hall_low\":" + String(cfg.hallThresholdLow);
+  json += ",\"hall_high\":" + String(cfg.hallThresholdHigh);
   json += ",\"show_air\":" + String(cfg.showAirSystem ? "true" : "false");
   json += ",\"midi_limit\":" + String(cfg.midiStorageLimitKb);
 
@@ -542,13 +546,19 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
     if (doc.containsKey("air_vel_resp")) cfg.airVelocityResponse = doc["air_vel_resp"];
 
     // Air delivery system (modulaire)
-    if (doc.containsKey("air_mode")) cfg.airMode = doc["air_mode"];
+    if (doc.containsKey("air_mode")) {
+      uint8_t am = doc["air_mode"];
+      // Retro-compat: ancien mode 6 -> mode 5 + endstop meca
+      if (am == 6) { am = AIR_MODE_PUMP_RESERVOIR; cfg.sensorType = SENSOR_TYPE_ENDSTOP_MECH; }
+      cfg.airMode = am;
+    }
     if (doc.containsKey("valve_type")) cfg.valveType = doc["valve_type"];
     // Retro-compat: ancien champ valve_servo
     if (doc.containsKey("valve_servo") && !doc.containsKey("valve_type")) {
       cfg.valveType = doc["valve_servo"].as<bool>() ? 1 : 0;
     }
     if (doc.containsKey("valve_ch")) cfg.valveServoPcaChannel = doc["valve_ch"];
+    if (doc.containsKey("motor_type")) cfg.motorType = doc["motor_type"];
     if (doc.containsKey("fan_pin")) cfg.fanPin = doc["fan_pin"];
     if (doc.containsKey("fan_min")) cfg.fanMinPwm = doc["fan_min"];
     if (doc.containsKey("fan_max")) cfg.fanMaxPwm = doc["fan_max"];
@@ -586,6 +596,9 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
     if (doc.containsKey("pid_ki")) cfg.pidKi = doc["pid_ki"];
     if (doc.containsKey("endstop_pin")) cfg.endstopPin = doc["endstop_pin"];
     if (doc.containsKey("endstop_high")) cfg.endstopActiveHigh = doc["endstop_high"].as<bool>();
+    if (doc.containsKey("hall_pin")) cfg.hallPin = doc["hall_pin"];
+    if (doc.containsKey("hall_low")) cfg.hallThresholdLow = doc["hall_low"];
+    if (doc.containsKey("hall_high")) cfg.hallThresholdHigh = doc["hall_high"];
     if (doc.containsKey("show_air")) cfg.showAirSystem = doc["show_air"].as<bool>();
     if (doc.containsKey("midi_limit")) {
       uint16_t ml = doc["midi_limit"];
@@ -1118,6 +1131,8 @@ void WebConfigurator::broadcastStatus() {
     json += ",\"pump_pwm\":" + String(pc.getPumpPwm());
     json += ",\"res_pct\":" + String(pc.getFillPercent());
     json += ",\"res_mm\":" + String(pc.getDistanceMm());
+    json += ",\"hall_val\":" + String(pc.getHallValue());
+    json += ",\"endstop_st\":" + String(pc.isEndstopActive() ? "true" : "false");
     json += ",\"sens_ok\":" + String(pc.isSensorDetected() ? "true" : "false");
   }
   if (_instrument) {

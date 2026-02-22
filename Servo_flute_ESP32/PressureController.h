@@ -39,13 +39,17 @@ public:
   bool     isPumpRunning() const { return _currentPumpPwm > 0; }
   bool     isSensorDetected() const { return _sensorDetected; }
   uint8_t  getTargetPercent() const { return _targetPercent; }
+  bool     isEndstopActive() const { return _endstopActive; }
+  uint16_t getHallValue() const { return _hallValue; }
 
 private:
   bool _sensorDetected;
-  uint8_t _sensorType;        // 0=VL53L0X, 1=VL6180X
+  uint8_t _sensorType;        // 0-4 (SENSOR_TYPE_*)
 
   // Etat capteur
-  uint16_t _distanceMm;       // Derniere mesure distance (mm)
+  uint16_t _distanceMm;       // Derniere mesure distance (mm) - pour ToF
+  uint16_t _hallValue;         // Derniere lecture analogique Hall
+  bool _endstopActive;         // Etat endstop (meca/optique)
   uint8_t _fillPercent;        // Pourcentage remplissage (0-100)
 
   // Etat pompe
@@ -61,7 +65,7 @@ private:
   // Lecture capteur selon type
   uint16_t readSensor();
 
-  // Appliquer PWM pompe
+  // Appliquer PWM pompe (respecte motorType On/Off vs PWM)
   void setPumpPwm(uint8_t pwm);
 };
 

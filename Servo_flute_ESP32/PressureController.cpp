@@ -58,7 +58,7 @@ static uint16_t readReg16_16(uint8_t addr, uint8_t reg) {
 
 PressureController::PressureController()
   : _sensorDetected(false), _sensorType(0),
-    _distanceMm(0), _fillPercent(0),
+    _distanceMm(0), _hallValue(0), _endstopActive(false), _fillPercent(0),
     _targetPercent(0), _currentPumpPwm(0),
     _pidIntegral(0), _pidLastError(0),
     _lastPidTime(0), _lastReadTime(0) {
@@ -71,35 +71,64 @@ bool PressureController::begin() {
   if (cfg.airMode >= AIR_MODE_PUMP_VALVE) {
     for (uint8_t i = 0; i < cfg.numPumps && i < MAX_PUMPS; i++) {
       pinMode(cfg.pumpPins[i], OUTPUT);
-      analogWrite(cfg.pumpPins[i], 0);
+      if (cfg.motorType == MOTOR_TYPE_ONOFF) {
+        digitalWrite(cfg.pumpPins[i], LOW);
+      } else {
+        analogWrite(cfg.pumpPins[i], 0);
+      }
     }
-  }
-
-  // Configurer pin endstop (mode 6)
-  if (cfg.airMode == AIR_MODE_PUMP_ENDSTOP) {
-    pinMode(cfg.endstopPin, INPUT_PULLUP);
     if (DEBUG) {
-      Serial.print("DEBUG: PressureController - Endstop GPIO ");
-      Serial.print(cfg.endstopPin);
-      Serial.println(cfg.endstopActiveHigh ? " (actif HIGH)" : " (actif LOW)");
+      Serial.print("DEBUG: PressureController - Moteur ");
+      Serial.println(cfg.motorType == MOTOR_TYPE_ONOFF ? "On/Off" : "PWM");
     }
   }
 
+  // Mode pompe directe (sans reservoir) - pas de capteur a configurer
   if (cfg.airMode != AIR_MODE_PUMP_RESERVOIR) {
     if (DEBUG) {
-      Serial.println("DEBUG: PressureController - Mode pompe directe (sans capteur distance)");
+      Serial.println("DEBUG: PressureController - Mode pompe directe (sans capteur)");
     }
     return false;
   }
 
-  // Detecter capteur sur I2C
-  uint8_t addr = (_sensorType == 1) ? VL6180X_ADDR : VL53L0X_ADDR;
+  // Mode reservoir: configurer selon type de capteur
+  if (_sensorType == SENSOR_TYPE_ENDSTOP_MECH || _sensorType == SENSOR_TYPE_ENDSTOP_OPT) {
+    // Endstop mecanique ou optique: entree digitale
+    pinMode(cfg.endstopPin, INPUT_PULLUP);
+    _sensorDetected = true;
+    if (DEBUG) {
+      Serial.print("DEBUG: PressureController - ");
+      Serial.print(_sensorType == SENSOR_TYPE_ENDSTOP_MECH ? "Endstop mecanique" : "Endstop optique");
+      Serial.print(" GPIO ");
+      Serial.print(cfg.endstopPin);
+      Serial.println(cfg.endstopActiveHigh ? " (actif HIGH)" : " (actif LOW)");
+    }
+    return true;
+  }
+
+  if (_sensorType == SENSOR_TYPE_HALL_KY024) {
+    // Capteur effet Hall KY-024: entree analogique
+    pinMode(cfg.hallPin, INPUT);
+    _sensorDetected = true;
+    if (DEBUG) {
+      Serial.print("DEBUG: PressureController - Hall KY-024 GPIO ");
+      Serial.print(cfg.hallPin);
+      Serial.print(" seuils ");
+      Serial.print(cfg.hallThresholdLow);
+      Serial.print("-");
+      Serial.println(cfg.hallThresholdHigh);
+    }
+    return true;
+  }
+
+  // Capteurs ToF (VL53L0X / VL6180X) : I2C
+  uint8_t addr = (_sensorType == SENSOR_TYPE_TOF_VL6180X) ? VL6180X_ADDR : VL53L0X_ADDR;
   Wire.beginTransmission(addr);
   uint8_t err = Wire.endTransmission();
 
   if (err != 0) {
     if (DEBUG) {
-      Serial.print("DEBUG: PressureController - Capteur non detecte a 0x");
+      Serial.print("DEBUG: PressureController - Capteur ToF non detecte a 0x");
       Serial.println(addr, HEX);
     }
     _sensorDetected = false;
@@ -109,10 +138,9 @@ bool PressureController::begin() {
   _sensorDetected = true;
 
   // Initialisation VL6180X
-  if (_sensorType == 1) {
+  if (_sensorType == SENSOR_TYPE_TOF_VL6180X) {
     uint8_t fresh = readReg16(VL6180X_ADDR, VL6180X_REG_SYSTEM_FRESH_OUT_OF_RESET);
     if (fresh == 1) {
-      // Configuration initiale minimale
       writeReg16(VL6180X_ADDR, 0x0207, 0x01);
       writeReg16(VL6180X_ADDR, 0x0208, 0x01);
       writeReg16(VL6180X_ADDR, 0x0096, 0x00);
@@ -143,16 +171,14 @@ bool PressureController::begin() {
       writeReg16(VL6180X_ADDR, 0x01AC, 0x3E);
       writeReg16(VL6180X_ADDR, 0x01A7, 0x1F);
       writeReg16(VL6180X_ADDR, 0x0030, 0x00);
-      // Mesure unique mode
       writeReg16(VL6180X_ADDR, VL6180X_REG_READOUT_AVERAGING_PERIOD, 0x30);
-      // Clear fresh flag
       writeReg16(VL6180X_ADDR, VL6180X_REG_SYSTEM_FRESH_OUT_OF_RESET, 0x00);
     }
   }
 
   if (DEBUG) {
     Serial.print("DEBUG: PressureController - Capteur ");
-    Serial.print(_sensorType == 1 ? "VL6180X" : "VL53L0X");
+    Serial.print(_sensorType == SENSOR_TYPE_TOF_VL6180X ? "VL6180X" : "VL53L0X");
     Serial.println(" detecte et initialise");
   }
 
@@ -200,29 +226,61 @@ void PressureController::update() {
 
   unsigned long now = millis();
 
-  // Mode pompe directe (sans capteur/reservoir) ou mode endstop
+  // Mode pompe directe (sans reservoir)
   if (cfg.airMode != AIR_MODE_PUMP_RESERVOIR || !_sensorDetected) {
-    if (cfg.airMode == AIR_MODE_PUMP_ENDSTOP) {
-      // Mode endstop: pompe ON si endstop inactif, OFF si actif
-      bool endstopActive = (digitalRead(cfg.endstopPin) == (cfg.endstopActiveHigh ? HIGH : LOW));
-      if (_targetPercent == 0 || endstopActive) {
-        setPumpPwm(0);
-      } else {
-        setPumpPwm(cfg.pumpMaxPwm[0]);
-      }
+    // PWM proportionnel direct a la cible
+    if (_targetPercent == 0) {
+      setPumpPwm(0);
     } else {
-      // PWM proportionnel direct a la cible
-      if (_targetPercent == 0) {
-        setPumpPwm(0);
+      uint8_t pwm = cfg.pumpMinPwm[0] + (uint16_t)(cfg.pumpMaxPwm[0] - cfg.pumpMinPwm[0]) * _targetPercent / 100;
+      setPumpPwm(pwm);
+    }
+    return;
+  }
+
+  // --- Mode reservoir avec capteur ---
+
+  // Endstop (mecanique ou optique): controle ON/OFF simple
+  if (_sensorType == SENSOR_TYPE_ENDSTOP_MECH || _sensorType == SENSOR_TYPE_ENDSTOP_OPT) {
+    _endstopActive = (digitalRead(cfg.endstopPin) == (cfg.endstopActiveHigh ? HIGH : LOW));
+    if (_targetPercent == 0 || _endstopActive) {
+      setPumpPwm(0);
+      _fillPercent = _endstopActive ? 100 : 0;
+    } else {
+      setPumpPwm(cfg.pumpMaxPwm[0]);
+      _fillPercent = 0;
+    }
+    return;
+  }
+
+  // Hall effect: lecture analogique periodique
+  if (_sensorType == SENSOR_TYPE_HALL_KY024) {
+    if (now - _lastReadTime >= PRESSURE_READ_INTERVAL_MS) {
+      _hallValue = analogRead(cfg.hallPin);
+      _lastReadTime = now;
+      // Calculer remplissage: valeur entre seuil bas et haut
+      if (_hallValue <= cfg.hallThresholdLow) {
+        _fillPercent = 0;
+      } else if (_hallValue >= cfg.hallThresholdHigh) {
+        _fillPercent = 100;
       } else {
-        uint8_t pwm = cfg.pumpMinPwm[0] + (uint16_t)(cfg.pumpMaxPwm[0] - cfg.pumpMinPwm[0]) * _targetPercent / 100;
-        setPumpPwm(pwm);
+        _fillPercent = (uint8_t)(((uint32_t)(_hallValue - cfg.hallThresholdLow) * 100) / (cfg.hallThresholdHigh - cfg.hallThresholdLow));
+      }
+    }
+    // Hysteresis pompe
+    if (now - _lastPidTime >= PRESSURE_PID_INTERVAL_MS) {
+      _lastPidTime = now;
+      if (_targetPercent == 0) { setPumpPwm(0); return; }
+      if (_fillPercent < _targetPercent - 5) {
+        setPumpPwm(cfg.pumpMaxPwm[0]);
+      } else if (_fillPercent >= _targetPercent) {
+        setPumpPwm(0);
       }
     }
     return;
   }
 
-  // Lecture capteur periodique
+  // ToF (VL53L0X / VL6180X): lecture I2C periodique
   if (now - _lastReadTime >= PRESSURE_READ_INTERVAL_MS) {
     _distanceMm = readSensor();
     _lastReadTime = now;
@@ -238,10 +296,7 @@ void PressureController::update() {
     }
   }
 
-  // Controle pompe par seuil de hauteur (pas de PID)
-  // La pompe s'active quand le remplissage tombe sous la cible,
-  // et s'arrete quand le remplissage atteint la cible ou si
-  // la distance depasse 300mm (capteur hors portee / pas de ballon)
+  // Controle pompe par seuil de hauteur avec hysteresis
   if (now - _lastPidTime >= PRESSURE_PID_INTERVAL_MS) {
     _lastPidTime = now;
 
@@ -250,13 +305,13 @@ void PressureController::update() {
       return;
     }
 
-    // Securite : distance > 300mm = capteur ne voit pas le ballon, couper pompe
+    // Securite : distance > 300mm = capteur ne voit pas le ballon
     if (_distanceMm > PUMP_SAFETY_MAX_DIST_MM) {
       setPumpPwm(0);
       return;
     }
 
-    // Securite : distance trop courte (surgonflage), couper pompe
+    // Securite : distance trop courte (surgonflage)
     if (_distanceMm <= PUMP_SAFETY_MIN_MM && _distanceMm > 0) {
       setPumpPwm(0);
       return;
@@ -264,12 +319,10 @@ void PressureController::update() {
 
     // Hysteresis: pompe ON si remplissage < cible - 5%, OFF si >= cible
     if (_fillPercent < _targetPercent - 5) {
-      // Pompe a PWM max pour gonfler
       setPumpPwm(cfg.pumpMaxPwm[0]);
     } else if (_fillPercent >= _targetPercent) {
       setPumpPwm(0);
     }
-    // Entre (cible-5) et cible : maintenir l'etat actuel (hysteresis)
   }
 }
 
@@ -290,11 +343,16 @@ void PressureController::setPumpPwm(uint8_t pwm) {
     _currentPumpPwm = pwm;
     if (cfg.airMode >= AIR_MODE_PUMP_VALVE) {
       for (uint8_t i = 0; i < cfg.numPumps && i < MAX_PUMPS; i++) {
-        // Appliquer PWM min/max par pompe
-        uint8_t pumpVal = pwm;
-        if (pumpVal > 0 && pumpVal < cfg.pumpMinPwm[i]) pumpVal = cfg.pumpMinPwm[i];
-        if (pumpVal > cfg.pumpMaxPwm[i]) pumpVal = cfg.pumpMaxPwm[i];
-        analogWrite(cfg.pumpPins[i], pumpVal);
+        if (cfg.motorType == MOTOR_TYPE_ONOFF) {
+          // Moteur On/Off : GPIO HIGH si pwm > 0, LOW sinon
+          digitalWrite(cfg.pumpPins[i], pwm > 0 ? HIGH : LOW);
+        } else {
+          // Moteur PWM : appliquer min/max par pompe
+          uint8_t pumpVal = pwm;
+          if (pumpVal > 0 && pumpVal < cfg.pumpMinPwm[i]) pumpVal = cfg.pumpMinPwm[i];
+          if (pumpVal > cfg.pumpMaxPwm[i]) pumpVal = cfg.pumpMaxPwm[i];
+          analogWrite(cfg.pumpPins[i], pumpVal);
+        }
       }
     }
   }

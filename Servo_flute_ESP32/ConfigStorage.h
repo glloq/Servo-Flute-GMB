@@ -104,28 +104,33 @@ struct RuntimeConfig {
   uint16_t timeUnpower;
 
   // --- Air delivery system (modulaire) ---
-  uint8_t airMode;                   // 0-6 (voir AIR_MODE_* dans settings.h)
+  uint8_t airMode;                   // 0-5 (voir AIR_MODE_* dans settings.h)
   uint8_t valveType;                 // 0=solenoide GPIO, 1=servo PCA
   uint8_t valveServoPcaChannel;      // Canal PCA9685 si valve=servo
+  uint8_t motorType;                 // 0=PWM variable, 1=On/Off
   // Ventilateur (mode 3)
   uint8_t fanPin;                    // GPIO PWM ventilateur
   uint8_t fanMinPwm;                // PWM min (seuil demarrage)
   uint8_t fanMaxPwm;                // PWM max
-  // Pompes (modes 4-6, 1 a 3 pompes)
+  // Pompes (modes 4-5, 1 a 3 pompes)
   uint8_t numPumps;                  // 1-3
-  uint8_t pumpPins[MAX_PUMPS];       // GPIO PWM pour chaque pompe
-  uint8_t pumpMinPwm[MAX_PUMPS];    // PWM min par pompe
-  uint8_t pumpMaxPwm[MAX_PUMPS];    // PWM max par pompe
-  // Reservoir capteur distance (mode 5)
-  uint8_t sensorType;               // 0=VL53L0X, 1=VL6180X
-  uint16_t sensorTargetMm;          // Hauteur cible (mm)
-  uint16_t sensorMinMm;             // Hauteur min (vide)
-  uint16_t sensorMaxMm;             // Hauteur max (plein)
+  uint8_t pumpPins[MAX_PUMPS];       // GPIO pour chaque pompe
+  uint8_t pumpMinPwm[MAX_PUMPS];    // PWM min par pompe (si motorType=PWM)
+  uint8_t pumpMaxPwm[MAX_PUMPS];    // PWM max par pompe (si motorType=PWM)
+  // Reservoir (mode 5) - capteur configurable
+  uint8_t sensorType;               // 0=VL53L0X, 1=VL6180X, 2=Hall KY-024, 3=endstop meca, 4=endstop optique
+  uint16_t sensorTargetMm;          // Hauteur cible (mm) - pour ToF
+  uint16_t sensorMinMm;             // Hauteur min (vide) - pour ToF
+  uint16_t sensorMaxMm;             // Hauteur max (plein) - pour ToF
   uint8_t pidKp;                     // Gain proportionnel PID (x10)
   uint8_t pidKi;                     // Gain integral PID (x10)
-  // Reservoir fin de course (mode 6)
+  // Endstop (sensorType 3 ou 4)
   uint8_t endstopPin;               // GPIO fin de course
   bool endstopActiveHigh;            // true = actif quand HIGH
+  // Hall effect (sensorType 2)
+  uint8_t hallPin;                   // GPIO analogique capteur Hall
+  uint16_t hallThresholdLow;        // Seuil bas analogique
+  uint16_t hallThresholdHigh;       // Seuil haut analogique
   // UI
   bool showAirSystem;                // Afficher schema pneumatique dans l'UI
 
