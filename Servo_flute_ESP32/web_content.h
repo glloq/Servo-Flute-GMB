@@ -236,6 +236,10 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
 .air-block-hdr .air-block-toggle.on::after{background:#fff;left:18px}
 .air-block-body{padding:10px 12px;display:none;animation:airFadeIn .25s ease}
 @keyframes airFadeIn{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:translateY(0)}}
+.air-layout-btn{display:flex;align-items:center;gap:4px;padding:6px 12px;background:#0d1b3e;border:1px solid #1a4080;
+border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;flex:1;justify-content:center}
+.air-layout-btn:hover{background:#162d5a;border-color:#2a5090}
+.air-layout-btn.selected{background:#0f3460;border-color:#4ecca3;color:#4ecca3;font-weight:600}
 @keyframes airShake{0%,100%{transform:translateX(0)}20%,60%{transform:translateX(-4px)}40%,80%{transform:translateX(4px)}}
 .air-block.active .air-block-body{display:block}
 .air-block.active{border-color:#1a5060}
@@ -622,15 +626,22 @@ border-radius:50%;background:#888;top:2px;left:2px;transition:all .2s}
       <span style="color:#888">Astuce: les badges sous le mode montrent les composants necessaires</span><br>
       <span style="color:#888">Raccourcis clavier: <b>Ctrl+S</b>=Sauver, <b>T</b>=Test, <b>Esc</b>=Stop, <b>H</b>=Aide, <b>?</b>=Raccourcis</span>
     </div>
-    <div class="cfg-row"><label>Mode air</label>
-      <select id="airModeSelect" onchange="confirmAirModeChange(this)">
-        <option value="0">Valve + servo flow</option>
-        <option value="2">Servo flow seul</option>
-        <option value="3">Ventilateur + servo flow</option>
-        <option value="4">Pompe(s) + valve</option>
-        <option value="5">Pompe(s) + reservoir + valve</option>
-      </select>
+    <div class="cfg-row" style="gap:10px">
+      <label>Source air</label>
+      <div id="airLayoutSelect" style="display:flex;gap:6px;flex:1">
+        <label class="air-layout-btn selected" id="airLayoutPump" onclick="setAirLayout(0)">
+          <input type="radio" name="airLayout" value="0" checked style="display:none">
+          <svg viewBox="0 0 20 20" width="14" height="14"><circle cx="10" cy="10" r="6" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="10" y1="4" x2="10" y2="16" stroke="currentColor" stroke-width="1.5"/></svg>
+          Pompe / Reservoir
+        </label>
+        <label class="air-layout-btn" id="airLayoutFan" onclick="setAirLayout(1)">
+          <input type="radio" name="airLayout" value="1" style="display:none">
+          <svg viewBox="0 0 20 20" width="14" height="14"><circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M10 3C10 7 13 10 10 10S4 7 4 10 7 17 10 17" fill="none" stroke="currentColor" stroke-width="1"/></svg>
+          Ventilateur
+        </label>
+      </div>
     </div>
+    <input type="hidden" id="airModeSelect" value="0">
     <div id="airModeDesc" style="font-size:.78em;color:#aaa;margin:4px 0 12px;padding:6px 10px;background:rgba(255,255,255,.04);border-radius:6px"></div>
 
     <!-- BLOCK: Pompe -->
@@ -1138,6 +1149,10 @@ function showTab(id,btn){
   if(id==='keyboard'&&lastAirData)updateAirDiagram(lastAirData);
 }
 // --- Air System (modulaire) ---
+const AIR_LAYOUT_DESCS=[
+  'Source air par pompe(s). Activez/desactivez chaque composant avec le bouton toggle. Desactivez pompe et reservoir pour une alimentation externe (compresseur, bouche).',
+  'Ventilateur radial PWM souffle en continu. Le servo flow dirige le flux vers la flute.'
+];
 const AIR_DESCS=[
   'Valve (solenoide ou servo) coupe l\'air, servo flow regle le debit. Ideal pour alimentation externe (compresseur, bouche).',
   '', // reserved
@@ -1161,7 +1176,23 @@ function applyAirTabVisibility(){
   airBtn.style.display='';
   if(CFG)buildFlute(CFG,'fluteSvg',false);
 }
-function getAirMode(){return parseInt($('airModeSelect').value)||0}
+// Compute firmware air_mode from layout + component toggles
+function getAirMode(){
+  const layout=parseInt(document.querySelector('input[name=airLayout]:checked').value)||0;
+  if(layout===1)return 3; // fan mode
+  // Pump/reservoir layout: check which components are enabled
+  const pumpOn=!$('airBlockPump').classList.contains('disabled');
+  const resOn=!$('airBlockRes').classList.contains('disabled');
+  const valveOn=!$('airBlockValve').classList.contains('disabled');
+  if(pumpOn&&resOn)return 5;
+  if(pumpOn)return 4;
+  if(valveOn)return 0;
+  return 2; // servo flow only
+}
+function getAirLayout(){
+  const r=document.querySelector('input[name=airLayout]:checked');
+  return r?parseInt(r.value)||0:0;
+}
 function setAirTarget(v){
   const pv=$('pumpTargetVal');pv.textContent=v+'%';
   pv.style.color=v>70?'#e94560':v>30?'#e9a645':v>0?'#4ecca3':'';
@@ -1318,29 +1349,59 @@ function sweepServoFlow(){
   },stepMs);
 }
 let _prevAirMode=0;
-function confirmAirModeChange(sel){
-  const newM=parseInt(sel.value),oldM=_prevAirMode;
-  if(oldM>=4&&newM<4){
-    if(!confirm('Changer de mode va masquer la configuration pompe/reservoir. Continuer ?')){sel.value=oldM;return}
-  }else if(oldM<4&&newM>=4){
-    if(!confirm('Ce mode necessite une pompe et des composants supplementaires. Continuer ?')){sel.value=oldM;return}
-  }
-  _prevAirMode=newM;
-  setAirMode(newM);markDirty();
+// Switch between pump/reservoir and fan layout
+function setAirLayout(layout){
+  // Update radio buttons visual
+  const btns=document.querySelectorAll('.air-layout-btn');
+  btns.forEach(b=>b.classList.remove('selected'));
+  const sel=layout===1?$('airLayoutFan'):$('airLayoutPump');
+  if(sel)sel.classList.add('selected');
+  const radio=sel?sel.querySelector('input[type=radio]'):null;
+  if(radio)radio.checked=true;
+  applyAirLayout(layout);
+  markDirty();
 }
-function setAirMode(v){
-  const m=parseInt(v);
+function applyAirLayout(layout){
+  const isFan=(layout===1);
+  // Fan layout: show fan block, hide pump+reservoir blocks
+  // Pump layout: show pump+reservoir+valve blocks (always visible, greyed if disabled)
+  const bp=$('airBlockPump'),bf=$('airBlockFan'),br=$('airBlockRes'),bv=$('airBlockValve');
+  if(isFan){
+    // Fan mode: show fan, hide pump+reservoir, hide valve (fan has no valve)
+    if(bf){bf.style.display='';bf.classList.add('active');setBlockEnabled(bf,true)}
+    if(bp)bp.style.display='none';
+    if(br)br.style.display='none';
+    if(bv)bv.style.display='none';
+  }else{
+    // Pump/reservoir layout: always show pump, reservoir, valve (enabled/disabled via toggle)
+    if(bf)bf.style.display='none';
+    if(bp){bp.style.display='';bp.classList.add('active')}
+    if(br){br.style.display='';br.classList.add('active')}
+    if(bv){bv.style.display='';bv.classList.add('active')}
+  }
+  // Servo flow always visible
+  const bs=$('airBlockServo');if(bs){bs.style.display='';bs.classList.add('active')}
+  // Update computed mode and refresh UI
+  syncAirModeFromToggles();
+}
+// Helper: set a block enabled or disabled
+function setBlockEnabled(bl,enabled){
+  if(!bl)return;
+  const tg=bl.querySelector('.air-block-toggle');
+  if(tg){
+    if(enabled){tg.classList.add('on');tg.setAttribute('aria-checked','true')}
+    else{tg.classList.remove('on');tg.setAttribute('aria-checked','false')}
+  }
+  bl.classList.toggle('disabled',!enabled);
+}
+// Recompute firmware air_mode from layout + toggles, update all dependent UI
+function syncAirModeFromToggles(){
+  const m=getAirMode();
   if(CFG)CFG.air_mode=m;
+  $('airModeSelect').value=m;
   const hasPump=m>=4,hasFan=m===3,hasValve=(m===0||m>=4),hasRes=m===5;
-  const hasServo=true; // all modes have servo flow
-  // Show/hide config blocks
-  const bp=$('airBlockPump');if(bp){bp.style.display=hasPump?'':'none';if(hasPump)bp.classList.add('active')}
-  const bf=$('airBlockFan');if(bf){bf.style.display=hasFan?'':'none';if(hasFan)bf.classList.add('active')}
-  const br=$('airBlockRes');if(br){br.style.display=hasRes?'':'none';if(hasRes)br.classList.add('active')}
-  const bv=$('airBlockValve');if(bv){bv.style.display=(hasValve)?'':'none';if(hasValve)bv.classList.add('active')}
-  const bs=$('airBlockServo');if(bs){bs.style.display=hasServo?'':'none';bs.classList.add('active')}
-  // Servo flow: show note Off angle only for modes without valve (servo flow cuts the air)
-  const needsOff=!hasValve; // modes 2,3: servo flow must cut air itself
+  // Servo flow: show note Off angle only for modes without valve
+  const needsOff=!hasValve;
   const offRow=$('cfgAirOffRow');if(offRow)offRow.style.display=needsOff?'':'none';
   const offHint=$('airServoOffHint');
   if(offHint)offHint.textContent=needsOff?'Position Off = coupure d\'air entre les notes. Min/Max = plage souffle note active.':'La valve coupe l\'air. Min/Max = plage de debit du servo flow.';
@@ -1359,7 +1420,7 @@ function setAirMode(v){
     const sh=$('airStatHall');if(sh)sh.style.display='none';
     const se=$('airStatEndstop');if(se)se.style.display='none';}
   const sv=$('airStatValve');if(sv)sv.style.display=(hasValve)?'':'none';
-  // Control section - always visible (all modes have at least servo flow test)
+  // Control section
   const cs=$('airCtrlSection');if(cs){cs.style.display='';
     $('airCtrlTitle').textContent=(hasPump||hasFan)?
       (hasFan?'Controle ventilateur':'Controle pompe'):'Controle servo flow';
@@ -1373,10 +1434,17 @@ function setAirMode(v){
   if(bt)bt.style.display=(hasPump||hasFan)?'':'none';
   const td=$('airTestDur');if(td)td.style.display=(hasPump||hasFan)?'':'none';
   if(hasRes)toggleSensorParams();
+  // Mode description
   const md=$('airModeDesc');if(md){
-    const parts=AIR_PARTS[m]||[];
-    const badges=parts.map(p=>'<span style="display:inline-block;font-size:.7em;background:#0f3460;color:#4ecca3;padding:1px 6px;border-radius:8px;margin:2px 2px 0 0">'+p+'</span>').join('');
-    md.innerHTML=(AIR_DESCS[m]||'')+'<div style="margin-top:4px">'+badges+'</div>';
+    const layout=getAirLayout();
+    const activeParts=[];
+    if(hasFan)activeParts.push('Ventilateur PWM');
+    if(hasPump)activeParts.push('Pompe(s)');
+    if(hasRes)activeParts.push('Reservoir + capteur');
+    if(hasValve)activeParts.push('Valve');
+    activeParts.push('Servo flow PCA');
+    const badges=activeParts.map(p=>'<span style="display:inline-block;font-size:.7em;background:#0f3460;color:#4ecca3;padding:1px 6px;border-radius:8px;margin:2px 2px 0 0">'+p+'</span>').join('');
+    md.innerHTML=(AIR_LAYOUT_DESCS[layout]||'')+'<div style="margin-top:4px">'+badges+'</div>';
   }
   // Update status bar
   const modeNames=['Valve+flow','','Servo seul','Ventilateur','Pompe directe','Pompe+reservoir'];
@@ -1384,6 +1452,23 @@ function setAirMode(v){
   validateAirConfig();
   buildAirSvg('airSvgFull',true);
   if(CFG)buildFlute(CFG,'fluteSvg',false);
+}
+// Legacy compat wrapper
+function setAirMode(v){
+  const m=parseInt(v);
+  // Map firmware mode to layout + toggles
+  if(m===3){
+    // Fan layout
+    setAirLayout(1);
+  }else{
+    // Pump/reservoir layout — set toggles based on mode
+    setAirLayout(0);
+    const bp=$('airBlockPump'),br=$('airBlockRes'),bv=$('airBlockValve');
+    setBlockEnabled(bp,m>=4); // pump enabled for modes 4,5
+    setBlockEnabled(br,m===5); // reservoir enabled for mode 5
+    setBlockEnabled(bv,m===0||m>=4); // valve enabled for modes 0,4,5
+  }
+  syncAirModeFromToggles();
 }
 let _allBlocksExpanded=true;
 function toggleAirHelp(){const hp=$('airHelpPanel');if(hp)hp.style.display=hp.style.display==='none'?'':'none'}
@@ -1409,6 +1494,9 @@ function toggleAirBlockEnable(id){
   bl.classList.toggle('disabled',!on);
   if(!on)bl.classList.remove('active');
   else bl.classList.add('active');
+  // Recompute firmware mode from new toggle state
+  syncAirModeFromToggles();
+  markDirty();
 }
 function toggleValveParams(noMark){
   const isSol=$('airValveType').value==='0';
@@ -1570,7 +1658,7 @@ function saveAirSettings(){
     const vm=$('airValidationMsg');if(vm){vm.style.animation='airShake .4s';setTimeout(()=>vm.style.animation='',400)}
     return;
   }
-  const m=parseInt($('airModeSelect').value);
+  const m=getAirMode();
   const showAir=$('cfgShowAir').checked;
   const rf=$('airResFormat');
   const vt=parseInt($('airValveType').value)||0;
@@ -1622,18 +1710,25 @@ function saveAirSettings(){
 }
 function resetAirDefaults(){
   if(!confirm('Reinitialiser les valeurs par defaut pour le mode actuel ?'))return;
-  const m=getAirMode();
-  if(m===2||m===3)$('cfgAirOff').value=5;
+  const layout=getAirLayout();
   $('cfgAirMin').value=10;$('cfgAirMax').value=90;
   $('airValveType').value='0';$('airValveCh').value=11;
   $('cfgVlvClose').value=0;$('cfgVlvOpen').value=90;$('cfgVlvDir').value='0';
-  // Solenoid defaults for modes with valve
-  if(m===0||m>=4){$('cfgSolPin').value=13;$('cfgSolAct').value=255;$('cfgSolHold').value=80;$('cfgSolTime').value=30;$('cfgSolInter').value=0}
-  if(m===3){$('airFanMin').value=60;$('airFanMax').value=255;$('airFanIdlePct').value=20;$('airFanIdleTimeout').value=5000}
-  if(m>=4){$('airMotorType').value='0';$('airNumPumps').value=1;toggleMotorType();buildPumpRows()}
-  if(m===5){$('airSensorType').value='0';$('airSensTarget').value=50;$('airSensMin').value=10;$('airSensMax').value=150;
-    $('airPidKp').value=30;$('airPidKi').value=5;toggleSensorParams()}
-  toggleValveParams();markDirty();validateAirConfig();
+  // Solenoid defaults
+  $('cfgSolPin').value=13;$('cfgSolAct').value=255;$('cfgSolHold').value=80;$('cfgSolTime').value=30;$('cfgSolInter').value=0;
+  if(layout===1){
+    // Fan defaults
+    $('cfgAirOff').value=5;
+    $('airFanMin').value=60;$('airFanMax').value=255;$('airFanIdlePct').value=20;$('airFanIdleTimeout').value=5000;
+  }else{
+    // Pump/reservoir defaults — enable all by default
+    const bp=$('airBlockPump'),br=$('airBlockRes'),bv=$('airBlockValve');
+    setBlockEnabled(bp,true);setBlockEnabled(br,true);setBlockEnabled(bv,true);
+    $('airMotorType').value='0';$('airNumPumps').value=1;toggleMotorType();buildPumpRows();
+    $('airSensorType').value='0';$('airSensTarget').value=50;$('airSensMin').value=10;$('airSensMax').value=150;
+    $('airPidKp').value=30;$('airPidKi').value=5;toggleSensorParams();
+  }
+  toggleValveParams();syncAirModeFromToggles();markDirty();
   showToast('Valeurs par defaut appliquees','success');
 }
 function copyAirConfig(){
@@ -1676,6 +1771,8 @@ function importAirConfig(){
     const d=JSON.parse(input);
     if(typeof d!=='object'||d===null){showToast('JSON invalide','error');return}
     if(d.air_mode!=null&&(d.air_mode<0||d.air_mode>5)){showToast('Mode air invalide','error');return}
+    // Remap legacy mode 1
+    if(d.air_mode===1){d.air_mode=0;d.valve_type=1}
     Object.assign(CFG,d);
     fillAirSettings();buildAirUI();markDirty();
     showToast('Config importee - Sauvegarder pour appliquer','success');
@@ -1685,7 +1782,6 @@ function fillAirSettings(){
   if(!CFG)return;
   // Remap legacy mode 1 (servo-valve) to mode 0 with valve_type=1
   if(CFG.air_mode===1){CFG.air_mode=0;CFG.valve_type=1}
-  $('airModeSelect').value=CFG.air_mode||0;
   $('airValveType').value=(CFG.valve_type||0).toString();
   $('airValveCh').value=CFG.valve_ch||11;
   $('airMotorType').value=(CFG.motor_type||0).toString();
@@ -1745,7 +1841,7 @@ function buildAirUI(){
   // Set flow test slider: start at off angle (modes 2,3) or min angle
   updateFlowSliderRange();
   const ft=$('airFlowTest');if(ft&&CFG){
-    const m=CFG.air_mode||0;const needsOff=(m===2||m===3);
+    const m=CFG.air_mode||0;const needsOff=(m===2||m===3); // modes without valve
     const startA=needsOff?(CFG.air_off!=null?CFG.air_off:0):(CFG.air_min!=null?CFG.air_min:0);
     ft.value=startA;$('airFlowTestVal').textContent=startA+'°'}
   // Redraw diagram with last known data on tab re-entry
