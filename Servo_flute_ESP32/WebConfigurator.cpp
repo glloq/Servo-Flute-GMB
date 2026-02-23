@@ -9,7 +9,7 @@ WebConfigurator::WebConfigurator(uint16_t port)
   : _server(port), _ws("/ws"),
     _instrument(nullptr), _player(nullptr), _wirelessManager(nullptr),
     _webVelocity(WEB_DEFAULT_VELOCITY), _lastStatusBroadcast(0), _lastWsCleanup(0),
-    _uploadSize(0)
+    _uploadSize(0), _uploadError(false)
 #if MIC_ENABLED
     , _audio(nullptr), _autoCal(nullptr), _micMonitorEnabled(false), _lastAudioBroadcast(0), _lastAcalBroadcast(0)
 #endif
@@ -730,6 +730,7 @@ void WebConfigurator::handleMidiUpload(AsyncWebServerRequest* request, const Str
       Serial.println(filename);
     }
     _uploadSize = 0;
+    _uploadError = false;
     // Stocker le nom original (nettoye, sans chemin)
     _uploadFileName = filename;
     int ls = _uploadFileName.lastIndexOf('/');
@@ -742,13 +743,14 @@ void WebConfigurator::handleMidiUpload(AsyncWebServerRequest* request, const Str
       if (DEBUG) {
         Serial.println("ERREUR: WebConfigurator - Impossible de creer fichier temp");
       }
+      _uploadError = true;
       return;
     }
   }
 
-  if (_uploadFile && len > 0) {
+  if (len > 0) {
     _uploadSize += len;
-    if (_uploadSize <= MIDI_FILE_MAX_SIZE) {
+    if (_uploadFile && _uploadSize <= MIDI_FILE_MAX_SIZE) {
       _uploadFile.write(data, len);
     }
   }
@@ -767,6 +769,14 @@ void WebConfigurator::handleMidiUpload(AsyncWebServerRequest* request, const Str
 }
 
 void WebConfigurator::handleMidiUploadComplete(AsyncWebServerRequest* request) {
+  // Verifier si une erreur est survenue pendant l'upload (ex: echec creation fichier temp)
+  if (_uploadError) {
+    String resp = "{\"ok\":false,\"msg\":\"Erreur ecriture fichier temporaire\"}";
+    request->send(500, "application/json", resp);
+    _ws.textAll("{\"t\":\"midi_error\",\"msg\":\"Erreur ecriture fichier temporaire\"}");
+    return;
+  }
+
   if (_uploadSize > MIDI_FILE_MAX_SIZE) {
     LittleFS.remove(MIDI_FILE_PATH);
     String resp = "{\"ok\":false,\"msg\":\"Fichier trop volumineux (max " + String(MIDI_FILE_MAX_SIZE / 1024) + "KB)\"}";
@@ -799,18 +809,50 @@ void WebConfigurator::handleMidiUploadComplete(AsyncWebServerRequest* request) {
     return;
   }
 
-  // Valider le fichier MIDI en le chargeant depuis le temp
-  if (_player && _player->loadFile(MIDI_FILE_PATH)) {
-    // Copier le fichier temp vers /midi/<filename>
-    if (!LittleFS.exists(MIDI_DIR)) {
-      LittleFS.mkdir(MIDI_DIR);
-    }
-    // Renommer (LittleFS.rename) le fichier temp vers sa destination finale
-    if (LittleFS.exists(destPath)) {
-      LittleFS.remove(destPath);
-    }
-    LittleFS.rename(MIDI_FILE_PATH, destPath);
+  // S'assurer que le repertoire MIDI existe
+  if (!LittleFS.exists(MIDI_DIR)) {
+    LittleFS.mkdir(MIDI_DIR);
+  }
 
+  // Deplacer le fichier temp vers sa destination finale
+  if (LittleFS.exists(destPath)) {
+    LittleFS.remove(destPath);
+  }
+  bool moved = LittleFS.rename(MIDI_FILE_PATH, destPath);
+
+  // Fallback: copie manuelle si rename echoue (certaines versions ESP32 LittleFS)
+  if (!moved) {
+    if (DEBUG) {
+      Serial.println("DEBUG: WebConfigurator - rename echoue, copie manuelle...");
+    }
+    File src = LittleFS.open(MIDI_FILE_PATH, "r");
+    File dst = LittleFS.open(destPath, "w");
+    if (src && dst) {
+      uint8_t buf[512];
+      while (src.available()) {
+        size_t n = src.read(buf, sizeof(buf));
+        dst.write(buf, n);
+      }
+      dst.close();
+      src.close();
+      LittleFS.remove(MIDI_FILE_PATH);
+      moved = true;
+    } else {
+      if (src) src.close();
+      if (dst) dst.close();
+    }
+  }
+
+  if (!moved) {
+    LittleFS.remove(MIDI_FILE_PATH);
+    String resp = "{\"ok\":false,\"msg\":\"Erreur stockage fichier MIDI\"}";
+    request->send(500, "application/json", resp);
+    _ws.textAll("{\"t\":\"midi_error\",\"msg\":\"Erreur stockage fichier\"}");
+    return;
+  }
+
+  // Charger le fichier MIDI depuis sa destination finale (pas le temp)
+  if (_player && _player->loadFile(destPath.c_str())) {
     String resp = "{\"ok\":true";
     resp += ",\"events\":" + String(_player->getEventCount());
     resp += ",\"duration\":" + String(_player->getDurationMs());
@@ -828,7 +870,7 @@ void WebConfigurator::handleMidiUploadComplete(AsyncWebServerRequest* request) {
     wsMsg += "}";
     _ws.textAll(wsMsg);
   } else {
-    LittleFS.remove(MIDI_FILE_PATH);
+    LittleFS.remove(destPath);
     String resp = "{\"ok\":false,\"msg\":\"Format MIDI invalide\"}";
     request->send(400, "application/json", resp);
     _ws.textAll("{\"t\":\"midi_error\",\"msg\":\"Format MIDI invalide\"}");
