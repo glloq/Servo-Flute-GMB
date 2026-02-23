@@ -274,17 +274,6 @@ void WebConfigurator::setupRoutes() {
     request->send(200, "application/json", json);
   });
 
-  // Upload MIDI (multipart)
-  _server.on("/api/midi", HTTP_POST,
-    [this](AsyncWebServerRequest* request) {
-      handleMidiUploadComplete(request);
-    },
-    [this](AsyncWebServerRequest* request, const String& filename,
-           size_t index, uint8_t* data, size_t len, bool final) {
-      handleMidiUpload(request, filename, index, data, len, final);
-    }
-  );
-
   // MIDI file list
   _server.on("/api/midi/list", HTTP_GET, [this](AsyncWebServerRequest* request) {
     handleMidiList(request);
@@ -313,6 +302,18 @@ void WebConfigurator::setupRoutes() {
       if (index == 0) { _configBody = ""; _configBody.reserve(total + 1); }
       char* buf = (char*)malloc(len + 1);
       if (buf) { memcpy(buf, data, len); buf[len] = '\0'; _configBody += buf; free(buf); }
+    }
+  );
+
+  // Upload MIDI (multipart) - MUST be registered AFTER /api/midi/* sub-routes
+  // because ESPAsyncWebServer prefix-matches /api/midi to /api/midi/*
+  _server.on("/api/midi", HTTP_POST,
+    [this](AsyncWebServerRequest* request) {
+      handleMidiUploadComplete(request);
+    },
+    [this](AsyncWebServerRequest* request, const String& filename,
+           size_t index, uint8_t* data, size_t len, bool final) {
+      handleMidiUpload(request, filename, index, data, len, final);
     }
   );
 
