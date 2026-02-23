@@ -94,6 +94,10 @@ border-radius:0 0 3px 3px;width:28px;height:90px;z-index:2;margin:0 -14px}
 .kf.c{background:#444}.kf.o{background:#4ecca3}.kf.h{background:linear-gradient(180deg,#4ecca3 50%,#444 50%)}
 .flute-box{background:#0d1b3e;border-radius:8px;padding:12px;text-align:center;margin-bottom:8px}
 .flute-box svg{width:100%;max-width:600px;height:auto}
+.kbd-air-flute-row{display:flex;align-items:flex-start;width:100%}
+.kbd-air-flute-row svg{max-width:none}
+#kbdFluteWrap{flex:1;min-width:0}
+#kbdFluteWrap svg{width:100%;height:auto}
 .flute-hole{stroke:#5C4A0A;stroke-width:2;transition:all .2s}
 .flute-hole.closed{fill:#3a2a0a}.flute-hole.open{fill:#4ecca3}.flute-hole.half{fill:#4ecca3;fill-opacity:.5}
 .flute-hole.thumb{filter:drop-shadow(0 0 3px #e94560)}
@@ -289,7 +293,9 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
   #tab-air .section>div>button{font-size:.72em;padding:4px 8px}
   #airDiagMsg{font-size:.68em}
   #airValidationMsg{font-size:.7em}
-  #airConfigSummary{font-size:.68em}}
+  #airConfigSummary{font-size:.68em}
+  .kbd-air-flute-row{flex-direction:column}
+  #kbdAirBox{flex:none;width:100%}}
 </style>
 </head>
 <body>
@@ -315,8 +321,10 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
 <!-- TAB: KEYBOARD -->
 <div class="tab active" id="tab-keyboard">
   <div class="flute-box">
-    <div id="kbdAirBox" style="display:none"><svg id="kbdAirSvg" viewBox="0 0 520 280" style="width:100%" preserveAspectRatio="xMinYMid meet"></svg></div>
-    <svg id="fluteSvg" viewBox="0 0 400 100" preserveAspectRatio="xMinYMid meet"></svg>
+    <div class="kbd-air-flute-row" id="kbdAirFluteRow">
+      <div id="kbdAirBox" style="display:none"><svg id="kbdAirSvg" viewBox="0 0 520 280" style="width:100%" preserveAspectRatio="xMinYMid meet"></svg></div>
+      <div id="kbdFluteWrap"><svg id="fluteSvg" viewBox="0 0 400 100" preserveAspectRatio="xMinYMid meet"></svg></div>
+    </div>
     <div class="flute-info"><span id="fluteNote">-</span> <span id="fluteInfo" style="color:#555">Jouez une note</span></div>
     <div id="kbdAirStats" style="display:none;gap:8px;flex-wrap:wrap;font-size:.75em;padding:4px 8px;background:#0a0a1a;border-radius:0 0 8px 8px;justify-content:center">
       <span id="kbdStatPump" style="display:none;color:#9aa">Pompe <b id="kbdPumpVal">OFF</b></span>
@@ -1225,24 +1233,31 @@ function applyAirTabVisibility(){
 }
 function refreshKbdAir(){
   const box=$('kbdAirBox');if(!box)return;
-  const fs=$('fluteSvg');
+  const fw=$('kbdFluteWrap');
   if(CFG&&CFG.show_air){
     box.style.display='';buildAirSvg('kbdAirSvg',true);
-    // Align flute embouchure with pipe exit using viewBox padding
-    if(fs&&_kbdPipeExitRatio>0){
-      var fvb=fs.viewBox.baseVal;
-      if(fvb&&fvb.width>0){
-        var em=CFG.embouchure||'bec';
-        var bpx=(em==='trav')?36:(em==='oca')?21:4;
-        var r=_kbdPipeExitRatio;
-        var padLeft=Math.round((r*fvb.width-bpx)/(1-r||1));
-        if(padLeft>0)fs.setAttribute('viewBox',(-padLeft)+' 0 '+(fvb.width+padLeft)+' '+fvb.height);
-      }
-    }
+    if(fw){fw.style.paddingTop='0';box.style.paddingTop='0';requestAnimationFrame(alignFluteWithAir)}
   }else{
     box.style.display='none';
+    if(fw){fw.style.paddingTop='0';box.style.paddingTop='0'}
   }
   refreshKbdPumpPanel();
+}
+function alignFluteWithAir(){
+  var airSvg=$('kbdAirSvg'),fs=$('fluteSvg'),fw=$('kbdFluteWrap'),box=$('kbdAirBox');
+  if(!airSvg||!fs||!fw||!box||!CFG||_kbdPipeExitY<=0)return;
+  var airRect=airSvg.getBoundingClientRect(),fluteRect=fs.getBoundingClientRect();
+  if(!airRect.height||!fluteRect.height)return;
+  var airScale=airRect.height/_kbdAirVBH;
+  var fvb=fs.viewBox.baseVal;
+  var fluteScale=fluteRect.height/(fvb?fvb.height:100);
+  var em=CFG.embouchure||'bec';
+  var embY=(em==='trav')?38:50;
+  var pipePixY=_kbdPipeExitY*airScale;
+  var embPixY=embY*fluteScale;
+  var offset=Math.round(pipePixY-embPixY);
+  if(offset>=0){fw.style.paddingTop=offset+'px';box.style.paddingTop='0'}
+  else{box.style.paddingTop=(-offset)+'px';fw.style.paddingTop='0'}
 }
 let _kbdPumpOn=false;
 function refreshKbdPumpPanel(){
@@ -2018,7 +2033,7 @@ function buildAirUI(){
   // Scroll to top on tab entry
   const tab=$('tab-air');if(tab)tab.scrollTop=0;
 }
-let _kbdPipeExitRatio=0;
+let _kbdPipeExitRatio=0,_kbdPipeExitY=0,_kbdAirVBW=440,_kbdAirVBH=155;
 function buildAirSvg(svgId,full){
   const svg=$(svgId);if(!svg||!CFG)return;
   const isKbd=(svgId==='kbdAirSvg');
@@ -2090,7 +2105,7 @@ function buildAirSvg(svgId,full){
       s+='<line x1="'+(pivotX+4)+'" y1="'+pivotY+'" x2="'+flX+'" y2="'+pivotY+'" stroke="#7799bb" stroke-width="3"/>';
       s+='<line class="airFlowAnim" x1="'+(pivotX+ductLen)+'" y1="'+pivotY+'" x2="'+flX+'" y2="'+pivotY+'"/>';
       s+='<polygon points="'+(flX-4)+','+(pivotY-3)+' '+(flX+1)+','+pivotY+' '+(flX-4)+','+(pivotY+3)+'" fill="#7799bb"/>';
-      _kbdPipeExitRatio=flX/w;
+      _kbdPipeExitRatio=flX/w;_kbdPipeExitY=pivotY;
     }else if(isTrav){
       // Full mode + traversiere: pipe horizontal then curves down above blow hole
       const blowX=flX+4+Math.round(fluteW*0.35);
@@ -2120,7 +2135,9 @@ function buildAirSvg(svgId,full){
     s+='<text x="'+fanCx+'" y="'+(chB+14)+'" text-anchor="middle" style="font-size:8px;fill:#9aa">Ventilateur</text>';
     s+='<text x="'+fanCx+'" y="'+(chT-6)+'" text-anchor="middle" style="font-size:6px;fill:#667">Aspiration</text>';
     s+='<text x="'+(pivotX+ductLen/2)+'" y="'+(pivotY-14)+'" text-anchor="middle" style="font-size:7px;fill:#9aa">Servo Flow</text>';
-    svg.setAttribute('viewBox','0 0 '+w+' '+h);
+    var fanW=w;
+    if(isKbd&&_kbdPipeExitRatio>0){fanW=Math.ceil(_kbdPipeExitRatio*w)+12;_kbdAirVBW=fanW;_kbdAirVBH=h}
+    svg.setAttribute('viewBox','0 0 '+fanW+' '+h);
     svg.innerHTML=s;
     return;
   }
@@ -2260,7 +2277,7 @@ function buildAirSvg(svgId,full){
       s+='<line x1="'+(vx+svW/2)+'" y1="'+svCy+'" x2="'+flX+'" y2="'+svCy+'" stroke="#7799bb" stroke-width="3"/>';
       s+='<line class="airFlowAnim" x1="'+(vx+svW/2)+'" y1="'+svCy+'" x2="'+flX+'" y2="'+svCy+'"/>';
       s+='<polygon points="'+(flX-4)+','+(svCy-3)+' '+(flX+1)+','+svCy+' '+(flX-4)+','+(svCy+3)+'" fill="#7799bb"/>';
-      _kbdPipeExitRatio=(flX+1)/w;
+      _kbdPipeExitRatio=(flX+1)/w;_kbdPipeExitY=svCy;
     }else if(_isTrav){
       const _bx=flX+4+Math.round(70*0.35),_fy=svCy+14;
       s+='<path d="M'+(vx+svW/2)+','+svCy+' L'+_bx+','+svCy+' L'+_bx+','+(_fy-1)+'" stroke="#7799bb" stroke-width="3" fill="none" stroke-linejoin="round"/>';
@@ -2293,7 +2310,7 @@ function buildAirSvg(svgId,full){
       s+='<line x1="'+(svX+36)+'" y1="'+teeY+'" x2="'+flX+'" y2="'+teeY+'" stroke="#7799bb" stroke-width="3"/>';
       s+='<line class="airFlowAnim" x1="'+(svX+36)+'" y1="'+teeY+'" x2="'+flX+'" y2="'+teeY+'"/>';
       s+='<polygon points="'+(flX-4)+','+(teeY-3)+' '+(flX+1)+','+teeY+' '+(flX-4)+','+(teeY+3)+'" fill="#7799bb"/>';
-      _kbdPipeExitRatio=(flX+1)/w;
+      _kbdPipeExitRatio=(flX+1)/w;_kbdPipeExitY=teeY;
     }else if(_isTrav2){
       const _bx2=flX+4+Math.round(70*0.35),_fy2=teeY+14;
       s+='<path d="M'+(svX+36)+','+teeY+' L'+_bx2+','+teeY+' L'+_bx2+','+(_fy2-1)+'" stroke="#7799bb" stroke-width="3" fill="none" stroke-linejoin="round"/>';
@@ -2311,7 +2328,9 @@ function buildAirSvg(svgId,full){
       s+='<text x="'+(flX+39)+'" y="'+(teeY+4)+'" text-anchor="middle" style="font-size:9px;fill:#333;font-weight:bold">Flute</text>';
     }
   }
-  svg.setAttribute('viewBox','0 0 '+w+' '+h);
+  var finalW=w;
+  if(isKbd&&_kbdPipeExitRatio>0){finalW=Math.ceil(_kbdPipeExitRatio*w)+12;_kbdAirVBW=finalW;_kbdAirVBH=h}
+  svg.setAttribute('viewBox','0 0 '+finalW+' '+h);
   svg.innerHTML=s;
 }
 function updateAirDiagram(d){
