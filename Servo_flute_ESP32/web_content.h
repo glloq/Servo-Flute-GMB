@@ -1225,58 +1225,12 @@ function applyAirTabVisibility(){
 }
 function refreshKbdAir(){
   const box=$('kbdAirBox');if(!box)return;
-  const fs=$('fluteSvg');
-  const airSvg=$('kbdAirSvg');
   if(CFG&&CFG.show_air){
     box.style.display='';buildAirSvg('kbdAirSvg',true);
-    // Align flute embouchure with pipe exit using viewBox padding.
-    // No rAF needed - viewBox padding is pure SVG math, no layout measurement.
-    _pixelAlignFlute(airSvg,fs);
   }else{
     box.style.display='none';
   }
   refreshKbdPumpPanel();
-}
-function _pixelAlignFlute(as,fs){
-  var dbg='align: ';
-  if(!as||!fs){_dbgAlign(as,'no svg refs');return}
-  if(!_kbdPipeExitRatio){_dbgAlign(as,'ratio=0');return}
-  if(!CFG){_dbgAlign(as,'no CFG');return}
-  var r=_kbdPipeExitRatio;
-  var fvb=fs.viewBox.baseVal;
-  if(!fvb||!fvb.width){_dbgAlign(as,'flute vb empty');return}
-  var em=CFG.embouchure||'bec';
-  var bpx=(em==='trav')?36:(em==='oca')?21:4;
-  var tw=fvb.width, th=fvb.height;
-  // Formula: padLeft = (r*tw - bpx) / (1 - r)
-  // This makes embouchure at viewBox x=bpx appear at fraction r of SVG width
-  var padLeft=Math.round((r*tw-bpx)/(1-r||1));
-  dbg+='r='+r.toFixed(3)+' tw='+tw+' bpx='+bpx+' pad='+padLeft;
-  if(padLeft>0){
-    fs.setAttribute('viewBox',(-padLeft)+' 0 '+(tw+padLeft)+' '+th);
-    dbg+=' newVB='+(-padLeft)+',0,'+(tw+padLeft)+','+th+' APPLIED';
-  }else{
-    dbg+=' skip(pad<=0)';
-  }
-  _dbgAlign(as,dbg);
-  // Debug marker line at pipe exit in air SVG
-  var vb=as.viewBox.baseVal;
-  if(vb&&vb.width){
-    var mk=as.querySelector('#dbgAlignMark');
-    if(!mk){mk=document.createElementNS('http://www.w3.org/2000/svg','line');mk.id='dbgAlignMark';as.appendChild(mk)}
-    mk.setAttribute('x1',r*vb.width);mk.setAttribute('y1','0');
-    mk.setAttribute('x2',r*vb.width);mk.setAttribute('y2',vb.height);
-    mk.setAttribute('stroke','red');mk.setAttribute('stroke-width','2');mk.setAttribute('stroke-dasharray','4,4');
-  }
-}
-function _dbgAlign(as,msg){
-  // Show debug message as visible text on air SVG
-  if(!as)return;
-  var t=as.querySelector('#dbgAlignTxt');
-  if(!t){t=document.createElementNS('http://www.w3.org/2000/svg','text');t.id='dbgAlignTxt';as.appendChild(t)}
-  t.setAttribute('x','5');t.setAttribute('y','12');
-  t.setAttribute('style','font-size:10px;fill:#ff0;font-family:monospace');
-  t.textContent=msg;
 }
 let _kbdPumpOn=false;
 function refreshKbdPumpPanel(){
@@ -2154,6 +2108,9 @@ function buildAirSvg(svgId,full){
     s+='<text x="'+fanCx+'" y="'+(chB+14)+'" text-anchor="middle" style="font-size:8px;fill:#9aa">Ventilateur</text>';
     s+='<text x="'+fanCx+'" y="'+(chT-6)+'" text-anchor="middle" style="font-size:6px;fill:#667">Aspiration</text>';
     s+='<text x="'+(pivotX+ductLen/2)+'" y="'+(pivotY-14)+'" text-anchor="middle" style="font-size:7px;fill:#9aa">Servo Flow</text>';
+    // Crop left margin: shift viewBox origin to where content starts
+    var cropL=Math.max(0,chL-4);
+    svg.setAttribute('viewBox',cropL+' 0 '+(w-cropL)+' '+h);
     svg.innerHTML=s;
     return;
   }
@@ -2344,6 +2301,10 @@ function buildAirSvg(svgId,full){
       s+='<text x="'+(flX+39)+'" y="'+(teeY+4)+'" text-anchor="middle" style="font-size:9px;fill:#333;font-weight:bold">Flute</text>';
     }
   }
+  // Crop left margin: shift viewBox origin to where content starts
+  var pxMin=hasPump?(colX-(np-1)*25-22):colX-18;
+  var cropL=Math.max(0,pxMin-4);
+  svg.setAttribute('viewBox',cropL+' 0 '+(w-cropL)+' '+h);
   svg.innerHTML=s;
 }
 function updateAirDiagram(d){
