@@ -273,10 +273,6 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
   .air-block .cfg-row label{flex:0 0 110px;font-size:.78em}
   #airCtrlSection .cfg-row label{flex:0 0 90px}
   #airSvgFull{max-height:220px}
-  .kbd-air-flute-row{flex-direction:column}
-  #kbdAirBox{flex:none;width:100%}
-  #kbdFluteWrap{padding-top:0 !important}
-  #kbdAirBox{padding-top:0 !important}
 }
 @media(max-width:480px){#airLayoutSelect{flex-wrap:wrap}
   .air-layout-btn{font-size:.7em;padding:5px 8px}
@@ -1249,7 +1245,6 @@ function alignFluteWithAir(){
   var airSvg=$('kbdAirSvg'),fs=$('fluteSvg'),fw=$('kbdFluteWrap'),box=$('kbdAirBox');
   if(!airSvg||!fs||!fw||!box||!CFG||_kbdPipeExitY<=0)return;
   // Skip alignment on narrow screens (column layout)
-  if(window.innerWidth<=768){fw.style.paddingTop='0';box.style.paddingTop='0';return}
   var airRect=airSvg.getBoundingClientRect(),fluteRect=fs.getBoundingClientRect();
   if(!airRect.height||!fluteRect.height)return;
   var airScale=airRect.height/_kbdAirVBH;
