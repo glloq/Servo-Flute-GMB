@@ -293,9 +293,7 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
   #tab-air .section>div>button{font-size:.72em;padding:4px 8px}
   #airDiagMsg{font-size:.68em}
   #airValidationMsg{font-size:.7em}
-  #airConfigSummary{font-size:.68em}
-  .kbd-air-flute-row{flex-direction:column}
-  #kbdAirBox{flex:none;width:100%}}
+  #airConfigSummary{font-size:.68em}}
 </style>
 </head>
 <body>
@@ -1246,6 +1244,7 @@ function refreshKbdAir(){
 function alignFluteWithAir(){
   var airSvg=$('kbdAirSvg'),fs=$('fluteSvg'),fw=$('kbdFluteWrap'),box=$('kbdAirBox');
   if(!airSvg||!fs||!fw||!box||!CFG||_kbdPipeExitY<=0)return;
+  // Skip alignment on narrow screens (column layout)
   var airRect=airSvg.getBoundingClientRect(),fluteRect=fs.getBoundingClientRect();
   if(!airRect.height||!fluteRect.height)return;
   var airScale=airRect.height/_kbdAirVBH;
