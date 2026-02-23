@@ -96,6 +96,7 @@ border-radius:0 0 3px 3px;width:28px;height:90px;z-index:2;margin:0 -14px}
 .flute-box svg{width:100%;max-width:600px;height:auto}
 .kbd-air-flute-row{display:flex;align-items:flex-start;width:100%}
 .kbd-air-flute-row svg{max-width:none}
+#kbdAirBox{flex:0 0 auto;max-width:30%}
 #kbdFluteWrap{flex:1;min-width:0}
 #kbdFluteWrap svg{width:100%;height:auto}
 .flute-hole{stroke:#5C4A0A;stroke-width:2;transition:all .2s}
