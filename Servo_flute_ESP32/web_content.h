@@ -1225,8 +1225,20 @@ function applyAirTabVisibility(){
 }
 function refreshKbdAir(){
   const box=$('kbdAirBox');if(!box)return;
+  const fs=$('fluteSvg');
   if(CFG&&CFG.show_air){
     box.style.display='';buildAirSvg('kbdAirSvg',true);
+    // Align flute embouchure with pipe exit using viewBox padding
+    if(fs&&_kbdPipeExitRatio>0){
+      var fvb=fs.viewBox.baseVal;
+      if(fvb&&fvb.width>0){
+        var em=CFG.embouchure||'bec';
+        var bpx=(em==='trav')?36:(em==='oca')?21:4;
+        var r=_kbdPipeExitRatio;
+        var padLeft=Math.round((r*fvb.width-bpx)/(1-r||1));
+        if(padLeft>0)fs.setAttribute('viewBox',(-padLeft)+' 0 '+(fvb.width+padLeft)+' '+fvb.height);
+      }
+    }
   }else{
     box.style.display='none';
   }
@@ -2108,9 +2120,7 @@ function buildAirSvg(svgId,full){
     s+='<text x="'+fanCx+'" y="'+(chB+14)+'" text-anchor="middle" style="font-size:8px;fill:#9aa">Ventilateur</text>';
     s+='<text x="'+fanCx+'" y="'+(chT-6)+'" text-anchor="middle" style="font-size:6px;fill:#667">Aspiration</text>';
     s+='<text x="'+(pivotX+ductLen/2)+'" y="'+(pivotY-14)+'" text-anchor="middle" style="font-size:7px;fill:#9aa">Servo Flow</text>';
-    // Crop left margin: shift viewBox origin to where content starts
-    var cropL=Math.max(0,chL-4);
-    svg.setAttribute('viewBox',cropL+' 0 '+(w-cropL)+' '+h);
+    svg.setAttribute('viewBox','0 0 '+w+' '+h);
     svg.innerHTML=s;
     return;
   }
@@ -2301,10 +2311,7 @@ function buildAirSvg(svgId,full){
       s+='<text x="'+(flX+39)+'" y="'+(teeY+4)+'" text-anchor="middle" style="font-size:9px;fill:#333;font-weight:bold">Flute</text>';
     }
   }
-  // Crop left margin: shift viewBox origin to where content starts
-  var pxMin=hasPump?(colX-(np-1)*25-22):colX-18;
-  var cropL=Math.max(0,pxMin-4);
-  svg.setAttribute('viewBox',cropL+' 0 '+(w-cropL)+' '+h);
+  svg.setAttribute('viewBox','0 0 '+w+' '+h);
   svg.innerHTML=s;
 }
 function updateAirDiagram(d){
