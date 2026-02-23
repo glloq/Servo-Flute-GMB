@@ -118,6 +118,7 @@ private:
   File _uploadFile;
   size_t _uploadSize;
   String _uploadFileName;  // Nom original du fichier uploade
+  bool _uploadError;       // Erreur pendant l'upload (ex: echec ouverture fichier temp)
 
 #if MIC_ENABLED
   // Audio analyzer (INMP441 microphone)
