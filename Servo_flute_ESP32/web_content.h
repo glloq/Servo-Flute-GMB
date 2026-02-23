@@ -2829,10 +2829,14 @@ function noteOn(midi){
   if(curNote!==null&&curNote!==midi)return false;
   curNote=midi;updateFluteForNote(midi);
   document.querySelectorAll('#fluteSvg .flute-hole.open').forEach(h=>h.classList.add('playing'));
-  // Souffle: calculer a partir de velocity et plage de la note
-  if(CFG){const nd=CFG.notes.find(n=>n.midi===midi);if(nd){
+  // Souffle: pre-positionner le servo airflow pendant le positionnement des doigts
+  // Seulement pour les modes avec valve physique (0,1,4,5) ou la valve bloque l'air
+  // Modes 2 (servo seul) et 3 (ventilateur): ne pas envoyer air_live car le servo
+  // controle directement l'air et produirait du son avant le positionnement des doigts
+  if(CFG){const am=CFG.air_mode||0;
+    if(am!==2&&am!==3){const nd=CFG.notes.find(n=>n.midi===midi);if(nd){
     const airPct=nd.amn+Math.round((nd.amx-nd.amn)*velocity/127);
-    wsSend({t:'air_live',v:airPct})}}
+    wsSend({t:'air_live',v:airPct})}}}
   wsSend({t:'non',n:midi,v:velocity});return true}
 function noteOff(midi){wsSend({t:'nof',n:midi});if(curNote===midi){curNote=null;
   document.querySelectorAll('#fluteSvg .flute-hole.playing').forEach(h=>h.classList.remove('playing'))}}

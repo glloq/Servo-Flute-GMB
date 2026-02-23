@@ -291,6 +291,9 @@ void InstrumentManager::allSoundOff() {
   if (cfg.airMode == AIR_MODE_FAN_SERVO) {
     _fanCtrl.stop();
   }
+  if (cfg.airMode >= AIR_MODE_PUMP_VALVE) {
+    _pressureCtrl.stop();
+  }
 
   if (DEBUG) {
     Serial.println("DEBUG: InstrumentManager - All Sound Off");
