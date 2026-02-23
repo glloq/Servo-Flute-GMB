@@ -1229,15 +1229,11 @@ function refreshKbdAir(){
   const airSvg=$('kbdAirSvg');
   if(CFG&&CFG.show_air){
     box.style.display='';buildAirSvg('kbdAirSvg',true);
-    // Align flute embouchure with pipe exit using pixel-accurate measurement.
-    // Double rAF ensures layout is fully computed after display:none -> visible.
-    if(fs)fs.style.transform='';
-    requestAnimationFrame(function(){requestAnimationFrame(function(){
-      _pixelAlignFlute(airSvg,fs);
-    })});
+    // Align flute embouchure with pipe exit using viewBox padding.
+    // No rAF needed - viewBox padding is pure SVG math, no layout measurement.
+    _pixelAlignFlute(airSvg,fs);
   }else{
     box.style.display='none';
-    if(fs)fs.style.transform='';
   }
   refreshKbdPumpPanel();
 }
@@ -1246,35 +1242,32 @@ function _pixelAlignFlute(as,fs){
   if(!as||!fs){_dbgAlign(as,'no svg refs');return}
   if(!_kbdPipeExitRatio){_dbgAlign(as,'ratio=0');return}
   if(!CFG){_dbgAlign(as,'no CFG');return}
-  var ctm=as.getScreenCTM();
-  if(!ctm){_dbgAlign(as,'air CTM null');return}
-  var vb=as.viewBox.baseVal;
-  if(!vb||!vb.width){_dbgAlign(as,'air vb empty');return}
-  var pt=as.createSVGPoint();
-  pt.x=_kbdPipeExitRatio*vb.width;pt.y=0;
-  var sp=pt.matrixTransform(ctm);
-  var fctm=fs.getScreenCTM();
-  if(!fctm){_dbgAlign(as,'flute CTM null, air.x='+Math.round(sp.x));return}
+  var r=_kbdPipeExitRatio;
+  var fvb=fs.viewBox.baseVal;
+  if(!fvb||!fvb.width){_dbgAlign(as,'flute vb empty');return}
   var em=CFG.embouchure||'bec';
   var bpx=(em==='trav')?36:(em==='oca')?21:4;
-  var fpt=fs.createSVGPoint();fpt.x=bpx;fpt.y=0;
-  var fsp=fpt.matrixTransform(fctm);
-  var dx=Math.round(sp.x-fsp.x);
-  dbg+='r='+_kbdPipeExitRatio.toFixed(3)+' vb='+vb.width+'x'+vb.height+' pipe.sx='+Math.round(sp.x)+' emb.sx='+Math.round(fsp.x)+' dx='+dx;
-  // Apply shift regardless of sign (dx could be negative if embouchure is already right of pipe)
-  if(Math.abs(dx)>1){
-    fs.style.transform='translateX('+dx+'px)';
-    dbg+=' APPLIED';
+  var tw=fvb.width, th=fvb.height;
+  // Formula: padLeft = (r*tw - bpx) / (1 - r)
+  // This makes embouchure at viewBox x=bpx appear at fraction r of SVG width
+  var padLeft=Math.round((r*tw-bpx)/(1-r||1));
+  dbg+='r='+r.toFixed(3)+' tw='+tw+' bpx='+bpx+' pad='+padLeft;
+  if(padLeft>0){
+    fs.setAttribute('viewBox',(-padLeft)+' 0 '+(tw+padLeft)+' '+th);
+    dbg+=' newVB='+(-padLeft)+',0,'+(tw+padLeft)+','+th+' APPLIED';
   }else{
-    dbg+=' skip(small)';
+    dbg+=' skip(pad<=0)';
   }
   _dbgAlign(as,dbg);
-  // Debug marker line at pipe exit
-  var mk=as.querySelector('#dbgAlignMark');
-  if(!mk){mk=document.createElementNS('http://www.w3.org/2000/svg','line');mk.id='dbgAlignMark';as.appendChild(mk)}
-  mk.setAttribute('x1',_kbdPipeExitRatio*vb.width);mk.setAttribute('y1','0');
-  mk.setAttribute('x2',_kbdPipeExitRatio*vb.width);mk.setAttribute('y2',vb.height);
-  mk.setAttribute('stroke','red');mk.setAttribute('stroke-width','2');mk.setAttribute('stroke-dasharray','4,4');
+  // Debug marker line at pipe exit in air SVG
+  var vb=as.viewBox.baseVal;
+  if(vb&&vb.width){
+    var mk=as.querySelector('#dbgAlignMark');
+    if(!mk){mk=document.createElementNS('http://www.w3.org/2000/svg','line');mk.id='dbgAlignMark';as.appendChild(mk)}
+    mk.setAttribute('x1',r*vb.width);mk.setAttribute('y1','0');
+    mk.setAttribute('x2',r*vb.width);mk.setAttribute('y2',vb.height);
+    mk.setAttribute('stroke','red');mk.setAttribute('stroke-width','2');mk.setAttribute('stroke-dasharray','4,4');
+  }
 }
 function _dbgAlign(as,msg){
   // Show debug message as visible text on air SVG
