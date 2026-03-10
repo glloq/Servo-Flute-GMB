@@ -1069,7 +1069,7 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
 
 <script>
 // --- Constants (mirrored from settings.h) ---
-const MIDI_CC_MAX=127,MIDI_VEL_MAX=127,MAX_FINGERS=15;
+const MIDI_CC_MAX=127,MIDI_VEL_MAX=127,MAX_FINGERS=31;
 const WEB_DEF_VEL=100,TEST_SOL_MS=2000,VU_SCALE=500,PITCH_OK_CT=15;
 
 const N=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];

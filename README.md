@@ -1,50 +1,75 @@
 # Servo Flute MIDI Boop
 
-**Flute robotique pilotee par MIDI, basee sur ESP32 avec connectivite sans fil et interface web embarquee.**
+**Instrument robotique modulaire pilote par MIDI, base sur ESP32.**
 
-Un projet open-source qui transforme une flute a bec en instrument robotique autonome : des servos controlent les doigts et le souffle, le tout pilotable via BLE-MIDI, WiFi rtpMIDI ou une interface web complete.
+Un projet open-source pour transformer n'importe quel instrument a vent en instrument robotique autonome. Le systeme est entierement configurable : nombre de servos, type de gestion d'air, doigtes personnalises — le tout modifiable sans recompiler via une interface web embarquee.
 
-## Capacites
+Flute a bec, tin whistle, clarinette, cornemuse, orgue... le firmware s'adapte a l'instrument.
 
-### Controle instrumental
-- **6 servos doigts** via PCA9685 (I2C PWM 16 canaux) pour les doigtes
-- **Servo airflow** pour le controle continu du debit d'air
-- **Solenoide 5V** pour l'ouverture/fermeture rapide de la valve
-- **Vibrato automatique** configurable (amplitude, vitesse)
-- **Breath controller** (CC2) avec courbe de reponse ajustable
-- **6 modes de gestion d'air** : solenoide classique, servo-valve, ventilateur, pompe(s) avec reservoir... ([details](docs/AIR_MANAGEMENT.md))
+## Architecture modulaire
 
-### Connectivite MIDI
-- **BLE-MIDI** via NimBLE (compatible iOS, macOS, Windows, Android)
-- **WiFi rtpMIDI** (compatible Apple MIDI, protocole standard)
-- **Basculement BT/WiFi** par interrupteur physique (GPIO4)
-- **Lecture de fichiers MIDI** (.mid SMF Type 0 et 1) uploades via le web
+Le systeme repose sur une configuration dynamique en JSON, persistee sur LittleFS :
 
-### Interface web embarquee
+- **Jusqu'a 31 servos doigts** — sur 2 PCA9685 (32 canaux dont 1 pour l'airflow), chaque servo configurable independamment (canal, angle, direction, trou de pouce)
+- **Nombre de notes illimite en pratique** — chaque note definit son doigte (pattern ouvert/ferme/demi-trou) et sa plage d'airflow
+- **6 modes de gestion d'air** — solenoide, servo-valve, ventilateur, pompe(s) avec reservoir... ([details](docs/AIR_MANAGEMENT.md))
+- **Extension multi-PCA9685** — pour les instruments a nombreuses cles ([details](docs/PCA9685_EXPANSION.md))
+
+Tous les parametres sont editables a chaud depuis l'interface web. Voir [CONFIGURATION.md](docs/CONFIGURATION.md).
+
+## Reception MIDI
+
+Le firmware supporte trois canaux de reception MIDI qui fonctionnent en parallele :
+
+| Canal | Protocole | Usage typique |
+|-------|-----------|---------------|
+| **Bluetooth** | BLE-MIDI (NimBLE) | iOS, macOS, Windows, Android — sans fil, faible latence |
+| **WiFi** | rtpMIDI (AppleMIDI) | DAW via reseau local, compatible Apple MIDI Network |
+| **Serial** | MIDI DIN (UART 31250 baud) | Connection filaire classique, modules MIDI hardware |
+
+### Selection du mode sans fil
+
+Un **interrupteur physique sur GPIO4** bascule entre Bluetooth et WiFi :
+
+| GPIO4 | Mode actif |
+|-------|------------|
+| LOW   | BLE-MIDI — l'ESP32 s'annonce comme peripherique Bluetooth |
+| HIGH  | WiFi rtpMIDI — connexion au reseau WiFi configure (mode STA) ou creation d'un hotspot (mode AP) |
+
+Le **MIDI Serial** (UART) est independant de cet interrupteur : il reste actif en permanence et peut etre active/desactive ainsi que configure (pin RX) depuis l'interface web.
+
+Les trois canaux convergent vers le meme `InstrumentManager` — une note recue par n'importe quel canal produit le meme resultat.
+
+Pour plus de details, voir [WIFI_MODES.md](docs/WIFI_MODES.md).
+
+### Lecture de fichiers MIDI
+
+Le systeme accepte egalement des fichiers `.mid` (SMF Type 0 et 1) uploades via l'interface web pour une lecture autonome sans source MIDI externe.
+
+## Interface web embarquee
+
 Serveur web SPA accessible en WiFi avec 6 onglets :
 
 | Onglet | Fonction |
 |--------|----------|
-| **Clavier** | Notes interactives avec representation visuelle de la flute (touch, souris, clavier AZERTY) |
+| **Clavier** | Notes interactives avec representation visuelle (touch, souris, clavier AZERTY) |
 | **MIDI** | Upload et lecture de fichiers .mid |
 | **Calibration** | Test temps reel des servos, assistant doigts, sweep airflow, auto-calibration micro |
 | **Config** | Tous les parametres editables, table des doigtes visuelle, sauvegarde persistante |
 | **WiFi** | Scan reseaux, connexion depuis le hotspot |
 | **Monitor** | Barres CC, heap memoire, journal en direct (WebSocket) |
 
-### Auto-calibration (optionnel)
-Avec un micro **INMP441** (I2S), le systeme peut automatiquement calibrer les positions d'airflow pour chaque note en detectant le son produit. Voir [CALIBRATION.md](docs/CALIBRATION.md).
+## Auto-calibration (optionnel)
 
-### Configuration persistante
-Tous les parametres sont modifiables a chaud via l'interface web et sauvegardes en JSON sur LittleFS. Pas besoin de recompiler pour ajuster le comportement. Voir [CONFIGURATION.md](docs/CONFIGURATION.md).
+Avec un micro **INMP441** (I2S), le systeme peut automatiquement calibrer les positions d'airflow pour chaque note en detectant le son produit. Voir [CALIBRATION.md](docs/CALIBRATION.md).
 
 ## Materiel requis
 
 - **ESP32-WROOM-32E** (DevKit v1 ou equivalent)
 - **PCA9685** module I2C PWM 16 canaux
-- **6x servos SG90** (doigts) + **1x servo SG90** (airflow)
-- **1x solenoide 5V** + MOSFET + diode de roue libre
-- **Alimentation 5V 5A** minimum
+- **Servos SG90** — nombre selon l'instrument (doigts + airflow)
+- **Systeme d'air** — solenoide, servo-valve, ventilateur ou pompe selon le mode choisi ([details](docs/AIR_MANAGEMENT.md))
+- **Alimentation 5V** dimensionnee selon le nombre de servos
 - **INMP441** micro MEMS I2S (optionnel, pour auto-calibration)
 
 Le brochage complet et les instructions de montage sont dans le [README du firmware](Servo_flute_ESP32/README.md).
@@ -74,7 +99,8 @@ Servo-Flute-Midi-Boop/
 2. Flasher le firmware sur l'ESP32
 3. Au premier boot, le hotspot WiFi `ServoFlute-Setup` demarre
 4. Se connecter au hotspot, ouvrir `192.168.4.1`
-5. Configurer le WiFi, calibrer les servos, jouer !
+5. Configurer le nombre de doigts, les doigtes, le mode d'air, calibrer les servos
+6. Connecter une source MIDI (BLE, WiFi ou Serial) et jouer
 
 ## Documentation
 
