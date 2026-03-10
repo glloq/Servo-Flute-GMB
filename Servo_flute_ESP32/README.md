@@ -85,7 +85,7 @@ Tous les parametres sont modifiables a chaud via l'interface web et persistes en
 
 Les valeurs par defaut sont definies dans `settings.h` et chargees au premier demarrage.
 
-Voir [docs/CONFIGURATION.md](docs/CONFIGURATION.md) pour la liste complete des parametres.
+Voir [CONFIGURATION.md](../docs/CONFIGURATION.md) pour la liste complete des parametres.
 
 ## API REST
 
@@ -197,7 +197,7 @@ Servo_flute_ESP32/
   StatusLed.h/.cpp       - Patterns LED d'etat
   HardwareInputs.h/.cpp  - Bouton + switch avec debounce
   web_content.h          - HTML/CSS/JS embarque en PROGMEM
-  docs/                  - Documentation technique
+  ../docs/               - Documentation technique (a la racine du repo)
 ```
 
 ## Premiere utilisation
