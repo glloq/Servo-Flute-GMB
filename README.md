@@ -2,9 +2,11 @@
 
 **Instrument robotique modulaire pilote par MIDI, base sur ESP32.**
 
-Un projet open-source pour transformer n'importe quel instrument a vent en instrument robotique autonome. Le systeme est entierement configurable : nombre de servos, type de gestion d'air, doigtes personnalises — le tout modifiable sans recompiler via une interface web embarquee.
+Un projet open-source pour transformer des flutes et instruments similaires en instruments robotiques autonomes. Le systeme est entierement configurable : nombre de servos, type de gestion d'air, doigtes personnalises — le tout modifiable sans recompiler via une interface web embarquee.
 
-Flute a bec, tin whistle, clarinette, cornemuse, orgue... le firmware s'adapte a l'instrument.
+Flute a bec, tin whistle, flute traversiere, NAF (Native American Flute), ocarina... le firmware s'adapte a l'instrument.
+
+> **Perimetre :** Ce projet cible les instruments a souffle simple (sans anche, sans embouchure a buzzing). Les instruments a anche (clarinette, hautbois, saxophone), a buzzing (trompette, trombone), et les orgues sont hors perimetre.
 
 ## Architecture modulaire
 
