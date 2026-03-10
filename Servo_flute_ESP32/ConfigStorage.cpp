@@ -40,6 +40,10 @@ void ConfigStorage::initDefaults() {
   // --- MIDI ---
   cfg.midiChannel = MIDI_CHANNEL;
 
+  // --- Serial MIDI ---
+  cfg.serialMidiEnabled = DEFAULT_SERIAL_MIDI_ENABLED;
+  cfg.serialMidiRxPin = DEFAULT_SERIAL_MIDI_RX_PIN;
+
   // --- Timing ---
   cfg.servoToSolenoidDelayMs = SERVO_TO_SOLENOID_DELAY_MS;
   cfg.minNoteIntervalForValveCloseMs = MIN_NOTE_INTERVAL_FOR_VALVE_CLOSE_MS;
@@ -213,6 +217,8 @@ bool ConfigStorage::load() {
 
   // --- Scalaires (surcharge partielle, chaque champ optionnel) ---
   cfg.midiChannel = doc["midi_ch"] | cfg.midiChannel;
+  cfg.serialMidiEnabled = doc["smidi_on"] | (cfg.serialMidiEnabled ? 1 : 0);
+  cfg.serialMidiRxPin = doc["smidi_rx"] | cfg.serialMidiRxPin;
   cfg.servoToSolenoidDelayMs = doc["servo_delay"] | cfg.servoToSolenoidDelayMs;
   cfg.minNoteIntervalForValveCloseMs = doc["valve_interval"] | cfg.minNoteIntervalForValveCloseMs;
   cfg.minNoteDurationMs = doc["min_note_dur"] | cfg.minNoteDurationMs;
@@ -378,6 +384,8 @@ bool ConfigStorage::save() {
 
   // --- Scalaires ---
   doc["midi_ch"] = cfg.midiChannel;
+  doc["smidi_on"] = cfg.serialMidiEnabled ? 1 : 0;
+  doc["smidi_rx"] = cfg.serialMidiRxPin;
   doc["servo_delay"] = cfg.servoToSolenoidDelayMs;
   doc["valve_interval"] = cfg.minNoteIntervalForValveCloseMs;
   doc["min_note_dur"] = cfg.minNoteDurationMs;

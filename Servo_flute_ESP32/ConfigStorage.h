@@ -55,6 +55,10 @@ struct RuntimeConfig {
   // --- MIDI ---
   uint8_t midiChannel;
 
+  // --- Serial MIDI (DIN input via UART) ---
+  bool serialMidiEnabled;              // Activer l'entree MIDI serie
+  uint8_t serialMidiRxPin;             // GPIO pour reception MIDI (RX)
+
   // --- Timing ---
   uint16_t servoToSolenoidDelayMs;
   uint16_t minNoteIntervalForValveCloseMs;
