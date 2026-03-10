@@ -10,8 +10,8 @@ Flute a bec, tin whistle, clarinette, cornemuse, orgue... le firmware s'adapte a
 
 Le systeme repose sur une configuration dynamique en JSON, persistee sur LittleFS :
 
-- **1 a 15 servos doigts** — chaque servo est configurable independamment (canal PCA9685, angle, direction, trou de pouce)
-- **1 a 32 notes** — chaque note definit son doigte (pattern ouvert/ferme/demi-trou) et sa plage d'airflow
+- **Jusqu'a 31 servos doigts** — sur 2 PCA9685 (32 canaux dont 1 pour l'airflow), chaque servo configurable independamment (canal, angle, direction, trou de pouce)
+- **Nombre de notes illimite en pratique** — chaque note definit son doigte (pattern ouvert/ferme/demi-trou) et sa plage d'airflow
 - **6 modes de gestion d'air** — solenoide, servo-valve, ventilateur, pompe(s) avec reservoir... ([details](docs/AIR_MANAGEMENT.md))
 - **Extension multi-PCA9685** — pour les instruments a nombreuses cles ([details](docs/PCA9685_EXPANSION.md))
 

@@ -2,7 +2,7 @@
  * ConfigStorage - Configuration persistante sur LittleFS (JSON)
  *
  * RuntimeConfig : structure contenant tous les parametres modifiables a chaud.
- * Supporte un nombre variable de doigts (1-15) et de notes (1-32).
+ * Supporte un nombre variable de doigts (1-31) et de notes (1-128).
  * Initialisee avec les valeurs par defaut de settings.h, puis surchargee par
  * le fichier /config.json sur LittleFS.
  *
@@ -24,7 +24,7 @@
  ******************************************************************************/
 
 struct FingerConfig {
-  uint8_t pcaChannel;      // Canal PCA9685 (0-15)
+  uint8_t pcaChannel;      // Canal PCA9685 (0-31, multi-PCA)
   uint16_t closedAngle;    // Angle position fermee (0-180)
   int8_t direction;        // +1 = horaire, -1 = anti-horaire
   bool isThumbHole;        // true = trou arriere (dessous de la flute)
@@ -43,8 +43,8 @@ struct NoteConfig {
 
 struct RuntimeConfig {
   // --- Instrument (modulaire) ---
-  uint8_t numFingers;                        // 1-15 (nombre effectif de doigts)
-  uint8_t numNotes;                          // 1-32 (nombre effectif de notes)
+  uint8_t numFingers;                        // 1-31 (nombre effectif de doigts)
+  uint8_t numNotes;                          // 1-128 (nombre effectif de notes)
   uint8_t airflowPcaChannel;                // Canal PCA9685 pour servo airflow
   uint8_t fingerAngleOpen;                   // Amplitude ouverture commune (degres)
   uint8_t halfHolePercent;                   // Pourcentage ouverture demi-trou (10-90, defaut 50)

@@ -1,7 +1,7 @@
 /***********************************************************************************************
 ----------------------------         SETTINGS ESP32            --------------------------------
 Configuration modulaire pour instruments a vent robotises.
-Supporte 1 a 15 servos doigts + 1 servo airflow sur PCA9685.
+Supporte jusqu'a 2 PCA9685 (32 canaux) : 1 a 31 servos doigts + 1 servo airflow.
 Version ESP32-WROOM avec BLE-MIDI / WiFi-MIDI / Hotspot
 Architecture avec servo debit + solenoide valve + mode binaire (ouvert/ferme)
 ************************************************************************************************/
@@ -17,8 +17,8 @@ Dimensionnement memoire maximal. Les valeurs effectives sont dans RuntimeConfig.
 ******************************************************************************/
 
 // Maximums (dimensionnement arrays)
-#define MAX_FINGER_SERVOS 15   // PCA9685 = 16 canaux, 1 reserve pour airflow
-#define MAX_NOTES 32           // Notes jouables maximum
+#define MAX_FINGER_SERVOS 31   // 2x PCA9685 = 32 canaux, 1 reserve pour airflow
+#define MAX_NOTES 128          // Notes jouables maximum (plage MIDI complète = 128)
 
 // Valeurs par defaut (utilisees par initDefaults / preset "Flute irlandaise C")
 #define DEFAULT_NUM_FINGERS 6
