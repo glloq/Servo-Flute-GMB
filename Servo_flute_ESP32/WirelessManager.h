@@ -35,6 +35,7 @@
 #include "HardwareInputs.h"
 #include "BleMidiHandler.h"
 #include "WifiMidiHandler.h"
+#include "SerialMidiHandler.h"
 #include "WebConfigurator.h"
 #include "MidiFilePlayer.h"
 
@@ -68,6 +69,7 @@ private:
 
   BleMidiHandler _bleMidi;
   WifiMidiHandler _wifiMidi;
+  SerialMidiHandler _serialMidi;
   WebConfigurator* _webConfig;
   MidiFilePlayer* _midiPlayer;
 

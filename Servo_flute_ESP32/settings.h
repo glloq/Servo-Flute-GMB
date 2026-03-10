@@ -288,6 +288,10 @@ const uint16_t SERVO_FREQUENCY = 50;
 // Canal MIDI (0 = omni mode, ecoute tous les canaux | 1-16 = canal specifique)
 #define MIDI_CHANNEL 0
 
+// Serial MIDI input (DIN MIDI via UART2)
+#define DEFAULT_SERIAL_MIDI_ENABLED false
+#define DEFAULT_SERIAL_MIDI_RX_PIN 16    // GPIO16 (RX2 par defaut sur ESP32)
+
 /*******************************************************************************
 -----------------------  CONTROL CHANGE (CC) SETTINGS  -----------------------
 ******************************************************************************/

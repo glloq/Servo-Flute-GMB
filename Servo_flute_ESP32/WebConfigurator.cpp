@@ -372,6 +372,8 @@ void WebConfigurator::handleApiConfig(AsyncWebServerRequest* request) {
 
   // Scalaires
   json += ",\"midi_ch\":" + String(cfg.midiChannel);
+  json += ",\"smidi_on\":" + String(cfg.serialMidiEnabled ? "true" : "false");
+  json += ",\"smidi_rx\":" + String(cfg.serialMidiRxPin);
   json += ",\"servo_delay\":" + String(cfg.servoToSolenoidDelayMs);
   json += ",\"valve_interval\":" + String(cfg.minNoteIntervalForValveCloseMs);
   json += ",\"min_note_dur\":" + String(cfg.minNoteDurationMs);
@@ -525,6 +527,8 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
 
     // --- Scalaires ---
     if (doc.containsKey("midi_ch")) cfg.midiChannel = doc["midi_ch"];
+    if (doc.containsKey("smidi_on")) cfg.serialMidiEnabled = doc["smidi_on"].as<bool>();
+    if (doc.containsKey("smidi_rx")) cfg.serialMidiRxPin = doc["smidi_rx"];
     if (doc.containsKey("servo_delay")) cfg.servoToSolenoidDelayMs = doc["servo_delay"];
     if (doc.containsKey("valve_interval")) cfg.minNoteIntervalForValveCloseMs = doc["valve_interval"];
     if (doc.containsKey("min_note_dur")) cfg.minNoteDurationMs = doc["min_note_dur"];

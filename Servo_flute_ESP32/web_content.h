@@ -964,6 +964,12 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
     </select></div>
   </div>
 
+  <div class="section"><h3>MIDI Serial (DIN)</h3>
+    <div class="cfg-row"><label>Activer</label><input type="checkbox" id="cfgSmidiOn" style="width:auto;flex:0"></div>
+    <div class="cfg-row"><label>Pin RX (GPIO)</label><input type="number" id="cfgSmidiRx" min="0" max="39" style="width:70px"></div>
+    <div style="font-size:.7em;color:#666;margin-top:2px">Connecter un circuit MIDI DIN (optocoupler) au GPIO choisi. Redemarrage requis apres changement.</div>
+  </div>
+
   <div class="section"><h3>Timing</h3>
     <div class="cfg-row"><label>Servo&rarr;valve (ms)</label><input type="number" id="cfgDelay" min="0" max="1000"></div>
     <div class="cfg-row"><label>Intervalle valve (ms)</label><input type="number" id="cfgValveInt" min="0" max="500"></div>
@@ -3525,6 +3531,8 @@ function fillSettings(){
   const sel=$('cfgMidiCh');sel.innerHTML='<option value="0">Omni (tous)</option>';
   for(let i=1;i<=16;i++){const o=document.createElement('option');o.value=i;o.textContent='Canal '+i;sel.appendChild(o)}
   sel.value=CFG.midi_ch||0;
+  $('cfgSmidiOn').checked=!!CFG.smidi_on;
+  $('cfgSmidiRx').value=CFG.smidi_rx!=null?CFG.smidi_rx:16;
   $('cfgDelay').value=CFG.servo_delay;$('cfgValveInt').value=CFG.valve_interval;$('cfgMinNote').value=CFG.min_note_dur;
   $('cfgCCVol').value=CFG.cc_vol!=null?CFG.cc_vol:127;$('cfgCCExpr').value=CFG.cc_expr!=null?CFG.cc_expr:127;
   $('cfgCCMod').value=CFG.cc_mod!=null?CFG.cc_mod:0;$('cfgCCBreath').value=CFG.cc_breath!=null?CFG.cc_breath:127;
@@ -3546,6 +3554,7 @@ function fillSettings(){
 function saveSettings(){
   btnLoad('btnSaveSettings',true);
   const body={device:$('cfgDevice').value,midi_ch:parseInt($('cfgMidiCh').value),
+    smidi_on:$('cfgSmidiOn').checked,smidi_rx:parseInt($('cfgSmidiRx').value),
     servo_delay:parseInt($('cfgDelay').value),valve_interval:parseInt($('cfgValveInt').value),
     min_note_dur:parseInt($('cfgMinNote').value),
     cc_vol:parseInt($('cfgCCVol').value),cc_expr:parseInt($('cfgCCExpr').value),

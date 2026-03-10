@@ -52,6 +52,9 @@ void WirelessManager::begin(InstrumentManager* instrument) {
       Serial.println("DEBUG: WirelessManager - Serveur web + lecteur MIDI initialises");
     }
   }
+
+  // Initialiser le MIDI serie (independant du mode BLE/WiFi)
+  _serialMidi.begin(instrument);
 }
 
 void WirelessManager::update() {
@@ -77,6 +80,9 @@ void WirelessManager::update() {
       _webConfig->update();
     }
   }
+
+  // Mettre a jour le MIDI serie (independant du mode BLE/WiFi)
+  _serialMidi.update();
 
   // Mettre a jour le pattern LED
   updateLedPattern();
