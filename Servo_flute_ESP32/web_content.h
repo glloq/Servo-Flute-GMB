@@ -151,6 +151,7 @@ font-weight:bold;border-radius:4px;margin:6px 0}
 .fg-dot{width:18px;height:18px;border-radius:50%;border:2px solid #777;cursor:pointer;transition:.15s}
 .fg-dot.closed{background:#444}.fg-dot.open{background:#4ecca3;border-color:#4ecca3}.fg-dot.half{background:linear-gradient(180deg,#4ecca3 50%,#444 50%);border-color:#4ecca3}
 .fg-dot.thumb{border-style:dashed;border-color:#e94560}
+.trav-only{display:none}
 .air-card{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #0f3460;flex-wrap:wrap}
 .air-note{font-weight:bold;min-width:40px;font-size:0.85em}
 .air-sliders{flex:1;min-width:150px}
@@ -899,6 +900,21 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
       </div>
     </div>
 
+    <!-- BLOCK: Angle Servo (trav only) -->
+    <div class="air-block trav-only" id="airBlockAngle">
+      <div class="air-block-hdr" tabindex="0" role="button" aria-label="Configuration servo angle" onclick="toggleAirBlock('airBlockAngle')" onkeydown="toggleAirBlock('airBlockAngle',event)">
+        <h4><svg viewBox="0 0 16 16" width="14" height="14"><path d="M8 2L2 14h12L8 2z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><line x1="8" y1="6" x2="8" y2="10" stroke="currentColor" stroke-width="1.2"/></svg>Servo Angle (traversiere)</h4>
+      </div>
+      <div class="air-block-body">
+        <p style="font-size:.72em;color:#888;margin:0 0 8px">Angle du jet d'air par rapport au biseau. Visible uniquement pour les flutes traversieres. CC74 (Brightness) module l'angle en temps reel.</p>
+        <div class="cfg-row"><label>Canal PCA angle</label><input type="number" id="cfgAngPca" min="0" max="31" title="Canal PCA9685 du servo angle" oninput="checkPca()"></div>
+        <div class="cfg-row"><label>Angle repos</label><input type="number" id="cfgAngOff" min="0" max="180" title="Position au repos (centre)"></div>
+        <div class="cfg-row"><label>Angle min</label><input type="number" id="cfgAngMin" min="0" max="180" title="Angle minimum calibre"></div>
+        <div class="cfg-row"><label>Angle max</label><input type="number" id="cfgAngMax" min="0" max="180" title="Angle maximum calibre"></div>
+        <div class="cfg-row"><label>Test angle</label><input type="range" min="0" max="180" value="90" id="testAngSlider" oninput="$('testAngVal').textContent=this.value+'&deg;';wsSend({t:'test_angle',a:parseInt(this.value)})"><span id="testAngVal" style="min-width:30px;font-size:.8em">90&deg;</span></div>
+      </div>
+    </div>
+
     <!-- Options affichage -->
     <div style="margin-top:12px">
       <div class="cfg-row"><label>Afficher schemas air dans onglet clavier</label><input type="checkbox" id="cfgShowAir" style="width:auto;flex:0" title="Affiche le schema pneumatique en miniature sur l'onglet clavier"></div>
@@ -1180,6 +1196,7 @@ function redoFp(){if(!fpFuture.length||!CFG)return;
 function updUndoUI(){$('undoBtn').disabled=!fpHistory.length;$('redoBtn').disabled=!fpFuture.length;
   $('undoInfo').textContent=fpHistory.length?fpHistory.length+' modif.':''}
 function checkPca(){if(!CFG)return;const used={};const airP=parseInt($('airPca').value);used[airP]='Souffle';
+  if(CFG.embouchure==='trav'){const angP=$('cfgAngPca');if(angP){const av=parseInt(angP.value);used[av]='Angle'}}
   document.querySelectorAll('.cal-card').forEach((card,i)=>{const ch=CFG.fingers[i]?CFG.fingers[i].ch:i;
     let conflict=used[ch]!==undefined;card.classList.toggle('pca-conflict',conflict);
     const w=card.querySelector('.pca-warn');if(w)w.textContent=conflict?'Conflit PCA '+ch+' avec '+used[ch]:'';
@@ -1883,6 +1900,10 @@ function saveAirSettings(){
     if(st>=3){d.endstop_pin=parseInt($('airEndstopPin').value)||34;d.endstop_high=$('airEndstopHigh').value==='1';
       d.endstop_pump_on=$('airEndstopPumpOn').value==='1'}
   }
+  // Angle servo (trav only)
+  if(CFG&&CFG.embouchure==='trav'){
+    d.ang_pca=parseInt($('cfgAngPca').value)||12;d.ang_off=parseInt($('cfgAngOff').value)||90;
+    d.ang_min=parseInt($('cfgAngMin').value)||60;d.ang_max=parseInt($('cfgAngMax').value)||120}
   const sb=$('btnAirSave');if(sb){sb.disabled=true;sb.textContent='Sauvegarde...'}
   fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)})
     .then(r=>r.json()).then(j=>{
@@ -2637,7 +2658,7 @@ function wizFinish(){
     body.fingers=[];
     for(let i=0;i<p.h;i++){body.fingers.push({ch:i,a:90,d:-1,th:p.th===i?1:0})}
     body.notes=[];
-    p.d.forEach(nd=>{body.notes.push({midi:nd[0],fp:nd[1],amn:nd[2],amx:nd[3]})});
+    p.d.forEach(nd=>{body.notes.push({midi:nd[0],fp:nd[1],amn:nd[2],amx:nd[3],ang:nd[4]||50})});
     body.num_notes=p.d.length;body.angle_open=30;body.half_hole_pct=50;
   }
   fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
@@ -2732,11 +2753,24 @@ function loadConfig(){
     $('devName').childNodes[0].textContent=d.device||'ServoFlute';
     buildKeyboard();buildFlute(CFG,'fluteSvg',false);markClean();
     applyCalibVisibility();applyAirTabVisibility();drawSeqGrid();
-    buildAirSvg('airSvgFull',true);
+    buildAirSvg('airSvgFull',true);updateTravVisibility();
     if(CFG.first_boot){showWizard()}
     if(micDetected){$('micSection').style.display='';wsSend({t:'mic_mon',on:1})}
     else $('micSection').style.display='none';
   }).catch(e=>{addLog('Erreur config: '+e);showToast('Erreur chargement config','error')})
+}
+
+function updateTravVisibility(){
+  const isTrav=CFG&&CFG.embouchure==='trav';
+  document.querySelectorAll('.trav-only').forEach(el=>{el.style.display=isTrav?'':'none'});
+  // Populate angle servo config fields
+  if(isTrav&&CFG){
+    const e=id=>$(id);
+    if(e('cfgAngPca'))e('cfgAngPca').value=CFG.ang_pca!=null?CFG.ang_pca:12;
+    if(e('cfgAngOff'))e('cfgAngOff').value=CFG.ang_off!=null?CFG.ang_off:90;
+    if(e('cfgAngMin'))e('cfgAngMin').value=CFG.ang_min!=null?CFG.ang_min:60;
+    if(e('cfgAngMax'))e('cfgAngMax').value=CFG.ang_max!=null?CFG.ang_max:120;
+  }
 }
 
 // --- KEYBOARD ---
@@ -3306,7 +3340,7 @@ function selectInstrument(val){
   CFG.fingers.forEach(f=>f.th=0);
   if(p.th>=0&&CFG.fingers[p.th])CFG.fingers[p.th].th=1;
   // Rebuild UI physique
-  buildFingerCards();buildFlute(CFG,'calFluteSvg',true);markDirty();
+  buildFingerCards();buildFlute(CFG,'calFluteSvg',true);updateTravVisibility();markDirty();
   showToast(p.n+' - '+p.h+' trous'+(p.th>=0?' (pouce)':''),'success')
 }
 
@@ -3394,15 +3428,15 @@ function applyPreset(val){
   const p=PR.find(x=>x.id===val);if(!p)return;
   CFG.embouchure=p.em||'trav';
   // Build notes from preset data
-  CFG.notes=p.d.map(n=>({midi:n[0],fp:[...n[1]],amn:n[2],amx:n[3]}));
+  CFG.notes=p.d.map(n=>({midi:n[0],fp:[...n[1]],amn:n[2],amx:n[3],ang:n[4]||50}));
   CFG.notes.forEach(n=>{while(n.fp.length<CFG.num_fingers)n.fp.push(0)});
   CFG.num_notes=CFG.notes.length;
-  fpSnap();buildFingeringRows();buildFlute(CFG,'calFluteSvg',true);updPresetInfo();markDirty()
+  fpSnap();buildFingeringRows();buildFlute(CFG,'calFluteSvg',true);updPresetInfo();updateTravVisibility();markDirty()
 }
 
 function saveStep2(){
   if(!CFG)return;btnLoad('btnSaveStep2',true);
-  const body={num_fingers:CFG.num_fingers,notes:CFG.notes.map(n=>({midi:n.midi,fp:n.fp.slice(0,CFG.num_fingers),amn:n.amn,amx:n.amx}))};
+  const body={num_fingers:CFG.num_fingers,notes:CFG.notes.map(n=>({midi:n.midi,fp:n.fp.slice(0,CFG.num_fingers),amn:n.amn,amx:n.amx,ang:n.ang!=null?n.ang:50}))};
   fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
     .then(r=>r.json()).then(d=>{btnLoad('btnSaveStep2',false);if(d.ok){showToast('Doigtes sauvegardes','success');markClean();fpHistory=[];fpFuture=[];updUndoUI();goStep(3);buildKeyboard();buildFlute(CFG,'fluteSvg',false)}else showToast('Erreur sauvegarde','error')})
     .catch(e=>{btnLoad('btnSaveStep2',false);showToast('Erreur: '+e,'error')})
@@ -3411,8 +3445,10 @@ function saveStep2(){
 // --- STEP 3: AIRFLOW ---
 function buildAirflowRows(){
   const c=$('airflowRows');c.innerHTML='';if(!CFG)return;
+  const isTrav=(CFG.embouchure==='trav');
   CFG.notes.forEach((n,ni)=>{
     let dots='';for(let f=0;f<CFG.num_fingers;f++)dots+='<span class="kf '+kfClass(n.fp[f])+'"></span>';
+    const angPct=n.ang!=null?n.ang:50;
     const d=document.createElement('div');d.className='air-card fade-in fade-delay-'+(Math.min(4,(ni%4)+1));
     d.innerHTML='<span class="air-note">'+mn(n.midi)+'</span>'+
       '<span class="kf-row" style="gap:2px">'+dots+'</span>'+
@@ -3422,6 +3458,8 @@ function buildAirflowRows(){
         '<input type="range" min="0" max="100" value="'+n.amn+'" oninput="CFG.notes['+ni+'].amn=parseInt(this.value);$(\'amn'+ni+'\').textContent=this.value;updDualFill('+ni+');markDirty()">'+
         '<input type="range" min="0" max="100" value="'+n.amx+'" oninput="CFG.notes['+ni+'].amx=parseInt(this.value);$(\'amx'+ni+'\').textContent=this.value;updDualFill('+ni+');markDirty()"></div>'+
       '</div>'+
+      '<div class="trav-only" style="min-width:90px;'+(isTrav?'display:flex':'')+'"><span style="font-size:.7em;color:#9aa;white-space:nowrap">Angle: <b id="ang'+ni+'">'+angPct+'</b>%</span>'+
+        '<input type="range" min="0" max="100" value="'+angPct+'" style="width:80px" oninput="CFG.notes['+ni+'].ang=parseInt(this.value);$(\'ang'+ni+'\').textContent=this.value;markDirty()"></div>'+
       '<button class="btn btn-s" style="padding:4px 8px;font-size:.75em" onclick="testPulse(this);testCalNote('+n.midi+')">Test</button>';
     c.appendChild(d);updDualFill(ni)
   })
@@ -3437,7 +3475,8 @@ function stopAutoCal(){autoCalRunning=false;$('btnAcalStart').style.display='';$
 
 function saveStep3(){
   if(!CFG)return;btnLoad('btnSaveStep3',true);
-  const body={notes_air:CFG.notes.map(n=>({amn:n.amn,amx:n.amx}))};
+  const body={notes_air:CFG.notes.map(n=>({amn:n.amn,amx:n.amx,ang:n.ang!=null?n.ang:50}))};
+  if(CFG.embouchure==='trav'){body.ang_pca=CFG.ang_pca;body.ang_off=CFG.ang_off;body.ang_min=CFG.ang_min;body.ang_max=CFG.ang_max}
   fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
     .then(r=>r.json()).then(d=>{btnLoad('btnSaveStep3',false);if(d.ok){showToast('Souffle sauvegarde','success');markClean();goStep(4)}else showToast('Erreur sauvegarde','error')})
     .catch(e=>{btnLoad('btnSaveStep3',false);showToast('Erreur: '+e,'error')})

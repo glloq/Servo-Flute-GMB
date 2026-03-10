@@ -41,7 +41,8 @@ AirflowController::AirflowController(Adafruit_PWMServoDriver& pwm)
     _cc2BufferIndex(0), _cc2BufferCount(0), _lastCC2Time(0), _lastVelocity(64),
     _baseAngleWithoutVibrato(cfg.servoAirflowOff), _vibratoActive(false),
     _currentMinAngle(cfg.servoAirflowMin), _currentMaxAngle(cfg.servoAirflowMax),
-    _attackActive(false), _attackStartTime(0), _attackStartAngle(0), _attackTargetAngle(0) {
+    _attackActive(false), _attackStartTime(0), _attackStartAngle(0), _attackTargetAngle(0),
+    _ccBrightness(cfg.ccBrightnessDefault), _currentAngleServo(cfg.servoAngleOff) {
   for (uint8_t i = 0; i < CC2_SMOOTHING_BUFFER_SIZE; i++) {
     _cc2SmoothingBuffer[i] = cfg.ccBreathDefault;
   }
@@ -60,6 +61,9 @@ void AirflowController::begin() {
     closeSolenoid();
   }
   setAirflowToRest();
+  if (isTravEmbouchure()) {
+    setAngleToRest();
+  }
 
   if (DEBUG) {
     const char* modeNames[] = {"Classique", "Servo-valve", "Servo seul", "Ventilateur", "Pompe+valve", "Pompe+reservoir"};
@@ -237,6 +241,9 @@ void AirflowController::setAirflowForNote(byte midiNote, byte velocity) {
   } else {
     setAirflowServoAngle(_baseAngleWithoutVibrato);
   }
+
+  // Angle servo (trav uniquement) — positionner simultanement
+  setAngleForNote(midiNote);
 }
 
 void AirflowController::openValve() {
@@ -315,6 +322,7 @@ void AirflowController::setValveServoAngle(bool open) {
 
 void AirflowController::setAirflowToRest() {
   setAirflowServoAngle(cfg.servoAirflowOff);
+  setAngleToRest();
 }
 
 void AirflowController::update() {
@@ -440,6 +448,72 @@ void AirflowController::setCC73Attack(byte ccValue) {
     Serial.println("%");
   }
 }
+
+// ===================== ANGLE SERVO (trav uniquement) =====================
+
+bool AirflowController::isTravEmbouchure() const {
+  return strcmp(cfg.embouchure, "trav") == 0;
+}
+
+void AirflowController::setAngleServoAngle(uint16_t angle) {
+  uint16_t pwmValue = angleToPWM(angle);
+  _pwm.setPWM(cfg.anglePcaChannel, 0, pwmValue);
+  _currentAngleServo = angle;
+}
+
+void AirflowController::setAngleForNote(byte midiNote) {
+  if (!isTravEmbouchure()) return;
+
+  const NoteConfig* note = getNoteByMidi(midiNote);
+  uint8_t pct = note ? note->anglePercent : DEFAULT_ANGLE_PERCENT;
+
+  // CC74 offset : 64 = neutre, 0 = decale vers min, 127 = decale vers max
+  float cc74Factor = ((int)_ccBrightness - 64) / 63.0f;  // -1.0 a +1.0
+  float basePct = pct / 100.0f;
+  float adjusted = basePct + cc74Factor * 0.3f;  // ±30% max d'influence CC
+  if (adjusted < 0.0f) adjusted = 0.0f;
+  if (adjusted > 1.0f) adjusted = 1.0f;
+
+  uint16_t angle = cfg.servoAngleMin + (uint16_t)((cfg.servoAngleMax - cfg.servoAngleMin) * adjusted);
+  setAngleServoAngle(angle);
+
+  if (DEBUG) {
+    Serial.print("DEBUG: AngleServo - Note: ");
+    Serial.print(midiNote);
+    Serial.print(" | Pct: ");
+    Serial.print(pct);
+    Serial.print(" | CC74: ");
+    Serial.print(_ccBrightness);
+    Serial.print(" | Angle: ");
+    Serial.println(angle);
+  }
+}
+
+void AirflowController::setAngleToRest() {
+  if (!isTravEmbouchure()) return;
+  setAngleServoAngle(cfg.servoAngleOff);
+}
+
+void AirflowController::setAngleLivePercent(uint8_t percent) {
+  if (percent > 100) percent = 100;
+  uint16_t angle = cfg.servoAngleMin + ((cfg.servoAngleMax - cfg.servoAngleMin) * percent / 100);
+  setAngleServoAngle(angle);
+}
+
+void AirflowController::testAngleServoAngle(uint16_t angle) {
+  if (angle > SERVO_MAX_ANGLE) angle = SERVO_MAX_ANGLE;
+  setAngleServoAngle(angle);
+  if (DEBUG) {
+    Serial.print("DEBUG: AngleServo - Test angle: ");
+    Serial.println(angle);
+  }
+}
+
+void AirflowController::setCC74Brightness(byte ccValue) {
+  _ccBrightness = ccValue;
+}
+
+// ===================== CC2 BREATH CONTROLLER =====================
 
 void AirflowController::updateCC2Breath(byte ccBreath) {
   if (!cfg.cc2Enabled) return;

@@ -380,6 +380,10 @@ void WebConfigurator::handleApiConfig(AsyncWebServerRequest* request) {
   json += ",\"air_off\":" + String(cfg.servoAirflowOff);
   json += ",\"air_min\":" + String(cfg.servoAirflowMin);
   json += ",\"air_max\":" + String(cfg.servoAirflowMax);
+  json += ",\"ang_pca\":" + String(cfg.anglePcaChannel);
+  json += ",\"ang_off\":" + String(cfg.servoAngleOff);
+  json += ",\"ang_min\":" + String(cfg.servoAngleMin);
+  json += ",\"ang_max\":" + String(cfg.servoAngleMax);
   json += ",\"vib_freq\":" + String(cfg.vibratoFrequencyHz, 1);
   json += ",\"vib_amp\":" + String(cfg.vibratoMaxAmplitudeDeg, 1);
   json += ",\"cc_vol\":" + String(cfg.ccVolumeDefault);
@@ -483,6 +487,7 @@ void WebConfigurator::handleApiConfig(AsyncWebServerRequest* request) {
     json += "{\"midi\":" + String(cfg.notes[i].midiNote);
     json += ",\"amn\":" + String(cfg.notes[i].airflowMinPercent);
     json += ",\"amx\":" + String(cfg.notes[i].airflowMaxPercent);
+    json += ",\"ang\":" + String(cfg.notes[i].anglePercent);
     json += ",\"fp\":[";
     for (int f = 0; f < cfg.numFingers; f++) {
       if (f > 0) json += ",";
@@ -535,6 +540,10 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
     if (doc.containsKey("air_off")) cfg.servoAirflowOff = doc["air_off"];
     if (doc.containsKey("air_min")) cfg.servoAirflowMin = doc["air_min"];
     if (doc.containsKey("air_max")) cfg.servoAirflowMax = doc["air_max"];
+    if (doc.containsKey("ang_pca")) cfg.anglePcaChannel = doc["ang_pca"];
+    if (doc.containsKey("ang_off")) cfg.servoAngleOff = doc["ang_off"];
+    if (doc.containsKey("ang_min")) cfg.servoAngleMin = doc["ang_min"];
+    if (doc.containsKey("ang_max")) cfg.servoAngleMax = doc["ang_max"];
     if (doc.containsKey("vib_freq")) cfg.vibratoFrequencyHz = doc["vib_freq"];
     if (doc.containsKey("vib_amp")) cfg.vibratoMaxAmplitudeDeg = doc["vib_amp"];
     if (doc.containsKey("cc_vol")) cfg.ccVolumeDefault = doc["cc_vol"];
@@ -676,6 +685,7 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
         cfg.notes[i].midiNote = n["midi"] | cfg.notes[i].midiNote;
         cfg.notes[i].airflowMinPercent = n["amn"] | cfg.notes[i].airflowMinPercent;
         cfg.notes[i].airflowMaxPercent = n["amx"] | cfg.notes[i].airflowMaxPercent;
+        cfg.notes[i].anglePercent = n["ang"] | cfg.notes[i].anglePercent;
         if (n.containsKey("fp")) {
           JsonArray fp = n["fp"];
           for (int f = 0; f < MAX_FINGER_SERVOS; f++) {
@@ -691,6 +701,15 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
       for (int i = 0; i < cfg.numNotes && i < (int)notes.size(); i++) {
         if (notes[i].containsKey("amn")) cfg.notes[i].airflowMinPercent = notes[i]["amn"];
         if (notes[i].containsKey("amx")) cfg.notes[i].airflowMaxPercent = notes[i]["amx"];
+        if (notes[i].containsKey("ang")) cfg.notes[i].anglePercent = notes[i]["ang"];
+      }
+    }
+
+    // --- Notes angle only (step 3 partial save, trav) ---
+    if (doc.containsKey("notes_ang")) {
+      JsonArray notes = doc["notes_ang"];
+      for (int i = 0; i < cfg.numNotes && i < (int)notes.size(); i++) {
+        if (notes[i].containsKey("ang")) cfg.notes[i].anglePercent = notes[i]["ang"];
       }
     }
 
@@ -1116,6 +1135,20 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
     if (aIdx >= 0) {
       int angle = msg.substring(aIdx + 4).toInt();
       _instrument->getAirflowCtrl().testAirflowAngle((uint16_t)angle);
+    }
+
+  } else if (type == "test_angle") {
+    int aIdx = msg.indexOf("\"a\":");
+    if (aIdx >= 0) {
+      int angle = msg.substring(aIdx + 4).toInt();
+      _instrument->getAirflowCtrl().testAngleServoAngle((uint16_t)angle);
+    }
+
+  } else if (type == "angle_live") {
+    int vIdx = msg.indexOf("\"v\":");
+    if (vIdx >= 0) {
+      uint8_t pct = (uint8_t)msg.substring(vIdx + 4).toInt();
+      _instrument->getAirflowCtrl().setAngleLivePercent(pct);
     }
 
   } else if (type == "test_sol") {

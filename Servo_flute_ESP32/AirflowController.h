@@ -49,6 +49,13 @@ public:
   // Calibration : tester solenoide open/close
   void testSolenoid(bool open);
 
+  // --- Angle servo (trav uniquement) ---
+  void setAngleForNote(byte midiNote);
+  void setAngleToRest();
+  void setAngleLivePercent(uint8_t percent);
+  void testAngleServoAngle(uint16_t angle);
+  void setCC74Brightness(byte ccValue);
+
 private:
   Adafruit_PWMServoDriver& _pwm;
   bool _solenoidOpen;
@@ -83,6 +90,12 @@ private:
   uint16_t angleToPWM(uint16_t angle);
   void setSolenoidPWM(uint8_t pwmValue);
   void setValveServoAngle(bool open);
+
+  // --- Angle servo (trav) ---
+  void setAngleServoAngle(uint16_t angle);
+  bool isTravEmbouchure() const;
+  byte _ccBrightness;
+  uint16_t _currentAngleServo;
 };
 
 #endif
