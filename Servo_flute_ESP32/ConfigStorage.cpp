@@ -146,6 +146,7 @@ void ConfigStorage::initDefaults() {
 
   // --- UI ---
   cfg.hideCalibration = false;
+  cfg.hideAir = false;
   cfg.solenoidPin = SOLENOID_PIN;
   strncpy(cfg.instrumentColor, "#D4B044", sizeof(cfg.instrumentColor));
   cfg.kbdMode = 0;
@@ -255,6 +256,7 @@ bool ConfigStorage::load() {
   cfg.solenoidActivationTimeMs = doc["sol_time"] | cfg.solenoidActivationTimeMs;
   cfg.timeUnpower = doc["time_unpower"] | cfg.timeUnpower;
   cfg.hideCalibration = doc["hide_calib"] | (cfg.hideCalibration ? 1 : 0);
+  cfg.hideAir = doc["hide_air"] | (cfg.hideAir ? 1 : 0);
   cfg.solenoidPin = doc["sol_pin"] | cfg.solenoidPin;
   cfg.kbdMode = doc["kbd_mode"] | cfg.kbdMode;
   const char* color = doc["color"];
@@ -430,6 +432,7 @@ bool ConfigStorage::save() {
   doc["sol_time"] = cfg.solenoidActivationTimeMs;
   doc["time_unpower"] = cfg.timeUnpower;
   doc["hide_calib"] = cfg.hideCalibration ? 1 : 0;
+  doc["hide_air"] = cfg.hideAir ? 1 : 0;
   doc["sol_pin"] = cfg.solenoidPin;
   doc["kbd_mode"] = cfg.kbdMode;
   doc["color"] = cfg.instrumentColor;

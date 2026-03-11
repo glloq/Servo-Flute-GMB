@@ -162,6 +162,7 @@ struct RuntimeConfig {
 
   // --- UI ---
   bool hideCalibration;              // Cacher l'onglet Calibration
+  bool hideAir;                      // Cacher l'onglet Air
   uint8_t solenoidPin;               // GPIO solenoide (configurable)
   char instrumentColor[8];           // Couleur hex instrument "#RRGGBB"
   uint8_t kbdMode;                   // 0=flute (defaut), 1=piano

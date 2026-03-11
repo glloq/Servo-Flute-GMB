@@ -454,6 +454,7 @@ void WebConfigurator::handleApiConfig(AsyncWebServerRequest* request) {
   json += ",\"wifi_ssid\":\"" + String(cfg.wifiSsid) + "\"";
   json += ",\"time_unpower\":" + String(cfg.timeUnpower);
   json += ",\"hide_calib\":" + String(cfg.hideCalibration ? "true" : "false");
+  json += ",\"hide_air\":" + String(cfg.hideAir ? "true" : "false");
   json += ",\"sol_pin\":" + String(cfg.solenoidPin);
   json += ",\"kbd_mode\":" + String(cfg.kbdMode);
   json += ",\"color\":\"" + String(cfg.instrumentColor) + "\"";
@@ -589,7 +590,14 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
     // --- Scalaires ---
     if (doc.containsKey("midi_ch")) cfg.midiChannel = doc["midi_ch"];
     if (doc.containsKey("smidi_on")) cfg.serialMidiEnabled = doc["smidi_on"].as<bool>();
-    if (doc.containsKey("smidi_rx")) cfg.serialMidiRxPin = doc["smidi_rx"];
+    if (doc.containsKey("smidi_rx")) {
+      uint8_t pin = doc["smidi_rx"];
+      // Valider que le GPIO est dans la liste autorisee
+      const uint8_t validPins[] = {16,17,18,19,23,25,26,27,33,34,35,36,39};
+      for (uint8_t i = 0; i < sizeof(validPins); i++) {
+        if (pin == validPins[i]) { cfg.serialMidiRxPin = pin; break; }
+      }
+    }
     if (doc.containsKey("servo_delay")) cfg.servoToSolenoidDelayMs = doc["servo_delay"];
     if (doc.containsKey("valve_interval")) cfg.minNoteIntervalForValveCloseMs = doc["valve_interval"];
     if (doc.containsKey("min_note_dur")) cfg.minNoteDurationMs = doc["min_note_dur"];
@@ -616,6 +624,7 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
     if (doc.containsKey("sol_time")) cfg.solenoidActivationTimeMs = doc["sol_time"];
     if (doc.containsKey("time_unpower")) cfg.timeUnpower = doc["time_unpower"];
     if (doc.containsKey("hide_calib")) cfg.hideCalibration = doc["hide_calib"].as<bool>();
+    if (doc.containsKey("hide_air")) cfg.hideAir = doc["hide_air"].as<bool>();
     if (doc.containsKey("sol_pin")) cfg.solenoidPin = doc["sol_pin"];
     if (doc.containsKey("kbd_mode")) cfg.kbdMode = doc["kbd_mode"];
     if (doc.containsKey("color")) {
