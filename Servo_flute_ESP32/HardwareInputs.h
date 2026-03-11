@@ -3,6 +3,7 @@
  *
  * Bouton (GPIO0 - BOOT) :
  * - Appui court : declenche l'appairage BLE ou affiche l'IP WiFi
+ * - Double appui (<500ms) : ouvre tous les doigts
  * - Appui long (3s) : force le mode hotspot (en mode WiFi)
  *
  * Interrupteur (GPIO4) :
@@ -26,6 +27,7 @@ enum OperatingMode {
 enum ButtonEvent {
   BUTTON_NONE,
   BUTTON_SHORT_PRESS,
+  BUTTON_DOUBLE_PRESS,
   BUTTON_LONG_PRESS
 };
 
@@ -61,6 +63,10 @@ private:
   bool _buttonHeld;
   unsigned long _pressStartTime;
   bool _longPressTriggered;
+
+  // Detection double appui
+  bool _waitingSecondPress;
+  unsigned long _firstReleaseTime;
 };
 
 #endif

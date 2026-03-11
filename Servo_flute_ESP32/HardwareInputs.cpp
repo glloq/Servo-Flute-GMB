@@ -5,7 +5,8 @@ HardwareInputs::HardwareInputs(uint8_t buttonPin, uint8_t switchPin)
     _mode(MODE_BLUETOOTH), _pendingEvent(BUTTON_NONE),
     _buttonState(false), _lastRawState(false),
     _lastDebounceTime(0), _buttonHeld(false),
-    _pressStartTime(0), _longPressTriggered(false) {
+    _pressStartTime(0), _longPressTriggered(false),
+    _waitingSecondPress(false), _firstReleaseTime(0) {
 }
 
 void HardwareInputs::begin() {
@@ -54,6 +55,16 @@ void HardwareInputs::update() {
       _pressStartTime = now;
       _buttonHeld = true;
       _longPressTriggered = false;
+
+      // Deuxieme appui pendant la fenetre double-press ?
+      if (_waitingSecondPress) {
+        _waitingSecondPress = false;
+        _pendingEvent = BUTTON_DOUBLE_PRESS;
+
+        if (DEBUG) {
+          Serial.println("DEBUG: HardwareInputs - Appui DOUBLE detecte");
+        }
+      }
     }
 
     // Bouton maintenu appuye - detecter appui long
@@ -61,6 +72,7 @@ void HardwareInputs::update() {
       if ((now - _pressStartTime) >= BUTTON_LONG_PRESS_MS) {
         _pendingEvent = BUTTON_LONG_PRESS;
         _longPressTriggered = true;
+        _waitingSecondPress = false;
 
         if (DEBUG) {
           Serial.println("DEBUG: HardwareInputs - Appui LONG detecte");
@@ -72,13 +84,21 @@ void HardwareInputs::update() {
     if (!_buttonState && prevState) {
       _buttonHeld = false;
 
-      // Si pas d'appui long deja declenche, c'est un appui court
-      if (!_longPressTriggered) {
-        _pendingEvent = BUTTON_SHORT_PRESS;
+      // Si pas d'appui long et pas de double-press deja declenche
+      if (!_longPressTriggered && _pendingEvent != BUTTON_DOUBLE_PRESS) {
+        // Premier appui : attendre un eventuel deuxieme
+        _waitingSecondPress = true;
+        _firstReleaseTime = now;
+      }
+    }
 
-        if (DEBUG) {
-          Serial.println("DEBUG: HardwareInputs - Appui COURT detecte");
-        }
+    // Timeout double-press : pas de deuxieme appui, c'est un appui court
+    if (_waitingSecondPress && !_buttonState && (now - _firstReleaseTime) >= BUTTON_DOUBLE_PRESS_MS) {
+      _waitingSecondPress = false;
+      _pendingEvent = BUTTON_SHORT_PRESS;
+
+      if (DEBUG) {
+        Serial.println("DEBUG: HardwareInputs - Appui COURT detecte");
       }
     }
   }

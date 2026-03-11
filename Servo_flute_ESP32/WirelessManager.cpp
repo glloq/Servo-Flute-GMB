@@ -121,6 +121,19 @@ String WirelessManager::getStatusText() const {
 }
 
 void WirelessManager::handleButtonEvent(ButtonEvent event) {
+  // Double appui : ouvre tous les doigts (quel que soit le mode)
+  if (event == BUTTON_DOUBLE_PRESS) {
+    if (_instrument) {
+      _instrument->powerOnServos();
+      _instrument->getFingerCtrl().openAllFingers();
+
+      if (DEBUG) {
+        Serial.println("DEBUG: WirelessManager - Double appui: ouverture tous les doigts");
+      }
+    }
+    return;
+  }
+
   if (_currentMode == MODE_BLUETOOTH) {
     if (event == BUTTON_SHORT_PRESS) {
       if (DEBUG) {

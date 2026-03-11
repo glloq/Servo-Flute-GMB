@@ -355,6 +355,9 @@ const uint16_t SERVO_FREQUENCY = 50;
 // Duree appui long bouton (ms) pour forcer hotspot
 #define BUTTON_LONG_PRESS_MS 3000
 
+// Fenetre double appui bouton (ms) — ouvre tous les doigts
+#define BUTTON_DOUBLE_PRESS_MS 500
+
 // Intervalle lecture switch (ms)
 #define SWITCH_READ_INTERVAL_MS 100
 
