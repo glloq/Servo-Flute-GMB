@@ -1210,6 +1210,7 @@ function redoFp(){if(!fpFuture.length||!CFG)return;
 function updUndoUI(){$('undoBtn').disabled=!fpHistory.length;$('redoBtn').disabled=!fpFuture.length;
   $('undoInfo').textContent=fpHistory.length?fpHistory.length+' modif.':''}
 function checkPca(){if(!CFG)return;const used={};const airP=parseInt($('airPca').value);used[airP]='Souffle';
+  if(CFG.valve_type===1){const vch=CFG.valve_ch;if(vch!==undefined)used[vch]='Valve servo'}
   document.querySelectorAll('.cal-card').forEach((card,i)=>{const ch=CFG.fingers[i]?CFG.fingers[i].ch:i;
     let conflict=used[ch]!==undefined;card.classList.toggle('pca-conflict',conflict);
     const w=card.querySelector('.pca-warn');if(w)w.textContent=conflict?'Conflit PCA '+ch+' avec '+used[ch]:'';
@@ -2171,6 +2172,7 @@ function buildAirSvg(svgId,full){
       s+='<text x="'+(flX+4+fluteW/2)+'" y="'+(pivotY+4)+'" text-anchor="middle" style="font-size:9px;fill:#333;font-weight:bold">Flute</text>';
     }
     // === Air duct (servo flow) - pivots at outlet, ON TOP of blue pipe ===
+    const ach=CFG.air_pca||10;
     s+='<g id="airFanDuct" style="transform-origin:'+pivotX+'px '+pivotY+'px">';
     s+='<rect x="'+pivotX+'" y="'+(pivotY-9)+'" width="'+ductLen+'" height="18" rx="3" fill="url(#agMetal)" stroke="#556" stroke-width="1" opacity=".9"/>';
     s+='<line class="airFlowAnim" x1="'+(pivotX+4)+'" y1="'+pivotY+'" x2="'+(pivotX+ductLen-4)+'" y2="'+pivotY+'"/>';
@@ -2180,6 +2182,7 @@ function buildAirSvg(svgId,full){
     s+='<text x="'+fanCx+'" y="'+(chB+14)+'" text-anchor="middle" style="font-size:8px;fill:#9aa">Ventilateur</text>';
     s+='<text x="'+fanCx+'" y="'+(chT-6)+'" text-anchor="middle" style="font-size:6px;fill:#667">Aspiration</text>';
     s+='<text x="'+(pivotX+ductLen/2)+'" y="'+(pivotY-14)+'" text-anchor="middle" style="font-size:7px;fill:#9aa">Servo Flow</text>';
+    s+='<text x="'+(pivotX+ductLen)+'" y="'+(pivotY+22)+'" text-anchor="middle" style="font-size:5px;fill:#569">CH'+ach+'</text>';
     var fanW=w;
     if(isKbd&&_kbdPipeExitRatio>0){fanW=Math.ceil(_kbdPipeExitRatio*w)+12;_kbdAirVBW=fanW;_kbdAirVBH=h}
     svg.setAttribute('viewBox','0 0 '+fanW+' '+h);
