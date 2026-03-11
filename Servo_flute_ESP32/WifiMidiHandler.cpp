@@ -10,6 +10,8 @@
 
 USING_NAMESPACE_APPLEMIDI;
 
+static const byte DNS_PORT = 53;
+
 // Instance rtpMIDI globale
 APPLEMIDI_CREATE_DEFAULTSESSION_INSTANCE();
 
@@ -35,6 +37,11 @@ void WifiMidiHandler::begin(InstrumentManager* instrument) {
 }
 
 void WifiMidiHandler::update() {
+  // Traiter les requetes DNS captive portal (AP uniquement)
+  if (_state == WIFI_STATE_AP_ACTIVE) {
+    _dnsServer.processNextRequest();
+  }
+
   // Verifier timeout connexion STA
   if (_state == WIFI_STATE_CONNECTING) {
     if (WiFi.status() == WL_CONNECTED) {
@@ -70,6 +77,11 @@ void WifiMidiHandler::startSTA(const char* ssid, const char* password) {
     Serial.println(ssid);
   }
 
+  // Arreter le DNS captive portal si on quitte le mode AP
+  if (_state == WIFI_STATE_AP_ACTIVE) {
+    stopCaptiveDNS();
+  }
+
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
 
@@ -101,6 +113,9 @@ void WifiMidiHandler::startAP() {
   // Configurer mDNS et rtpMIDI en mode AP aussi
   setupMDNS();
   setupRtpMidi();
+
+  // Demarrer le DNS captive portal
+  startCaptiveDNS();
 }
 
 void WifiMidiHandler::forceAP() {
@@ -265,6 +280,22 @@ void WifiMidiHandler::connectToNetwork(const char* ssid, const char* password) {
   }
 
   startSTA(ssid, password);
+}
+
+void WifiMidiHandler::startCaptiveDNS() {
+  _dnsServer.start(DNS_PORT, "*", WiFi.softAPIP());
+
+  if (DEBUG) {
+    Serial.println("DEBUG: WifiMidiHandler - DNS captive portal actif");
+  }
+}
+
+void WifiMidiHandler::stopCaptiveDNS() {
+  _dnsServer.stop();
+
+  if (DEBUG) {
+    Serial.println("DEBUG: WifiMidiHandler - DNS captive portal arrete");
+  }
 }
 
 bool WifiMidiHandler::isChannelAccepted(byte channel) {

@@ -23,6 +23,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <DNSServer.h>
 #include "settings.h"
 
 // Forward declaration
@@ -84,6 +85,11 @@ private:
   bool isChannelAccepted(byte channel);
   void setupMDNS();
   void setupRtpMidi();
+
+  // Captive portal DNS (mode AP uniquement)
+  DNSServer _dnsServer;
+  void startCaptiveDNS();
+  void stopCaptiveDNS();
 };
 
 #endif

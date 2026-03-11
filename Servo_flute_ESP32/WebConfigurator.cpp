@@ -348,9 +348,30 @@ void WebConfigurator::setupRoutes() {
     }
   );
 
-  // 404
-  _server.onNotFound([](AsyncWebServerRequest* request) {
-    request->send(404, "text/plain", "Not found");
+  // Captive portal detection endpoints (mode AP)
+  _server.on("/generate_204", HTTP_GET, [](AsyncWebServerRequest* request) {
+    request->redirect("http://192.168.4.1/");
+  });
+  _server.on("/hotspot-detect.html", HTTP_GET, [](AsyncWebServerRequest* request) {
+    request->redirect("http://192.168.4.1/");
+  });
+  _server.on("/connecttest.txt", HTTP_GET, [](AsyncWebServerRequest* request) {
+    request->redirect("http://192.168.4.1/");
+  });
+  _server.on("/ncsi.txt", HTTP_GET, [](AsyncWebServerRequest* request) {
+    request->redirect("http://192.168.4.1/");
+  });
+  _server.on("/redirect", HTTP_GET, [](AsyncWebServerRequest* request) {
+    request->redirect("http://192.168.4.1/");
+  });
+
+  // 404 — en mode AP, rediriger vers la page principale (captive portal)
+  _server.onNotFound([this](AsyncWebServerRequest* request) {
+    if (_wirelessManager && _wirelessManager->getWifiMidi().isAPMode()) {
+      request->redirect("http://192.168.4.1/");
+    } else {
+      request->send(404, "text/plain", "Not found");
+    }
   });
 }
 
