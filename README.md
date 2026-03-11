@@ -95,6 +95,7 @@ API REST et WebSocket : [API_WEB.md](docs/API_WEB.md)
 | [Extension PCA9685](docs/PCA9685_EXPANSION.md) | Support multi-cartes (jusqu'a 31 servos) |
 | [Modes WiFi](docs/WIFI_MODES.md) | BLE-MIDI, WiFi STA, hotspot AP |
 | [MIDI Serial](docs/MIDI_SERIAL.md) | Branchement MIDI DIN (optocoupler, GPIO) |
+| [Servo Angle](docs/SERVO_ANGLE.md) | Montage et calibration servos, flute traversiere |
 
 ## Structure du projet
 
