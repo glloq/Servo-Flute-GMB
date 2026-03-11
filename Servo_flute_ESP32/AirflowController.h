@@ -21,6 +21,7 @@ public:
   void closeValve();
   bool isValveOpen() const;
   uint16_t getAirflowAngle() const { return _baseAngleWithoutVibrato; }
+  uint16_t getAngleServoAngle() const { return _currentAngleServo; }
 
   // Deprecated aliases (retro-compat)
   void openSolenoid() { openValve(); }
@@ -48,6 +49,13 @@ public:
   void testAirflowAngle(uint16_t angle);
   // Calibration : tester solenoide open/close
   void testSolenoid(bool open);
+
+  // --- Angle servo (trav uniquement) ---
+  void setAngleForNote(byte midiNote);
+  void setAngleToRest();
+  void setAngleLivePercent(uint8_t percent);
+  void testAngleServoAngle(uint16_t angle);
+  void setCC74Brightness(byte ccValue);
 
 private:
   Adafruit_PWMServoDriver& _pwm;
@@ -83,6 +91,13 @@ private:
   uint16_t angleToPWM(uint16_t angle);
   void setSolenoidPWM(uint8_t pwmValue);
   void setValveServoAngle(bool open);
+
+  // --- Angle servo (trav) ---
+  void setAngleServoAngle(uint16_t angle);
+  bool isTravEmbouchure() const;
+  byte _ccBrightness;
+  uint16_t _currentAngleServo;
+  byte _lastAngleNote;  // Derniere note pour re-appliquer CC74 en temps reel
 };
 
 #endif
