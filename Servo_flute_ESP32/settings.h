@@ -125,6 +125,17 @@ Set MIC_ENABLED to false if no mic is connected.
 #define SERVO_AIRFLOW_MAX 100     // Angle maximum absolu
 
 /*******************************************************************************
+---------------------------   AIR ANGLE SERVO (trav)   ----------------------
+Servo d'angle du jet d'air — uniquement pour flute traversiere (embouchure "trav").
+Controle l'inclinaison du flux d'air par rapport au biseau de l'embouchure.
+******************************************************************************/
+#define DEFAULT_ANGLE_PCA_CHANNEL 12   // Canal PCA9685 pour servo angle
+#define SERVO_ANGLE_OFF  90            // Angle repos (centre)
+#define SERVO_ANGLE_MIN  60            // Angle min calibre
+#define SERVO_ANGLE_MAX  120           // Angle max calibre
+#define DEFAULT_ANGLE_PERCENT 50       // % par defaut par note (milieu de plage)
+
+/*******************************************************************************
 -----------------------   AIR DELIVERY SYSTEM          ------------------------
 Modes modulaires de gestion d'air. L'interface s'adapte au mode choisi.
   0 = Classique (solenoide + servo flow)
@@ -252,28 +263,30 @@ struct DefaultNoteConfig {
   bool fingerPattern[DEFAULT_NUM_FINGERS];
   uint8_t airflowMinPercent;
   uint8_t airflowMaxPercent;
+  uint8_t anglePercent;            // Angle jet d'air (0-100%), trav uniquement
 };
 
 const DefaultNoteConfig DEFAULT_NOTES[DEFAULT_NUM_NOTES] = {
+  // MIDI  Doigtes            AirMin AirMax Angle
   // OCTAVE BASSE
-  {  82,  {0,1,1,1,1,1},  10,  60  },  // A#5
-  {  83,  {1,1,1,1,1,1},  0,   50  },  // B5
+  {  82,  {0,1,1,1,1,1},  10,  60,  40  },  // A#5
+  {  83,  {1,1,1,1,1,1},  0,   50,  40  },  // B5
 
   // OCTAVE 1 - MEDIUM
-  {  84,  {0,0,0,0,0,0},  20,  75  },  // C6
-  {  86,  {0,0,0,0,0,1},  15,  70  },  // D6
-  {  88,  {0,0,0,0,1,1},  10,  65  },  // E6
-  {  89,  {0,0,0,1,1,1},  10,  60  },  // F6
-  {  91,  {0,0,1,1,1,1},  5,   55  },  // G6
-  {  93,  {0,1,1,1,1,1},  5,   50  },  // A6
-  {  95,  {1,1,1,1,1,1},  0,   45  },  // B6
+  {  84,  {0,0,0,0,0,0},  20,  75,  45  },  // C6
+  {  86,  {0,0,0,0,0,1},  15,  70,  45  },  // D6
+  {  88,  {0,0,0,0,1,1},  10,  65,  48  },  // E6
+  {  89,  {0,0,0,1,1,1},  10,  60,  48  },  // F6
+  {  91,  {0,0,1,1,1,1},  5,   55,  50  },  // G6
+  {  93,  {0,1,1,1,1,1},  5,   50,  50  },  // A6
+  {  95,  {1,1,1,1,1,1},  0,   45,  52  },  // B6
 
   // OCTAVE 2 - AIGU
-  {  96,  {0,0,0,0,0,0},  50,  100 },  // C7
-  {  98,  {0,0,0,0,0,1},  45,  95  },  // D7
-  {  100, {0,0,0,0,1,1},  40,  90  },  // E7
-  {  101, {0,0,0,1,1,1},  35,  85  },  // F7
-  {  103, {0,0,1,1,1,1},  30,  80  }   // G7
+  {  96,  {0,0,0,0,0,0},  50,  100, 60  },  // C7
+  {  98,  {0,0,0,0,0,1},  45,  95,  62  },  // D7
+  {  100, {0,0,0,0,1,1},  40,  90,  65  },  // E7
+  {  101, {0,0,0,1,1,1},  35,  85,  68  },  // F7
+  {  103, {0,0,1,1,1,1},  30,  80,  70  }   // G7
 };
 
 /*******************************************************************************

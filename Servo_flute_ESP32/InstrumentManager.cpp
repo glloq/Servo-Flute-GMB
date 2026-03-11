@@ -259,8 +259,13 @@ void InstrumentManager::handleControlChange(byte ccNumber, byte ccValue) {
       }
       break;
 
-    case MIDI_CC_BRIGHTNESS:  // Brightness
+    case MIDI_CC_BRIGHTNESS:  // Brightness -> angle servo (trav)
       _ccBrightness = ccValue;
+      _airflowCtrl.setCC74Brightness(ccValue);
+      if (DEBUG) {
+        Serial.print("DEBUG: CC 74 (Brightness/Angle) = ");
+        Serial.println(ccValue);
+      }
       break;
 
     case MIDI_CC_ALL_SOUND_OFF:
@@ -286,7 +291,7 @@ void InstrumentManager::allSoundOff() {
   }
   _sequencer.stop();
   _airflowCtrl.closeSolenoid();
-  _airflowCtrl.setAirflowToRest();
+  _airflowCtrl.setAirflowToRest();  // inclut setAngleToRest()
   _fingerCtrl.closeAllFingers();
   if (cfg.airMode == AIR_MODE_FAN_SERVO) {
     _fanCtrl.stop();
@@ -307,6 +312,7 @@ void InstrumentManager::resetAllControllers() {
   _ccBreath = cfg.ccBreathDefault;
   _ccBrightness = cfg.ccBrightnessDefault;
   _airflowCtrl.setCCValues(_ccVolume, _ccExpression, _ccModulation);
+  _airflowCtrl.setCC74Brightness(_ccBrightness);
 
   if (DEBUG) {
     Serial.println("DEBUG: InstrumentManager - Reset All Controllers");

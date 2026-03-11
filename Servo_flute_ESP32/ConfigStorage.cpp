@@ -32,6 +32,7 @@ void ConfigStorage::initDefaults() {
     cfg.notes[i].midiNote = DEFAULT_NOTES[i].midiNote;
     cfg.notes[i].airflowMinPercent = DEFAULT_NOTES[i].airflowMinPercent;
     cfg.notes[i].airflowMaxPercent = DEFAULT_NOTES[i].airflowMaxPercent;
+    cfg.notes[i].anglePercent = DEFAULT_NOTES[i].anglePercent;
     // Copy finger pattern (default has DEFAULT_NUM_FINGERS, pad rest with 0)
     for (int f = 0; f < MAX_FINGER_SERVOS; f++) {
       cfg.notes[i].fingerPattern[f] = (f < DEFAULT_NUM_FINGERS) ? DEFAULT_NOTES[i].fingerPattern[f] : 0;
@@ -54,6 +55,12 @@ void ConfigStorage::initDefaults() {
   cfg.servoAirflowOff = SERVO_AIRFLOW_OFF;
   cfg.servoAirflowMin = SERVO_AIRFLOW_MIN;
   cfg.servoAirflowMax = SERVO_AIRFLOW_MAX;
+
+  // --- Angle servo (trav) ---
+  cfg.anglePcaChannel = DEFAULT_ANGLE_PCA_CHANNEL;
+  cfg.servoAngleOff = SERVO_ANGLE_OFF;
+  cfg.servoAngleMin = SERVO_ANGLE_MIN;
+  cfg.servoAngleMax = SERVO_ANGLE_MAX;
 
   // --- Vibrato ---
   cfg.vibratoFrequencyHz = VIBRATO_FREQUENCY_HZ;
@@ -211,6 +218,7 @@ bool ConfigStorage::load() {
       cfg.notes[i].midiNote = n["midi"] | cfg.notes[i].midiNote;
       cfg.notes[i].airflowMinPercent = n["amn"] | cfg.notes[i].airflowMinPercent;
       cfg.notes[i].airflowMaxPercent = n["amx"] | cfg.notes[i].airflowMaxPercent;
+      cfg.notes[i].anglePercent = n["ang"] | cfg.notes[i].anglePercent;
       JsonArray fp = n["fp"];
       if (fp) {
         for (int f = 0; f < MAX_FINGER_SERVOS; f++) {
@@ -230,6 +238,10 @@ bool ConfigStorage::load() {
   cfg.servoAirflowOff = doc["air_off"] | cfg.servoAirflowOff;
   cfg.servoAirflowMin = doc["air_min"] | cfg.servoAirflowMin;
   cfg.servoAirflowMax = doc["air_max"] | cfg.servoAirflowMax;
+  cfg.anglePcaChannel = doc["ang_pca"] | cfg.anglePcaChannel;
+  cfg.servoAngleOff = doc["ang_off"] | cfg.servoAngleOff;
+  cfg.servoAngleMin = doc["ang_min"] | cfg.servoAngleMin;
+  cfg.servoAngleMax = doc["ang_max"] | cfg.servoAngleMax;
   cfg.vibratoFrequencyHz = doc["vib_freq"] | cfg.vibratoFrequencyHz;
   cfg.vibratoMaxAmplitudeDeg = doc["vib_amp"] | cfg.vibratoMaxAmplitudeDeg;
   cfg.ccVolumeDefault = doc["cc_vol"] | cfg.ccVolumeDefault;
@@ -387,6 +399,7 @@ bool ConfigStorage::save() {
     n["midi"] = cfg.notes[i].midiNote;
     n["amn"] = cfg.notes[i].airflowMinPercent;
     n["amx"] = cfg.notes[i].airflowMaxPercent;
+    n["ang"] = cfg.notes[i].anglePercent;
     JsonArray fp = n["fp"].to<JsonArray>();
     for (int f = 0; f < MAX_FINGER_SERVOS; f++) {
       fp.add((int)cfg.notes[i].fingerPattern[f]);
@@ -403,6 +416,10 @@ bool ConfigStorage::save() {
   doc["air_off"] = cfg.servoAirflowOff;
   doc["air_min"] = cfg.servoAirflowMin;
   doc["air_max"] = cfg.servoAirflowMax;
+  doc["ang_pca"] = cfg.anglePcaChannel;
+  doc["ang_off"] = cfg.servoAngleOff;
+  doc["ang_min"] = cfg.servoAngleMin;
+  doc["ang_max"] = cfg.servoAngleMax;
   doc["vib_freq"] = cfg.vibratoFrequencyHz;
   doc["vib_amp"] = cfg.vibratoMaxAmplitudeDeg;
   doc["cc_vol"] = cfg.ccVolumeDefault;

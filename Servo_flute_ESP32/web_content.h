@@ -151,6 +151,7 @@ font-weight:bold;border-radius:4px;margin:6px 0}
 .fg-dot{width:18px;height:18px;border-radius:50%;border:2px solid #777;cursor:pointer;transition:.15s}
 .fg-dot.closed{background:#444}.fg-dot.open{background:#4ecca3;border-color:#4ecca3}.fg-dot.half{background:linear-gradient(180deg,#4ecca3 50%,#444 50%);border-color:#4ecca3}
 .fg-dot.thumb{border-style:dashed;border-color:#e94560}
+.trav-only{display:none}
 .air-card{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #0f3460;flex-wrap:wrap}
 .air-note{font-weight:bold;min-width:40px;font-size:0.85em}
 .air-sliders{flex:1;min-width:150px}
@@ -924,17 +925,18 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
       </div>
     </div>
 
-    <!-- BLOCK: Servo Angle (traversiere only) -->
-    <div class="air-block" id="airBlockAngle" style="display:none">
+    <!-- BLOCK: Angle Servo (trav only) -->
+    <div class="air-block trav-only" id="airBlockAngle">
       <div class="air-block-hdr" tabindex="0" role="button" aria-label="Configuration servo angle" onclick="toggleAirBlock('airBlockAngle')" onkeydown="toggleAirBlock('airBlockAngle',event)">
-        <h4><svg viewBox="0 0 16 16" width="14" height="14"><path d="M3 13L13 3M13 3v5M13 3H8" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>Servo Angle</h4>
-        <div class="air-block-toggle" id="airBlockAngleToggle" role="switch" aria-checked="false" onclick="event.stopPropagation();toggleAngleServo()"></div>
+        <h4><svg viewBox="0 0 16 16" width="14" height="14"><path d="M8 2L2 14h12L8 2z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><line x1="8" y1="6" x2="8" y2="10" stroke="currentColor" stroke-width="1.2"/></svg>Servo Angle (traversiere)</h4>
       </div>
       <div class="air-block-body">
-        <p style="font-size:.75em;color:#888;margin:0 0 8px">Oriente le jet d'air sur le biseau de la flute traversiere.</p>
-        <div class="cfg-row"><label>Canal PCA</label>
-          <select id="cfgAngleCh" style="max-width:80px" title="Canal PCA9685 pour le servo angle (ne pas utiliser le meme que flow ou doigts)"></select>
-        </div>
+        <p style="font-size:.72em;color:#888;margin:0 0 8px">Angle du jet d'air par rapport au biseau. Visible uniquement pour les flutes traversieres. CC74 (Brightness) module l'angle en temps reel.</p>
+        <div class="cfg-row"><label>Canal PCA angle</label><input type="number" id="cfgAngPca" min="0" max="31" title="Canal PCA9685 du servo angle" oninput="checkPca()"></div>
+        <div class="cfg-row"><label>Angle repos</label><input type="number" id="cfgAngOff" min="0" max="180" title="Position au repos (centre)"></div>
+        <div class="cfg-row"><label>Angle min</label><input type="number" id="cfgAngMin" min="0" max="180" title="Angle minimum calibre"></div>
+        <div class="cfg-row"><label>Angle max</label><input type="number" id="cfgAngMax" min="0" max="180" title="Angle maximum calibre"></div>
+        <div class="cfg-row"><label>Test angle</label><input type="range" min="0" max="180" value="90" id="testAngSlider" oninput="$('testAngVal').textContent=this.value+'&deg;';wsSend({t:'test_angle',a:parseInt(this.value)})"><span id="testAngVal" style="min-width:30px;font-size:.8em">90&deg;</span></div>
       </div>
     </div>
 
@@ -1148,26 +1150,26 @@ const PR=[
 [86,[0,0,0,0,0,0],30,80],[88,[0,0,0,0,0,1],30,80],[90,[0,0,0,0,1,1],30,85],[91,[0,0,0,1,1,1],35,85],
 [93,[0,0,1,1,1,1],35,90],[95,[0,1,1,1,1,1],35,90],[97,[1,1,1,1,1,1],40,95]]},
 {id:'irish_c',n:'Fl\u00fbte irlandaise (Do)',h:6,th:-1,em:'trav',d:[
-[82,[0,1,1,1,1,1],10,60],[83,[1,1,1,1,1,1],0,50],
-[84,[0,0,0,0,0,0],20,75],[86,[0,0,0,0,0,1],15,70],[88,[0,0,0,0,1,1],10,65],[89,[0,0,0,1,1,1],10,60],
-[91,[0,0,1,1,1,1],5,55],[93,[0,1,1,1,1,1],5,50],[95,[1,1,1,1,1,1],0,45],
-[96,[0,0,0,0,0,0],50,100],[98,[0,0,0,0,0,1],45,95],[100,[0,0,0,0,1,1],40,90],[101,[0,0,0,1,1,1],35,85],
-[103,[0,0,1,1,1,1],30,80]]},
+[82,[0,1,1,1,1,1],10,60,40],[83,[1,1,1,1,1,1],0,50,40],
+[84,[0,0,0,0,0,0],20,75,42],[86,[0,0,0,0,0,1],15,70,44],[88,[0,0,0,0,1,1],10,65,46],[89,[0,0,0,1,1,1],10,60,48],
+[91,[0,0,1,1,1,1],5,55,50],[93,[0,1,1,1,1,1],5,50,52],[95,[1,1,1,1,1,1],0,45,54],
+[96,[0,0,0,0,0,0],50,100,55],[98,[0,0,0,0,0,1],45,95,57],[100,[0,0,0,0,1,1],40,90,59],[101,[0,0,0,1,1,1],35,85,61],
+[103,[0,0,1,1,1,1],30,80,63]]},
 {id:'bansuri_a',n:'Bansuri (La)',h:6,th:-1,em:'trav',d:[
-[64,[0,0,0,0,0,0],5,45],[66,[0,0,0,0,0,1],5,45],[68,[0,0,0,0,1,1],5,50],
-[69,[0,0,0,1,1,1],10,50],[71,[0,0,1,1,1,1],10,55],[73,[0,1,1,1,1,1],10,55],
-[74,[1,0,0,0,0,0],15,60],[76,[0,0,0,0,0,0],20,65],[78,[0,0,0,0,0,1],20,65],[80,[0,0,0,0,1,1],20,70],
-[81,[0,0,0,1,1,1],35,80],[83,[0,0,1,1,1,1],35,85],[85,[0,1,1,1,1,1],40,85]]},
+[64,[0,0,0,0,0,0],5,45,40],[66,[0,0,0,0,0,1],5,45,42],[68,[0,0,0,0,1,1],5,50,44],
+[69,[0,0,0,1,1,1],10,50,46],[71,[0,0,1,1,1,1],10,55,48],[73,[0,1,1,1,1,1],10,55,50],
+[74,[1,0,0,0,0,0],15,60,52],[76,[0,0,0,0,0,0],20,65,55],[78,[0,0,0,0,0,1],20,65,57],[80,[0,0,0,0,1,1],20,70,59],
+[81,[0,0,0,1,1,1],35,80,60],[83,[0,0,1,1,1,1],35,85,62],[85,[0,1,1,1,1,1],40,85,65]]},
 {id:'dizi_d',n:'Dizi (R\u00e9)',h:6,th:-1,em:'trav',d:[
-[69,[0,0,0,0,0,0],5,45],[71,[0,0,0,0,0,1],5,45],[73,[0,0,0,0,1,1],5,50],
-[74,[0,0,0,1,1,1],10,50],[76,[0,0,1,1,1,1],10,55],[78,[0,1,1,1,1,1],10,55],
-[81,[0,0,0,0,0,0],30,75],[83,[0,0,0,0,0,1],30,75],[85,[0,0,0,0,1,1],30,80],
-[86,[0,0,0,1,1,1],35,80],[88,[0,0,1,1,1,1],35,85],[90,[0,1,1,1,1,1],40,85]]},
+[69,[0,0,0,0,0,0],5,45,42],[71,[0,0,0,0,0,1],5,45,44],[73,[0,0,0,0,1,1],5,50,46],
+[74,[0,0,0,1,1,1],10,50,48],[76,[0,0,1,1,1,1],10,55,50],[78,[0,1,1,1,1,1],10,55,52],
+[81,[0,0,0,0,0,0],30,75,55],[83,[0,0,0,0,0,1],30,75,57],[85,[0,0,0,0,1,1],30,80,59],
+[86,[0,0,0,1,1,1],35,80,60],[88,[0,0,1,1,1,1],35,85,62],[90,[0,1,1,1,1,1],40,85,65]]},
 {id:'fife_bb',n:'Fifre (Sib)',h:6,th:-1,em:'trav',d:[
-[70,[0,0,0,0,0,0],10,55],[72,[0,0,0,0,0,1],10,55],[74,[0,0,0,0,1,1],10,55],[75,[0,0,0,1,1,1],10,60],
-[77,[0,0,1,1,1,1],10,60],[79,[0,1,1,1,1,1],10,60],[81,[1,1,1,1,1,1],10,65],
-[82,[0,0,0,0,0,0],35,80],[84,[0,0,0,0,0,1],35,80],[86,[0,0,0,0,1,1],35,85],[87,[0,0,0,1,1,1],40,85],
-[89,[0,0,1,1,1,1],40,90],[91,[0,1,1,1,1,1],40,90],[93,[1,1,1,1,1,1],45,95]]},
+[70,[0,0,0,0,0,0],10,55,42],[72,[0,0,0,0,0,1],10,55,44],[74,[0,0,0,0,1,1],10,55,46],[75,[0,0,0,1,1,1],10,60,48],
+[77,[0,0,1,1,1,1],10,60,50],[79,[0,1,1,1,1,1],10,60,52],[81,[1,1,1,1,1,1],10,65,54],
+[82,[0,0,0,0,0,0],35,80,55],[84,[0,0,0,0,0,1],35,80,57],[86,[0,0,0,0,1,1],35,85,59],[87,[0,0,0,1,1,1],40,85,60],
+[89,[0,0,1,1,1,1],40,90,62],[91,[0,1,1,1,1,1],40,90,64],[93,[1,1,1,1,1,1],45,95,65]]},
 {id:'quena_g',n:'Quena (Sol)',h:7,th:0,em:'end',d:[
 [67,[0,0,0,0,0,0,0],5,45],[69,[0,0,0,0,0,0,1],5,45],[71,[0,0,0,0,0,1,1],5,50],[72,[0,0,0,0,1,1,1],5,50],
 [74,[0,0,0,1,1,1,1],5,55],[76,[0,0,1,1,1,1,1],5,55],[78,[0,1,1,1,1,1,1],5,60],
@@ -1224,8 +1226,7 @@ function redoFp(){if(!fpFuture.length||!CFG)return;
 function updUndoUI(){$('undoBtn').disabled=!fpHistory.length;$('redoBtn').disabled=!fpFuture.length;
   $('undoInfo').textContent=fpHistory.length?fpHistory.length+' modif.':''}
 function checkPca(){if(!CFG)return;const used={};const airP=parseInt($('airPca').value);used[airP]='Souffle';
-  if(CFG.valve_type===1){const vch=CFG.valve_ch;if(vch!==undefined)used[vch]='Valve servo'}
-  if(CFG.embouchure==='trav'&&CFG.angle_on){const ach=CFG.angle_ch!=null?CFG.angle_ch:12;used[ach]='Servo Angle'}
+  if(CFG.embouchure==='trav'){const angP=$('cfgAngPca');if(angP){const av=parseInt(angP.value);used[av]='Angle'}}
   document.querySelectorAll('.cal-card').forEach((card,i)=>{const ch=CFG.fingers[i]?CFG.fingers[i].ch:i;
     let conflict=used[ch]!==undefined;card.classList.toggle('pca-conflict',conflict);
     const w=card.querySelector('.pca-warn');if(w)w.textContent=conflict?'Conflit PCA '+ch+' avec '+used[ch]:'';
@@ -1832,6 +1833,13 @@ function validateAirConfig(){
     if(needsOff&&(aOff<0||aOff>180)){warns.push('Servo flow: angle Off doit etre entre 0 et 180');errBlocks.add('airBlockServo')}
     if(aMin>=aMax){warns.push('Servo flow: angle min doit etre inferieur a max');errBlocks.add('airBlockServo')}
   }
+  // Angle servo validation (trav only)
+  if(CFG&&CFG.embouchure==='trav'){
+    const angMin=parseInt($('cfgAngMin').value),angMax=parseInt($('cfgAngMax').value),angOff=parseInt($('cfgAngOff').value);
+    if(!isNaN(angMin)&&!isNaN(angMax)&&angMin>=angMax){warns.push('Angle servo: min doit etre inferieur a max');errBlocks.add('airBlockAngle')}
+    if(!isNaN(angOff)&&(angOff<0||angOff>180)){warns.push('Angle servo: angle repos doit etre entre 0 et 180');errBlocks.add('airBlockAngle')}
+    if(!isNaN(angMin)&&!isNaN(angMax)&&(angMin<0||angMin>180||angMax<0||angMax>180)){warns.push('Angle servo: angles doivent etre entre 0 et 180');errBlocks.add('airBlockAngle')}
+  }
   // Fan PWM validation
   if(m===3){
     const fmin=parseInt($('airFanMin').value)||0,fmax=parseInt($('airFanMax').value)||255;
@@ -1963,6 +1971,10 @@ function saveAirSettings(){
     if(st>=3){d.endstop_pin=parseInt($('airEndstopPin').value)||34;d.endstop_high=$('airEndstopHigh').value==='1';
       d.endstop_pump_on=$('airEndstopPumpOn').value==='1'}
   }
+  // Angle servo (trav only)
+  if(CFG&&CFG.embouchure==='trav'){
+    const _ap=parseInt($('cfgAngPca').value),_ao=parseInt($('cfgAngOff').value),_an=parseInt($('cfgAngMin').value),_ax=parseInt($('cfgAngMax').value);
+    d.ang_pca=isNaN(_ap)?12:_ap;d.ang_off=isNaN(_ao)?90:_ao;d.ang_min=isNaN(_an)?60:_an;d.ang_max=isNaN(_ax)?120:_ax}
   const sb=$('btnAirSave');if(sb){sb.disabled=true;sb.textContent='Sauvegarde...'}
   fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)})
     .then(r=>r.json()).then(j=>{
@@ -2748,7 +2760,7 @@ function wizFinish(){
     body.fingers=[];
     for(let i=0;i<p.h;i++){body.fingers.push({ch:i,a:90,d:-1,th:p.th===i?1:0})}
     body.notes=[];
-    p.d.forEach(nd=>{body.notes.push({midi:nd[0],fp:nd[1],amn:nd[2],amx:nd[3]})});
+    p.d.forEach(nd=>{body.notes.push({midi:nd[0],fp:nd[1],amn:nd[2],amx:nd[3],ang:nd[4]||50})});
     body.num_notes=p.d.length;body.angle_open=30;body.half_hole_pct=50;
   }
   fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
@@ -2860,11 +2872,24 @@ function loadConfig(){
     $('devName').childNodes[0].textContent=d.device||'ServoFlute';
     buildKeyboard();buildFlute(CFG,'fluteSvg',false);markClean();
     applyCalibVisibility();applyAirTabVisibility();drawSeqGrid();
-    buildAirSvg('airSvgFull',true);
+    buildAirSvg('airSvgFull',true);updateTravVisibility();
     if(CFG.first_boot){showWizard()}
     if(micDetected){$('micSection').style.display='';wsSend({t:'mic_mon',on:1})}
     else $('micSection').style.display='none';
   }).catch(e=>{addLog('Erreur config: '+e);showToast('Erreur chargement config','error')})
+}
+
+function updateTravVisibility(){
+  const isTrav=CFG&&CFG.embouchure==='trav';
+  document.querySelectorAll('.trav-only').forEach(el=>{el.style.display=isTrav?'':'none'});
+  // Populate angle servo config fields
+  if(isTrav&&CFG){
+    const e=id=>$(id);
+    if(e('cfgAngPca'))e('cfgAngPca').value=CFG.ang_pca!=null?CFG.ang_pca:12;
+    if(e('cfgAngOff'))e('cfgAngOff').value=CFG.ang_off!=null?CFG.ang_off:90;
+    if(e('cfgAngMin'))e('cfgAngMin').value=CFG.ang_min!=null?CFG.ang_min:60;
+    if(e('cfgAngMax'))e('cfgAngMax').value=CFG.ang_max!=null?CFG.ang_max:120;
+  }
 }
 
 // --- KEYBOARD ---
@@ -3439,7 +3464,7 @@ function selectInstrument(val){
   CFG.fingers.forEach(f=>f.th=0);
   if(p.th>=0&&CFG.fingers[p.th])CFG.fingers[p.th].th=1;
   // Rebuild UI physique
-  buildFingerCards();buildFlute(CFG,'calFluteSvg',true);markDirty();
+  buildFingerCards();buildFlute(CFG,'calFluteSvg',true);updateTravVisibility();markDirty();
   showToast(p.n+' - '+p.h+' trous'+(p.th>=0?' (pouce)':''),'success')
 }
 
@@ -3530,15 +3555,15 @@ function applyPreset(val){
   const p=PR.find(x=>x.id===val);if(!p)return;
   CFG.embouchure=p.em||'bec';
   // Build notes from preset data
-  CFG.notes=p.d.map(n=>({midi:n[0],fp:[...n[1]],amn:n[2],amx:n[3]}));
+  CFG.notes=p.d.map(n=>({midi:n[0],fp:[...n[1]],amn:n[2],amx:n[3],ang:n[4]||50}));
   CFG.notes.forEach(n=>{while(n.fp.length<CFG.num_fingers)n.fp.push(0)});
   CFG.num_notes=CFG.notes.length;
-  fpSnap();buildFingeringRows();buildFlute(CFG,'calFluteSvg',true);updPresetInfo();markDirty()
+  fpSnap();buildFingeringRows();buildFlute(CFG,'calFluteSvg',true);updPresetInfo();updateTravVisibility();markDirty()
 }
 
 function saveStep2(){
   if(!CFG)return;btnLoad('btnSaveStep2',true);
-  const body={num_fingers:CFG.num_fingers,notes:CFG.notes.map(n=>({midi:n.midi,fp:n.fp.slice(0,CFG.num_fingers),amn:n.amn,amx:n.amx}))};
+  const body={num_fingers:CFG.num_fingers,notes:CFG.notes.map(n=>({midi:n.midi,fp:n.fp.slice(0,CFG.num_fingers),amn:n.amn,amx:n.amx,ang:n.ang!=null?n.ang:50}))};
   fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
     .then(r=>r.json()).then(d=>{btnLoad('btnSaveStep2',false);if(d.ok){showToast('Doigtes sauvegardes','success');markClean();fpHistory=[];fpFuture=[];updUndoUI();goStep(3);buildKeyboard();buildFlute(CFG,'fluteSvg',false)}else showToast('Erreur sauvegarde','error')})
     .catch(e=>{btnLoad('btnSaveStep2',false);showToast('Erreur: '+e,'error')})
@@ -3548,8 +3573,10 @@ function saveStep2(){
 function pctToAngle(pct){if(!CFG)return'?';const mn=CFG.air_min||0,mx=CFG.air_max||180;return Math.round(mn+(mx-mn)*pct/100)}
 function buildAirflowRows(){
   const c=$('airflowRows');c.innerHTML='';if(!CFG)return;
+  const isTrav=(CFG.embouchure==='trav');
   CFG.notes.forEach((n,ni)=>{
     let dots='';for(let f=0;f<CFG.num_fingers;f++)dots+='<span class="kf '+kfClass(n.fp[f])+'"></span>';
+    const angPct=n.ang!=null?n.ang:50;
     const d=document.createElement('div');d.className='air-card fade-in fade-delay-'+(Math.min(4,(ni%4)+1));
     d.innerHTML='<span class="air-note">'+mn(n.midi)+'</span>'+
       '<span class="kf-row" style="gap:2px">'+dots+'</span>'+
@@ -3559,6 +3586,8 @@ function buildAirflowRows(){
         '<input type="range" min="0" max="100" value="'+n.amn+'" oninput="CFG.notes['+ni+'].amn=parseInt(this.value);$(\'amn'+ni+'\').textContent=this.value;$(\'amnA'+ni+'\').textContent=pctToAngle(this.value);updDualFill('+ni+');markDirty()">'+
         '<input type="range" min="0" max="100" value="'+n.amx+'" oninput="CFG.notes['+ni+'].amx=parseInt(this.value);$(\'amx'+ni+'\').textContent=this.value;$(\'amxA'+ni+'\').textContent=pctToAngle(this.value);updDualFill('+ni+');markDirty()"></div>'+
       '</div>'+
+      '<div class="trav-only" style="min-width:90px;'+(isTrav?'display:flex':'')+'"><span style="font-size:.7em;color:#9aa;white-space:nowrap">Angle: <b id="ang'+ni+'">'+angPct+'</b>%</span>'+
+        '<input type="range" min="0" max="100" value="'+angPct+'" style="width:80px" oninput="CFG.notes['+ni+'].ang=parseInt(this.value);$(\'ang'+ni+'\').textContent=this.value;markDirty()"></div>'+
       '<button class="btn btn-s" style="padding:4px 8px;font-size:.75em" onclick="testPulse(this);testCalNote('+n.midi+')">Test</button>';
     c.appendChild(d);updDualFill(ni)
   })
@@ -3583,7 +3612,8 @@ function stopAutoCal(){autoCalRunning=false;$('btnAcalStart').style.display='';$
 
 function saveStep3(){
   if(!CFG)return;btnLoad('btnSaveStep3',true);
-  const body={notes_air:CFG.notes.map(n=>({amn:n.amn,amx:n.amx}))};
+  const body={notes_air:CFG.notes.map(n=>({amn:n.amn,amx:n.amx,ang:n.ang!=null?n.ang:50}))};
+  if(CFG.embouchure==='trav'){body.ang_pca=CFG.ang_pca;body.ang_off=CFG.ang_off;body.ang_min=CFG.ang_min;body.ang_max=CFG.ang_max}
   fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
     .then(r=>r.json()).then(d=>{btnLoad('btnSaveStep3',false);if(d.ok){showToast('Souffle sauvegarde','success');markClean();goStep(4)}else showToast('Erreur sauvegarde','error')})
     .catch(e=>{btnLoad('btnSaveStep3',false);showToast('Erreur: '+e,'error')})
