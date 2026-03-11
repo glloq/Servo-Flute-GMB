@@ -929,6 +929,7 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
     <div class="air-block trav-only" id="airBlockAngle">
       <div class="air-block-hdr" tabindex="0" role="button" aria-label="Configuration servo angle" onclick="toggleAirBlock('airBlockAngle')" onkeydown="toggleAirBlock('airBlockAngle',event)">
         <h4><svg viewBox="0 0 16 16" width="14" height="14"><path d="M8 2L2 14h12L8 2z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><line x1="8" y1="6" x2="8" y2="10" stroke="currentColor" stroke-width="1.2"/></svg>Servo Angle (traversiere)</h4>
+        <span class="air-block-toggle" id="airBlockAngleToggle" role="switch" aria-checked="false" onclick="event.stopPropagation();toggleAngleServo()" title="Activer/desactiver le servo angle"></span>
       </div>
       <div class="air-block-body">
         <p style="font-size:.72em;color:#888;margin:0 0 8px">Angle du jet d'air par rapport au biseau. Visible uniquement pour les flutes traversieres. CC74 (Brightness) module l'angle en temps reel.</p>
@@ -1226,7 +1227,7 @@ function redoFp(){if(!fpFuture.length||!CFG)return;
 function updUndoUI(){$('undoBtn').disabled=!fpHistory.length;$('redoBtn').disabled=!fpFuture.length;
   $('undoInfo').textContent=fpHistory.length?fpHistory.length+' modif.':''}
 function checkPca(){if(!CFG)return;const used={};const airP=parseInt($('airPca').value);used[airP]='Souffle';
-  if(CFG.embouchure==='trav'){const angP=$('cfgAngPca');if(angP){const av=parseInt(angP.value);used[av]='Angle'}}
+  if(CFG.embouchure==='trav'&&CFG.angle_on){const angP=$('cfgAngPca');if(angP){const av=parseInt(angP.value);used[av]='Servo Angle'}}
   document.querySelectorAll('.cal-card').forEach((card,i)=>{const ch=CFG.fingers[i]?CFG.fingers[i].ch:i;
     let conflict=used[ch]!==undefined;card.classList.toggle('pca-conflict',conflict);
     const w=card.querySelector('.pca-warn');if(w)w.textContent=conflict?'Conflit PCA '+ch+' avec '+used[ch]:'';
@@ -1740,7 +1741,8 @@ function toggleAngleServo(){
   tg.setAttribute('aria-checked',on?'true':'false');
   const bl=$('airBlockAngle');
   if(bl){bl.classList.toggle('disabled',!on);if(on)bl.classList.add('active');else bl.classList.remove('active')}
-  validateAirConfig();markDirty();
+  if(CFG)CFG.angle_on=on;
+  validateAirConfig();buildAirSvg('airSvgFull',true);markDirty();
 }
 function toggleValveParams(noMark){
   const isSol=$('airValveType').value==='0';
@@ -1880,9 +1882,10 @@ function validateAirConfig(){
     if(vch===ach){warns.push('Valve: canal PCA '+vch+' deja utilise par servo flow');errBlocks.add('airBlockValve')}
   }
   // Servo angle conflict (traversiere, only if enabled)
-  const _angleOn=$('airBlockAngleToggle')&&$('airBlockAngleToggle').classList.contains('on');
+  const _angleTg=$('airBlockAngleToggle');
+  const _angleOn=_angleTg&&_angleTg.classList.contains('on');
   if(CFG&&CFG.embouchure==='trav'&&_angleOn){
-    const angleCh=parseInt($('cfgAngleCh').value)||12;
+    const angleCh=parseInt($('cfgAngPca').value)||12;
     const ach=CFG.air_pca||10;
     if(angleCh===ach){warns.push('Servo Angle: canal PCA '+angleCh+' deja utilise par servo flow');errBlocks.add('airBlockAngle')}
     if(hasValve&&parseInt($('airValveType').value)===1){
@@ -1948,9 +1951,9 @@ function saveAirSettings(){
     d.vlv_dir=parseInt($('cfgVlvDir').value)||0}
   // Servo angle (traversiere)
   if(CFG&&CFG.embouchure==='trav'){
-    const angleOn=$('airBlockAngleToggle')&&$('airBlockAngleToggle').classList.contains('on');
-    d.angle_on=angleOn;
-    if(angleOn)d.angle_ch=parseInt($('cfgAngleCh').value)||12;
+    const tg=$('airBlockAngleToggle');
+    const angleOn=tg&&tg.classList.contains('on');
+    d.angle_on=!!angleOn;
   }
   if(m===3){d.fan_pin=parseInt($('airFanPin').value)||26;d.fan_min=parseInt($('airFanMin').value)||60;d.fan_max=parseInt($('airFanMax').value)||255;
     d.fan_idle_pct=parseInt($('airFanIdlePct').value)||0;d.fan_idle_timeout=parseInt($('airFanIdleTimeout').value)||0}
@@ -1983,9 +1986,10 @@ function saveAirSettings(){
       d.endstop_pump_on=$('airEndstopPumpOn').value==='1'}
   }
   // Angle servo (trav only)
-  if(CFG&&CFG.embouchure==='trav'){
+  if(CFG&&CFG.embouchure==='trav'&&d.angle_on){
     const _ap=parseInt($('cfgAngPca').value),_ao=parseInt($('cfgAngOff').value),_an=parseInt($('cfgAngMin').value),_ax=parseInt($('cfgAngMax').value);
-    d.ang_pca=isNaN(_ap)?12:_ap;d.ang_off=isNaN(_ao)?90:_ao;d.ang_min=isNaN(_an)?60:_an;d.ang_max=isNaN(_ax)?120:_ax}
+    d.ang_pca=isNaN(_ap)?12:_ap;d.ang_off=isNaN(_ao)?90:_ao;d.ang_min=isNaN(_an)?60:_an;d.ang_max=isNaN(_ax)?120:_ax;
+    d.angle_ch=d.ang_pca}
   const sb=$('btnAirSave');if(sb){sb.disabled=true;sb.textContent='Sauvegarde...'}
   fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)})
     .then(r=>r.json()).then(j=>{
@@ -2021,7 +2025,10 @@ function resetAirDefaults(){
   const angleTg=$('airBlockAngleToggle');
   if(angleTg){angleTg.classList.remove('on');angleTg.setAttribute('aria-checked','false')}
   const angleBlk=$('airBlockAngle');if(angleBlk){angleBlk.classList.add('disabled');angleBlk.classList.remove('active')}
-  const angleSel=$('cfgAngleCh');if(angleSel)angleSel.value='12';
+  const ap=$('cfgAngPca');if(ap)ap.value=12;
+  const ao=$('cfgAngOff');if(ao)ao.value=90;
+  const an=$('cfgAngMin');if(an)an.value=60;
+  const ax=$('cfgAngMax');if(ax)ax.value=120;
   toggleValveParams();syncAirModeFromToggles();markDirty();
   showToast('Valeurs par defaut appliquees','success');
 }
@@ -2029,7 +2036,7 @@ function copyAirConfig(){
   const keys=['air_mode','valve_type','valve_ch','vlv_close','vlv_open','vlv_dir','air_off','air_min','air_max','motor_type','num_pumps',
     'fan_pin','fan_min','fan_max','fan_idle_pct','fan_idle_timeout','sol_pin','sol_act','sol_hold','sol_time','sol_inter','sens_type','sens_target',
     'sens_min','sens_max','pid_kp','pid_ki','hall_pin','hall_low','hall_high','endstop_pin','endstop_high','endstop_pump_on','res_format','show_air',
-    'angle_on','angle_ch'];
+    'angle_on','angle_ch','ang_pca','ang_off','ang_min','ang_max'];
   const out={};keys.forEach(k=>{if(CFG[k]!=null)out[k]=CFG[k]});
   const json=JSON.stringify(out,null,2);
   if(navigator.clipboard)navigator.clipboard.writeText(json).then(()=>showToast('Config copiee','success'));
@@ -2120,9 +2127,10 @@ function fillAirSettings(){
     const isTrav=(CFG.embouchure==='trav');
     angleBlock.style.display=isTrav?'':'none';
     if(isTrav){
-      const sel=$('cfgAngleCh');sel.innerHTML='';
-      for(let i=0;i<16;i++){const o=document.createElement('option');o.value=i;o.textContent='PCA '+i;sel.appendChild(o)}
-      sel.value=CFG.angle_ch!=null?CFG.angle_ch:12;
+      const ap=$('cfgAngPca');if(ap)ap.value=CFG.ang_pca!=null?CFG.ang_pca:12;
+      const ao=$('cfgAngOff');if(ao)ao.value=CFG.ang_off!=null?CFG.ang_off:90;
+      const an=$('cfgAngMin');if(an)an.value=CFG.ang_min!=null?CFG.ang_min:60;
+      const ax=$('cfgAngMax');if(ax)ax.value=CFG.ang_max!=null?CFG.ang_max:120;
       const aOn=!!CFG.angle_on;
       const tg=$('airBlockAngleToggle');
       if(tg){tg.classList.toggle('on',aOn);tg.setAttribute('aria-checked',aOn?'true':'false')}
@@ -2166,7 +2174,7 @@ function buildAirUI(){
 }
 let _kbdPipeExitRatio=0,_kbdPipeExitY=0,_kbdAirVBW=440,_kbdAirVBH=155;
 function svgServoAngle(cx,cy){
-  const ach=CFG.angle_ch!=null?CFG.angle_ch:12;
+  const ach=CFG.ang_pca!=null?CFG.ang_pca:(CFG.angle_ch!=null?CFG.angle_ch:12);
   const sw=26,sh=18;
   let s='<rect x="'+(cx-sw/2)+'" y="'+(cy-sh/2)+'" width="'+sw+'" height="'+sh+'" rx="4" fill="url(#agMetal)" stroke="#569" stroke-width="1.2"/>';
   s+='<path id="airAngleNeedle" d="M'+cx+','+cy+' L'+(cx+8)+','+(cy-6)+'" stroke="#f76" stroke-width="1.8" stroke-linecap="round"/>';
