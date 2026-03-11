@@ -27,11 +27,11 @@ Transforme une flute, un tin whistle, un ocarina ou toute flute a souffle simple
 | Alimentation 5V | Dimensionnee selon le nombre de servos |
 | INMP441 (optionnel) | Micro I2S pour auto-calibration |
 
-Brochage complet et montage : [README firmware](Servo_flute_ESP32/README.md)
+Brochage complet : [Configuration](docs/CONFIGURATION.md)
 
 ## Demarrage rapide
 
-1. Installer les [dependances Arduino](Servo_flute_ESP32/README.md#dependances-arduino)
+1. Installer les dependances Arduino (voir `Servo_flute_ESP32/settings.h`)
 2. Flasher le firmware sur l'ESP32
 3. Au premier boot, le hotspot WiFi `ServoFlute-Setup` demarre
 4. Se connecter au hotspot — la page de configuration s'ouvre automatiquement (captive portal)
@@ -94,7 +94,7 @@ API REST et WebSocket : [API_WEB.md](docs/API_WEB.md)
 | [Configuration](docs/CONFIGURATION.md) | Tous les parametres configurables |
 | [Extension PCA9685](docs/PCA9685_EXPANSION.md) | Support multi-cartes (jusqu'a 31 servos) |
 | [Modes WiFi](docs/WIFI_MODES.md) | BLE-MIDI, WiFi STA, hotspot AP |
-| [Firmware](Servo_flute_ESP32/README.md) | Brochage, dependances, structure du code |
+| [MIDI Serial](docs/MIDI_SERIAL.md) | Branchement MIDI DIN (optocoupler, GPIO) |
 
 ## Structure du projet
 
