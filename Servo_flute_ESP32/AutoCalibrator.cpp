@@ -18,6 +18,11 @@ AutoCalibrator::AutoCalibrator(FingerController& fingers, AirflowController& air
 }
 
 void AutoCalibrator::start(AutoCalMode mode) {
+  // Stop any running calibration first
+  if (isRunning()) {
+    stop();
+  }
+
   _mode = mode;
   _currentNote = 0;
   memset(_results, 0, sizeof(_results));
@@ -362,8 +367,8 @@ void AutoCalibrator::applyResults() {
 }
 
 void AutoCalibrator::applyRangeResults() {
-  if (_rfMinAngle > 0) cfg.servoAirflowMin = _rfMinAngle;
-  if (_rfMaxAngle > 0) cfg.servoAirflowMax = _rfMaxAngle;
+  if (_rfMinAngle >= 0) cfg.servoAirflowMin = _rfMinAngle;
+  if (_rfMaxAngle >= 0) cfg.servoAirflowMax = _rfMaxAngle;
   ConfigStorage::save();
 
   if (DEBUG) {
