@@ -2,122 +2,112 @@
 
 **Instrument robotique modulaire pilote par MIDI, base sur ESP32.**
 
-Un projet open-source pour transformer des flutes et instruments similaires en instruments robotiques autonomes. Le systeme est entierement configurable : nombre de servos, type de gestion d'air, doigtes personnalises — le tout modifiable sans recompiler via une interface web embarquee.
+Transforme une flute, un tin whistle, un ocarina ou toute flute a souffle simple en instrument robotique autonome. Le firmware s'adapte a l'instrument : nombre de doigts, type de gestion d'air, doigtes personnalises — tout est configurable a chaud depuis une interface web, sans recompiler.
 
-Flute a bec, tin whistle, flute traversiere, NAF (Native American Flute), ocarina... le firmware s'adapte a l'instrument.
+> **Perimetre :** Instruments a souffle simple (flute a bec, tin whistle, NAF, ocarina...). Les instruments a anche ou a buzzing (clarinette, trompette...) sont hors perimetre.
 
-> **Perimetre :** Ce projet cible les instruments a souffle simple (sans anche, sans embouchure a buzzing). Les instruments a anche (clarinette, hautbois, saxophone), a buzzing (trompette, trombone), et les orgues sont hors perimetre.
+## Fonctionnalites
 
-## Architecture modulaire
+- **Jusqu'a 31 servos** sur 2 cartes PCA9685, chacun configurable independamment
+- **3 entrees MIDI simultanees** — Bluetooth (BLE-MIDI), WiFi (rtpMIDI), Serial (UART)
+- **6 modes de gestion d'air** — solenoide, servo-valve, ventilateur, pompe...
+- **Interface web 6 onglets** — clavier virtuel, lecteur MIDI, calibration, config, WiFi, monitoring
+- **Auto-calibration** optionnelle par micro INMP441 (I2S)
+- **Lecture de fichiers MIDI** (.mid SMF Type 0/1) sans source externe
+- **Configuration persistante** en JSON sur LittleFS, editable a chaud
 
-Le systeme repose sur une configuration dynamique en JSON, persistee sur LittleFS :
+## Materiel
 
-- **Jusqu'a 31 servos doigts** — sur 2 PCA9685 (32 canaux dont 1 pour l'airflow), chaque servo configurable independamment (canal, angle, direction, trou de pouce)
-- **Nombre de notes illimite en pratique** — chaque note definit son doigte (pattern ouvert/ferme/demi-trou) et sa plage d'airflow
-- **6 modes de gestion d'air** — solenoide, servo-valve, ventilateur, pompe(s) avec reservoir... ([details](docs/AIR_MANAGEMENT.md))
-- **Extension multi-PCA9685** — pour les instruments a nombreuses cles ([details](docs/PCA9685_EXPANSION.md))
+| Composant | Role |
+|-----------|------|
+| ESP32-WROOM-32E | Microcontroleur principal |
+| PCA9685 (x1 ou x2) | PWM 16 canaux pour servos |
+| Servos SG90 | Doigts + airflow |
+| Systeme d'air | Solenoide, servo-valve, ventilateur ou pompe |
+| Alimentation 5V | Dimensionnee selon le nombre de servos |
+| INMP441 (optionnel) | Micro I2S pour auto-calibration |
 
-Tous les parametres sont editables a chaud depuis l'interface web. Voir [CONFIGURATION.md](docs/CONFIGURATION.md).
-
-## Reception MIDI
-
-Le firmware supporte trois canaux de reception MIDI qui fonctionnent en parallele :
-
-| Canal | Protocole | Usage typique |
-|-------|-----------|---------------|
-| **Bluetooth** | BLE-MIDI (NimBLE) | iOS, macOS, Windows, Android — sans fil, faible latence |
-| **WiFi** | rtpMIDI (AppleMIDI) | DAW via reseau local, compatible Apple MIDI Network |
-| **Serial** | MIDI DIN (UART 31250 baud) | Connection filaire classique, modules MIDI hardware |
-
-### Selection du mode sans fil
-
-Un **interrupteur physique sur GPIO4** bascule entre Bluetooth et WiFi :
-
-| GPIO4 | Mode actif |
-|-------|------------|
-| LOW   | BLE-MIDI — l'ESP32 s'annonce comme peripherique Bluetooth |
-| HIGH  | WiFi rtpMIDI — connexion au reseau WiFi configure (mode STA) ou creation d'un hotspot (mode AP) |
-
-Le **MIDI Serial** (UART) est independant de cet interrupteur : il reste actif en permanence et peut etre active/desactive ainsi que configure (pin RX) depuis l'interface web.
-
-Les trois canaux convergent vers le meme `InstrumentManager` — une note recue par n'importe quel canal produit le meme resultat.
-
-Pour plus de details, voir [WIFI_MODES.md](docs/WIFI_MODES.md).
-
-### Lecture de fichiers MIDI
-
-Le systeme accepte egalement des fichiers `.mid` (SMF Type 0 et 1) uploades via l'interface web pour une lecture autonome sans source MIDI externe.
-
-## Interface web embarquee
-
-Serveur web SPA accessible en WiFi avec 6 onglets :
-
-| Onglet | Fonction |
-|--------|----------|
-| **Clavier** | Notes interactives avec representation visuelle (touch, souris, clavier AZERTY) |
-| **MIDI** | Upload et lecture de fichiers .mid |
-| **Calibration** | Test temps reel des servos, assistant doigts, sweep airflow, auto-calibration micro |
-| **Config** | Tous les parametres editables, table des doigtes visuelle, sauvegarde persistante |
-| **WiFi** | Scan reseaux, connexion depuis le hotspot |
-| **Monitor** | Barres CC, heap memoire, journal en direct (WebSocket) |
-
-## Auto-calibration (optionnel)
-
-Avec un micro **INMP441** (I2S), le systeme peut automatiquement calibrer les positions d'airflow pour chaque note en detectant le son produit. Voir [AUTO_CALIBRATION.md](docs/AUTO_CALIBRATION.md).
-
-## Materiel requis
-
-- **ESP32-WROOM-32E** (DevKit v1 ou equivalent)
-- **PCA9685** module I2C PWM 16 canaux
-- **Servos SG90** — nombre selon l'instrument (doigts + airflow)
-- **Systeme d'air** — solenoide, servo-valve, ventilateur ou pompe selon le mode choisi ([details](docs/AIR_MANAGEMENT.md))
-- **Alimentation 5V** dimensionnee selon le nombre de servos
-- **INMP441** micro MEMS I2S (optionnel, pour auto-calibration)
-
-Le brochage complet et les instructions de montage sont dans le [README du firmware](Servo_flute_ESP32/README.md).
-
-## Structure du projet
-
-```
-Servo-Flute-Midi-Boop/
-  README.md                  <- Ce fichier
-  docs/                      <- Documentation technique
-    ARCHITECTURE.md           - Architecture modulaire et flux de donnees
-    AIR_MANAGEMENT.md         - Systeme de gestion d'air (6 modes)
-    API_WEB.md                - Reference API REST et WebSocket
-    AUTO_CALIBRATION.md       - Auto-calibration micro INMP441
-    CALIBRATION.md            - Guide de calibration manuelle
-    CONFIGURATION.md          - Reference complete des parametres
-    PCA9685_EXPANSION.md      - Etude d'extension multi-PCA9685
-    WIFI_MODES.md             - Modes sans fil (BT, STA, AP)
-  Servo_flute_ESP32/          <- Code source firmware Arduino
-    Servo_flute_ESP32.ino      - Point d'entree (setup/loop)
-    settings.h                 - Defines hardware et valeurs par defaut
-    ...                        - Modules (voir ARCHITECTURE.md)
-```
+Brochage complet et montage : [README firmware](Servo_flute_ESP32/README.md)
 
 ## Demarrage rapide
 
-1. Installer les dependances Arduino (voir [README firmware](Servo_flute_ESP32/README.md#dependances-arduino))
+1. Installer les [dependances Arduino](Servo_flute_ESP32/README.md#dependances-arduino)
 2. Flasher le firmware sur l'ESP32
 3. Au premier boot, le hotspot WiFi `ServoFlute-Setup` demarre
 4. Se connecter au hotspot, ouvrir `192.168.4.1`
-5. Configurer le nombre de doigts, les doigtes, le mode d'air, calibrer les servos
-6. Connecter une source MIDI (BLE, WiFi ou Serial) et jouer
+5. Configurer le nombre de doigts, les doigtes, le mode d'air
+6. Calibrer les servos (onglet Calibration)
+7. Connecter une source MIDI (BLE, WiFi ou Serial) et jouer
+
+## Commandes physiques
+
+### Interrupteur BT/WiFi (GPIO4)
+
+| Position | Mode |
+|----------|------|
+| LOW | Bluetooth (BLE-MIDI) |
+| HIGH | WiFi (rtpMIDI + interface web) |
+
+### Bouton BOOT (GPIO0)
+
+| Action | Effet |
+|--------|-------|
+| Appui court | BLE : restart advertising / WiFi : affiche l'IP |
+| Double appui (< 500ms) | Ouvre tous les doigts (quel que soit le mode) |
+| Appui long (3s) | WiFi : force le mode hotspot (AP) |
+
+## Reception MIDI
+
+Les trois canaux fonctionnent en parallele et convergent vers le meme `InstrumentManager` :
+
+| Canal | Protocole | Usage |
+|-------|-----------|-------|
+| Bluetooth | BLE-MIDI (NimBLE) | iOS, macOS, Windows, Android |
+| WiFi | rtpMIDI (AppleMIDI) | DAW via reseau local |
+| Serial | MIDI DIN (UART 31250 baud) | Modules MIDI hardware |
+
+Details : [WIFI_MODES.md](docs/WIFI_MODES.md)
+
+## Interface web
+
+Accessible en mode WiFi — SPA sur 6 onglets :
+
+| Onglet | Fonction |
+|--------|----------|
+| Clavier | Notes interactives (touch, souris, clavier AZERTY) |
+| MIDI | Upload et lecture de fichiers .mid |
+| Calibration | Test servos, assistant doigts, sweep airflow, auto-calibration |
+| Config | Parametres editables, table des doigtes, sauvegarde |
+| WiFi | Scan reseaux, connexion depuis le hotspot |
+| Monitor | Barres CC, heap memoire, journal en direct |
+
+API REST et WebSocket : [API_WEB.md](docs/API_WEB.md)
 
 ## Documentation
 
 | Document | Description |
 |----------|-------------|
-| [Architecture](docs/ARCHITECTURE.md) | Diagramme des modules, flux de donnees, machine d'etats |
+| [Architecture](docs/ARCHITECTURE.md) | Modules, flux de donnees, machine d'etats |
 | [Gestion d'air](docs/AIR_MANAGEMENT.md) | Les 6 modes d'air, capteurs, pompes, ventilateurs |
 | [API Web](docs/API_WEB.md) | Endpoints REST et protocole WebSocket |
 | [Auto-calibration](docs/AUTO_CALIBRATION.md) | Calibration automatique avec micro INMP441 |
 | [Calibration](docs/CALIBRATION.md) | Guide de calibration manuelle pas-a-pas |
 | [Configuration](docs/CONFIGURATION.md) | Tous les parametres configurables |
-| [Extension PCA9685](docs/PCA9685_EXPANSION.md) | Support multi-cartes pour instruments a nombreuses cles |
-| [Modes WiFi](docs/WIFI_MODES.md) | BLE-MIDI, WiFi STA, hotspot AP, securite |
-| [Firmware](Servo_flute_ESP32/README.md) | Brochage, materiel, dependances, structure du code |
+| [Extension PCA9685](docs/PCA9685_EXPANSION.md) | Support multi-cartes (jusqu'a 31 servos) |
+| [Modes WiFi](docs/WIFI_MODES.md) | BLE-MIDI, WiFi STA, hotspot AP |
+| [Firmware](Servo_flute_ESP32/README.md) | Brochage, dependances, structure du code |
+
+## Structure du projet
+
+```
+Servo-Flute-Midi-Boop/
+  README.md                   <- Ce fichier
+  docs/                       <- Documentation technique
+  Servo_flute_ESP32/           <- Firmware Arduino (ESP32)
+    Servo_flute_ESP32.ino       - Point d'entree (setup/loop)
+    settings.h                  - Defines hardware et valeurs par defaut
+    ...                         - Modules (voir ARCHITECTURE.md)
+```
 
 ## Licence
 
