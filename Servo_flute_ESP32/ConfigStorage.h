@@ -146,6 +146,9 @@ struct RuntimeConfig {
   uint8_t hallPin;                   // GPIO analogique capteur Hall
   uint16_t hallThresholdLow;        // Seuil bas analogique
   uint16_t hallThresholdHigh;       // Seuil haut analogique
+  // Servo angle (traversiere: oriente le jet d'air sur le biseau)
+  uint8_t angleServoPcaChannel;      // Canal PCA9685 servo angle (traversiere)
+
   // UI
   bool showAirSystem;                // Afficher schema pneumatique dans l'UI
   char resFormat[9];                 // "balloon" ou "bellows" (format visuel reservoir)

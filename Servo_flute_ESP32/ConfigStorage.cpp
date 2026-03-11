@@ -131,6 +131,7 @@ void ConfigStorage::initDefaults() {
   cfg.hallPin = DEFAULT_HALL_PIN;
   cfg.hallThresholdLow = DEFAULT_HALL_THRESHOLD_LOW;
   cfg.hallThresholdHigh = DEFAULT_HALL_THRESHOLD_HIGH;
+  cfg.angleServoPcaChannel = DEFAULT_ANGLE_SERVO_CH;
   cfg.showAirSystem = DEFAULT_SHOW_AIR_SYSTEM;
   strlcpy(cfg.resFormat, "balloon", sizeof(cfg.resFormat));
 
@@ -321,6 +322,7 @@ bool ConfigStorage::load() {
   cfg.hallPin = doc["hall_pin"] | cfg.hallPin;
   cfg.hallThresholdLow = doc["hall_low"] | cfg.hallThresholdLow;
   cfg.hallThresholdHigh = doc["hall_high"] | cfg.hallThresholdHigh;
+  cfg.angleServoPcaChannel = doc["angle_ch"] | cfg.angleServoPcaChannel;
   cfg.showAirSystem = doc["show_air"] | (cfg.showAirSystem ? 1 : 0);
   const char* rf = doc["res_format"];
   if (rf) { strlcpy(cfg.resFormat, rf, sizeof(cfg.resFormat)); }
@@ -461,6 +463,7 @@ bool ConfigStorage::save() {
   doc["hall_pin"] = cfg.hallPin;
   doc["hall_low"] = cfg.hallThresholdLow;
   doc["hall_high"] = cfg.hallThresholdHigh;
+  doc["angle_ch"] = cfg.angleServoPcaChannel;
   doc["show_air"] = cfg.showAirSystem ? 1 : 0;
   doc["res_format"] = cfg.resFormat;
   doc["midi_limit"] = cfg.midiStorageLimitKb;

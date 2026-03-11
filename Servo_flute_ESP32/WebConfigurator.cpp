@@ -505,6 +505,7 @@ void WebConfigurator::handleApiConfig(AsyncWebServerRequest* request) {
   json += ",\"hall_pin\":" + String(cfg.hallPin);
   json += ",\"hall_low\":" + String(cfg.hallThresholdLow);
   json += ",\"hall_high\":" + String(cfg.hallThresholdHigh);
+  json += ",\"angle_ch\":" + String(cfg.angleServoPcaChannel);
   json += ",\"show_air\":" + String(cfg.showAirSystem ? "true" : "false");
   json += ",\"res_format\":\"" + String(cfg.resFormat) + "\"";
   json += ",\"midi_limit\":" + String(cfg.midiStorageLimitKb);
@@ -640,6 +641,7 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
       cfg.valveType = doc["valve_servo"].as<bool>() ? 1 : 0;
     }
     if (doc.containsKey("valve_ch")) cfg.valveServoPcaChannel = doc["valve_ch"];
+    if (doc.containsKey("angle_ch")) cfg.angleServoPcaChannel = doc["angle_ch"];
     if (doc.containsKey("vlv_close")) cfg.valveServoCloseAngle = doc["vlv_close"];
     if (doc.containsKey("vlv_open")) cfg.valveServoOpenAngle = doc["vlv_open"];
     if (doc.containsKey("vlv_dir")) cfg.valveServoDir = doc["vlv_dir"];
