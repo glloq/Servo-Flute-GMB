@@ -21,6 +21,7 @@ public:
   void closeValve();
   bool isValveOpen() const;
   uint16_t getAirflowAngle() const { return _baseAngleWithoutVibrato; }
+  uint16_t getAngleServoAngle() const { return _currentAngleServo; }
 
   // Deprecated aliases (retro-compat)
   void openSolenoid() { openValve(); }
@@ -96,6 +97,7 @@ private:
   bool isTravEmbouchure() const;
   byte _ccBrightness;
   uint16_t _currentAngleServo;
+  byte _lastAngleNote;  // Derniere note pour re-appliquer CC74 en temps reel
 };
 
 #endif

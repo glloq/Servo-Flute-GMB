@@ -1270,6 +1270,9 @@ void WebConfigurator::broadcastStatus() {
   if (_instrument) {
     json += ",\"valve_open\":" + String(_instrument->getAirflowCtrl().isValveOpen() ? "true" : "false");
     json += ",\"air_angle\":" + String(_instrument->getAirflowCtrl().getAirflowAngle());
+    if (strcmp(cfg.embouchure, "trav") == 0) {
+      json += ",\"ang_angle\":" + String(_instrument->getAirflowCtrl().getAngleServoAngle());
+    }
   }
 
   json += ",\"heap\":" + String(ESP.getFreeHeap());

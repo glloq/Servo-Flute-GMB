@@ -42,7 +42,8 @@ AirflowController::AirflowController(Adafruit_PWMServoDriver& pwm)
     _baseAngleWithoutVibrato(cfg.servoAirflowOff), _vibratoActive(false),
     _currentMinAngle(cfg.servoAirflowMin), _currentMaxAngle(cfg.servoAirflowMax),
     _attackActive(false), _attackStartTime(0), _attackStartAngle(0), _attackTargetAngle(0),
-    _ccBrightness(cfg.ccBrightnessDefault), _currentAngleServo(cfg.servoAngleOff) {
+    _ccBrightness(cfg.ccBrightnessDefault), _currentAngleServo(cfg.servoAngleOff),
+    _lastAngleNote(0) {
   for (uint8_t i = 0; i < CC2_SMOOTHING_BUFFER_SIZE; i++) {
     _cc2SmoothingBuffer[i] = cfg.ccBreathDefault;
   }
@@ -467,8 +468,11 @@ void AirflowController::setAngleForNote(byte midiNote) {
   const NoteConfig* note = getNoteByMidi(midiNote);
   uint8_t pct = note ? note->anglePercent : DEFAULT_ANGLE_PERCENT;
 
+  _lastAngleNote = midiNote;
+
   // CC74 offset : 64 = neutre, 0 = decale vers min, 127 = decale vers max
   float cc74Factor = ((int)_ccBrightness - 64) / 63.0f;  // -1.0 a +1.0
+  if (cc74Factor < -1.0f) cc74Factor = -1.0f;
   float basePct = pct / 100.0f;
   float adjusted = basePct + cc74Factor * 0.3f;  // ±30% max d'influence CC
   if (adjusted < 0.0f) adjusted = 0.0f;
@@ -491,16 +495,19 @@ void AirflowController::setAngleForNote(byte midiNote) {
 
 void AirflowController::setAngleToRest() {
   if (!isTravEmbouchure()) return;
+  _lastAngleNote = 0;
   setAngleServoAngle(cfg.servoAngleOff);
 }
 
 void AirflowController::setAngleLivePercent(uint8_t percent) {
+  if (!isTravEmbouchure()) return;
   if (percent > 100) percent = 100;
   uint16_t angle = cfg.servoAngleMin + ((cfg.servoAngleMax - cfg.servoAngleMin) * percent / 100);
   setAngleServoAngle(angle);
 }
 
 void AirflowController::testAngleServoAngle(uint16_t angle) {
+  if (!isTravEmbouchure()) return;
   if (angle > SERVO_MAX_ANGLE) angle = SERVO_MAX_ANGLE;
   setAngleServoAngle(angle);
   if (DEBUG) {
@@ -511,6 +518,10 @@ void AirflowController::testAngleServoAngle(uint16_t angle) {
 
 void AirflowController::setCC74Brightness(byte ccValue) {
   _ccBrightness = ccValue;
+  // Re-appliquer l'angle si une note est en cours (temps reel)
+  if (_lastAngleNote != 0 && isTravEmbouchure()) {
+    setAngleForNote(_lastAngleNote);
+  }
 }
 
 // ===================== CC2 BREATH CONTROLLER =====================
