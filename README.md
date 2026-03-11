@@ -11,7 +11,7 @@ Transforme une flute, un tin whistle, un ocarina ou toute flute a souffle simple
 - **Jusqu'a 31 servos** sur 2 cartes PCA9685, chacun configurable independamment
 - **3 entrees MIDI simultanees** — Bluetooth (BLE-MIDI), WiFi (rtpMIDI), Serial (UART)
 - **6 modes de gestion d'air** — solenoide, servo-valve, ventilateur, pompe...
-- **Interface web 6 onglets** — clavier virtuel, lecteur MIDI, calibration, config, WiFi, monitoring
+- **Interface web** — clavier virtuel, lecteur MIDI, calibration, gestion d'air + page reglages
 - **Auto-calibration** optionnelle par micro INMP441 (I2S)
 - **Lecture de fichiers MIDI** (.mid SMF Type 0/1) sans source externe
 - **Configuration persistante** en JSON sur LittleFS, editable a chaud
@@ -34,7 +34,7 @@ Brochage complet et montage : [README firmware](Servo_flute_ESP32/README.md)
 1. Installer les [dependances Arduino](Servo_flute_ESP32/README.md#dependances-arduino)
 2. Flasher le firmware sur l'ESP32
 3. Au premier boot, le hotspot WiFi `ServoFlute-Setup` demarre
-4. Se connecter au hotspot, ouvrir `192.168.4.1`
+4. Se connecter au hotspot — la page de configuration s'ouvre automatiquement (captive portal)
 5. Configurer le nombre de doigts, les doigtes, le mode d'air
 6. Calibrer les servos (onglet Calibration)
 7. Connecter une source MIDI (BLE, WiFi ou Serial) et jouer
@@ -70,16 +70,15 @@ Details : [WIFI_MODES.md](docs/WIFI_MODES.md)
 
 ## Interface web
 
-Accessible en mode WiFi — SPA sur 6 onglets :
+Accessible en mode WiFi — application web SPA avec 4 onglets et une page reglages :
 
-| Onglet | Fonction |
-|--------|----------|
-| Clavier | Notes interactives (touch, souris, clavier AZERTY) |
-| MIDI | Upload et lecture de fichiers .mid |
-| Calibration | Test servos, assistant doigts, sweep airflow, auto-calibration |
-| Config | Parametres editables, table des doigtes, sauvegarde |
-| WiFi | Scan reseaux, connexion depuis le hotspot |
-| Monitor | Barres CC, heap memoire, journal en direct |
+| Section | Fonction |
+|---------|----------|
+| **Clavier** | Notes interactives (touch, souris, clavier AZERTY) |
+| **MIDI** | Upload et lecture de fichiers .mid |
+| **Air** | Controle du systeme d'air, monitoring temps reel |
+| **Calibration** | Test servos, assistant doigts, sweep airflow, auto-calibration |
+| **Reglages** (engrenage) | Parametres, table des doigtes, WiFi, sauvegarde persistante |
 
 API REST et WebSocket : [API_WEB.md](docs/API_WEB.md)
 
