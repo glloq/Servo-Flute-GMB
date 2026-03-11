@@ -177,6 +177,7 @@ Modes modulaires de gestion d'air. L'interface s'adapte au mode choisi.
 #define DEFAULT_AIR_MODE            AIR_MODE_SOLENOID_SERVO
 #define DEFAULT_VALVE_TYPE          0      // 0=solenoide GPIO, 1=servo PCA
 #define DEFAULT_VALVE_SERVO_CH      11     // Canal PCA si valve=servo
+#define DEFAULT_ANGLE_SERVO_CH      12     // Canal PCA servo angle (traversiere)
 #define DEFAULT_MOTOR_TYPE          MOTOR_TYPE_PWM
 #define DEFAULT_NUM_PUMPS           1
 #define DEFAULT_PUMP_PIN            25     // GPIO25 (DAC capable)
