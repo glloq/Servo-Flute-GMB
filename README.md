@@ -63,7 +63,7 @@ Serveur web SPA accessible en WiFi avec 6 onglets :
 
 ## Auto-calibration (optionnel)
 
-Avec un micro **INMP441** (I2S), le systeme peut automatiquement calibrer les positions d'airflow pour chaque note en detectant le son produit. Voir [CALIBRATION.md](docs/CALIBRATION.md).
+Avec un micro **INMP441** (I2S), le systeme peut automatiquement calibrer les positions d'airflow pour chaque note en detectant le son produit. Voir [AUTO_CALIBRATION.md](docs/AUTO_CALIBRATION.md).
 
 ## Materiel requis
 
@@ -85,7 +85,8 @@ Servo-Flute-Midi-Boop/
     ARCHITECTURE.md           - Architecture modulaire et flux de donnees
     AIR_MANAGEMENT.md         - Systeme de gestion d'air (6 modes)
     API_WEB.md                - Reference API REST et WebSocket
-    CALIBRATION.md            - Guide de calibration et auto-calibration
+    AUTO_CALIBRATION.md       - Auto-calibration micro INMP441
+    CALIBRATION.md            - Guide de calibration manuelle
     CONFIGURATION.md          - Reference complete des parametres
     PCA9685_EXPANSION.md      - Etude d'extension multi-PCA9685
     WIFI_MODES.md             - Modes sans fil (BT, STA, AP)
@@ -111,7 +112,8 @@ Servo-Flute-Midi-Boop/
 | [Architecture](docs/ARCHITECTURE.md) | Diagramme des modules, flux de donnees, machine d'etats |
 | [Gestion d'air](docs/AIR_MANAGEMENT.md) | Les 6 modes d'air, capteurs, pompes, ventilateurs |
 | [API Web](docs/API_WEB.md) | Endpoints REST et protocole WebSocket |
-| [Calibration](docs/CALIBRATION.md) | Guide pas-a-pas, auto-calibration micro |
+| [Auto-calibration](docs/AUTO_CALIBRATION.md) | Calibration automatique avec micro INMP441 |
+| [Calibration](docs/CALIBRATION.md) | Guide de calibration manuelle pas-a-pas |
 | [Configuration](docs/CONFIGURATION.md) | Tous les parametres configurables |
 | [Extension PCA9685](docs/PCA9685_EXPANSION.md) | Support multi-cartes pour instruments a nombreuses cles |
 | [Modes WiFi](docs/WIFI_MODES.md) | BLE-MIDI, WiFi STA, hotspot AP, securite |
