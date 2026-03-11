@@ -1231,16 +1231,16 @@ const AIR_LAYOUT_DESCS=[
   'Ventilateur radial PWM souffle en continu. Le servo flow dirige le flux vers la flute.'
 ];
 const AIR_DESCS=[
-  'Valve (solenoide ou servo) coupe l\'air, servo flow regle le debit. Ideal pour alimentation externe (compresseur, bouche).',
-  '', // reserved
+  'Valve solenoide coupe l\'air, servo flow regle le debit. Ideal pour alimentation externe (compresseur, bouche).',
+  'Valve servo PCA coupe l\'air, servo flow regle le debit. Alternative silencieuse au solenoide.',
   'Servo flow seul. L\'angle min coupe l\'air entre les notes. Simple, un seul servo suffit.',
   'Ventilateur PWM souffle en continu. Le servo flow dirige le flux vers la flute. Bonne puissance.',
   'Pompe(s) directe(s) + valve. Souffle direct sans reservoir. 1-3 pompes en parallele.',
   'Pompe(s) + reservoir + capteur. Regulation PID automatique de la pression. Configuration la plus complete.'
 ];
 const AIR_PARTS=[
-  ['Servo flow PCA','Valve'],
-  [], // reserved
+  ['Servo flow PCA','Valve solenoide'],
+  ['Servo flow PCA','Valve servo PCA'],
   ['Servo flow PCA'],
   ['Servo flow PCA','Ventilateur PWM'],
   ['Servo flow PCA','Pompe(s)','Valve'],
@@ -1330,7 +1330,11 @@ function getAirMode(){
   const valveOn=!$('airBlockValve').classList.contains('disabled');
   if(pumpOn&&resOn)return 5;
   if(pumpOn)return 4;
-  if(valveOn)return 0;
+  if(valveOn){
+    // Mode 0 = solenoide, mode 1 = servo-valve
+    const vt=parseInt($('airValveType').value)||0;
+    return vt===1?1:0;
+  }
   return 2; // servo flow only
 }
 function getAirLayout(){
@@ -1444,7 +1448,7 @@ function runAirDiagnostic(){
   if(dbar)dbar.style.display='';
   if(dfill)dfill.style.width='0';
   const m=getAirMode();
-  const hasValve=(m===0||m>=4),hasPump=m>=4,hasFan=m===3,hasRes=m===5;
+  const hasValve=(m===0||m===1||m>=4),hasPump=m>=4,hasFan=m===3,hasRes=m===5;
   const needsOff=(m===2||m===3);
   const steps=[];let t=0;
   // Build test sequence based on mode
@@ -1568,7 +1572,7 @@ function syncAirModeFromToggles(){
   const m=getAirMode();
   if(CFG)CFG.air_mode=m;
   $('airModeSelect').value=m;
-  const hasPump=m>=4,hasFan=m===3,hasValve=(m===0||m>=4),hasRes=m===5;
+  const hasPump=m>=4,hasFan=m===3,hasValve=(m===0||m===1||m>=4),hasRes=m===5;
   // Servo flow: show note Off angle only for modes without valve
   const needsOff=!hasValve;
   const offRow=$('cfgAirOffRow');if(offRow)offRow.style.display=needsOff?'':'none';
@@ -1580,6 +1584,7 @@ function syncAirModeFromToggles(){
   toggleValveParams(true);
   // Live stats visibility
   const sp=$('airStatPump');if(sp)sp.style.display=hasPump?'':'none';
+  const sap=$('airStatActivePumps');if(sap)sap.style.display=(hasPump&&CFG&&CFG.num_pumps>1)?'':'none';
   const sf=$('airStatFan');if(sf)sf.style.display=hasFan?'':'none';
   const sr=$('airStatRes');if(sr)sr.style.display=hasRes?'':'none';
   const ss=$('airStatSensor');if(ss)ss.style.display=hasRes?'':'none';
@@ -1633,7 +1638,7 @@ function syncAirModeFromToggles(){
     md.innerHTML=(AIR_LAYOUT_DESCS[layout]||'')+'<div style="margin-top:4px">'+badges+'</div>';
   }
   // Update status bar
-  const modeNames=['Valve+flow','','Servo seul','Ventilateur','Pompe directe','Pompe+reservoir'];
+  const modeNames=['Valve+flow','Servo-valve','Servo seul','Ventilateur','Pompe directe','Pompe+reservoir'];
   const sm=$('airStatusMode');if(sm)sm.textContent=modeNames[m]||'?';
   validateAirConfig();
   buildAirSvg('airSvgFull',true);
@@ -1652,7 +1657,9 @@ function setAirMode(v){
     const bp=$('airBlockPump'),br=$('airBlockRes'),bv=$('airBlockValve');
     setBlockEnabled(bp,m>=4); // pump enabled for modes 4,5
     setBlockEnabled(br,m===5); // reservoir enabled for mode 5
-    setBlockEnabled(bv,m===0||m>=4); // valve enabled for modes 0,4,5
+    setBlockEnabled(bv,m===0||m===1||m>=4); // valve enabled for modes 0,1,4,5
+    // Mode 1 = servo-valve: set valve type to servo
+    if(m===1){const vt=$('airValveType');if(vt)vt.value='1';toggleValveParams()}
   }
   syncAirModeFromToggles();
 }
@@ -1775,7 +1782,7 @@ function buildPumpRows(){
 function validateAirConfig(){
   const m=getAirMode();
   const warns=[];const errBlocks=new Set();
-  const hasValve=(m===0||m>=4);
+  const hasValve=(m===0||m===1||m>=4);
   // Servo flow angle validation (all modes)
   const needsOff=(m===2||m===3);
   const aOff=needsOff?parseInt($('cfgAirOff').value):0;
@@ -1864,7 +1871,7 @@ function saveAirSettings(){
   const showAir=$('cfgShowAir').checked;
   const rf=$('airResFormat');
   const vt=parseInt($('airValveType').value)||0;
-  const hasValve=(m===0||m>=4);
+  const hasValve=(m===0||m===1||m>=4);
   const needsOff=(m===2||m===3);
   const d={air_mode:m,valve_type:vt,show_air:showAir,
     res_format:rf?rf.value:'balloon',
@@ -2072,7 +2079,7 @@ function buildAirSvg(svgId,full){
   const svg=$(svgId);if(!svg||!CFG)return;
   const isKbd=(svgId==='kbdAirSvg');
   const m=CFG.air_mode||0;
-  const hasPump=m>=4,hasFan=m===3,hasValve=(m===0||m>=4),hasRes=(m===5);
+  const hasPump=m>=4,hasFan=m===3,hasValve=(m===0||m===1||m>=4),hasRes=(m===5);
   const np=(hasPump&&CFG.num_pumps>1)?CFG.num_pumps:1;
   const st=CFG.sens_type||0;
   const resFormat=(CFG.res_format||'balloon');
@@ -2507,7 +2514,7 @@ function updateAirDiagram(d){
     kas.style.display='flex';
     const ksp=$('kbdStatPump');if(ksp)ksp.style.display=(m>=4)?'':'none';
     const ksf=$('kbdStatFan');if(ksf)ksf.style.display=(m===3)?'':'none';
-    const ksv=$('kbdStatValve');if(ksv)ksv.style.display=(m===0||m>=4)?'':'none';
+    const ksv=$('kbdStatValve');if(ksv)ksv.style.display=(m===0||m===1||m>=4)?'':'none';
     const ksr=$('kbdStatRes');if(ksr)ksr.style.display=(m===5)?'':'none';
     const kpv=$('kbdPumpVal');if(kpv){kpv.textContent=d.pump_pwm>0?Math.round(d.pump_pwm/255*100)+'%':'OFF';kpv.style.color=d.pump_pwm>0?'#4ecca3':''}
     const kfv=$('kbdFanVal');if(kfv){kfv.textContent=d.fan_pwm>0?(d.fan_speed!=null?d.fan_speed+'%':d.fan_pwm):'OFF';kfv.style.color=d.fan_pwm>0?'#4ecca3':''}
@@ -2975,7 +2982,7 @@ function fluteMouth(g,em,ty,by,th,cy,ox){
 function buildFlute(cfg,svgId,showNums){
   const svg=$(svgId);if(!svg||!cfg)return;
   const nf=cfg.num_fingers||6,fingers=cfg.fingers||[];
-  const em=cfg.embouchure||'trav';
+  const em=cfg.embouchure||'bec';
   // Ocarina = forme speciale
   if(em==='oca'){buildOcarina(cfg,svgId,showNums);return}
   const sp=50,sx=100,r=14;
@@ -3330,7 +3337,7 @@ function buildInstrumentSelect(){
   s.innerHTML='<option value="">-- Personnalis\u00e9 --</option>';
   const emNames={trav:'Traversieres',bec:'A bec / sifflets',naf:'Am\u00e9rindiennes',end:'Emb. libre',oca:'Ocarinas'};
   const emOrder=['bec','trav','end','naf','oca'];
-  const groups={};PR.forEach(p=>{const k=p.em||'trav';(groups[k]=groups[k]||[]).push(p)});
+  const groups={};PR.forEach(p=>{const k=p.em||'bec';(groups[k]=groups[k]||[]).push(p)});
   emOrder.forEach(em=>{if(!groups[em])return;
     const og=document.createElement('optgroup');og.label=emNames[em]||em;
     groups[em].sort((a,b)=>a.h-b.h).forEach(p=>{const o=document.createElement('option');o.value=p.id;
@@ -3342,7 +3349,7 @@ function selectInstrument(val){
   if(!val||!CFG)return;
   const p=PR.find(x=>x.id===val);if(!p)return;
   // Step 1 = config physique seulement (trous + pouce + embouchure), pas les notes
-  CFG.num_fingers=p.h;CFG.embouchure=p.em||'trav';
+  CFG.num_fingers=p.h;CFG.embouchure=p.em||'bec';
   while(CFG.fingers.length<p.h)CFG.fingers.push({ch:CFG.fingers.length,a:90,d:-1,th:0});
   CFG.fingers.forEach(f=>f.th=0);
   if(p.th>=0&&CFG.fingers[p.th])CFG.fingers[p.th].th=1;
@@ -3365,7 +3372,7 @@ function saveStep1(){
     CFG.fingers[i].d=parseInt($('fd'+i).value);
     const thEl=$('fth'+i);CFG.fingers[i].th=thEl?thEl.checked?1:0:0
   }
-  const body={num_fingers:CFG.num_fingers,air_pca:CFG.air_pca,angle_open:CFG.angle_open,half_hole_pct:CFG.half_hole_pct,embouchure:CFG.embouchure||'trav',fingers:CFG.fingers.slice(0,CFG.num_fingers)};
+  const body={num_fingers:CFG.num_fingers,air_pca:CFG.air_pca,angle_open:CFG.angle_open,half_hole_pct:CFG.half_hole_pct,embouchure:CFG.embouchure||'bec',fingers:CFG.fingers.slice(0,CFG.num_fingers)};
   fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
     .then(r=>r.json()).then(d=>{btnLoad('btnSaveStep1',false);if(d.ok){showToast('Doigts sauvegardes','success');markClean();buildFlute(CFG,'fluteSvg',false);goStep(2)}else showToast('Erreur sauvegarde','error')})
     .catch(e=>{btnLoad('btnSaveStep1',false);showToast('Erreur: '+e,'error')})
@@ -3433,7 +3440,7 @@ function updPresetInfo(){
 function applyPreset(val){
   if(!val||!CFG)return;
   const p=PR.find(x=>x.id===val);if(!p)return;
-  CFG.embouchure=p.em||'trav';
+  CFG.embouchure=p.em||'bec';
   // Build notes from preset data
   CFG.notes=p.d.map(n=>({midi:n[0],fp:[...n[1]],amn:n[2],amx:n[3],ang:n[4]||50}));
   CFG.notes.forEach(n=>{while(n.fp.length<CFG.num_fingers)n.fp.push(0)});
