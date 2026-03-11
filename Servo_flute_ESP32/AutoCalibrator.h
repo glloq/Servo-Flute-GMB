@@ -22,7 +22,8 @@ class AirflowController;
 class AudioAnalyzer;
 
 enum AutoCalMode {
-  ACAL_MODE_AIRFLOW     // Auto-calibrate airflow per note
+  ACAL_MODE_AIRFLOW,        // Auto-calibrate airflow per note
+  ACAL_MODE_RANGE_FIND      // Find global servo range (min/max)
 };
 
 enum AutoCalState {
@@ -31,7 +32,12 @@ enum AutoCalState {
   ACAL_SETTLE,          // Wait for servos to settle
   ACAL_SWEEP,           // Sweeping airflow angle
   ACAL_NOTE_DONE,       // Store result, prepare next
-  ACAL_COMPLETE         // All notes calibrated
+  ACAL_COMPLETE,        // All notes calibrated
+  // Range finder states
+  ACAL_RF_PREPARE,      // Position fingers for middle note
+  ACAL_RF_SETTLE,       // Wait for servos
+  ACAL_RF_SWEEP,        // Sweep 0->180
+  ACAL_RF_COMPLETE      // Range found
 };
 
 struct AutoCalNoteResult {
@@ -48,8 +54,9 @@ public:
   void stop();
   void update();
 
-  bool isRunning() const { return _state != ACAL_IDLE && _state != ACAL_COMPLETE; }
+  bool isRunning() const { return _state != ACAL_IDLE && _state != ACAL_COMPLETE && _state != ACAL_RF_COMPLETE; }
   bool isComplete() const { return _state == ACAL_COMPLETE; }
+  bool isRangeFinderComplete() const { return _state == ACAL_RF_COMPLETE; }
   AutoCalState getState() const { return _state; }
   int getCurrentNoteIndex() const { return _currentNote; }
   int getCurrentAngle() const { return _currentAngle; }
@@ -63,6 +70,11 @@ public:
 
   // Apply results to cfg
   void applyResults();
+
+  // Range finder results
+  int getRangeFinderMin() const { return _rfMinAngle; }
+  int getRangeFinderMax() const { return _rfMaxAngle; }
+  void applyRangeResults();
 
 private:
   FingerController& _fingers;
@@ -79,6 +91,13 @@ private:
   int _airMinPct;
   int _airMaxPct;
   int _silenceCounter;      // Consecutive silent readings after sound found
+  bool _noteDoneHandled;    // Prevent repeated execution in NOTE_DONE
+
+  // Range finder
+  int _rfMinAngle;
+  int _rfMaxAngle;
+  bool _rfFoundMin;
+  int _rfSilenceCount;
 
   AutoCalNoteResult _results[MAX_NOTES];
 

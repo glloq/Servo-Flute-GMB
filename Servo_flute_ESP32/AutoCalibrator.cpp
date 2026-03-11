@@ -11,7 +11,9 @@ AutoCalibrator::AutoCalibrator(FingerController& fingers, AirflowController& air
   : _fingers(fingers), _airflow(airflow), _audio(audio),
     _state(ACAL_IDLE), _mode(ACAL_MODE_AIRFLOW),
     _currentNote(0), _currentAngle(0), _stateTimer(0),
-    _foundMin(false), _airMinPct(0), _airMaxPct(0), _silenceCounter(0) {
+    _foundMin(false), _airMinPct(0), _airMaxPct(0), _silenceCounter(0),
+    _noteDoneHandled(false),
+    _rfMinAngle(-1), _rfMaxAngle(-1), _rfFoundMin(false), _rfSilenceCount(0) {
   memset(_results, 0, sizeof(_results));
 }
 
@@ -23,12 +25,26 @@ void AutoCalibrator::start(AutoCalMode mode) {
   // Ensure audio analyzer is active
   _audio.setActive(true);
 
-  // Begin with first note
-  _state = ACAL_PREPARE;
-  _stateTimer = millis();
+  if (mode == ACAL_MODE_RANGE_FIND) {
+    _state = ACAL_RF_PREPARE;
+    _rfMinAngle = -1;
+    _rfMaxAngle = -1;
+    _rfFoundMin = false;
+    _rfSilenceCount = 0;
+    _currentAngle = 0;
+    _stateTimer = millis();
 
-  if (DEBUG) {
-    Serial.println("DEBUG: AutoCalibrator - Demarrage calibration airflow");
+    if (DEBUG) {
+      Serial.println("DEBUG: AutoCalibrator - Demarrage range finder");
+    }
+  } else {
+    // Begin with first note
+    _state = ACAL_PREPARE;
+    _stateTimer = millis();
+
+    if (DEBUG) {
+      Serial.println("DEBUG: AutoCalibrator - Demarrage calibration airflow");
+    }
   }
 }
 
@@ -44,7 +60,7 @@ void AutoCalibrator::stop() {
 }
 
 void AutoCalibrator::update() {
-  if (_state == ACAL_IDLE || _state == ACAL_COMPLETE) return;
+  if (_state == ACAL_IDLE || _state == ACAL_COMPLETE || _state == ACAL_RF_COMPLETE) return;
 
   unsigned long now = millis();
   unsigned long elapsed = now - _stateTimer;
@@ -101,6 +117,7 @@ void AutoCalibrator::update() {
           _airMaxPct = 100;
         }
         _state = ACAL_NOTE_DONE;
+        _noteDoneHandled = false;
         _stateTimer = now;
         break;
       }
@@ -149,6 +166,7 @@ void AutoCalibrator::update() {
             }
 
             _state = ACAL_NOTE_DONE;
+            _noteDoneHandled = false;
             _stateTimer = now;
           }
         } else {
@@ -159,8 +177,9 @@ void AutoCalibrator::update() {
     }
 
     case ACAL_NOTE_DONE: {
-      // First entry: close solenoid and store result
-      if (elapsed < AUTOCAL_STORE_DELAY_MS) {
+      // Execute close/store exactly once on entry
+      if (!_noteDoneHandled) {
+        _noteDoneHandled = true;
         _airflow.testSolenoid(false);
         _airflow.setAirflowToRest();
 
@@ -188,6 +207,117 @@ void AutoCalibrator::update() {
       }
       break;
     }
+
+    case ACAL_RF_PREPARE: {
+      // Pick middle note for range finding
+      int midIdx = cfg.numNotes / 2;
+      byte midi = cfg.notes[midIdx].midiNote;
+      _fingers.setFingerPatternForNote(midi);
+      _currentNote = midIdx;
+
+      // Start from angle 0
+      _currentAngle = 0;
+      _airflow.testAirflowAngle(_currentAngle);
+      _airflow.testSolenoid(true);
+
+      _rfFoundMin = false;
+      _rfMinAngle = -1;
+      _rfMaxAngle = -1;
+      _rfSilenceCount = 0;
+
+      _state = ACAL_RF_SETTLE;
+      _stateTimer = now;
+
+      if (DEBUG) {
+        Serial.print("DEBUG: RangeFinder - Note MIDI ");
+        Serial.println(midi);
+      }
+      break;
+    }
+
+    case ACAL_RF_SETTLE: {
+      if (elapsed >= AUTOCAL_SETTLE_MS) {
+        _state = ACAL_RF_SWEEP;
+        _stateTimer = now;
+      }
+      break;
+    }
+
+    case ACAL_RF_SWEEP: {
+      if (elapsed < AUTOCAL_RF_STEP_MS) return;
+      _stateTimer = now;
+
+      _currentAngle++;
+
+      if (_currentAngle > 180) {
+        // Reached end of sweep
+        if (_rfFoundMin && _rfMaxAngle < 0) {
+          _rfMaxAngle = 180;
+        }
+        _state = ACAL_RF_COMPLETE;
+        _airflow.testSolenoid(false);
+        _airflow.setAirflowToRest();
+        _fingers.closeAllFingers();
+        _stateTimer = now;
+
+        if (DEBUG) {
+          Serial.print("DEBUG: RangeFinder - Complete min=");
+          Serial.print(_rfMinAngle);
+          Serial.print(" max=");
+          Serial.println(_rfMaxAngle);
+        }
+        break;
+      }
+
+      _airflow.testAirflowAngle(_currentAngle);
+
+      // Analyze audio
+      bool soundNow = _audio.isSoundDetected();
+      int detectedMidi = _audio.getPitchMidi();
+      byte expectedMidi = cfg.notes[_currentNote].midiNote;
+      bool pitchOk = (detectedMidi > 0) &&
+                     (abs(detectedMidi - expectedMidi) <= AUTOCAL_PITCH_TOLERANCE_SEMI);
+
+      if (!_rfFoundMin) {
+        if (soundNow && pitchOk) {
+          _rfFoundMin = true;
+          _rfMinAngle = _currentAngle - AUTOCAL_RF_MARGIN_DEG;
+          if (_rfMinAngle < 0) _rfMinAngle = 0;
+          _rfSilenceCount = 0;
+
+          if (DEBUG) {
+            Serial.print("DEBUG: RangeFinder - min found at ");
+            Serial.println(_currentAngle);
+          }
+        }
+      } else {
+        if (!soundNow || !pitchOk) {
+          _rfSilenceCount++;
+          if (_rfSilenceCount >= AUTOCAL_SILENCE_COUNT) {
+            _rfMaxAngle = _currentAngle - AUTOCAL_SILENCE_COUNT + AUTOCAL_RF_MARGIN_DEG;
+            if (_rfMaxAngle > 180) _rfMaxAngle = 180;
+
+            if (DEBUG) {
+              Serial.print("DEBUG: RangeFinder - max found at ");
+              Serial.println(_rfMaxAngle);
+            }
+
+            _state = ACAL_RF_COMPLETE;
+            _airflow.testSolenoid(false);
+            _airflow.setAirflowToRest();
+            _fingers.closeAllFingers();
+            _stateTimer = now;
+          }
+        } else {
+          _rfSilenceCount = 0;
+        }
+      }
+      break;
+    }
+
+    case ACAL_RF_COMPLETE:
+      // Handled in WebConfigurator
+      break;
 
     default:
       break;
@@ -228,6 +358,19 @@ void AutoCalibrator::applyResults() {
 
   if (DEBUG) {
     Serial.println("DEBUG: AutoCalibrator - Resultats appliques et sauvegardes");
+  }
+}
+
+void AutoCalibrator::applyRangeResults() {
+  if (_rfMinAngle > 0) cfg.servoAirflowMin = _rfMinAngle;
+  if (_rfMaxAngle > 0) cfg.servoAirflowMax = _rfMaxAngle;
+  ConfigStorage::save();
+
+  if (DEBUG) {
+    Serial.print("DEBUG: RangeFinder - Applique min=");
+    Serial.print(cfg.servoAirflowMin);
+    Serial.print(" max=");
+    Serial.println(cfg.servoAirflowMax);
   }
 }
 

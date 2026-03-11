@@ -111,25 +111,52 @@ void WebConfigurator::update() {
 
       // Broadcast progress
       if (_ws.count() > 0 && now - _lastAcalBroadcast >= AUTOCAL_AUDIO_INTERVAL_MS) {
-        int ni = _autoCal->getCurrentNoteIndex();
-        byte midi = (ni >= 0 && ni < cfg.numNotes) ? cfg.notes[ni].midiNote : 0;
-        String noteName = "";
-        if (midi > 0) {
-          const char* names[] = {"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
-          noteName = String(names[midi % 12]) + String((int)(midi / 12) - 1);
+        AutoCalState acState = _autoCal->getState();
+
+        if (acState >= ACAL_RF_PREPARE && acState <= ACAL_RF_SWEEP) {
+          // Range finder progress
+          String pj = "{\"t\":\"rf_prog\"";
+          pj += ",\"angle\":" + String(_autoCal->getCurrentAngle());
+          pj += ",\"st\":" + String((int)acState);
+          if (_autoCal->getRangeFinderMin() >= 0) {
+            pj += ",\"min\":" + String(_autoCal->getRangeFinderMin());
+          }
+          pj += "}";
+          _ws.textAll(pj);
+        } else {
+          // Per-note airflow calibration progress
+          int ni = _autoCal->getCurrentNoteIndex();
+          byte midi = (ni >= 0 && ni < cfg.numNotes) ? cfg.notes[ni].midiNote : 0;
+          String noteName = "";
+          if (midi > 0) {
+            const char* names[] = {"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
+            noteName = String(names[midi % 12]) + String((int)(midi / 12) - 1);
+          }
+          String pj = "{\"t\":\"acal_prog\"";
+          pj += ",\"idx\":" + String(ni);
+          pj += ",\"note\":\"" + noteName + "\"";
+          pj += ",\"total\":" + String(cfg.numNotes);
+          pj += ",\"angle\":" + String(_autoCal->getCurrentAngle());
+          pj += ",\"st\":" + String((int)acState);
+          pj += "}";
+          _ws.textAll(pj);
         }
-        String pj = "{\"t\":\"acal_prog\"";
-        pj += ",\"idx\":" + String(ni);
-        pj += ",\"note\":\"" + noteName + "\"";
-        pj += ",\"total\":" + String(cfg.numNotes);
-        pj += ",\"angle\":" + String(_autoCal->getCurrentAngle());
-        pj += ",\"st\":" + String((int)_autoCal->getState());
-        pj += "}";
-        _ws.textAll(pj);
         _lastAcalBroadcast = now;
       }
     }
-    // Check completion
+    // Check range finder completion
+    if (_autoCal && _autoCal->isRangeFinderComplete()) {
+      String dj = "{\"t\":\"rf_done\",\"ok\":";
+      dj += String(_autoCal->getRangeFinderMin() >= 0 ? "true" : "false");
+      if (_autoCal->getRangeFinderMin() >= 0) {
+        dj += ",\"min\":" + String(_autoCal->getRangeFinderMin());
+        dj += ",\"max\":" + String(_autoCal->getRangeFinderMax());
+      }
+      dj += "}";
+      _ws.textAll(dj);
+      _autoCal->stop();
+    }
+    // Check airflow calibration completion
     if (_autoCal && _autoCal->isComplete()) {
       _autoCal->applyResults();
       const char* names[] = {"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
@@ -139,8 +166,12 @@ void WebConfigurator::update() {
         byte midi = cfg.notes[i].midiNote;
         String nn = String(names[midi % 12]) + String((int)(midi / 12) - 1);
         AutoCalNoteResult r = _autoCal->getResult(i);
+        int range = (int)cfg.servoAirflowMax - (int)cfg.servoAirflowMin;
+        int minAngle = (int)cfg.servoAirflowMin + r.airMin * range / 100;
+        int maxAngle = (int)cfg.servoAirflowMin + r.airMax * range / 100;
         dj += "{\"name\":\"" + nn + "\",\"ok\":" + String(r.valid ? "true" : "false");
-        dj += ",\"min\":" + String(r.airMin) + ",\"max\":" + String(r.airMax) + "}";
+        dj += ",\"min\":" + String(r.airMin) + ",\"max\":" + String(r.airMax);
+        dj += ",\"minA\":" + String(minAngle) + ",\"maxA\":" + String(maxAngle) + "}";
       }
       dj += "]}";
       _ws.textAll(dj);
@@ -1216,6 +1247,15 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
         _audio->setActive(true);
         _micMonitorEnabled = true;
         _autoCal->start(ACAL_MODE_AIRFLOW);
+      } else if (mode == "range" && _autoCal && _audio && _audio->isMicDetected()) {
+        _audio->setActive(true);
+        _micMonitorEnabled = true;
+        _autoCal->start(ACAL_MODE_RANGE_FIND);
+      } else if (mode == "apply_range" && _autoCal) {
+        _autoCal->applyRangeResults();
+        String rj = "{\"t\":\"rf_applied\",\"min\":" + String(cfg.servoAirflowMin) +
+                    ",\"max\":" + String(cfg.servoAirflowMax) + "}";
+        _ws.textAll(rj);
       } else if (mode == "stop") {
         if (_autoCal) _autoCal->stop();
       }
