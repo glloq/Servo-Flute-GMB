@@ -28,6 +28,7 @@ struct FingerConfig {
   uint16_t closedAngle;    // Angle position fermee (0-180)
   int8_t direction;        // +1 = horaire, -1 = anti-horaire
   bool isThumbHole;        // true = trou arriere (dessous de la flute)
+  uint8_t halfPercent;     // 0 = utiliser global halfHolePercent, 1-100 = override per-doigt
 };
 
 struct NoteConfig {

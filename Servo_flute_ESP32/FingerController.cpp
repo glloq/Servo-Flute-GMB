@@ -80,7 +80,12 @@ uint16_t FingerController::calculateServoAngle(int fingerIndex, uint8_t openStat
   } else {
     // 1=full open, 2=half open (configurable % of full angle)
     int16_t travel = cfg.fingerAngleOpen * cfg.fingers[fingerIndex].direction;
-    if (openState == 2) travel = travel * cfg.halfHolePercent / 100;
+    if (openState == 2) {
+      uint8_t hp = cfg.fingers[fingerIndex].halfPercent > 0
+                   ? cfg.fingers[fingerIndex].halfPercent
+                   : cfg.halfHolePercent;
+      travel = travel * hp / 100;
+    }
     int16_t angle = baseAngle + travel;
 
     if (angle < SERVO_MIN_ANGLE) angle = SERVO_MIN_ANGLE;

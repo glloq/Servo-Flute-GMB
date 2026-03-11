@@ -503,7 +503,11 @@ void WebConfigurator::handleApiConfig(AsyncWebServerRequest* request) {
     json += "{\"ch\":" + String(cfg.fingers[i].pcaChannel);
     json += ",\"a\":" + String(cfg.fingers[i].closedAngle);
     json += ",\"d\":" + String(cfg.fingers[i].direction);
-    json += ",\"th\":" + String(cfg.fingers[i].isThumbHole ? 1 : 0) + "}";
+    json += ",\"th\":" + String(cfg.fingers[i].isThumbHole ? 1 : 0);
+    if (cfg.fingers[i].halfPercent > 0) {
+      json += ",\"hp\":" + String(cfg.fingers[i].halfPercent);
+    }
+    json += "}";
   }
   json += "]";
 
@@ -694,6 +698,7 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
         if (fingers[i].containsKey("a")) cfg.fingers[i].closedAngle = fingers[i]["a"];
         if (fingers[i].containsKey("d")) cfg.fingers[i].direction = fingers[i]["d"];
         if (fingers[i].containsKey("th")) cfg.fingers[i].isThumbHole = (fingers[i]["th"].as<int>() != 0);
+        if (fingers[i].containsKey("hp")) cfg.fingers[i].halfPercent = constrain(fingers[i]["hp"].as<int>(), 0, 100);
       }
     }
 
