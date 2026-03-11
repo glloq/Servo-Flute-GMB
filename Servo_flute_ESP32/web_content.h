@@ -1723,6 +1723,17 @@ function toggleAirBlockEnable(id){
   syncAirModeFromToggles();
   markDirty();
 }
+function updateAngleBlockVisibility(){
+  const bl=$('airBlockAngle');if(!bl||!CFG)return;
+  const isTrav=(CFG.embouchure==='trav');
+  bl.style.display=isTrav?'':'none';
+  if(!isTrav){
+    // Disable angle servo when switching away from traversiere
+    const tg=$('airBlockAngleToggle');
+    if(tg){tg.classList.remove('on');tg.setAttribute('aria-checked','false')}
+    bl.classList.add('disabled');bl.classList.remove('active');
+  }
+}
 function toggleAngleServo(){
   const tg=$('airBlockAngleToggle');if(!tg)return;
   const on=tg.classList.toggle('on');
@@ -2006,13 +2017,19 @@ function resetAirDefaults(){
     $('airSensorType').value='0';$('airSensTarget').value=50;$('airSensMin').value=10;$('airSensMax').value=150;
     $('airPidKp').value=30;$('airPidKi').value=5;toggleSensorParams();
   }
+  // Servo angle defaults (traversiere)
+  const angleTg=$('airBlockAngleToggle');
+  if(angleTg){angleTg.classList.remove('on');angleTg.setAttribute('aria-checked','false')}
+  const angleBlk=$('airBlockAngle');if(angleBlk){angleBlk.classList.add('disabled');angleBlk.classList.remove('active')}
+  const angleSel=$('cfgAngleCh');if(angleSel)angleSel.value='12';
   toggleValveParams();syncAirModeFromToggles();markDirty();
   showToast('Valeurs par defaut appliquees','success');
 }
 function copyAirConfig(){
   const keys=['air_mode','valve_type','valve_ch','vlv_close','vlv_open','vlv_dir','air_off','air_min','air_max','motor_type','num_pumps',
     'fan_pin','fan_min','fan_max','fan_idle_pct','fan_idle_timeout','sol_pin','sol_act','sol_hold','sol_time','sol_inter','sens_type','sens_target',
-    'sens_min','sens_max','pid_kp','pid_ki','hall_pin','hall_low','hall_high','endstop_pin','endstop_high','endstop_pump_on','res_format','show_air'];
+    'sens_min','sens_max','pid_kp','pid_ki','hall_pin','hall_low','hall_high','endstop_pin','endstop_high','endstop_pump_on','res_format','show_air',
+    'angle_on','angle_ch'];
   const out={};keys.forEach(k=>{if(CFG[k]!=null)out[k]=CFG[k]});
   const json=JSON.stringify(out,null,2);
   if(navigator.clipboard)navigator.clipboard.writeText(json).then(()=>showToast('Config copiee','success'));
@@ -3464,7 +3481,7 @@ function selectInstrument(val){
   CFG.fingers.forEach(f=>f.th=0);
   if(p.th>=0&&CFG.fingers[p.th])CFG.fingers[p.th].th=1;
   // Rebuild UI physique
-  buildFingerCards();buildFlute(CFG,'calFluteSvg',true);updateTravVisibility();markDirty();
+  buildFingerCards();buildFlute(CFG,'calFluteSvg',true);updateTravVisibility();updateAngleBlockVisibility();markDirty();
   showToast(p.n+' - '+p.h+' trous'+(p.th>=0?' (pouce)':''),'success')
 }
 
@@ -3558,7 +3575,7 @@ function applyPreset(val){
   CFG.notes=p.d.map(n=>({midi:n[0],fp:[...n[1]],amn:n[2],amx:n[3],ang:n[4]||50}));
   CFG.notes.forEach(n=>{while(n.fp.length<CFG.num_fingers)n.fp.push(0)});
   CFG.num_notes=CFG.notes.length;
-  fpSnap();buildFingeringRows();buildFlute(CFG,'calFluteSvg',true);updPresetInfo();updateTravVisibility();markDirty()
+  fpSnap();buildFingeringRows();buildFlute(CFG,'calFluteSvg',true);updPresetInfo();updateTravVisibility();updateAngleBlockVisibility();markDirty()
 }
 
 function saveStep2(){
