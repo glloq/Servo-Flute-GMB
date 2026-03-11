@@ -995,32 +995,37 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
     <div style="font-size:.7em;color:#666;margin-top:2px">Connecter un circuit MIDI DIN (optocoupler) au GPIO choisi. Redemarrage requis apres changement.</div>
   </div>
 
-  <div class="section"><h3>Timing</h3>
-    <div class="cfg-row"><label>Servo&rarr;valve (ms)</label><input type="number" id="cfgDelay" min="0" max="1000"></div>
-    <div class="cfg-row"><label>Intervalle valve (ms)</label><input type="number" id="cfgValveInt" min="0" max="500"></div>
-    <div class="cfg-row"><label>Note min (ms)</label><input type="number" id="cfgMinNote" min="0" max="500"></div>
+  <div class="section"><h3>Timing des notes</h3>
+    <div class="cfg-row"><label>Delai doigts &rarr; souffle (ms)</label><input type="number" id="cfgDelay" min="0" max="1000"></div>
+    <div style="font-size:.7em;color:#666;margin:-4px 0 6px 148px">Temps entre le positionnement des doigts et l'ouverture de la valve</div>
+    <div class="cfg-row"><label>Fermeture valve inter-notes (ms)</label><input type="number" id="cfgValveInt" min="0" max="500"></div>
+    <div style="font-size:.7em;color:#666;margin:-4px 0 6px 148px">Intervalle minimum entre 2 notes pour fermer la valve (0 = legato)</div>
+    <div class="cfg-row"><label>Duree minimum d'une note (ms)</label><input type="number" id="cfgMinNote" min="0" max="500"></div>
   </div>
 
-  <div class="section"><h3>CC Defaults</h3>
+  <div class="section"><h3>Valeurs MIDI par defaut</h3>
+    <div style="font-size:.7em;color:#666;margin-bottom:6px">Valeurs initiales au demarrage (0-127). Modifiables en temps reel via MIDI CC.</div>
     <div class="cfg-row"><label>Volume (CC7)</label><input type="number" id="cfgCCVol" min="0" max="127"></div>
     <div class="cfg-row"><label>Expression (CC11)</label><input type="number" id="cfgCCExpr" min="0" max="127"></div>
-    <div class="cfg-row"><label>Modulation (CC1)</label><input type="number" id="cfgCCMod" min="0" max="127"></div>
-    <div class="cfg-row"><label>Breath (CC2)</label><input type="number" id="cfgCCBreath" min="0" max="127"></div>
-    <div class="cfg-row"><label>Brightness (CC74)</label><input type="number" id="cfgCCBright" min="0" max="127"></div>
+    <div class="cfg-row"><label>Vibrato (CC1)</label><input type="number" id="cfgCCMod" min="0" max="127"></div>
+    <div class="cfg-row"><label>Souffle (CC2)</label><input type="number" id="cfgCCBreath" min="0" max="127"></div>
+    <div class="cfg-row"><label>Brillance (CC74)</label><input type="number" id="cfgCCBright" min="0" max="127"></div>
   </div>
 
-  <div class="section"><h3>Power off servo</h3>
-    <div class="cfg-row"><label>Timeout (ms)</label><input type="number" id="cfgUnpower" min="0" max="60000"></div>
+  <div class="section"><h3>Economie d'energie</h3>
+    <div class="cfg-row"><label>Eteindre servos apres (ms)</label><input type="number" id="cfgUnpower" min="0" max="60000"></div>
+    <div style="font-size:.7em;color:#666;margin:-4px 0 6px 148px">Coupe l'alimentation des servos apres inactivite (0 = toujours actifs)</div>
   </div>
 
-  <div class="section"><h3>Stockage MIDI</h3>
-    <div class="cfg-row"><label>Limite (KB)</label><input type="number" id="cfgMidiLimit" min="50" max="2000" step="50"></div>
+  <div class="section"><h3>Stockage fichiers MIDI</h3>
+    <div class="cfg-row"><label>Espace maximum (KB)</label><input type="number" id="cfgMidiLimit" min="50" max="2000" step="50"></div>
+    <div style="font-size:.7em;color:#666;margin:-4px 0 6px 148px">Limite de stockage pour les fichiers .mid uploades</div>
   </div>
 
-  <div class="section"><h3>Interface</h3>
-    <div class="cfg-row"><label>Couleur instrument</label><input type="color" id="cfgColor" value="#D4B044" style="width:40px;height:28px;flex:0;padding:0;border:1px solid #555;border-radius:4px;cursor:pointer"></div>
-    <div class="cfg-row"><label>Mode clavier</label><select id="cfgKbdMode"><option value="0">Flute</option><option value="1">Piano</option></select></div>
-    <div class="cfg-row"><label>Cacher Calibration</label><input type="checkbox" id="cfgHideCalib" style="width:auto;flex:0"></div>
+  <div class="section"><h3>Affichage</h3>
+    <div class="cfg-row"><label>Couleur de l'instrument</label><input type="color" id="cfgColor" value="#D4B044" style="width:48px;height:48px;flex:0;padding:0;border:2px solid #555;border-radius:6px;cursor:pointer"></div>
+    <div class="cfg-row"><label>Masquer onglet Calibration</label><input type="checkbox" id="cfgHideCalib" style="width:auto;flex:0"></div>
+    <div class="cfg-row"><label>Masquer onglet Air</label><input type="checkbox" id="cfgHideAir" style="width:auto;flex:0"></div>
   </div>
 
   <div class="section"><h3>WiFi</h3>
@@ -1258,7 +1263,9 @@ const PWM_GPIOS=[2,4,5,12,13,14,15,16,17,18,19,21,22,23,25,26,27,32,33];
 let lastAirData=null;
 function applyAirTabVisibility(){
   const airBtn=$('btnTabAir');
-  airBtn.style.display='';
+  if(CFG&&CFG.hide_air){airBtn.style.display='none';
+    if($('tab-air').classList.contains('active')){showTab('keyboard',document.querySelector('.tabs button'))}
+  }else{airBtn.style.display=''}
   if(CFG){buildFlute(CFG,'fluteSvg',false);refreshKbdAir()}
 }
 function refreshKbdAir(){
@@ -3607,8 +3614,8 @@ function fillSettings(){
   $('cfgUnpower').value=CFG.time_unpower;
   $('cfgMidiLimit').value=CFG.midi_limit||500;
   $('cfgColor').value=CFG.color||'#D4B044';
-  $('cfgKbdMode').value=CFG.kbd_mode||0;
   $('cfgHideCalib').checked=!!CFG.hide_calib;
+  $('cfgHideAir').checked=!!CFG.hide_air;
   // Appliquer visibilite onglets
   applyCalibVisibility();applyAirTabVisibility();
   $('wifiSsid').value=CFG.wifi_ssid||'';
@@ -3627,8 +3634,8 @@ function saveSettings(){
     cc_vol:parseInt($('cfgCCVol').value),cc_expr:parseInt($('cfgCCExpr').value),
     cc_mod:parseInt($('cfgCCMod').value),cc_breath:parseInt($('cfgCCBreath').value),cc_bright:parseInt($('cfgCCBright').value),
     time_unpower:parseInt($('cfgUnpower').value),midi_limit:parseInt($('cfgMidiLimit').value),
-    color:$('cfgColor').value,kbd_mode:parseInt($('cfgKbdMode').value),
-    hide_calib:$('cfgHideCalib').checked};
+    color:$('cfgColor').value,
+    hide_calib:$('cfgHideCalib').checked,hide_air:$('cfgHideAir').checked};
   fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
     .then(r=>r.json()).then(d=>{btnLoad('btnSaveSettings',false);
       if(d.ok){showToast('Parametres sauvegardes','success');markClean();loadConfig()}
