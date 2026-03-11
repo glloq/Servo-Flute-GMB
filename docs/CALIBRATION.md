@@ -34,14 +34,23 @@ Aller dans l'onglet **Calibration** :
 2. Bouton **FERMER** : desactive la valve
 3. Verifier que le debit d'air passe bien quand le solenoide est ouvert
 
-### 5. Test par note
+### 5. Reglage demi-ouverture
+
+Pour les instruments utilisant des demi-trous (flute a bec baroque, etc.) :
+
+1. Le slider **Demi-ouverture** (global, 10-90%) definit le pourcentage d'ouverture par defaut pour les positions "demi" (valeur 2 dans le pattern de doigtes)
+2. Chaque doigt peut avoir un **override individuel** via le slider "Demi %" dans sa carte (Step 1). Mettre 0 = utiliser le global
+3. Le bouton **Demi** dans chaque carte permet de tester la position demi-ouverte du servo en temps reel
+4. Cas typique : sur une flute a bec, le pouce (doigt 1) necessite un % different (~25%) des trous avant (~50%)
+
+### 6. Test par note
 
 1. Selectionner une note dans le dropdown
 2. Cliquer **Jouer position** : positionne les doigts + airflow pour cette note (sans solenoide)
 3. Verifier visuellement que le bon pattern de doigts est applique
 4. Si le son est trop fort/faible pour certaines notes, ajuster les pourcentages airflow dans Config > Airflow par note
 
-### 6. Sauvegarder
+### 7. Sauvegarder
 
 Aller dans **Config** et cliquer **Sauvegarder**. Les valeurs sont persistees sur LittleFS.
 
@@ -71,13 +80,28 @@ Si le micro n'est pas detecte, le driver I2S est desinstalle pour liberer les re
 1. Aller dans l'onglet **Calibration**
 2. La section **Auto-calibration** apparait en bas (si micro detecte)
 3. Le **VU-metre** et l'**affichage du pitch** montrent en temps reel ce que le micro capte
-4. Cliquer **Demarrer auto-calibration** :
+
+#### Range Finder (detection plage servo)
+
+Avant la calibration par note, le **Range Finder** permet de detecter automatiquement la plage utile du servo airflow :
+
+1. Cliquer **Detecter plage servo**
+2. Le systeme positionne les doigts pour une note du milieu de la tessiture
+3. Le servo airflow balaye de 0 a 180 degres (a 100ms/pas)
+4. Le micro detecte l'angle minimum (debut du son) et maximum (fin du son)
+5. Les resultats s'affichent avec les boutons **Appliquer** / **Ignorer**
+6. "Appliquer" met a jour `air_min` et `air_max` dans la configuration
+
+#### Auto-calibration airflow par note
+
+1. Cliquer **Demarrer auto-calibration** :
    - Pour chaque note, le systeme positionne les doigts et ouvre le solenoide
    - Le debit d'air est augmente progressivement du minimum au maximum
    - Le micro detecte le debut du son (air_min) et la fin du son (air_max)
    - La hauteur du son est verifiee pour s'assurer que c'est bien la bonne note (tolerance ±3 demi-tons)
-5. Les resultats sont affiches note par note (reussite/echec avec pourcentages)
-6. Les valeurs sont automatiquement sauvegardees dans la configuration
+   - L'angle servo courant est affiche en temps reel pendant le sweep
+2. Les resultats sont affiches note par note avec pourcentages et angles en degres
+3. Les valeurs sont automatiquement sauvegardees dans la configuration
 
 ### Parametres de calibration
 
@@ -88,6 +112,8 @@ Les constantes de l'auto-calibration sont definies dans `settings.h` :
 | `AUTOCAL_SETTLE_MS` | 300 | Temps de stabilisation des servos (ms) |
 | `AUTOCAL_STEP_MS` | 80 | Intervalle entre chaque pas de sweep (ms) |
 | `AUTOCAL_SILENCE_COUNT` | 3 | Lectures silencieuses consecutives pour valider air_max |
+| `AUTOCAL_RF_STEP_MS` | 100 | Intervalle entre pas du range finder (ms) |
+| `AUTOCAL_RF_MARGIN_DEG` | 3 | Marge de securite en degres pour le range finder |
 | `MIC_RMS_THRESHOLD` | 0.02 | Seuil RMS pour la detection de son |
 | `MIC_PITCH_TOLERANCE_CENTS` | 200 | Tolerance de pitch en cents (±2 demi-tons) |
 | `MIC_YIN_THRESHOLD` | 0.15 | Seuil de confiance pour la detection de pitch |
@@ -122,8 +148,9 @@ Pour chaque note individuellement :
 ### Table des doigtes visuelle
 
 L'onglet **Config** > section **Doigtes et airflow par note** affiche un tableau interactif :
-- Points cliquables pour chaque doigt (ouvert/ferme)
-- Valeurs air min/max editables
+- Points cliquables pour chaque doigt, cycle 3 etats : ferme (0) → ouvert (1) → demi-ouvert (2)
+- Legende visuelle : ouvert (vert), ferme (gris), demi (degrade), pouce (bordure rouge)
+- Valeurs air min/max editables avec affichage en degres
 - Bouton test par note
 
 ### Commandes WebSocket
@@ -138,6 +165,8 @@ Depuis l'interface web, les commandes de calibration passent par WebSocket pour 
 | Test note | `{"t":"test_note","n":84}` | Applique doigts + airflow pour la note MIDI `n` |
 | Monitoring micro | `{"t":"mic_mon","on":true}` | Active/desactive le flux audio temps reel |
 | Auto-calibration | `{"t":"auto_cal","mode":"air"}` | Demarre la calibration automatique airflow |
+| Range finder | `{"t":"auto_cal","mode":"range"}` | Detecte la plage servo airflow (sweep 0-180) |
+| Appliquer range | `{"t":"auto_cal","mode":"apply_range"}` | Applique les resultats du range finder |
 | Stop auto-cal | `{"t":"auto_cal","mode":"stop"}` | Arrete la calibration en cours |
 
 ### Securite

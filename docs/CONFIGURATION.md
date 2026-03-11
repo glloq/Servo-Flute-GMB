@@ -68,11 +68,14 @@ Les modifications via l'interface web sont appliquees immediatement en memoire e
 
 ### Doigts
 
-| Parametre | JSON key | Description |
-|-----------|----------|-------------|
-| Angle ouverture | `angle_open` | Angle d'ouverture par rapport a la position fermee (deg) |
-| Angles fermes | `fingers[].a` | Angle servo en position fermee pour chaque doigt |
-| Directions | `fingers[].d` | Sens d'ouverture (+1 ou -1) |
+| Parametre | JSON key | Type | Defaut | Description |
+|-----------|----------|------|--------|-------------|
+| Angle ouverture | `angle_open` | deg | 30 | Angle d'ouverture par rapport a la position fermee |
+| Demi-ouverture globale | `half_hole_pct` | 10-90 | 50 | % d'ouverture pour les positions "demi" (fallback global) |
+| Angles fermes | `fingers[].a` | deg | 90 | Angle servo en position fermee pour chaque doigt |
+| Directions | `fingers[].d` | +1/-1 | -1 | Sens d'ouverture |
+| Trou de pouce | `fingers[].th` | 0/1 | 0 | 1 = trou arriere (dessous de la flute) |
+| Demi % per-doigt | `fingers[].hp` | 0-100 | 0 | Override demi-ouverture (0 = utiliser global) |
 
 ### Airflow par note
 
@@ -116,6 +119,8 @@ Ces constantes sont definies dans `settings.h` et ne sont pas modifiables via l'
 | `AUTOCAL_SETTLE_MS` | 300 | Delai stabilisation servos (ms) |
 | `AUTOCAL_STEP_MS` | 80 | Intervalle entre pas de sweep (ms) |
 | `AUTOCAL_SILENCE_COUNT` | 3 | Lectures silencieuses pour valider fin de son |
+| `AUTOCAL_RF_STEP_MS` | 100 | Intervalle entre pas du range finder (ms) |
+| `AUTOCAL_RF_MARGIN_DEG` | 3 | Marge de securite range finder (deg) |
 | `AUTOCAL_AUDIO_INTERVAL_MS` | 100 | Intervalle broadcast audio WS (ms) |
 
 Pour desactiver completement le support micro, mettre `MIC_ENABLED` a `false` dans `settings.h`. Cela exclut tout le code audio/auto-calibration a la compilation.
@@ -143,8 +148,9 @@ Exemple de `/config.json` sur LittleFS :
   "sol_hold": 128,
   "sol_time": 50,
   "angle_open": 30,
+  "half_hole_pct": 50,
   "fingers": [
-    {"a": 90, "d": -1},
+    {"a": 90, "d": -1, "th": 1, "hp": 25},
     {"a": 95, "d": 1},
     {"a": 90, "d": 1},
     {"a": 100, "d": 1},

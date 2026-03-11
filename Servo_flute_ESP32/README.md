@@ -121,6 +121,8 @@ Messages JSON Client -> Serveur :
 {"t":"test_note","n":84}           // Test position note complete
 {"t":"mic_mon","on":true}          // Activer/desactiver monitoring micro
 {"t":"auto_cal","mode":"air"}      // Demarrer auto-calibration airflow
+{"t":"auto_cal","mode":"range"}    // Demarrer range finder (sweep 0-180)
+{"t":"auto_cal","mode":"apply_range"} // Appliquer resultats range finder
 {"t":"auto_cal","mode":"stop"}     // Arreter auto-calibration
 ```
 
@@ -128,8 +130,11 @@ Messages JSON Serveur -> Client (micro INMP441, si detecte) :
 
 ```json
 {"t":"audio","rms":0.12,"hz":440,"midi":69,"cents":-5}  // Monitoring audio temps reel
-{"t":"acal_prog","idx":3,"note":"C6","total":14,"st":3}  // Progression auto-calibration
+{"t":"acal_prog","idx":3,"note":"C6","total":14,"angle":75,"st":3}  // Progression auto-cal
 {"t":"acal_done","ok":true,"results":[...]}               // Resultats auto-calibration
+{"t":"rf_prog","angle":85,"st":8,"min":42}                // Progression range finder
+{"t":"rf_done","ok":true,"min":42,"max":135}              // Resultat range finder
+{"t":"rf_applied","min":42,"max":135}                     // Range finder applique
 ```
 
 ## Dependances Arduino

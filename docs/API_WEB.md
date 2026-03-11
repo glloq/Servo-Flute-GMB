@@ -53,7 +53,7 @@ Le champ `mic` indique si un microphone INMP441 a ete detecte au demarrage. L'in
   "num_fingers": 6,
   "mic": true,
   "fingers": [
-    {"ch": 0, "a": 90, "d": -1},
+    {"ch": 0, "a": 90, "d": -1, "th": 1, "hp": 25},
     {"ch": 1, "a": 95, "d": 1}
   ],
   "notes": [
@@ -190,6 +190,8 @@ Connexion persistante pour le controle temps reel et le monitoring.
 | Test note | `{"t":"test_note","n":84}` | Position complete pour une note |
 | Monitoring micro | `{"t":"mic_mon","on":true}` | Activer/desactiver le flux audio |
 | Auto-calibration | `{"t":"auto_cal","mode":"air"}` | Demarrer auto-cal airflow |
+| Range finder | `{"t":"auto_cal","mode":"range"}` | Detecter plage servo (sweep 0-180) |
+| Appliquer range | `{"t":"auto_cal","mode":"apply_range"}` | Appliquer resultats range finder |
 | Stop auto-cal | `{"t":"auto_cal","mode":"stop"}` | Arreter auto-cal en cours |
 
 ### Messages Serveur -> Client
@@ -255,12 +257,37 @@ Connexion persistante pour le controle temps reel et le monitoring.
   "t": "acal_done",
   "ok": true,
   "results": [
-    {"name": "A#5", "ok": true, "min": 15, "max": 65},
-    {"name": "B5", "ok": true, "min": 10, "max": 58},
-    {"name": "C6", "ok": false, "min": 0, "max": 0}
+    {"name": "A#5", "ok": true, "min": 15, "max": 65, "minA": 72, "maxA": 95},
+    {"name": "B5", "ok": true, "min": 10, "max": 58, "minA": 68, "maxA": 92},
+    {"name": "C6", "ok": false, "min": 0, "max": 0, "minA": 60, "maxA": 60}
   ]
 }
 ```
 
 - `results[].ok` : `true` si la calibration a reussi pour cette note
 - `results[].min` / `max` : pourcentages airflow detectes (0-100)
+- `results[].minA` / `maxA` : angles servo correspondants (degres)
+
+**Progression range finder :**
+```json
+{"t": "rf_prog", "angle": 85, "st": 8, "min": 42}
+```
+
+- `angle` : angle servo courant (0-180)
+- `st` : etat machine (6=prepare, 7=settle, 8=sweep)
+- `min` : angle minimum detecte (present seulement si deja trouve)
+
+**Resultat range finder :**
+```json
+{"t": "rf_done", "ok": true, "min": 42, "max": 135}
+```
+
+- `ok` : `true` si du son a ete detecte
+- `min` / `max` : angles servo detectes (degres)
+
+**Range finder applique :**
+```json
+{"t": "rf_applied", "min": 42, "max": 135}
+```
+
+Confirme que les valeurs `air_min` / `air_max` ont ete mises a jour dans la configuration.
