@@ -24,6 +24,7 @@ void ConfigStorage::initDefaults() {
     cfg.fingers[i].closedAngle = DEFAULT_FINGERS[i].closedAngle;
     cfg.fingers[i].direction = DEFAULT_FINGERS[i].direction;
     cfg.fingers[i].isThumbHole = DEFAULT_FINGERS[i].isThumbHole;
+    cfg.fingers[i].halfPercent = 0;  // 0 = use global halfHolePercent
   }
 
   // Load default note configs
@@ -200,6 +201,7 @@ bool ConfigStorage::load() {
       cfg.fingers[i].closedAngle = f["a"] | cfg.fingers[i].closedAngle;
       cfg.fingers[i].direction = f["d"] | cfg.fingers[i].direction;
       cfg.fingers[i].isThumbHole = f["th"] | (cfg.fingers[i].isThumbHole ? 1 : 0);
+      cfg.fingers[i].halfPercent = f["hp"] | cfg.fingers[i].halfPercent;
     }
   }
 
@@ -378,6 +380,9 @@ bool ConfigStorage::save() {
     f["d"] = cfg.fingers[i].direction;
     if (cfg.fingers[i].isThumbHole) {
       f["th"] = 1;
+    }
+    if (cfg.fingers[i].halfPercent > 0) {
+      f["hp"] = cfg.fingers[i].halfPercent;
     }
   }
 

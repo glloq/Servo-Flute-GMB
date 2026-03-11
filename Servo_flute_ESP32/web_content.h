@@ -325,6 +325,11 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
       <div id="kbdAirBox" style="display:none"><svg id="kbdAirSvg" viewBox="0 0 520 280" style="width:100%" preserveAspectRatio="xMinYMid meet"></svg></div>
       <div id="kbdFluteWrap"><svg id="fluteSvg" viewBox="0 0 400 100" preserveAspectRatio="xMinYMid meet"></svg></div>
     </div>
+    <div style="display:flex;gap:10px;font-size:.7em;color:#667;justify-content:center;padding:4px 0">
+      <span><span class="kf o" style="display:inline-block;vertical-align:middle"></span> Ouvert</span>
+      <span><span class="kf c" style="display:inline-block;vertical-align:middle"></span> Ferme</span>
+      <span><span class="kf h" style="display:inline-block;vertical-align:middle"></span> Demi</span>
+    </div>
     <div class="flute-info"><span id="fluteNote">-</span> <span id="fluteInfo" style="color:#555">Jouez une note</span></div>
     <div id="kbdAirStats" style="display:none;gap:8px;flex-wrap:wrap;font-size:.75em;padding:4px 8px;background:#0a0a1a;border-radius:0 0 8px 8px;justify-content:center">
       <span id="kbdStatPump" style="display:none;color:#9aa">Pompe <b id="kbdPumpVal">OFF</b></span>
@@ -463,6 +468,7 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
         <span><span class="fg-dot open" style="display:inline-block;width:12px;height:12px;vertical-align:middle"></span> Ouvert</span>
         <span><span class="fg-dot closed" style="display:inline-block;width:12px;height:12px;vertical-align:middle"></span> Ferme</span>
         <span><span class="fg-dot closed thumb" style="display:inline-block;width:12px;height:12px;vertical-align:middle"></span> Pouce</span>
+        <span><span class="fg-dot half" style="display:inline-block;width:12px;height:12px;vertical-align:middle"></span> Demi</span>
       </div>
       <div class="undo-bar">
         <button class="btn btn-s" id="undoBtn" onclick="undoFp()" disabled title="Ctrl+Z"><svg viewBox="0 0 16 16" width="12" height="12"><path d="M4 7h8a3 3 0 010 6H9" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M7 4L4 7l3 3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>Annuler</button>
@@ -3361,7 +3367,12 @@ function buildFingerCards(){
       '<input type="range" min="0" max="180" value="'+f.a+'" id="fa'+i+'" style="width:100%"'+
         ' oninput="CFG.fingers['+i+'].a=parseInt(this.value);$(\'fav'+i+'\').textContent=this.value+\'&deg;\';testFinger('+i+',parseInt(this.value))"></div>'+
       '<div class="btn-row"><button class="btn btn-s" onclick="testPulse(this);testFinger('+i+',CFG.fingers['+i+'].a)">Fermer</button>'+
-        '<button class="btn btn-s" onclick="testPulse(this);testFinger('+i+',CFG.fingers['+i+'].a+(CFG.angle_open||30)*CFG.fingers['+i+'].d)">Ouvrir</button></div>'+
+        '<button class="btn btn-s" onclick="testPulse(this);testFinger('+i+',CFG.fingers['+i+'].a+(CFG.angle_open||30)*CFG.fingers['+i+'].d)">Ouvrir</button>'+
+        '<button class="btn btn-s" onclick="testPulse(this);testFingerHalf('+i+')">Demi</button></div>'+
+      '<div style="margin:6px 0"><div style="display:flex;justify-content:space-between;font-size:.75em;color:#888;margin-bottom:2px">'+
+        '<span>Demi %</span><span id="fhpv'+i+'">'+(f.hp||0)+'% <span style="color:#555">'+(f.hp?'':'(global)')+'</span></span></div>'+
+        '<input type="range" min="0" max="100" value="'+(f.hp||0)+'" id="fhp'+i+'" style="width:100%"'+
+          ' oninput="CFG.fingers['+i+'].hp=parseInt(this.value);$(\'fhpv'+i+'\').innerHTML=this.value+\'% <span style=color:#555>\'+(this.value>0?\'\':\'(global)\')+\'</span>\';markDirty()"></div>'+
       '<div class="pca-warn"></div>';
     d.innerHTML=html;c.appendChild(d)
   }
@@ -3386,7 +3397,7 @@ function selectInstrument(val){
   const p=PR.find(x=>x.id===val);if(!p)return;
   // Step 1 = config physique seulement (trous + pouce + embouchure), pas les notes
   CFG.num_fingers=p.h;CFG.embouchure=p.em||'bec';
-  while(CFG.fingers.length<p.h)CFG.fingers.push({ch:CFG.fingers.length,a:90,d:-1,th:0});
+  while(CFG.fingers.length<p.h)CFG.fingers.push({ch:CFG.fingers.length,a:90,d:-1,th:0,hp:0});
   CFG.fingers.forEach(f=>f.th=0);
   if(p.th>=0&&CFG.fingers[p.th])CFG.fingers[p.th].th=1;
   // Rebuild UI physique
@@ -3395,9 +3406,11 @@ function selectInstrument(val){
 }
 
 function testFinger(i,a){wsSend({t:'test_finger',i:i,a:parseInt(a)});
-  // Update flute SVG
   const el=$('fh_calFluteSvg_'+i);if(el){const closed=CFG.fingers[i].a;const open=Math.abs(a-closed)>(CFG.angle_open||30)/2;
     el.setAttribute('class','flute-hole '+(open?'open':'closed')+(CFG.fingers[i].th?' thumb':''))}}
+function testFingerHalf(i){const f=CFG.fingers[i];const hp=f.hp||CFG.half_hole_pct||50;
+  const a=f.a+Math.round((CFG.angle_open||30)*f.d*hp/100);testFinger(i,a);
+  const el=$('fh_calFluteSvg_'+i);if(el)el.setAttribute('class','flute-hole half'+(f.th?' thumb':''))}
 
 function saveStep1(){
   if(!CFG)return;btnLoad('btnSaveStep1',true);
@@ -3406,7 +3419,8 @@ function saveStep1(){
     CFG.fingers[i].ch=parseInt($('fch'+i).value);
     CFG.fingers[i].a=parseInt($('fa'+i).value);
     CFG.fingers[i].d=parseInt($('fd'+i).value);
-    const thEl=$('fth'+i);CFG.fingers[i].th=thEl?thEl.checked?1:0:0
+    const thEl=$('fth'+i);CFG.fingers[i].th=thEl?thEl.checked?1:0:0;
+    CFG.fingers[i].hp=parseInt($('fhp'+i).value)||0
   }
   const body={num_fingers:CFG.num_fingers,air_pca:CFG.air_pca,angle_open:CFG.angle_open,half_hole_pct:CFG.half_hole_pct,embouchure:CFG.embouchure||'bec',fingers:CFG.fingers.slice(0,CFG.num_fingers)};
   fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
