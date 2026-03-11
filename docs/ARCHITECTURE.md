@@ -105,8 +105,9 @@ Si `MIC_ENABLED` est `true` dans `settings.h` et qu'un micro INMP441 est detecte
 
 ### AutoCalibrator
 
-Machine d'etat pour la calibration automatique du debit d'air :
+Deux modes de calibration automatique :
 
+**Mode airflow (per-note) :**
 ```
 IDLE --> PREPARE --> SETTLE --> SWEEP --> NOTE_DONE --> (note suivante ou COMPLETE)
 ```
@@ -116,6 +117,16 @@ IDLE --> PREPARE --> SETTLE --> SWEEP --> NOTE_DONE --> (note suivante ou COMPLE
 - **SWEEP** : augmente progressivement l'angle airflow, detecte le debut du son (RMS > seuil + pitch correct) et la fin (silence apres son)
 - **NOTE_DONE** : stocke air_min/air_max, passe a la note suivante
 - **COMPLETE** : applique les resultats a la config et sauvegarde
+
+**Mode range finder (detection plage servo globale) :**
+```
+IDLE --> RF_PREPARE --> RF_SETTLE --> RF_SWEEP --> RF_COMPLETE
+```
+
+- **RF_PREPARE** : positionne les doigts pour la note du milieu de la tessiture
+- **RF_SETTLE** : attend la stabilisation
+- **RF_SWEEP** : balaye 0→180 degres a 100ms/pas, detecte debut/fin du son
+- **RF_COMPLETE** : resultats disponibles (min/max angles), appliques sur demande
 
 ### Broadcast audio
 

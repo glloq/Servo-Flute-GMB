@@ -1,6 +1,6 @@
 # Audit Complet du Code - Servo Flute ESP32
 
-**Date**: 2026-03-10
+**Date**: 2026-03-11 (mis a jour)
 **Version auditee**: ESP32 1.1
 **Fichiers analyses**: 38 fichiers (.ino, .h, .cpp, .md)
 
@@ -230,11 +230,9 @@ Le code est globalement **bien structure et fonctionnel**. L'architecture modula
 - `analyzeBuffer()` est appele seulement si `_validSamples > 0`, donc en pratique la division par zero ne se produit pas.
 - **Impact**: Aucun en pratique grace au guard dans `update()`.
 
-**[MINEUR] AutoCalibrator NOTE_DONE ecrit le resultat a chaque update()**
-- Fichier: `AutoCalibrator.cpp:162-188`
-- Dans l'etat `ACAL_NOTE_DONE`, le code de stockage s'execute a chaque appel `update()` tant que `elapsed < AUTOCAL_STORE_DELAY_MS`. Avec `AUTOCAL_STORE_DELAY_MS = 10ms` et le loop() a ~1ms, le resultat et la fermeture solenoide sont executes ~10 fois.
-- **Impact**: La fermeture solenoide et l'ecriture resultat sont idempotentes (memes valeurs reecrites). Pas de bug fonctionnel mais travail redondant.
-- **Fix recommande**: Ajouter un flag `_noteResultStored` pour n'executer le stockage qu'une fois.
+**[CORRIGE] AutoCalibrator NOTE_DONE ecrit le resultat a chaque update()**
+- Fichier: `AutoCalibrator.cpp:179-208`
+- **Corrige** : flag `_noteDoneHandled` ajoute pour n'executer le stockage et la fermeture solenoide qu'une seule fois a l'entree dans l'etat NOTE_DONE.
 
 ---
 
@@ -352,11 +350,33 @@ Le code est globalement **bien structure et fonctionnel**. L'architecture modula
 | 1 | MINEUR | WifiMidiHandler | SSID non-echappe dans JSON scan | cpp:236 |
 | 2 | MINEUR | MidiFilePlayer | Boucle potentielle sur chunks inconnus | cpp:244 |
 | 3 | MINEUR | AirflowController | CC73 modifie cfg directement | cpp:423 |
-| 4 | MINEUR | AutoCalibrator | Stockage resultat repete dans NOTE_DONE | cpp:162 |
+| 4 | ~~MINEUR~~ | AutoCalibrator | ~~Stockage resultat repete dans NOTE_DONE~~ | **CORRIGE** |
 | 5 | INFO | ConfigStorage | Mot de passe WiFi en clair | cpp:451 |
 | 6 | INFO | MidiFilePlayer | Allocation fixe 16KB pour events | cpp:20 |
 
 **Aucun probleme critique ou bloquant detecte.**
+
+---
+
+## Corrections appliquees (2026-03-11)
+
+| Fix | Description |
+|-----|-------------|
+| NOTE_DONE repeated | Flag `_noteDoneHandled` empeche l'execution repetee |
+| `applyRangeResults()` | Condition `>= 0` au lieu de `> 0` pour accepter angle 0 |
+| `start()` safe restart | Appelle `stop()` si un mode tourne deja avant d'en lancer un autre |
+| UI exclusion mutuelle | Les boutons range finder / auto-cal se desactivent mutuellement |
+| `stopRangeFinder()` | Cache la barre de progression a l'arret manuel |
+| `rf_applied` rebuild | Reconstruit les airflow rows apres application des nouvelles plages |
+
+### Ajouts fonctionnels
+
+| Feature | Description |
+|---------|-------------|
+| Range finder | Mode `ACAL_MODE_RANGE_FIND` — sweep 0-180 pour detecter plage servo |
+| Legendes demi-ouvert | Ajoutees dans l'editeur de doigtes (Step 2) et le tab clavier |
+| Demi-ouverture per-doigt | `FingerConfig.halfPercent` (0 = global, 1-100 = override) |
+| Angles dans resultats | `acal_done` inclut `minA`/`maxA` (degres) + affichage `pctToAngle` |
 
 ---
 
