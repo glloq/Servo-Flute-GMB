@@ -991,8 +991,8 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
 
   <div class="section"><h3>MIDI Serial (DIN)</h3>
     <div class="cfg-row"><label>Activer</label><input type="checkbox" id="cfgSmidiOn" style="width:auto;flex:0"></div>
-    <div class="cfg-row"><label>Pin RX (GPIO)</label><input type="number" id="cfgSmidiRx" min="0" max="39" style="width:70px"></div>
-    <div style="font-size:.7em;color:#666;margin-top:2px">Connecter un circuit MIDI DIN (optocoupler) au GPIO choisi. Redemarrage requis apres changement.</div>
+    <div class="cfg-row"><label>Pin RX (GPIO)</label><select id="cfgSmidiRx" style="width:auto"><option value="16">16 (RX2)</option><option value="17">17</option><option value="18">18</option><option value="19">19</option><option value="23">23</option><option value="25">25</option><option value="26">26</option><option value="27">27</option><option value="33">33</option><option value="34">34 (input only)</option><option value="35">35 (input only)</option><option value="36">36 (input only)</option><option value="39">39 (input only)</option></select></div>
+    <div style="font-size:.7em;color:#666;margin-top:2px">Connecter un circuit optocoupler MIDI DIN au GPIO choisi. Les pins 34-39 sont en entree uniquement (ideal pour RX). Redemarrage requis.</div>
   </div>
 
   <div class="section"><h3>Timing des notes</h3>

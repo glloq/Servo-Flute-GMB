@@ -46,6 +46,39 @@ Portage de la Servo Flute v3 (Arduino Leonardo) vers l'ESP32-WROOM-32E, ajoutant
 | 14 | INMP441 BCLK (optionnel) |
 | 15 | INMP441 LRCLK/WS (optionnel) |
 | 32 | INMP441 DIN/SD (optionnel) |
+| 16 | MIDI Serial RX (optionnel, configurable) |
+
+### Branchement MIDI DIN (optionnel)
+
+Pour recevoir du MIDI depuis un module hardware (clavier, sequenceur, pedalier...) via une prise DIN 5 broches standard.
+
+**Composants necessaires :**
+
+| Composant | Ref | Role |
+|-----------|-----|------|
+| Optocoupler | 6N138 (ou H11L1) | Isolation galvanique |
+| Diode | 1N4148 | Protection inversion |
+| Resistance | 220 ohm | Limitation courant LED opto |
+| Resistance | 470 ohm | Pull-up sortie opto |
+| Connecteur | DIN-5 femelle (chassis) | Prise MIDI standard |
+
+**Schema de cablage :**
+
+```
+DIN-5 pin 5 ──── 220R ──── 6N138 pin 2 (anode)
+DIN-5 pin 4 ──┬─ 1N4148 ── 6N138 pin 3 (cathode)
+              │    (cathode vers pin 2)
+              GND
+
+6N138 pin 8 (Vcc) ── 3.3V
+6N138 pin 5 (GND) ── GND
+6N138 pin 6 (out) ──┬── 470R ── 3.3V
+                     └── ESP32 GPIO (RX)
+```
+
+> **Important** : Alimenter le 6N138 en **3.3V** (pas 5V) car les GPIO ESP32 ne tolerent pas le 5V.
+> Le GPIO RX est configurable dans Reglages > MIDI Serial. Par defaut : GPIO 16.
+> Les pins 34-39 sont en entree uniquement et conviennent parfaitement.
 
 ### Canaux PCA9685
 

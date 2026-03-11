@@ -585,7 +585,14 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
     // --- Scalaires ---
     if (doc.containsKey("midi_ch")) cfg.midiChannel = doc["midi_ch"];
     if (doc.containsKey("smidi_on")) cfg.serialMidiEnabled = doc["smidi_on"].as<bool>();
-    if (doc.containsKey("smidi_rx")) cfg.serialMidiRxPin = doc["smidi_rx"];
+    if (doc.containsKey("smidi_rx")) {
+      uint8_t pin = doc["smidi_rx"];
+      // Valider que le GPIO est dans la liste autorisee
+      const uint8_t validPins[] = {16,17,18,19,23,25,26,27,33,34,35,36,39};
+      for (uint8_t i = 0; i < sizeof(validPins); i++) {
+        if (pin == validPins[i]) { cfg.serialMidiRxPin = pin; break; }
+      }
+    }
     if (doc.containsKey("servo_delay")) cfg.servoToSolenoidDelayMs = doc["servo_delay"];
     if (doc.containsKey("valve_interval")) cfg.minNoteIntervalForValveCloseMs = doc["valve_interval"];
     if (doc.containsKey("min_note_dur")) cfg.minNoteDurationMs = doc["min_note_dur"];
