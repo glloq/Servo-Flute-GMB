@@ -2768,7 +2768,7 @@ function handleWs(d){
     $('acalState').textContent=sn[d.st]||'...';
     $('acalAngle').textContent=d.st===3&&d.angle!=null?(d.angle+' deg'):''
   }else if(d.t==='acal_done'){
-    autoCalRunning=false;$('btnAcalStart').style.display='';$('btnAcalStop').style.display='none';
+    autoCalRunning=false;$('btnAcalStart').style.display='';$('btnAcalStop').style.display='none';$('btnRfStart').style.display='';
     $('acalFill').style.width='100%';$('acalState').textContent='Termine !';$('acalAngle').textContent='';addLog('Auto-cal OK');
     if(d.results){let h='';d.results.forEach(r=>{h+='<div style="display:flex;justify-content:space-between;font-size:.8em;padding:2px 0">'+
       '<span>'+esc(r.name)+'</span><span style="color:'+(r.ok?'#4ecca3':'#e94560')+'">'+(r.ok?esc(r.min+'%-'+r.max+'%'+(r.minA!=null?' ('+r.minA+'deg-'+r.maxA+'deg)':'')):'Echec')+'</span></div>'});
@@ -2779,7 +2779,8 @@ function handleWs(d){
     $('rfFill').style.width=((d.angle||0)/180*100)+'%';
     if(d.min!=null)$('rfStep').textContent='Min: '+d.min+' deg - Sweep...';
   }else if(d.t==='rf_done'){
-    $('btnRfStart').style.display='';$('btnRfStop').style.display='none';$('rfFill').style.width='100%';
+    $('btnRfStart').style.display='';$('btnRfStop').style.display='none';$('btnAcalStart').style.display='';
+    $('rfFill').style.width='100%';
     if(d.ok&&d.min!=null){$('rfMinVal').textContent=d.min;$('rfMaxVal').textContent=d.max;
       $('rfResult').style.display='block';$('rfStep').textContent='Plage detectee !'}
     else{$('rfStep').textContent='Aucun son detecte'}
@@ -2788,7 +2789,7 @@ function handleWs(d){
     $('rfProgress').style.display='none';$('btnRfStart').style.display='';
     if(CFG){CFG.air_min=d.min;CFG.air_max=d.max}
     if($('cfgAirMin'))$('cfgAirMin').value=d.min;if($('cfgAirMax'))$('cfgAirMax').value=d.max;
-    setTimeout(loadConfig,500)
+    buildAirflowRows();setTimeout(loadConfig,500)
   }
 }
 function updateCC(n,v){if(v===undefined)return;const p=(v/MIDI_CC_MAX*100).toFixed(0);
@@ -3519,15 +3520,18 @@ function testCalNote(midi){wsSend({t:'test_note',n:midi});wsSend({t:'test_sol',o
   setTimeout(()=>wsSend({t:'test_sol',o:0}),TEST_SOL_MS)}
 
 function startRangeFinder(){$('btnRfStart').style.display='none';$('btnRfStop').style.display='';
+  $('btnAcalStart').style.display='none';
   $('rfProgress').style.display='block';$('rfResult').style.display='none';wsSend({t:'auto_cal',mode:'range'})}
 function stopRangeFinder(){$('btnRfStart').style.display='';$('btnRfStop').style.display='none';
-  wsSend({t:'auto_cal',mode:'stop'})}
+  $('btnAcalStart').style.display='';
+  $('rfProgress').style.display='none';wsSend({t:'auto_cal',mode:'stop'})}
 function applyRangeResult(){wsSend({t:'auto_cal',mode:'apply_range'})}
 function dismissRangeResult(){$('rfProgress').style.display='none';$('btnRfStart').style.display='';$('btnRfStop').style.display='none'}
 function startAutoCal(){autoCalRunning=true;$('btnAcalStart').style.display='none';$('btnAcalStop').style.display='';
+  $('btnRfStart').style.display='none';
   $('acalProgress').style.display='block';$('acalResults').style.display='none';wsSend({t:'auto_cal',mode:'air'})}
 function stopAutoCal(){autoCalRunning=false;$('btnAcalStart').style.display='';$('btnAcalStop').style.display='none';
-  wsSend({t:'auto_cal',mode:'stop'})}
+  $('btnRfStart').style.display='';wsSend({t:'auto_cal',mode:'stop'})}
 
 function saveStep3(){
   if(!CFG)return;btnLoad('btnSaveStep3',true);
