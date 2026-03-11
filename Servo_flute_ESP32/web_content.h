@@ -925,12 +925,13 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
     </div>
 
     <!-- BLOCK: Servo Angle (traversiere only) -->
-    <div class="air-block active" id="airBlockAngle" style="display:none">
+    <div class="air-block" id="airBlockAngle" style="display:none">
       <div class="air-block-hdr" tabindex="0" role="button" aria-label="Configuration servo angle" onclick="toggleAirBlock('airBlockAngle')" onkeydown="toggleAirBlock('airBlockAngle',event)">
         <h4><svg viewBox="0 0 16 16" width="14" height="14"><path d="M3 13L13 3M13 3v5M13 3H8" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>Servo Angle</h4>
+        <div class="air-block-toggle" id="airBlockAngleToggle" role="switch" aria-checked="false" onclick="event.stopPropagation();toggleAngleServo()"></div>
       </div>
       <div class="air-block-body">
-        <p style="font-size:.75em;color:#888;margin:0 0 8px">Oriente le jet d'air sur le biseau de la flute traversiere. Visible uniquement en mode traversiere.</p>
+        <p style="font-size:.75em;color:#888;margin:0 0 8px">Oriente le jet d'air sur le biseau de la flute traversiere.</p>
         <div class="cfg-row"><label>Canal PCA</label>
           <select id="cfgAngleCh" style="max-width:80px" title="Canal PCA9685 pour le servo angle (ne pas utiliser le meme que flow ou doigts)"></select>
         </div>
@@ -1224,7 +1225,7 @@ function updUndoUI(){$('undoBtn').disabled=!fpHistory.length;$('redoBtn').disabl
   $('undoInfo').textContent=fpHistory.length?fpHistory.length+' modif.':''}
 function checkPca(){if(!CFG)return;const used={};const airP=parseInt($('airPca').value);used[airP]='Souffle';
   if(CFG.valve_type===1){const vch=CFG.valve_ch;if(vch!==undefined)used[vch]='Valve servo'}
-  if(CFG.embouchure==='trav'){const ach=CFG.angle_ch!=null?CFG.angle_ch:12;used[ach]='Servo Angle'}
+  if(CFG.embouchure==='trav'&&CFG.angle_on){const ach=CFG.angle_ch!=null?CFG.angle_ch:12;used[ach]='Servo Angle'}
   document.querySelectorAll('.cal-card').forEach((card,i)=>{const ch=CFG.fingers[i]?CFG.fingers[i].ch:i;
     let conflict=used[ch]!==undefined;card.classList.toggle('pca-conflict',conflict);
     const w=card.querySelector('.pca-warn');if(w)w.textContent=conflict?'Conflit PCA '+ch+' avec '+used[ch]:'';
@@ -1721,6 +1722,14 @@ function toggleAirBlockEnable(id){
   syncAirModeFromToggles();
   markDirty();
 }
+function toggleAngleServo(){
+  const tg=$('airBlockAngleToggle');if(!tg)return;
+  const on=tg.classList.toggle('on');
+  tg.setAttribute('aria-checked',on?'true':'false');
+  const bl=$('airBlockAngle');
+  if(bl){bl.classList.toggle('disabled',!on);if(on)bl.classList.add('active');else bl.classList.remove('active')}
+  validateAirConfig();markDirty();
+}
 function toggleValveParams(noMark){
   const isSol=$('airValveType').value==='0';
   const solP=$('airValveSolParams');if(solP)solP.style.display=isSol?'':'none';
@@ -1851,8 +1860,9 @@ function validateAirConfig(){
     const ach=CFG?CFG.air_pca||10:10;
     if(vch===ach){warns.push('Valve: canal PCA '+vch+' deja utilise par servo flow');errBlocks.add('airBlockValve')}
   }
-  // Servo angle conflict (traversiere)
-  if(CFG&&CFG.embouchure==='trav'){
+  // Servo angle conflict (traversiere, only if enabled)
+  const _angleOn=$('airBlockAngleToggle')&&$('airBlockAngleToggle').classList.contains('on');
+  if(CFG&&CFG.embouchure==='trav'&&_angleOn){
     const angleCh=parseInt($('cfgAngleCh').value)||12;
     const ach=CFG.air_pca||10;
     if(angleCh===ach){warns.push('Servo Angle: canal PCA '+angleCh+' deja utilise par servo flow');errBlocks.add('airBlockAngle')}
@@ -1918,7 +1928,11 @@ function saveAirSettings(){
     d.vlv_close=parseInt($('cfgVlvClose').value)||0;d.vlv_open=parseInt($('cfgVlvOpen').value)||90;
     d.vlv_dir=parseInt($('cfgVlvDir').value)||0}
   // Servo angle (traversiere)
-  if(CFG&&CFG.embouchure==='trav'){d.angle_ch=parseInt($('cfgAngleCh').value)||12}
+  if(CFG&&CFG.embouchure==='trav'){
+    const angleOn=$('airBlockAngleToggle')&&$('airBlockAngleToggle').classList.contains('on');
+    d.angle_on=angleOn;
+    if(angleOn)d.angle_ch=parseInt($('cfgAngleCh').value)||12;
+  }
   if(m===3){d.fan_pin=parseInt($('airFanPin').value)||26;d.fan_min=parseInt($('airFanMin').value)||60;d.fan_max=parseInt($('airFanMax').value)||255;
     d.fan_idle_pct=parseInt($('airFanIdlePct').value)||0;d.fan_idle_timeout=parseInt($('airFanIdleTimeout').value)||0}
   if(m>=4){
@@ -2080,6 +2094,11 @@ function fillAirSettings(){
       const sel=$('cfgAngleCh');sel.innerHTML='';
       for(let i=0;i<16;i++){const o=document.createElement('option');o.value=i;o.textContent='PCA '+i;sel.appendChild(o)}
       sel.value=CFG.angle_ch!=null?CFG.angle_ch:12;
+      const aOn=!!CFG.angle_on;
+      const tg=$('airBlockAngleToggle');
+      if(tg){tg.classList.toggle('on',aOn);tg.setAttribute('aria-checked',aOn?'true':'false')}
+      angleBlock.classList.toggle('disabled',!aOn);
+      angleBlock.classList.toggle('active',aOn);
     }
   }
   // Show air checkbox
@@ -2210,7 +2229,7 @@ function buildAirSvg(svgId,full){
       s+='<rect x="'+(flX+4)+'" y="'+fluteY+'" width="'+fluteW+'" height="'+fluteH+'" rx="10" fill="'+(CFG.color||'#D4B044')+'" stroke="#a89030" stroke-width="1" opacity=".8"/>';
       s+='<ellipse cx="'+blowX+'" cy="'+(fluteY+3)+'" rx="5" ry="2.5" fill="#5C4A0A" opacity=".6"/>';
       s+='<text x="'+(flX+4+fluteW/2)+'" y="'+(fluteY+fluteH/2+4)+'" text-anchor="middle" style="font-size:9px;fill:#333;font-weight:bold">Flute</text>';
-      s+=svgServoAngle(blowX+20,pivotY+8);
+      if(CFG.angle_on)s+=svgServoAngle(blowX+20,pivotY+8);
     }else{
       // Full mode + bec/naf/oca: horizontal pipe to flute left side
       s+='<line x1="'+(pivotX+4)+'" y1="'+pivotY+'" x2="'+flX+'" y2="'+pivotY+'" stroke="#7799bb" stroke-width="3"/>';
@@ -2383,7 +2402,7 @@ function buildAirSvg(svgId,full){
       s+='<rect x="'+(flX+4)+'" y="'+_fy+'" width="70" height="24" rx="10" fill="'+(CFG.color||'#D4B044')+'" stroke="#a89030" stroke-width="1" opacity=".8"/>';
       s+='<ellipse cx="'+_bx+'" cy="'+(_fy+3)+'" rx="5" ry="2.5" fill="#5C4A0A" opacity=".6"/>';
       s+='<text x="'+(flX+39)+'" y="'+(_fy+16)+'" text-anchor="middle" style="font-size:9px;fill:#333;font-weight:bold">Flute</text>';
-      s+=svgServoAngle(_bx+20,svCy+8);
+      if(CFG.angle_on)s+=svgServoAngle(_bx+20,svCy+8);
     }else{
       s+='<line x1="'+(vx+svW/2)+'" y1="'+svCy+'" x2="'+flX+'" y2="'+svCy+'" stroke="#7799bb" stroke-width="3"/>';
       s+='<line class="airFlowAnim" x1="'+(vx+svW/2)+'" y1="'+svCy+'" x2="'+flX+'" y2="'+svCy+'"/>';
@@ -2417,7 +2436,7 @@ function buildAirSvg(svgId,full){
       s+='<rect x="'+(flX+4)+'" y="'+_fy2+'" width="70" height="24" rx="10" fill="'+(CFG.color||'#D4B044')+'" stroke="#a89030" stroke-width="1" opacity=".8"/>';
       s+='<ellipse cx="'+_bx2+'" cy="'+(_fy2+3)+'" rx="5" ry="2.5" fill="#5C4A0A" opacity=".6"/>';
       s+='<text x="'+(flX+39)+'" y="'+(_fy2+16)+'" text-anchor="middle" style="font-size:9px;fill:#333;font-weight:bold">Flute</text>';
-      s+=svgServoAngle(_bx2+20,teeY+8);
+      if(CFG.angle_on)s+=svgServoAngle(_bx2+20,teeY+8);
     }else{
       s+='<line x1="'+(svX+36)+'" y1="'+teeY+'" x2="'+flX+'" y2="'+teeY+'" stroke="#7799bb" stroke-width="3"/>';
       s+='<line class="airFlowAnim" x1="'+(svX+36)+'" y1="'+teeY+'" x2="'+flX+'" y2="'+teeY+'"/>';

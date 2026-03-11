@@ -147,6 +147,7 @@ struct RuntimeConfig {
   uint16_t hallThresholdLow;        // Seuil bas analogique
   uint16_t hallThresholdHigh;       // Seuil haut analogique
   // Servo angle (traversiere: oriente le jet d'air sur le biseau)
+  bool angleServoEnabled;              // true = utiliser servo angle (traversiere)
   uint8_t angleServoPcaChannel;      // Canal PCA9685 servo angle (traversiere)
 
   // UI
