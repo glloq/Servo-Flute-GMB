@@ -37,6 +37,7 @@ public:
 
   void allSoundOff();
   void resetAllControllers();
+  void powerOnServos();
 
   // Calibration : acces direct aux controleurs
   FingerController& getFingerCtrl() { return _fingerCtrl; }
@@ -71,7 +72,6 @@ private:
   unsigned long _cc2WindowStart;
 
   void managePower();
-  void powerOnServos();
   void powerOffServos();
 
   // Fan idle: track sequencer state transitions
