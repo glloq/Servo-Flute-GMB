@@ -493,12 +493,31 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
         <span class="pitch-hz" id="pitchHz">- Hz</span>
         <span class="pitch-cents ok" id="pitchCents">-</span>
       </div>
+      <p style="font-size:.78em;color:#888;margin:4px 0">Detection automatique de la plage servo (min/max) en balayant 0-180 degres.</p>
+      <div class="btn-row" style="margin-bottom:8px">
+        <button class="btn btn-s" id="btnRfStart" onclick="startRangeFinder()">Detecter plage servo</button>
+        <button class="btn btn-p" id="btnRfStop" onclick="stopRangeFinder()" style="display:none">Arreter</button>
+      </div>
+      <div class="acal-progress" id="rfProgress" style="display:none">
+        <div class="acal-info"><span id="rfStep">Sweep 0-180 deg...</span><span id="rfAngle">0 deg</span></div>
+        <div class="acal-bar"><div class="acal-fill" id="rfFill"></div></div>
+        <div id="rfResult" style="margin-top:8px;display:none">
+          <div style="font-size:.85em;padding:8px;background:rgba(78,204,163,.08);border-radius:6px">
+            <span>Min detecte: <b id="rfMinVal">-</b> deg</span> &mdash;
+            <span>Max detecte: <b id="rfMaxVal">-</b> deg</span>
+            <div class="btn-row" style="margin-top:8px">
+              <button class="btn btn-g btn-s" onclick="applyRangeResult()">Appliquer</button>
+              <button class="btn btn-s" onclick="dismissRangeResult()">Ignorer</button>
+            </div>
+          </div>
+        </div>
+      </div>
       <div class="btn-row">
         <button class="btn btn-g" id="btnAcalStart" onclick="startAutoCal()">Auto-calibrer toutes les notes</button>
         <button class="btn btn-p" id="btnAcalStop" onclick="stopAutoCal()" style="display:none">Arreter</button>
       </div>
       <div class="acal-progress" id="acalProgress">
-        <div class="acal-info"><span id="acalStep">-</span><span id="acalState">-</span></div>
+        <div class="acal-info"><span id="acalStep">-</span><span id="acalState">-</span><span id="acalAngle"></span></div>
         <div class="acal-bar"><div class="acal-fill" id="acalFill"></div></div>
         <div id="acalResults" style="margin-top:8px;display:none"></div>
       </div>
@@ -2718,14 +2737,30 @@ function handleWs(d){
     $('acalProgress').style.display='block';$('acalStep').textContent='Note '+(d.idx+1)+'/'+d.total+' '+d.note;
     $('acalFill').style.width=(((d.idx||0)/(d.total||1))*100)+'%';
     const sn={0:'Attente',1:'Prep',2:'Stab',3:'Sweep...',4:'Analyse',5:'OK'};
-    $('acalState').textContent=sn[d.st]||'...'
+    $('acalState').textContent=sn[d.st]||'...';
+    $('acalAngle').textContent=d.st===3&&d.angle!=null?(d.angle+' deg'):''
   }else if(d.t==='acal_done'){
     autoCalRunning=false;$('btnAcalStart').style.display='';$('btnAcalStop').style.display='none';
-    $('acalFill').style.width='100%';$('acalState').textContent='Termine !';addLog('Auto-cal OK');
+    $('acalFill').style.width='100%';$('acalState').textContent='Termine !';$('acalAngle').textContent='';addLog('Auto-cal OK');
     if(d.results){let h='';d.results.forEach(r=>{h+='<div style="display:flex;justify-content:space-between;font-size:.8em;padding:2px 0">'+
-      '<span>'+esc(r.name)+'</span><span style="color:'+(r.ok?'#4ecca3':'#e94560')+'">'+(r.ok?esc(r.min+'%-'+r.max+'%'):'Echec')+'</span></div>'});
+      '<span>'+esc(r.name)+'</span><span style="color:'+(r.ok?'#4ecca3':'#e94560')+'">'+(r.ok?esc(r.min+'%-'+r.max+'%'+(r.minA!=null?' ('+r.minA+'deg-'+r.maxA+'deg)':'')):'Echec')+'</span></div>'});
       $('acalResults').innerHTML=h;$('acalResults').style.display='block'}
     setTimeout(loadConfig,1000)
+  }else if(d.t==='rf_prog'){
+    $('rfProgress').style.display='block';$('rfAngle').textContent=(d.angle||0)+' deg';
+    $('rfFill').style.width=((d.angle||0)/180*100)+'%';
+    if(d.min!=null)$('rfStep').textContent='Min: '+d.min+' deg - Sweep...';
+  }else if(d.t==='rf_done'){
+    $('btnRfStart').style.display='';$('btnRfStop').style.display='none';$('rfFill').style.width='100%';
+    if(d.ok&&d.min!=null){$('rfMinVal').textContent=d.min;$('rfMaxVal').textContent=d.max;
+      $('rfResult').style.display='block';$('rfStep').textContent='Plage detectee !'}
+    else{$('rfStep').textContent='Aucun son detecte'}
+  }else if(d.t==='rf_applied'){
+    showToast('Plage servo mise a jour: '+d.min+'deg-'+d.max+'deg','success');
+    $('rfProgress').style.display='none';$('btnRfStart').style.display='';
+    if(CFG){CFG.air_min=d.min;CFG.air_max=d.max}
+    if($('cfgAirMin'))$('cfgAirMin').value=d.min;if($('cfgAirMax'))$('cfgAirMax').value=d.max;
+    setTimeout(loadConfig,500)
   }
 }
 function updateCC(n,v){if(v===undefined)return;const p=(v/MIDI_CC_MAX*100).toFixed(0);
@@ -3416,6 +3451,7 @@ function saveStep2(){
 }
 
 // --- STEP 3: AIRFLOW ---
+function pctToAngle(pct){if(!CFG)return'?';const mn=CFG.air_min||0,mx=CFG.air_max||180;return Math.round(mn+(mx-mn)*pct/100)}
 function buildAirflowRows(){
   const c=$('airflowRows');c.innerHTML='';if(!CFG)return;
   CFG.notes.forEach((n,ni)=>{
@@ -3424,10 +3460,10 @@ function buildAirflowRows(){
     d.innerHTML='<span class="air-note">'+mn(n.midi)+'</span>'+
       '<span class="kf-row" style="gap:2px">'+dots+'</span>'+
       '<div class="air-sliders">'+
-        '<div class="air-vals"><span>Min: <b id="amn'+ni+'">'+n.amn+'</b>%</span><span>Max: <b id="amx'+ni+'">'+n.amx+'</b>%</span></div>'+
+        '<div class="air-vals"><span>Min: <b id="amn'+ni+'">'+n.amn+'</b>% (<b id="amnA'+ni+'">'+pctToAngle(n.amn)+'</b>deg)</span><span>Max: <b id="amx'+ni+'">'+n.amx+'</b>% (<b id="amxA'+ni+'">'+pctToAngle(n.amx)+'</b>deg)</span></div>'+
         '<div class="dual-range"><div class="dual-range-track"></div><div class="dual-range-fill" id="drf'+ni+'"></div>'+
-        '<input type="range" min="0" max="100" value="'+n.amn+'" oninput="CFG.notes['+ni+'].amn=parseInt(this.value);$(\'amn'+ni+'\').textContent=this.value;updDualFill('+ni+');markDirty()">'+
-        '<input type="range" min="0" max="100" value="'+n.amx+'" oninput="CFG.notes['+ni+'].amx=parseInt(this.value);$(\'amx'+ni+'\').textContent=this.value;updDualFill('+ni+');markDirty()"></div>'+
+        '<input type="range" min="0" max="100" value="'+n.amn+'" oninput="CFG.notes['+ni+'].amn=parseInt(this.value);$(\'amn'+ni+'\').textContent=this.value;$(\'amnA'+ni+'\').textContent=pctToAngle(this.value);updDualFill('+ni+');markDirty()">'+
+        '<input type="range" min="0" max="100" value="'+n.amx+'" oninput="CFG.notes['+ni+'].amx=parseInt(this.value);$(\'amx'+ni+'\').textContent=this.value;$(\'amxA'+ni+'\').textContent=pctToAngle(this.value);updDualFill('+ni+');markDirty()"></div>'+
       '</div>'+
       '<button class="btn btn-s" style="padding:4px 8px;font-size:.75em" onclick="testPulse(this);testCalNote('+n.midi+')">Test</button>';
     c.appendChild(d);updDualFill(ni)
@@ -3437,6 +3473,12 @@ function buildAirflowRows(){
 function testCalNote(midi){wsSend({t:'test_note',n:midi});wsSend({t:'test_sol',o:1});
   setTimeout(()=>wsSend({t:'test_sol',o:0}),TEST_SOL_MS)}
 
+function startRangeFinder(){$('btnRfStart').style.display='none';$('btnRfStop').style.display='';
+  $('rfProgress').style.display='block';$('rfResult').style.display='none';wsSend({t:'auto_cal',mode:'range'})}
+function stopRangeFinder(){$('btnRfStart').style.display='';$('btnRfStop').style.display='none';
+  wsSend({t:'auto_cal',mode:'stop'})}
+function applyRangeResult(){wsSend({t:'auto_cal',mode:'apply_range'})}
+function dismissRangeResult(){$('rfProgress').style.display='none';$('btnRfStart').style.display='';$('btnRfStop').style.display='none'}
 function startAutoCal(){autoCalRunning=true;$('btnAcalStart').style.display='none';$('btnAcalStop').style.display='';
   $('acalProgress').style.display='block';$('acalResults').style.display='none';wsSend({t:'auto_cal',mode:'air'})}
 function stopAutoCal(){autoCalRunning=false;$('btnAcalStart').style.display='';$('btnAcalStop').style.display='none';

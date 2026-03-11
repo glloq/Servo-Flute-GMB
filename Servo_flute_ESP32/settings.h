@@ -85,6 +85,8 @@ Set MIC_ENABLED to false if no mic is connected.
 #define AUTOCAL_MIN_RANGE_PCT   5       // Minimum range pct between air_min and air_max
 #define AUTOCAL_STORE_DELAY_MS  10      // Delay before storing result in NOTE_DONE state
 #define AUTOCAL_NOTE_INTERVAL_MS 200    // Pause between notes during auto-cal
+#define AUTOCAL_RF_STEP_MS      100     // Time per step for range finder (0-180 sweep)
+#define AUTOCAL_RF_MARGIN_DEG   3       // Safety margin (degrees) for range finder results
 
 /*******************************************************************************
 ---------------------------   TIMING SETTINGS (ms)    ------------------------
