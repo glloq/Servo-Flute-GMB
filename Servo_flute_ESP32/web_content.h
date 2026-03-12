@@ -2143,6 +2143,7 @@ function fillAirSettings(){
   // Attach validation listeners + dirty tracking (once only)
   if(!window._airListenersAttached){
     window._airListenersAttached=true;
+    $('cfgShowAir').addEventListener('change',function(){if(CFG)CFG.show_air=this.checked;applyAirTabVisibility();markDirty()});
     ['airFanMin','airFanMax','airFanIdlePct','airFanIdleTimeout','airHallLow','airHallHigh','airSensMin','airSensMax','cfgAirOff','cfgAirMin','cfgAirMax'].forEach(id=>{
       const el=$(id);if(el)el.addEventListener('input',()=>{validateAirConfig();updateHallBar();markDirty()})});
     document.querySelectorAll('#tab-air select,#tab-air input[type=number],#tab-air input[type=checkbox]').forEach(el=>{
