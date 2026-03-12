@@ -8,25 +8,49 @@
                     +----------+----------+
                     |                     |
              InstrumentManager      WirelessManager
-              |     |     |          |    |    |    |
-   FingerCtrl | AirflowCtrl |    BleMidi | WifiMidi |
-              |             |           |          |
-         NoteSequencer  EventQueue   WebConfigurator
-                                     |    |    |
-                              MidiFilePlayer | ConfigStorage
-                                             |
-                                    [si MIC_ENABLED]
-                                    AudioAnalyzer
-                                         |
-                                   AutoCalibrator
+              |     |     |     |     |    |    |
+   FingerCtrl | AirflowCtrl |  |  BleMidi | WifiMidi
+              |             |  |          |
+         NoteSequencer   FanCtrl     SerialMidiHandler
+              |          PressureCtrl
+         EventQueue           |
+                         WebConfigurator
+                          |    |    |
+                   MidiFilePlayer | ConfigStorage
+                                  |
+                         [si MIC_ENABLED]
+                         AudioAnalyzer
+                              |
+                        AutoCalibrator
 ```
+
+### Modules principaux
+
+| Module | Fichier | Role |
+|--------|---------|------|
+| `InstrumentManager` | InstrumentManager.h/cpp | Orchestrateur : PCA9685, CC, dispatching notes |
+| `FingerController` | FingerController.h/cpp | Controle des servos doigts (patterns, demi-trous) |
+| `AirflowController` | AirflowController.h/cpp | Servo airflow, servo angle, vibrato, solenoide |
+| `NoteSequencer` | NoteSequencer.h/cpp | Machine d'etats note (IDLE→PLAYING→STOPPING) |
+| `EventQueue` | EventQueue.h/cpp | File FIFO circulaire pour evenements temporises |
+| `FanController` | FanController.h/cpp | PWM ventilateur avec rampe et idle |
+| `PressureController` | PressureController.h/cpp | Pompe(s) + capteur pression, PID/bang-bang |
+| `WirelessManager` | WirelessManager.h/cpp | Switch BLE/WiFi selon GPIO4 |
+| `BleMidiHandler` | BleMidiHandler.h/cpp | BLE-MIDI via NimBLE |
+| `WifiMidiHandler` | WifiMidiHandler.h/cpp | WiFi rtpMIDI (AppleMIDI) + captive portal |
+| `SerialMidiHandler` | SerialMidiHandler.h/cpp | MIDI DIN sur UART2 (31250 baud) |
+| `WebConfigurator` | WebConfigurator.h/cpp | Serveur web, REST API, WebSocket |
+| `MidiFilePlayer` | MidiFilePlayer.h/cpp | Parseur et lecteur SMF Type 0/1 |
+| `ConfigStorage` | ConfigStorage.h/cpp | Persistance JSON sur LittleFS |
+| `AudioAnalyzer` | AudioAnalyzer.h/cpp | Driver I2S INMP441 + pitch YIN |
+| `AutoCalibrator` | AutoCalibrator.h/cpp | Calibration automatique (airflow + range finder) |
 
 ## Flux de donnees
 
 ### Reception MIDI
 ```
-BLE-MIDI ou rtpMIDI
-  -> BleMidiHandler / WifiMidiHandler
+BLE-MIDI ou rtpMIDI ou Serial MIDI
+  -> BleMidiHandler / WifiMidiHandler / SerialMidiHandler
     -> isChannelAccepted(channel)
     -> InstrumentManager.noteOn(note, velocity)
       -> NoteSequencer.playNote(note, velocity)
@@ -47,7 +71,7 @@ Navigateur (touch/clic/clavier)
 ### Configuration
 ```
 Page web Config -> POST /api/config (JSON partiel)
-  -> WebConfigurator.handleApiConfigPost()
+  -> WebConfigurator.handleApiConfigFinalize()
     -> Mise a jour RuntimeConfig cfg
     -> ConfigStorage::save() -> /config.json (LittleFS)
 
@@ -149,11 +173,12 @@ Le `initSafeState()` est appele avant tout dans `setup()` pour que le materiel s
 ## Memoire
 
 Budget typique (ESP32-WROOM 520KB SRAM) :
-- PROGMEM (web_content.h) : ~42KB en flash, 0 en RAM
-- RuntimeConfig cfg : ~300 bytes
-- ArduinoJson (parsing) : ~2KB temporaire
+- PROGMEM (web_content.h) : ~100KB en flash, 0 en RAM
+- RuntimeConfig cfg : ~1.5KB (structure avec tableaux fingers/notes)
+- MidiFilePlayer events : ~16KB max (2000 events x 8 octets)
+- ArduinoJson (parsing) : ~2-4KB temporaire
 - NimBLE stack : ~20KB
 - WiFi stack : ~40KB
 - AsyncWebServer + WS : ~15KB
-- AudioAnalyzer (si micro) : ~4KB (buffer I2S DMA) + ~8KB (buffer analyse)
-- Heap libre typique : ~150-180KB (sans micro), ~138-168KB (avec micro)
+- AudioAnalyzer (si micro) : ~4KB (buffer I2S DMA) + ~4KB (buffer analyse float)
+- Heap libre typique : ~150-180KB (sans micro), ~140-170KB (avec micro)
