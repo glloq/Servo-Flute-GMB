@@ -2265,10 +2265,25 @@ function buildAirSvg(svgId,full){
     const fluteW=70,fluteH=24;
     if(isKbd){
       // Kbd mode: horizontal pipe + arrow, flute is in separate SVG below
-      s+='<line x1="'+(pivotX+4)+'" y1="'+pivotY+'" x2="'+flX+'" y2="'+pivotY+'" stroke="#7799bb" stroke-width="3"/>';
-      s+='<line class="airFlowAnim" x1="'+(pivotX+ductLen)+'" y1="'+pivotY+'" x2="'+flX+'" y2="'+pivotY+'"/>';
-      s+='<polygon points="'+(flX-4)+','+(pivotY-3)+' '+(flX+1)+','+pivotY+' '+(flX-4)+','+(pivotY+3)+'" fill="#7799bb"/>';
-      _kbdPipeExitRatio=flX/w;_kbdPipeExitY=pivotY;
+      const _kbdAng=isTrav&&CFG.angle_on;
+      const _kAngW=30,_kAngGap=6;
+      const _kPipeStart=pivotX+ductLen;
+      if(_kbdAng){
+        const _kAngX=_kPipeStart+_kAngGap;
+        const _kEnd=_kAngX+_kAngW+_kAngGap;
+        s+='<line x1="'+(pivotX+4)+'" y1="'+pivotY+'" x2="'+_kAngX+'" y2="'+pivotY+'" stroke="#7799bb" stroke-width="3"/>';
+        s+='<line class="airFlowAnim" x1="'+_kPipeStart+'" y1="'+pivotY+'" x2="'+_kAngX+'" y2="'+pivotY+'"/>';
+        s+=svgServoAngle(_kAngX+_kAngW/2,pivotY);
+        s+='<line x1="'+(_kAngX+_kAngW)+'" y1="'+pivotY+'" x2="'+_kEnd+'" y2="'+pivotY+'" stroke="#7799bb" stroke-width="3"/>';
+        s+='<line class="airFlowAnim" x1="'+(_kAngX+_kAngW)+'" y1="'+pivotY+'" x2="'+_kEnd+'" y2="'+pivotY+'"/>';
+        s+='<polygon points="'+(_kEnd-4)+','+(pivotY-3)+' '+(_kEnd+1)+','+pivotY+' '+(_kEnd-4)+','+(pivotY+3)+'" fill="#7799bb"/>';
+        _kbdPipeExitRatio=(_kEnd+1)/w;_kbdPipeExitY=pivotY;
+      }else{
+        s+='<line x1="'+(pivotX+4)+'" y1="'+pivotY+'" x2="'+flX+'" y2="'+pivotY+'" stroke="#7799bb" stroke-width="3"/>';
+        s+='<line class="airFlowAnim" x1="'+_kPipeStart+'" y1="'+pivotY+'" x2="'+flX+'" y2="'+pivotY+'"/>';
+        s+='<polygon points="'+(flX-4)+','+(pivotY-3)+' '+(flX+1)+','+pivotY+' '+(flX-4)+','+(pivotY+3)+'" fill="#7799bb"/>';
+        _kbdPipeExitRatio=flX/w;_kbdPipeExitY=pivotY;
+      }
     }else if(isTrav){
       // Full mode + traversiere: pipe horizontal then curves down above blow hole
       const hasAng=!!CFG.angle_on;
@@ -2456,10 +2471,23 @@ function buildAirSvg(svgId,full){
     const _isTrav=(CFG.embouchure==='trav');
     if(isKbd){
       // Kbd mode: horizontal pipe + arrow, flute is separate SVG below
-      s+='<line x1="'+(vx+svW/2)+'" y1="'+svCy+'" x2="'+flX+'" y2="'+svCy+'" stroke="#7799bb" stroke-width="3"/>';
-      s+='<line class="airFlowAnim" x1="'+(vx+svW/2)+'" y1="'+svCy+'" x2="'+flX+'" y2="'+svCy+'"/>';
-      s+='<polygon points="'+(flX-4)+','+(svCy-3)+' '+(flX+1)+','+svCy+' '+(flX-4)+','+(svCy+3)+'" fill="#7799bb"/>';
-      _kbdPipeExitRatio=(flX+1)/w;_kbdPipeExitY=svCy;
+      const _kbdAng2=_isTrav&&CFG.angle_on;
+      const _kPipeStart2=vx+svW/2;
+      if(_kbdAng2){
+        const _kAngX2=_kPipeStart2+6;const _kAngW2=30;
+        const _kEnd2=_kAngX2+_kAngW2+6;
+        s+='<line x1="'+_kPipeStart2+'" y1="'+svCy+'" x2="'+_kAngX2+'" y2="'+svCy+'" stroke="#7799bb" stroke-width="3"/>';
+        s+=svgServoAngle(_kAngX2+_kAngW2/2,svCy);
+        s+='<line x1="'+(_kAngX2+_kAngW2)+'" y1="'+svCy+'" x2="'+_kEnd2+'" y2="'+svCy+'" stroke="#7799bb" stroke-width="3"/>';
+        s+='<line class="airFlowAnim" x1="'+(_kAngX2+_kAngW2)+'" y1="'+svCy+'" x2="'+_kEnd2+'" y2="'+svCy+'"/>';
+        s+='<polygon points="'+(_kEnd2-4)+','+(svCy-3)+' '+(_kEnd2+1)+','+svCy+' '+(_kEnd2-4)+','+(svCy+3)+'" fill="#7799bb"/>';
+        _kbdPipeExitRatio=(_kEnd2+1)/w;_kbdPipeExitY=svCy;
+      }else{
+        s+='<line x1="'+_kPipeStart2+'" y1="'+svCy+'" x2="'+flX+'" y2="'+svCy+'" stroke="#7799bb" stroke-width="3"/>';
+        s+='<line class="airFlowAnim" x1="'+_kPipeStart2+'" y1="'+svCy+'" x2="'+flX+'" y2="'+svCy+'"/>';
+        s+='<polygon points="'+(flX-4)+','+(svCy-3)+' '+(flX+1)+','+svCy+' '+(flX-4)+','+(svCy+3)+'" fill="#7799bb"/>';
+        _kbdPipeExitRatio=(flX+1)/w;_kbdPipeExitY=svCy;
+      }
     }else if(_isTrav){
       const _hasAng=!!CFG.angle_on;
       const _angW=30,_angGap=6;
@@ -2506,10 +2534,23 @@ function buildAirSvg(svgId,full){
     const _isTrav2=(CFG.embouchure==='trav');
     if(isKbd){
       // Kbd mode: horizontal pipe + arrow, flute is separate SVG below
-      s+='<line x1="'+(svX+36)+'" y1="'+teeY+'" x2="'+flX+'" y2="'+teeY+'" stroke="#7799bb" stroke-width="3"/>';
-      s+='<line class="airFlowAnim" x1="'+(svX+36)+'" y1="'+teeY+'" x2="'+flX+'" y2="'+teeY+'"/>';
-      s+='<polygon points="'+(flX-4)+','+(teeY-3)+' '+(flX+1)+','+teeY+' '+(flX-4)+','+(teeY+3)+'" fill="#7799bb"/>';
-      _kbdPipeExitRatio=(flX+1)/w;_kbdPipeExitY=teeY;
+      const _kbdAng3=_isTrav2&&CFG.angle_on;
+      const _kPipeStart3=svX+36;
+      if(_kbdAng3){
+        const _kAngX3=_kPipeStart3+6;const _kAngW3=30;
+        const _kEnd3=_kAngX3+_kAngW3+6;
+        s+='<line x1="'+_kPipeStart3+'" y1="'+teeY+'" x2="'+_kAngX3+'" y2="'+teeY+'" stroke="#7799bb" stroke-width="3"/>';
+        s+=svgServoAngle(_kAngX3+_kAngW3/2,teeY);
+        s+='<line x1="'+(_kAngX3+_kAngW3)+'" y1="'+teeY+'" x2="'+_kEnd3+'" y2="'+teeY+'" stroke="#7799bb" stroke-width="3"/>';
+        s+='<line class="airFlowAnim" x1="'+(_kAngX3+_kAngW3)+'" y1="'+teeY+'" x2="'+_kEnd3+'" y2="'+teeY+'"/>';
+        s+='<polygon points="'+(_kEnd3-4)+','+(teeY-3)+' '+(_kEnd3+1)+','+teeY+' '+(_kEnd3-4)+','+(teeY+3)+'" fill="#7799bb"/>';
+        _kbdPipeExitRatio=(_kEnd3+1)/w;_kbdPipeExitY=teeY;
+      }else{
+        s+='<line x1="'+_kPipeStart3+'" y1="'+teeY+'" x2="'+flX+'" y2="'+teeY+'" stroke="#7799bb" stroke-width="3"/>';
+        s+='<line class="airFlowAnim" x1="'+_kPipeStart3+'" y1="'+teeY+'" x2="'+flX+'" y2="'+teeY+'"/>';
+        s+='<polygon points="'+(flX-4)+','+(teeY-3)+' '+(flX+1)+','+teeY+' '+(flX-4)+','+(teeY+3)+'" fill="#7799bb"/>';
+        _kbdPipeExitRatio=(flX+1)/w;_kbdPipeExitY=teeY;
+      }
     }else if(_isTrav2){
       const _hasAng2=!!CFG.angle_on;
       const _angW2=30,_angGap2=6;
