@@ -2,10 +2,12 @@
 #include "ConfigStorage.h"
 
 InstrumentManager::InstrumentManager()
-  : _pwm(Adafruit_PWMServoDriver()),
+  : _pwm0(PCA_ADDR_BOARD0),
+    _pwm1(PCA_ADDR_BOARD1),
+    _secondBoardEnabled(false),
     _eventQueue(EVENT_QUEUE_SIZE),
-    _fingerCtrl(_pwm),
-    _airflowCtrl(_pwm),
+    _fingerCtrl([this](uint8_t ch, uint16_t on, uint16_t off) { setPWM(ch, on, off); }),
+    _airflowCtrl([this](uint8_t ch, uint16_t on, uint16_t off) { setPWM(ch, on, off); }),
     _sequencer(_eventQueue, _fingerCtrl, _airflowCtrl),
     _lastActivityTime(0),
     _servosPowered(false),
@@ -31,10 +33,32 @@ void InstrumentManager::begin() {
   pinMode(PIN_SERVOS_OFF, OUTPUT);
   powerOnServos();
 
-  // Initialiser le PCA9685
-  _pwm.begin();
-  _pwm.setPWMFreq(SERVO_FREQUENCY);
+  // Initialiser le PCA9685 carte 1 (toujours active)
+  _pwm0.begin();
+  _pwm0.setPWMFreq(SERVO_FREQUENCY);
   delay(PWM_INIT_DELAY_MS);
+
+  // Detection automatique : carte 2 necessaire si un canal >= 16
+  _secondBoardEnabled = false;
+  for (int i = 0; i < cfg.numFingers; i++) {
+    if (cfg.fingers[i].pcaChannel >= 16) {
+      _secondBoardEnabled = true;
+      break;
+    }
+  }
+  if (cfg.airflowPcaChannel >= 16 || cfg.valveServoPcaChannel >= 16 ||
+      cfg.anglePcaChannel >= 16 || cfg.angleServoPcaChannel >= 16) {
+    _secondBoardEnabled = true;
+  }
+
+  if (_secondBoardEnabled) {
+    _pwm1.begin();
+    _pwm1.setPWMFreq(SERVO_FREQUENCY);
+    delay(PWM_INIT_DELAY_MS);
+    if (DEBUG) {
+      Serial.println("DEBUG: InstrumentManager - PCA9685 #2 (0x41) initialisee");
+    }
+  }
 
   // Initialiser les controleurs
   _fingerCtrl.begin();
@@ -316,5 +340,13 @@ void InstrumentManager::resetAllControllers() {
 
   if (DEBUG) {
     Serial.println("DEBUG: InstrumentManager - Reset All Controllers");
+  }
+}
+
+void InstrumentManager::setPWM(uint8_t channel, uint16_t on, uint16_t off) {
+  if (channel < 16) {
+    _pwm0.setPWM(channel, on, off);
+  } else if (_secondBoardEnabled) {
+    _pwm1.setPWM(channel - 16, on, off);
   }
 }

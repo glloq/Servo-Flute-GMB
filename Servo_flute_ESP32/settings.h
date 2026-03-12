@@ -18,6 +18,10 @@ Dimensionnement memoire maximal. Les valeurs effectives sont dans RuntimeConfig.
 
 // Maximums (dimensionnement arrays)
 #define MAX_FINGER_SERVOS 31   // 2x PCA9685 = 32 canaux, 1 reserve pour airflow
+
+// Adresses I2C des cartes PCA9685
+#define PCA_ADDR_BOARD0 0x40   // Carte 1 (defaut) — canaux 0-15
+#define PCA_ADDR_BOARD1 0x41   // Carte 2 (optionnelle) — canaux 16-31
 #define MAX_NOTES 128          // Notes jouables maximum (plage MIDI complète = 128)
 
 // Valeurs par defaut (utilisees par initDefaults / preset "Flute irlandaise C")

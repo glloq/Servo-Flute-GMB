@@ -92,15 +92,10 @@ API REST et WebSocket : [API_WEB.md](docs/API_WEB.md)
 | [Auto-calibration](docs/AUTO_CALIBRATION.md) | Calibration automatique avec micro INMP441 |
 | [Calibration](docs/CALIBRATION.md) | Guide de calibration manuelle pas-a-pas |
 | [Configuration](docs/CONFIGURATION.md) | Tous les parametres configurables |
+| [Extension PCA9685](docs/PCA9685_EXPANSION.md) | Support multi-cartes PCA9685 (jusqu'a 31 servos) |
 | [Modes WiFi](docs/WIFI_MODES.md) | BLE-MIDI, WiFi STA, hotspot AP |
 | [MIDI Serial](docs/MIDI_SERIAL.md) | Branchement MIDI DIN (optocoupler, GPIO) |
 | [Servo Angle](docs/SERVO_ANGLE.md) | Montage et calibration servos, flute traversiere |
-
-**Etudes de conception (non implementees) :**
-
-| Document | Description |
-|----------|-------------|
-| [Extension PCA9685](docs/PCA9685_EXPANSION.md) | Etude : support multi-cartes (jusqu'a 31 servos) |
 
 ## Structure du projet
 

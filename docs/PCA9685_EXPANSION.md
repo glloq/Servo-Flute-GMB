@@ -1,10 +1,9 @@
 # Extension Multi-PCA9685 : Etude technique
 
-> **Note : Ce document est une etude de conception / design document.**
-> Les modifications decrites ici ne sont **pas encore implementees** dans le firmware.
-> Le support multi-PCA9685 (canaux 0-31) est fonctionnel au niveau de la configuration
-> (`pcaChannel` accepte 0-31) mais le firmware utilise actuellement une seule carte PCA9685.
-> Ce document decrit les modifications necessaires pour un support complet a 2 cartes.
+> **Statut : IMPLEMENTE** — Le support multi-PCA9685 est fonctionnel dans le firmware.
+> La seconde carte (adresse 0x41) est detectee et initialisee automatiquement si un canal >= 16
+> est present dans la configuration (doigts, airflow, valve ou angle servo).
+> L'interface web supporte les canaux 0-31 pour tous les selecteurs PCA.
 
 ## Contexte
 

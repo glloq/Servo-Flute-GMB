@@ -2,12 +2,15 @@
 #define AIRFLOW_CONTROLLER_H
 
 #include <Arduino.h>
-#include <Adafruit_PWMServoDriver.h>
+#include <functional>
 #include "settings.h"
+
+// Callback type pour ecriture PWM multi-PCA9685
+using PwmWriteFn = std::function<void(uint8_t channel, uint16_t on, uint16_t off)>;
 
 class AirflowController {
 public:
-  AirflowController(Adafruit_PWMServoDriver& pwm);
+  AirflowController(PwmWriteFn writePwm);
 
   void begin();
 
@@ -58,7 +61,7 @@ public:
   void setCC74Brightness(byte ccValue);
 
 private:
-  Adafruit_PWMServoDriver& _pwm;
+  PwmWriteFn _writePwm;
   bool _solenoidOpen;
   unsigned long _solenoidOpenTime;
 

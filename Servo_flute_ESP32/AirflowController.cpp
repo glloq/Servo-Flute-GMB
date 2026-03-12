@@ -33,8 +33,8 @@ inline float fastSin(unsigned long timeMs, float frequency) {
   return pgm_read_byte(&SIN_LUT[index]) / SIN_LUT_SCALE;
 }
 
-AirflowController::AirflowController(Adafruit_PWMServoDriver& pwm)
-  : _pwm(pwm), _solenoidOpen(false), _solenoidOpenTime(0),
+AirflowController::AirflowController(PwmWriteFn writePwm)
+  : _writePwm(writePwm), _solenoidOpen(false), _solenoidOpenTime(0),
     _ccVolume(cfg.ccVolumeDefault), _ccExpression(cfg.ccExpressionDefault),
     _ccModulation(cfg.ccModulationDefault),
     _ccBreath(cfg.ccBreathDefault),
@@ -318,7 +318,7 @@ bool AirflowController::isValveOpen() const {
 void AirflowController::setValveServoAngle(bool open) {
   uint16_t angle = open ? cfg.valveServoOpenAngle : cfg.valveServoCloseAngle;
   uint16_t pwmValue = angleToPWM(angle);
-  _pwm.setPWM(cfg.valveServoPcaChannel, 0, pwmValue);
+  _writePwm(cfg.valveServoPcaChannel, 0, pwmValue);
 }
 
 void AirflowController::setAirflowToRest() {
@@ -393,7 +393,7 @@ void AirflowController::testSolenoid(bool open) {
 
 void AirflowController::setAirflowServoAngle(uint16_t angle) {
   uint16_t pwmValue = angleToPWM(angle);
-  _pwm.setPWM(cfg.airflowPcaChannel, 0, pwmValue);
+  _writePwm(cfg.airflowPcaChannel, 0, pwmValue);
 }
 
 uint16_t AirflowController::angleToPWM(uint16_t angle) {
@@ -458,7 +458,7 @@ bool AirflowController::isTravEmbouchure() const {
 
 void AirflowController::setAngleServoAngle(uint16_t angle) {
   uint16_t pwmValue = angleToPWM(angle);
-  _pwm.setPWM(cfg.anglePcaChannel, 0, pwmValue);
+  _writePwm(cfg.anglePcaChannel, 0, pwmValue);
   _currentAngleServo = angle;
 }
 

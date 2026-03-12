@@ -2,12 +2,15 @@
 #define FINGER_CONTROLLER_H
 
 #include <Arduino.h>
-#include <Adafruit_PWMServoDriver.h>
+#include <functional>
 #include "settings.h"
+
+// Callback type pour ecriture PWM multi-PCA9685
+using PwmWriteFn = std::function<void(uint8_t channel, uint16_t on, uint16_t off)>;
 
 class FingerController {
 public:
-  FingerController(Adafruit_PWMServoDriver& pwm);
+  FingerController(PwmWriteFn writePwm);
 
   void begin();
 
@@ -25,7 +28,7 @@ public:
   void testFingerAngle(int fingerIndex, uint16_t angle);
 
 private:
-  Adafruit_PWMServoDriver& _pwm;
+  PwmWriteFn _writePwm;
 
   uint16_t calculateServoAngle(int fingerIndex, uint8_t openState);
   void setServoAngle(int fingerIndex, uint16_t angle);

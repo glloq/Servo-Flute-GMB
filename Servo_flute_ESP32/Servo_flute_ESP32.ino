@@ -65,10 +65,31 @@ void initSafeState() {
   // Initialiser I2C avec les pins ESP32
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
 
-  // Creer une instance temporaire du PWM driver
-  Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
-  pwm.begin();
-  pwm.setPWMFreq(SERVO_FREQUENCY);
+  // Initialiser la carte PCA9685 #1 (toujours presente)
+  Adafruit_PWMServoDriver pwm0(PCA_ADDR_BOARD0);
+  pwm0.begin();
+  pwm0.setPWMFreq(SERVO_FREQUENCY);
+
+  // Detecter si la carte #2 est necessaire (canaux >= 16 dans les defauts)
+  bool needBoard1 = (DEFAULT_AIRFLOW_PCA_CHANNEL >= 16);
+  for (int i = 0; i < DEFAULT_NUM_FINGERS && !needBoard1; i++) {
+    if (DEFAULT_FINGERS[i].pcaChannel >= 16) needBoard1 = true;
+  }
+
+  Adafruit_PWMServoDriver pwm1(PCA_ADDR_BOARD1);
+  if (needBoard1) {
+    pwm1.begin();
+    pwm1.setPWMFreq(SERVO_FREQUENCY);
+  }
+
+  // Lambda pour router setPWM vers la bonne carte
+  auto writePwm = [&](uint8_t channel, uint16_t on, uint16_t off) {
+    if (channel < 16) {
+      pwm0.setPWM(channel, on, off);
+    } else if (needBoard1) {
+      pwm1.setPWM(channel - 16, on, off);
+    }
+  };
 
   // Solenoide en etat sur (FERME)
   pinMode(SOLENOID_PIN, OUTPUT);
@@ -76,12 +97,12 @@ void initSafeState() {
 
   // Servo airflow en position repos (utilise defaut avant chargement config)
   uint16_t pulseWidth = map(SERVO_AIRFLOW_OFF, SERVO_MIN_ANGLE, SERVO_MAX_ANGLE, SERVO_PULSE_MIN, SERVO_PULSE_MAX);
-  pwm.setPWM(DEFAULT_AIRFLOW_PCA_CHANNEL, 0, pulseWidth);
+  writePwm(DEFAULT_AIRFLOW_PCA_CHANNEL, 0, pulseWidth);
 
   // Tous les servos doigts en position fermee (utilise defauts)
   for (int i = 0; i < DEFAULT_NUM_FINGERS; i++) {
     pulseWidth = map(DEFAULT_FINGERS[i].closedAngle, SERVO_MIN_ANGLE, SERVO_MAX_ANGLE, SERVO_PULSE_MIN, SERVO_PULSE_MAX);
-    pwm.setPWM(DEFAULT_FINGERS[i].pcaChannel, 0, pulseWidth);
+    writePwm(DEFAULT_FINGERS[i].pcaChannel, 0, pulseWidth);
   }
 
   delay(SAFE_STATE_SETTLE_MS);
