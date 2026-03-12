@@ -214,10 +214,30 @@ Quelques valeurs hardcodees sans define/constante :
 **[SEQ-1] Transition STATE_STOPPING est instantanee** — OBSERVATION
 `handleStopping()` fait juste `transitionTo(STATE_IDLE)` — c'est un no-op effectif. L'etat STOPPING n'a aucune utilite concrete actuellement, mais offre un point d'extension pour un eventuel delai de fermeture des doigts.
 
-**[SEQ-2] _playbackStartTime non reinitialise apres vidage de la queue** — MINEUR
+**[SEQ-2] `stop()` ne ferme pas la valve ni ne coupe l'air** — MOYEN
+`NoteSequencer::stop()` (lignes 198-206) ne reinitialise que les variables d'etat internes, mais ne ferme pas le solenoide et ne remet pas le servo air au repos. Compare a `stopCurrentNote()` qui appelle `closeSolenoid()` + `setAirflowToRest()`. Le caller `InstrumentManager::allSoundOff()` compense en appelant ces methodes separement, mais un appel direct a `stop()` pourrait laisser la valve ouverte.
+
+**[SEQ-3] _playbackStartTime non reinitialise apres vidage de la queue** — MINEUR
 `NoteSequencer::stop()` ne reinitialise pas `_playbackStartTime`. Si la queue est videe par un "all sound off" et de nouveaux evenements arrivent, le timing relatif peut etre incorrectement calcule, bien que le check `_playbackStartTime == 0` en ligne 98 compense partiellement.
 
-### 4.5 Style et conventions
+### 4.5 Bugs fonctionnels
+
+**[BUG-1] `BleMidiHandler::startAdvertising()` ne redemarre pas reellement l'advertising BLE** — MOYEN
+`BleMidiHandler::startAdvertising()` (lignes 53-61) ne fait que mettre `_advertising = true` sans appeler l'API NimBLE pour relancer l'advertising. Le bouton court en mode BLE (cense relancer la decouverte) n'a donc aucun effet reel.
+
+**[BUG-2] Thread safety — acces concurrent sur ESP32 dual-core** — MOYEN
+ESP32 est dual-core. Les callbacks BLE et WiFi peuvent s'executer sur le core 0 pendant que `loop()` tourne sur le core 1. Les variables partagees sont accedees sans mutex, `volatile`, ni operations atomiques :
+- `EventQueue._count`, `_head`, `_tail` (enqueue depuis callback, dequeue depuis loop)
+- `_ccVolume`, `_ccExpression`, `_ccModulation` dans InstrumentManager
+- `_connected` dans BleMidiHandler/WifiMidiHandler
+- `_cc2SmoothingBuffer` dans AirflowController
+
+En pratique, les acces sont courts (lecture/ecriture de bytes/ints, atomiques sur ESP32 Xtensa), mais le compilateur pourrait optimiser les lectures (caching en registre) sans `volatile`.
+
+**[BUG-3] `isTravEmbouchure()` fait un strcmp a chaque appel** — NEGLIGEABLE
+`AirflowController::isTravEmbouchure()` (ligne 456) fait un `strcmp(cfg.embouchure, "trav")` a chaque appel. Cette methode est appelee depuis `setAngleForNote()`, `setAngleToRest()`, etc. pendant le jeu. Devrait etre un booleen cache mis a jour dans `begin()`.
+
+### 4.6 Style et conventions
 
 | Critere | Evaluation |
 |---|---|
@@ -582,10 +602,10 @@ Les commentaires sont **bons** :
 | Severite | Nombre | IDs |
 |---|---|---|
 | **CRITIQUE** | 0 | — |
-| **MOYEN** | 7 | SEC-1, SEC-2, GPIO-1, MIDI-1, MIDI-2, ROB-1, WEB-1 |
-| **MINEUR** | 15 | ARCH-1, ARCH-2, ARCH-3, DUP-1, DUP-2, DUP-3, SEC-3, SEC-4, ROB-2, HW-SEC-1, HW-SEC-2, WEB-2, WEB-3, WEB-4, WEB-6 |
-| **NEGLIGEABLE** | 8 | ROB-3, ROB-4, MAGIC-1, MEM-2, GPIO-2, MIDI-3, WEB-5, DOC-3 |
-| **OBSERVATION** | 9 | SEQ-1, SEQ-2, MEM-1, MEM-3, I2C-1, GPIO-3, PWR-1, MUS-1, MUS-2, MUS-3 |
+| **MOYEN** | 10 | SEC-1, SEC-2, GPIO-1, MIDI-1, MIDI-2, ROB-1, WEB-1, SEQ-2, BUG-1, BUG-2 |
+| **MINEUR** | 15 | ARCH-1, ARCH-2, ARCH-3, DUP-1, DUP-2, DUP-3, SEC-3, SEC-4, ROB-2, HW-SEC-1, HW-SEC-2, SEQ-3, WEB-2, WEB-3, WEB-4, WEB-6 |
+| **NEGLIGEABLE** | 9 | ROB-3, ROB-4, MAGIC-1, MEM-2, GPIO-2, MIDI-3, WEB-5, DOC-3, BUG-3 |
+| **OBSERVATION** | 8 | SEQ-1, MEM-1, MEM-3, I2C-1, GPIO-3, PWR-1, MUS-1, MUS-2, MUS-3 |
 
 ### Par categorie
 
@@ -593,7 +613,7 @@ Les commentaires sont **bons** :
 |---|---|---|---|---|---|
 | Securite | 0 | 2 | 4 | 1 | 0 |
 | Architecture | 0 | 0 | 3 | 0 | 0 |
-| Code qualite | 0 | 2 | 3 | 1 | 2 |
+| Code qualite / Bugs | 0 | 5 | 3 | 2 | 2 |
 | Robustesse | 0 | 1 | 1 | 2 | 0 |
 | Hardware | 0 | 1 | 2 | 1 | 2 |
 | Performance | 0 | 0 | 0 | 0 | 3 |
@@ -626,30 +646,37 @@ Les commentaires sont **bons** :
    - Utiliser ArduinoJson pour serialiser les reponses au lieu de la concatenation manuelle
    - Ou a minima, echapper `"`, `\`, et les caracteres de controle dans les SSID, filenames, deviceName
 
+6. **Corriger `BleMidiHandler::startAdvertising()` pour redemarer l'advertising NimBLE** (BUG-1)
+   - Appeler l'API NimBLE pour relancer l'advertising au lieu de juste mettre un flag
+
+7. **Ajouter `volatile` sur les variables partagees entre cores** (BUG-2)
+   - `_connected`, `_ccVolume`, `_ccExpression`, `_ccModulation`, `_ccBreath`
+   - Optionnel: mutex sur `EventQueue._count`/`_head`/`_tail`
+
 ### Priorite 2 — A ameliorer (qualite/maintenabilite)
 
-6. **Extraire `angleToPWM()` en fonction utilitaire** (DUP-1)
+8. **Extraire `angleToPWM()` en fonction utilitaire** (DUP-1)
    - Creer un `ServoUtils.h` avec les fonctions partagees
 
-7. **Proteger les divisions par zero dans PressureController** (ROB-2)
+9. **Proteger les divisions par zero dans PressureController** (ROB-2)
    - Ajouter `if (divisor == 0) return 0;` avant les divisions
 
-8. **Documenter les endpoints API manquants** (DOC-1)
-   - Ajouter `/api/config/factory`, `/api/wifi/status`, `/api/midi/list`, `/api/midi/delete`, `/api/midi/load`
+10. **Documenter les endpoints API manquants** (DOC-1)
+    - Ajouter `/api/config/factory`, `/api/wifi/status`, `/api/midi/list`, `/api/midi/delete`, `/api/midi/load`
 
-9. **Verifier les allocations dynamiques** (ARCH-2)
-   - Ajouter `if (ptr == nullptr) { reboot/halt }` apres chaque `new`
+11. **Verifier les allocations dynamiques** (ARCH-2)
+    - Ajouter `if (ptr == nullptr) { reboot/halt }` apres chaque `new`
 
-10. **Resoudre le conflit GPIO26** (GPIO-1)
+12. **Resoudre le conflit GPIO26** (GPIO-1)
     - Utiliser un GPIO different par defaut pour le ventilateur ou la pompe 2
     - Ajouter une validation dans ConfigStorage::load() pour detecter les conflits GPIO
 
 ### Priorite 3 — Evolutions souhaitables
 
-11. **Ajouter un mode legato** (MUS-2) — changement de doigtes sans couper l'air
-12. **Ajouter un timeout de securite pour le solenoide** (HW-SEC-1, HW-SEC-2)
-13. **Vibrato sur le servo angle** (MUS-3) pour la traversiere
-14. **Marqueur PCA9685_EXPANSION.md comme "futur/conception"** (DOC-2) dans le README
+13. **Ajouter un mode legato** (MUS-2) — changement de doigtes sans couper l'air
+14. **Ajouter un timeout de securite pour le solenoide** (HW-SEC-1, HW-SEC-2)
+15. **Vibrato sur le servo angle** (MUS-3) pour la traversiere
+16. **Marqueur PCA9685_EXPANSION.md comme "futur/conception"** (DOC-2) dans le README
 
 ---
 
