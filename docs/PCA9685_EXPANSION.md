@@ -1,5 +1,11 @@
 # Extension Multi-PCA9685 : Etude technique
 
+> **Note : Ce document est une etude de conception / design document.**
+> Les modifications decrites ici ne sont **pas encore implementees** dans le firmware.
+> Le support multi-PCA9685 (canaux 0-31) est fonctionnel au niveau de la configuration
+> (`pcaChannel` accepte 0-31) mais le firmware utilise actuellement une seule carte PCA9685.
+> Ce document decrit les modifications necessaires pour un support complet a 2 cartes.
+
 ## Contexte
 
 Le systeme utilise actuellement un seul PCA9685 (16 canaux PWM via I2C, adresse 0x40).
