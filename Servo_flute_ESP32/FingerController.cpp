@@ -1,8 +1,8 @@
 #include "FingerController.h"
 #include "ConfigStorage.h"
 
-FingerController::FingerController(Adafruit_PWMServoDriver& pwm)
-  : _pwm(pwm) {
+FingerController::FingerController(PwmWriteFn writePwm)
+  : _writePwm(writePwm) {
 }
 
 void FingerController::begin() {
@@ -98,7 +98,7 @@ uint16_t FingerController::calculateServoAngle(int fingerIndex, uint8_t openStat
 void FingerController::setServoAngle(int fingerIndex, uint16_t angle) {
   int pcaChannel = cfg.fingers[fingerIndex].pcaChannel;
   uint16_t pwmValue = angleToPWM(angle);
-  _pwm.setPWM(pcaChannel, 0, pwmValue);
+  _writePwm(pcaChannel, 0, pwmValue);
 }
 
 void FingerController::testFingerAngle(int fingerIndex, uint16_t angle) {

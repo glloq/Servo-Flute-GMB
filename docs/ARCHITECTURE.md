@@ -28,9 +28,9 @@
 
 | Module | Fichier | Role |
 |--------|---------|------|
-| `InstrumentManager` | InstrumentManager.h/cpp | Orchestrateur : PCA9685, CC, dispatching notes |
-| `FingerController` | FingerController.h/cpp | Controle des servos doigts (patterns, demi-trous) |
-| `AirflowController` | AirflowController.h/cpp | Servo airflow, servo angle, vibrato, solenoide |
+| `InstrumentManager` | InstrumentManager.h/cpp | Orchestrateur : multi-PCA9685 (0x40+0x41), CC, dispatching notes |
+| `FingerController` | FingerController.h/cpp | Controle des servos doigts via callback PWM (patterns, demi-trous) |
+| `AirflowController` | AirflowController.h/cpp | Servo airflow/angle via callback PWM, vibrato, solenoide |
 | `NoteSequencer` | NoteSequencer.h/cpp | Machine d'etats note (IDLE→PLAYING→STOPPING) |
 | `EventQueue` | EventQueue.h/cpp | File FIFO circulaire pour evenements temporises |
 | `FanController` | FanController.h/cpp | PWM ventilateur avec rampe et idle |

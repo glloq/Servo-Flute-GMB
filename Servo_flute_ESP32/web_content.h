@@ -895,7 +895,7 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
         </div>
         <div id="airValveServoParams" style="display:none">
           <div class="cfg-row"><label>Canal PCA valve</label>
-            <input type="number" id="airValveCh" min="0" max="15" value="11" title="Canal sur le PCA9685 (0-15). Ne pas utiliser le meme canal que le servo flow.">
+            <input type="number" id="airValveCh" min="0" max="31" value="11" title="Canal PCA9685 (0-15 carte 1, 16-31 carte 2). Ne pas utiliser le meme canal que le servo flow.">
           </div>
           <div class="cfg-row"><label>Angle ferme</label><input type="number" id="cfgVlvClose" min="0" max="180" value="0" title="Angle servo quand la valve est fermee"></div>
           <div class="cfg-row"><label>Angle ouvert</label><input type="number" id="cfgVlvOpen" min="0" max="180" value="90" title="Angle servo quand la valve est ouverte"></div>
@@ -2137,7 +2137,7 @@ function fillAirSettings(){
     const isTrav=(CFG.embouchure==='trav');
     angleBlock.style.display=isTrav?'block':'none';
     if(isTrav){
-      const ap=$('cfgAngPca');if(ap){ap.innerHTML='';for(let i=0;i<16;i++){const o=document.createElement('option');o.value=i;o.textContent='PCA '+i;ap.appendChild(o)}ap.value=CFG.ang_pca!=null?CFG.ang_pca:12}
+      const ap=$('cfgAngPca');if(ap){ap.innerHTML='';for(let i=0;i<32;i++){const o=document.createElement('option');o.value=i;o.textContent='PCA '+i+(i>=16?' (B2)':'');ap.appendChild(o)}ap.value=CFG.ang_pca!=null?CFG.ang_pca:12}
       const ao=$('cfgAngOff');if(ao)ao.value=CFG.ang_off!=null?CFG.ang_off:90;
       const an=$('cfgAngMin');if(an)an.value=CFG.ang_min!=null?CFG.ang_min:60;
       const ax=$('cfgAngMax');if(ax)ax.value=CFG.ang_max!=null?CFG.ang_max:120;
@@ -3534,11 +3534,11 @@ function buildFingerCards(){
   $('halfHolePct').value=CFG.half_hole_pct||50;$('hhVal').textContent=(CFG.half_hole_pct||50)+'%';
   // PCA dropdown
   const sel=$('airPca');sel.innerHTML='';
-  for(let i=0;i<16;i++){const o=document.createElement('option');o.value=i;o.textContent='PCA '+i;sel.appendChild(o)}
+  for(let i=0;i<32;i++){const o=document.createElement('option');o.value=i;o.textContent='PCA '+i+(i>=16?' (B2)':'');sel.appendChild(o)}
   sel.value=CFG.air_pca||10;
   // Angle servo PCA dropdown (trav only)
   const angSel=$('calAngPca');if(angSel){angSel.innerHTML='';
-    for(let i=0;i<16;i++){const o=document.createElement('option');o.value=i;o.textContent='PCA '+i;angSel.appendChild(o)}
+    for(let i=0;i<32;i++){const o=document.createElement('option');o.value=i;o.textContent='PCA '+i+(i>=16?' (B2)':'');angSel.appendChild(o)}
     angSel.value=CFG.ang_pca!=null?CFG.ang_pca:12;
     angSel.addEventListener('change',function(){syncAngPca(this.value);checkPca()});
   }
@@ -3551,7 +3551,7 @@ function buildFingerCards(){
       '<div style="display:flex;align-items:center;gap:8px">'+
         '<span style="font-size:.75em;color:#888">Pin PCA</span>'+
         '<select id="fch'+i+'" style="max-width:70px" onchange="CFG.fingers['+i+'].ch=parseInt(this.value);checkPca();markDirty()">'+
-          Array.from({length:16},(_,j)=>'<option value="'+j+'"'+(j===f.ch?' selected':'')+'>'+j+'</option>').join('')+'</select>'+
+          Array.from({length:32},(_,j)=>'<option value="'+j+'"'+(j===f.ch?' selected':'')+'>'+(j>=16?j+' (B2)':j)+'</option>').join('')+'</select>'+
         '<select id="fd'+i+'" style="max-width:60px" onchange="CFG.fingers['+i+'].d=parseInt(this.value);markDirty()">'+
           '<option value="1"'+(f.d===1?' selected':'')+'>\u21BB</option><option value="-1"'+(f.d===-1?' selected':'')+'>\u21BA</option></select>'+
       '</div></div>';

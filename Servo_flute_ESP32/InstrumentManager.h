@@ -39,6 +39,9 @@ public:
   void resetAllControllers();
   void powerOnServos();
 
+  // Ecriture PWM multi-PCA9685 : route vers la bonne carte (canal 0-15 = carte 0, 16-31 = carte 1)
+  void setPWM(uint8_t channel, uint16_t on, uint16_t off);
+
   // Calibration : acces direct aux controleurs
   FingerController& getFingerCtrl() { return _fingerCtrl; }
   AirflowController& getAirflowCtrl() { return _airflowCtrl; }
@@ -46,7 +49,9 @@ public:
   FanController& getFanCtrl() { return _fanCtrl; }
 
 private:
-  Adafruit_PWMServoDriver _pwm;
+  Adafruit_PWMServoDriver _pwm0;    // Carte 1 (0x40) — toujours active
+  Adafruit_PWMServoDriver _pwm1;    // Carte 2 (0x41) — active si canaux >= 16
+  bool _secondBoardEnabled;
   EventQueue _eventQueue;
   FingerController _fingerCtrl;
   AirflowController _airflowCtrl;
