@@ -62,7 +62,7 @@ void AirflowController::begin() {
     closeSolenoid();
   }
   setAirflowToRest();
-  if (isTravEmbouchure()) {
+  if (isAngleServoActive()) {
     setAngleToRest();
   }
 
@@ -456,6 +456,10 @@ bool AirflowController::isTravEmbouchure() const {
   return strcmp(cfg.embouchure, "trav") == 0;
 }
 
+bool AirflowController::isAngleServoActive() const {
+  return isTravEmbouchure() && cfg.angleServoEnabled;
+}
+
 void AirflowController::setAngleServoAngle(uint16_t angle) {
   uint16_t pwmValue = angleToPWM(angle);
   _writePwm(cfg.anglePcaChannel, 0, pwmValue);
@@ -463,7 +467,7 @@ void AirflowController::setAngleServoAngle(uint16_t angle) {
 }
 
 void AirflowController::setAngleForNote(byte midiNote) {
-  if (!isTravEmbouchure()) return;
+  if (!isAngleServoActive()) return;
 
   const NoteConfig* note = getNoteByMidi(midiNote);
   uint8_t pct = note ? note->anglePercent : DEFAULT_ANGLE_PERCENT;
@@ -494,13 +498,13 @@ void AirflowController::setAngleForNote(byte midiNote) {
 }
 
 void AirflowController::setAngleToRest() {
-  if (!isTravEmbouchure()) return;
+  if (!isAngleServoActive()) return;
   _lastAngleNote = 0;
   setAngleServoAngle(cfg.servoAngleOff);
 }
 
 void AirflowController::setAngleLivePercent(uint8_t percent) {
-  if (!isTravEmbouchure()) return;
+  if (!isAngleServoActive()) return;
   if (percent > 100) percent = 100;
   uint16_t angle = cfg.servoAngleMin + ((cfg.servoAngleMax - cfg.servoAngleMin) * percent / 100);
   setAngleServoAngle(angle);
@@ -519,7 +523,7 @@ void AirflowController::testAngleServoAngle(uint16_t angle) {
 void AirflowController::setCC74Brightness(byte ccValue) {
   _ccBrightness = ccValue;
   // Re-appliquer l'angle si une note est en cours (temps reel)
-  if (_lastAngleNote != 0 && isTravEmbouchure()) {
+  if (_lastAngleNote != 0 && isAngleServoActive()) {
     setAngleForNote(_lastAngleNote);
   }
 }

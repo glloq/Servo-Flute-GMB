@@ -98,6 +98,8 @@ private:
   // --- Angle servo (trav) ---
   void setAngleServoAngle(uint16_t angle);
   bool isTravEmbouchure() const;
+  // Le servo angle n'est pilote que sur une embouchure traversiere ET si le toggle est actif
+  bool isAngleServoActive() const;
   byte _ccBrightness;
   uint16_t _currentAngleServo;
   byte _lastAngleNote;  // Derniere note pour re-appliquer CC74 en temps reel
