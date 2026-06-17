@@ -51,12 +51,14 @@ void BleMidiHandler::update() {
 }
 
 void BleMidiHandler::startAdvertising() {
-  if (!_advertising) {
-    _advertising = true;
+  _advertising = true;
 
-    if (DEBUG) {
-      Serial.println("DEBUG: BleMidiHandler - Advertising demarre");
-    }
+  // Relancer reellement l'advertising via l'API NimBLE (no-op si deja en cours).
+  // Sans cet appel, le bouton "restart advertising" en mode BLE n'avait aucun effet.
+  NimBLEDevice::startAdvertising();
+
+  if (DEBUG) {
+    Serial.println("DEBUG: BleMidiHandler - Advertising (re)demarre");
   }
 }
 

@@ -315,7 +315,11 @@ bool MidiFilePlayer::parseMTrk(File& file, uint32_t trackLength, uint16_t divisi
     uint32_t currentTimeMs = lastTempoChangeMs + ticksToMs(ticksSinceTempoChange, currentTempo, division);
 
     // Lire le premier octet de l'evenement
-    uint8_t statusByte = file.read();
+    // Garde EOF : sur un fichier tronque (trackEnd > taille reelle), file.read()
+    // retourne -1 sans faire avancer la position -> sortir pour eviter une boucle infinie.
+    int statusRaw = file.read();
+    if (statusRaw < 0) break;
+    uint8_t statusByte = (uint8_t)statusRaw;
 
     // Running status : si le bit 7 n'est pas set, c'est un data byte
     if (statusByte < 0x80) {
@@ -436,13 +440,18 @@ bool MidiFilePlayer::parseMTrk(File& file, uint32_t trackLength, uint16_t divisi
 uint32_t MidiFilePlayer::readVLQ(File& file, uint32_t& bytesRead) {
   uint32_t value = 0;
   bytesRead = 0;
-  uint8_t b;
 
+  // Un VLQ MIDI valide ne depasse jamais 4 octets. La limite et le check EOF
+  // evitent une boucle infinie sur fichier tronque/corrompu : a l'EOF,
+  // file.read() retourne -1, casté en uint8_t = 0xFF (bit 0x80 toujours actif).
   do {
-    b = file.read();
+    int raw = file.read();
+    if (raw < 0) break;  // EOF : ne pas boucler sur 0xFF
+    uint8_t b = (uint8_t)raw;
     bytesRead++;
     value = (value << 7) | (b & 0x7F);
-  } while (b & 0x80);
+    if ((b & 0x80) == 0) break;
+  } while (bytesRead < 4);
 
   return value;
 }
