@@ -67,7 +67,7 @@ void AirflowController::begin() {
   }
 
   if (DEBUG) {
-    const char* modeNames[] = {"Classique", "Servo-valve", "Servo seul", "Ventilateur", "Pompe+valve", "Pompe+reservoir"};
+    const char* modeNames[] = {"Classic", "Servo-valve", "Servo only", "Fan", "Pump+valve", "Pump+reservoir"};
     Serial.print("DEBUG: AirflowController - Mode: ");
     Serial.println(cfg.airMode < 6 ? modeNames[cfg.airMode] : "?");
     #if SOLENOID_USE_PWM

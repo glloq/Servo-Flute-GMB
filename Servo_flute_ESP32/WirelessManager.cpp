@@ -103,20 +103,20 @@ bool WirelessManager::isMidiConnected() const {
 String WirelessManager::getStatusText() const {
   if (_currentMode == MODE_BLUETOOTH) {
     if (_bleMidi.isConnected()) {
-      return "BLE: Connecte";
+      return "BLE: Connected";
     } else if (_bleMidi.isAdvertising()) {
       return "BLE: Advertising...";
     }
-    return "BLE: Inactif";
+    return "BLE: Inactive";
   } else {
     if (_wifiMidi.isAPMode()) {
       return "WiFi AP: " + _wifiMidi.getIPAddress();
     } else if (_wifiMidi.getState() == WIFI_STATE_STA_CONNECTED) {
       return "WiFi: " + _wifiMidi.getIPAddress();
     } else if (_wifiMidi.getState() == WIFI_STATE_CONNECTING) {
-      return "WiFi: Connexion...";
+      return "WiFi: Connecting...";
     }
-    return "WiFi: Deconnecte";
+    return "WiFi: Disconnected";
   }
 }
 
