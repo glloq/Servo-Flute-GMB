@@ -1,11 +1,11 @@
 /***********************************************************************************************
- * web_content.h - Interface web embarquee en PROGMEM
+ * web_content.h - Embedded web interface en PROGMEM
  *
- * Single Page Application avec 3 onglets + overlay settings :
- * 1. Clavier virtuel (dynamique depuis cfg.notes[])
- * 2. Lecteur MIDI (upload + transport)
- * 3. Calibration (3 etapes : Doigts, Doigtes, Souffle)
- * + Overlay Settings (engrenage) : tous les parametres avances
+ * Single Page Application with 3 tabs + overlay settings :
+ * 1. Virtual keyboard (dynamic from cfg.notes[])
+ * 2. MIDI player (upload + transport)
+ * 3. Calibration (3 steps : Fingers, Fingerings, Breath)
+ * + Overlay Settings (gear) : all advanced settings
  *
  * Interface responsive / mobile-friendly
  ***********************************************************************************************/
@@ -14,7 +14,7 @@
 
 const char WEB_HTML_CONTENT[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
-<html lang="fr">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
@@ -301,18 +301,18 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
 <body>
 <div class="toast-container" id="toastContainer"></div>
 <div class="hdr">
-  <h1 id="devName">ServoFlute<span class="unsaved-badge" id="unsavedBadge">modifi&eacute;</span></h1>
-  <div class="hdr-c" onclick="openSeqModal()" style="cursor:pointer" title="Editeur de sequences"><span style="color:#e94560">B</span><svg viewBox="0 0 28 28" width="22" height="22"><circle cx="14" cy="14" r="12" fill="none" stroke="#8aa" stroke-width="1.5"/><text x="14" y="19" text-anchor="middle" fill="#e94560" font-size="18" font-weight="bold">&#8734;</text></svg><span style="color:#e94560">P</span></div>
+  <h1 id="devName">ServoFlute<span class="unsaved-badge" id="unsavedBadge">modified</span></h1>
+  <div class="hdr-c" onclick="openSeqModal()" style="cursor:pointer" title="Sequence editor"><span style="color:#e94560">B</span><svg viewBox="0 0 28 28" width="22" height="22"><circle cx="14" cy="14" r="12" fill="none" stroke="#8aa" stroke-width="1.5"/><text x="14" y="19" text-anchor="middle" fill="#e94560" font-size="18" font-weight="bold">&#8734;</text></svg><span style="color:#e94560">P</span></div>
   <div class="hdr-r">
     <span class="dot off" id="sDot"></span>
-    <button class="gear-btn" onclick="toggleSettings()" title="Reglages" id="gearBtn">
+    <button class="gear-btn" onclick="toggleSettings()" title="Settings" id="gearBtn">
       <svg viewBox="0 0 16 16" width="18" height="18"><circle cx="8" cy="8" r="2" fill="currentColor"/><path d="M14.3 6.7l-1.2-.2a5.2 5.2 0 00-.5-1.1l.7-1-1.7-1.7-1 .7c-.3-.2-.7-.4-1.1-.5L9.3 1.7H7.7l-.2 1.2c-.4.1-.8.3-1.1.5l-1-.7L3.7 4.4l.7 1c-.2.3-.4.7-.5 1.1L2.7 6.7v1.6l1.2.2c.1.4.3.8.5 1.1l-.7 1 1.7 1.7 1-.7c.3.2.7.4 1.1.5l.2 1.2h1.6l.2-1.2c.4-.1.8-.3 1.1-.5l1 .7 1.7-1.7-.7-1c.2-.3.4-.7.5-1.1l1.2-.2V6.7z" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
     </button>
   </div>
 </div>
 
 <div class="tabs">
-  <button class="active" onclick="showTab('keyboard',this)"><svg viewBox="0 0 16 14" width="14" height="12"><rect x="1" y="1" width="14" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.2"/><rect x="3" y="4" width="2" height="2" rx=".5" fill="currentColor"/><rect x="7" y="4" width="2" height="2" rx=".5" fill="currentColor"/><rect x="11" y="4" width="2" height="2" rx=".5" fill="currentColor"/><rect x="4" y="8" width="8" height="2" rx=".5" fill="currentColor"/></svg>Clavier</button>
+  <button class="active" onclick="showTab('keyboard',this)"><svg viewBox="0 0 16 14" width="14" height="12"><rect x="1" y="1" width="14" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.2"/><rect x="3" y="4" width="2" height="2" rx=".5" fill="currentColor"/><rect x="7" y="4" width="2" height="2" rx=".5" fill="currentColor"/><rect x="11" y="4" width="2" height="2" rx=".5" fill="currentColor"/><rect x="4" y="8" width="8" height="2" rx=".5" fill="currentColor"/></svg>Keyboard</button>
   <button onclick="showTab('midi',this)"><svg viewBox="0 0 14 16" width="12" height="14"><path d="M12 1v10.5a2.5 2.5 0 11-2-2.45V3.5L5 5v8a2.5 2.5 0 11-2-2.45V1l9-2z" fill="currentColor" opacity=".85"/></svg>MIDI</button>
   <button id="btnTabAir" onclick="showTab('air',this)" style="display:none;position:relative"><svg viewBox="0 0 16 16" width="14" height="14"><path d="M8 1C4.5 1 2 4 2 7c0 2 1 3.5 2.5 4.5L4 15h8l-.5-3.5C13 10.5 14 9 14 7c0-3-2.5-6-6-6z" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M6 7.5c0-1.5 1-2.5 2-2.5s2 1 2 2.5" fill="none" stroke="currentColor" stroke-width="1"/></svg>Air<span id="airWarnBadge" style="display:none;position:absolute;top:-2px;right:-2px;width:8px;height:8px;border-radius:50%;background:#e94560"></span></button>
   <button id="btnTabCalib" onclick="showTab('calib',this)"><svg viewBox="0 0 16 16" width="14" height="14"><path d="M6.5 1L7 4H5L2 8h3l-.5 7 6-9H7.5l2-5z" fill="currentColor" opacity=".85"/></svg>Calibration</button>
@@ -326,14 +326,14 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
       <div id="kbdFluteWrap"><svg id="fluteSvg" viewBox="0 0 400 100" preserveAspectRatio="xMinYMid meet"></svg></div>
     </div>
     <div style="display:flex;gap:10px;font-size:.7em;color:#667;justify-content:center;padding:4px 0">
-      <span><span class="kf o" style="display:inline-block;vertical-align:middle"></span> Ouvert</span>
-      <span><span class="kf c" style="display:inline-block;vertical-align:middle"></span> Ferme</span>
-      <span><span class="kf h" style="display:inline-block;vertical-align:middle"></span> Demi</span>
+      <span><span class="kf o" style="display:inline-block;vertical-align:middle"></span> Open</span>
+      <span><span class="kf c" style="display:inline-block;vertical-align:middle"></span> Closed</span>
+      <span><span class="kf h" style="display:inline-block;vertical-align:middle"></span> Half</span>
     </div>
-    <div class="flute-info"><span id="fluteNote">-</span> <span id="fluteInfo" style="color:#555">Jouez une note</span></div>
+    <div class="flute-info"><span id="fluteNote">-</span> <span id="fluteInfo" style="color:#555">Play a note</span></div>
     <div id="kbdAirStats" style="display:none;gap:8px;flex-wrap:wrap;font-size:.75em;padding:4px 8px;background:#0a0a1a;border-radius:0 0 8px 8px;justify-content:center">
-      <span id="kbdStatPump" style="display:none;color:#9aa">Pompe <b id="kbdPumpVal">OFF</b></span>
-      <span id="kbdStatFan" style="display:none;color:#9aa">Ventil. <b id="kbdFanVal">OFF</b></span>
+      <span id="kbdStatPump" style="display:none;color:#9aa">Pump <b id="kbdPumpVal">OFF</b></span>
+      <span id="kbdStatFan" style="display:none;color:#9aa">Fan <b id="kbdFanVal">OFF</b></span>
       <span id="kbdStatValve" style="color:#9aa">Valve <b id="kbdValveVal">--</b></span>
       <span id="kbdStatServo" style="color:#9aa">Servo <b id="kbdServoVal">--</b></span>
       <span id="kbdStatRes" style="display:none;color:#9aa">Reservoir <b id="kbdResVal">--%</b></span>
@@ -341,12 +341,12 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
   </div>
   <div id="kbdPumpPanel">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-      <span style="font-size:.85em;font-weight:bold;color:#cde" id="kbdPumpTitle">Pompe</span>
+      <span style="font-size:.85em;font-weight:bold;color:#cde" id="kbdPumpTitle">Pump</span>
       <span style="font-size:.7em;color:#667;font-style:italic" id="kbdPumpMode"></span>
     </div>
-    <button id="kbdPumpBtn" class="off" onclick="kbdTogglePump()">Demarrer pompe</button>
+    <button id="kbdPumpBtn" class="off" onclick="kbdTogglePump()">Start pump</button>
     <div class="cfg-row" style="margin-top:8px">
-      <label id="kbdPumpTargetLabel" style="font-size:.8em">Cible</label>
+      <label id="kbdPumpTargetLabel" style="font-size:.8em">Target</label>
       <input type="range" min="0" max="100" value="50" id="kbdPumpTarget" oninput="kbdSetPumpTarget(this.value)">
       <span id="kbdPumpTargetVal" style="min-width:36px;text-align:right;font-size:.85em">50%</span>
     </div>
@@ -367,9 +367,9 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
 <!-- TAB: MIDI PLAYER -->
 <div class="tab" id="tab-midi">
   <div class="section">
-    <h3>Fichier MIDI</h3>
+    <h3>MIDI file</h3>
     <div class="drop-zone" id="dropZone" onclick="document.getElementById('midiFile').click()">
-      Glisser-deposer un fichier MIDI ou cliquer
+      Drag and drop a MIDI file or click
       <input type="file" id="midiFile" accept=".mid,.midi" style="display:none" onchange="uploadMidi(this)">
     </div>
     <div class="upload-bar" id="uploadBar"><div class="upload-fill" id="uploadFill"></div></div>
@@ -384,7 +384,7 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
       <span id="fName"></span> &bull; <span id="fEvents"></span> evt &bull; <span id="fDuration"></span>
     </div>
     <div id="chSelect" style="display:none;margin-top:8px">
-      <div class="cfg-row"><label>Canal</label><select id="midiCh" onchange="setMidiCh(this.value)"><option value="255">Tous</option></select></div>
+      <div class="cfg-row"><label>Channel</label><select id="midiCh" onchange="setMidiCh(this.value)"><option value="255">All</option></select></div>
     </div>
   </div>
   <div class="section">
@@ -412,21 +412,21 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
     <div class="step-dot" onclick="goStep(4)">4</div>
   </div>
   <div class="step-labels">
-    <span>Doigts</span><span>Doigtes</span><span>Souffle</span><span>Expression</span>
+    <span>Fingers</span><span>Fingerings</span><span>Breath</span><span>Expression</span>
   </div>
 
   <!-- STEP 1: FINGERS -->
   <div id="step1" class="step-panel">
     <div class="section">
       <h3>Type d'instrument</h3>
-      <p style="font-size:.8em;color:#888;margin:0 0 8px">Choisissez l'instrument pour configurer automatiquement le nombre de trous et le type d'embouchure.</p>
+      <p style="font-size:.8em;color:#888;margin:0 0 8px">Choose the instrument to automatically configure the number of holes and mouthpiece type.</p>
       <div class="cfg-row"><label>Instrument</label>
         <select id="instrumentSelect" style="flex:1;max-width:300px" onchange="selectInstrument(this.value)"></select>
       </div>
     </div>
     <div class="section">
-      <h3>Configuration des servos</h3>
-      <div class="cfg-row"><label>Nombre de doigts</label>
+      <h3>Servo configuration</h3>
+      <div class="cfg-row"><label>Number of fingers</label>
         <div style="display:flex;align-items:center;gap:8px">
           <button class="btn btn-s" onclick="changeFingers(-1)">-</button>
           <span id="numFingersDisp" style="min-width:24px;text-align:center;font-weight:bold">6</span>
@@ -439,11 +439,11 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
       <div class="cfg-row trav-only" id="calAngPcaRow"><label>Servo angle PCA</label>
         <select id="calAngPca" style="max-width:80px" onchange="checkPca()"></select>
       </div>
-      <div class="cfg-row"><label>Amplitude ouverture</label>
+      <div class="cfg-row"><label>Opening amount</label>
         <input type="range" min="10" max="90" value="30" id="angleOpen" oninput="$('aoVal').textContent=this.value+'&deg;'">
         <span id="aoVal" style="min-width:36px">30&deg;</span>
       </div>
-      <div class="cfg-row"><label>Demi-ouverture</label>
+      <div class="cfg-row"><label>Half-open</label>
         <input type="range" min="10" max="90" value="50" id="halfHolePct" oninput="$('hhVal').textContent=this.value+'%'">
         <span id="hhVal" style="min-width:36px">50%</span>
       </div>
@@ -453,7 +453,7 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
     </div>
     <div id="fingerCards"></div>
     <div class="btn-row" style="justify-content:flex-end">
-      <button class="btn btn-p" id="btnSaveStep1" onclick="saveStep1()"><svg viewBox="0 0 16 16" width="14" height="14"><path d="M12.7 1H3a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2V3.3L12.7 1zM8 13a2.5 2.5 0 110-5 2.5 2.5 0 010 5zM11 5H5V2h6v3z" fill="currentColor"/></svg>Sauver &amp; Continuer &rarr;</button>
+      <button class="btn btn-p" id="btnSaveStep1" onclick="saveStep1()"><svg viewBox="0 0 16 16" width="14" height="14"><path d="M12.7 1H3a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2V3.3L12.7 1zM8 13a2.5 2.5 0 110-5 2.5 2.5 0 010 5zM11 5H5V2h6v3z" fill="currentColor"/></svg>Save &amp; Continue &rarr;</button>
     </div>
   </div>
 
@@ -461,32 +461,32 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
   <div id="step2" class="step-panel" style="display:none">
     <div class="section">
       <h3>Accordage &amp; doigtes</h3>
-      <p style="font-size:.8em;color:#888;margin:0 0 8px">Selectionnez l'accordage correspondant a l'instrument choisi. Cela definit les notes jouables et les combinaisons de doigts associees.</p>
+      <p style="font-size:.8em;color:#888;margin:0 0 8px">Select the tuning that matches the chosen instrument. This defines playable notes and associated fingering combinations.</p>
       <div class="cfg-row"><label>Accordage</label>
         <select id="presetSelect" style="flex:1;max-width:320px" onchange="applyPreset(this.value);updPresetInfo()"></select>
       </div>
     </div>
     <div class="section" id="fingeringSection">
       <div style="display:flex;gap:12px;font-size:.75em;color:#888;margin-bottom:8px">
-        <span><span class="fg-dot open" style="display:inline-block;width:12px;height:12px;vertical-align:middle"></span> Ouvert</span>
-        <span><span class="fg-dot closed" style="display:inline-block;width:12px;height:12px;vertical-align:middle"></span> Ferme</span>
-        <span><span class="fg-dot closed thumb" style="display:inline-block;width:12px;height:12px;vertical-align:middle"></span> Pouce</span>
-        <span><span class="fg-dot half" style="display:inline-block;width:12px;height:12px;vertical-align:middle"></span> Demi</span>
+        <span><span class="fg-dot open" style="display:inline-block;width:12px;height:12px;vertical-align:middle"></span> Open</span>
+        <span><span class="fg-dot closed" style="display:inline-block;width:12px;height:12px;vertical-align:middle"></span> Closed</span>
+        <span><span class="fg-dot closed thumb" style="display:inline-block;width:12px;height:12px;vertical-align:middle"></span> Thumb</span>
+        <span><span class="fg-dot half" style="display:inline-block;width:12px;height:12px;vertical-align:middle"></span> Half</span>
       </div>
       <div class="undo-bar">
-        <button class="btn btn-s" id="undoBtn" onclick="undoFp()" disabled title="Ctrl+Z"><svg viewBox="0 0 16 16" width="12" height="12"><path d="M4 7h8a3 3 0 010 6H9" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M7 4L4 7l3 3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>Annuler</button>
-        <button class="btn btn-s" id="redoBtn" onclick="redoFp()" disabled title="Ctrl+Y"><svg viewBox="0 0 16 16" width="12" height="12"><path d="M12 7H4a3 3 0 000 6h3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M9 4l3 3-3 3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>Retablir</button>
+        <button class="btn btn-s" id="undoBtn" onclick="undoFp()" disabled title="Ctrl+Z"><svg viewBox="0 0 16 16" width="12" height="12"><path d="M4 7h8a3 3 0 010 6H9" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M7 4L4 7l3 3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>Cancel</button>
+        <button class="btn btn-s" id="redoBtn" onclick="redoFp()" disabled title="Ctrl+Y"><svg viewBox="0 0 16 16" width="12" height="12"><path d="M12 7H4a3 3 0 000 6h3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M9 4l3 3-3 3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>Redo</button>
         <span id="undoInfo"></span>
       </div>
       <div id="fingeringRows"></div>
       <div class="btn-row">
-        <button class="btn btn-s" onclick="addNote()">+ Ajouter note</button>
-        <button class="btn btn-s" onclick="removeLastNote()">- Supprimer</button>
+        <button class="btn btn-s" onclick="addNote()">+ Add note</button>
+        <button class="btn btn-s" onclick="removeLastNote()">- Delete</button>
       </div>
     </div>
     <div class="btn-row" style="justify-content:space-between">
-      <button class="btn btn-s" onclick="goStep(1)"><svg viewBox="0 0 16 16" width="14" height="14"><path d="M10 3L5 8l5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>Retour</button>
-      <button class="btn btn-p" id="btnSaveStep2" onclick="saveStep2()"><svg viewBox="0 0 16 16" width="14" height="14"><path d="M12.7 1H3a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2V3.3L12.7 1zM8 13a2.5 2.5 0 110-5 2.5 2.5 0 010 5zM11 5H5V2h6v3z" fill="currentColor"/></svg>Sauver &amp; Continuer &rarr;</button>
+      <button class="btn btn-s" onclick="goStep(1)"><svg viewBox="0 0 16 16" width="14" height="14"><path d="M10 3L5 8l5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>Back</button>
+      <button class="btn btn-p" id="btnSaveStep2" onclick="saveStep2()"><svg viewBox="0 0 16 16" width="14" height="14"><path d="M12.7 1H3a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2V3.3L12.7 1zM8 13a2.5 2.5 0 110-5 2.5 2.5 0 010 5zM11 5H5V2h6v3z" fill="currentColor"/></svg>Save &amp; Continue &rarr;</button>
     </div>
   </div>
 
@@ -503,10 +503,10 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
         <span class="pitch-hz" id="pitchHz">- Hz</span>
         <span class="pitch-cents ok" id="pitchCents">-</span>
       </div>
-      <p style="font-size:.78em;color:#888;margin:4px 0">Detection automatique de la plage servo (min/max) en balayant 0-180 degres.</p>
+      <p style="font-size:.78em;color:#888;margin:4px 0">Automatic servo range detection (min/max) by sweeping 0-180 degrees.</p>
       <div class="btn-row" style="margin-bottom:8px">
-        <button class="btn btn-s" id="btnRfStart" onclick="startRangeFinder()">Detecter plage servo</button>
-        <button class="btn btn-p" id="btnRfStop" onclick="stopRangeFinder()" style="display:none">Arreter</button>
+        <button class="btn btn-s" id="btnRfStart" onclick="startRangeFinder()">Detect servo range</button>
+        <button class="btn btn-p" id="btnRfStop" onclick="stopRangeFinder()" style="display:none">Stop</button>
       </div>
       <div class="acal-progress" id="rfProgress" style="display:none">
         <div class="acal-info"><span id="rfStep">Sweep 0-180 deg...</span><span id="rfAngle">0 deg</span></div>
@@ -523,8 +523,8 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
         </div>
       </div>
       <div class="btn-row">
-        <button class="btn btn-g" id="btnAcalStart" onclick="startAutoCal()">Auto-calibrer toutes les notes</button>
-        <button class="btn btn-p" id="btnAcalStop" onclick="stopAutoCal()" style="display:none">Arreter</button>
+        <button class="btn btn-g" id="btnAcalStart" onclick="startAutoCal()">Auto-calibrate all notes</button>
+        <button class="btn btn-p" id="btnAcalStop" onclick="stopAutoCal()" style="display:none">Stop</button>
       </div>
       <div class="acal-progress" id="acalProgress">
         <div class="acal-info"><span id="acalStep">-</span><span id="acalState">-</span><span id="acalAngle"></span></div>
@@ -533,21 +533,21 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
       </div>
     </div>
     <div class="section">
-      <h3>Souffle par note</h3>
+      <h3>Breath per note</h3>
       <div id="airflowRows"></div>
     </div>
     <div class="btn-row" style="justify-content:space-between">
-      <button class="btn btn-s" onclick="goStep(2)"><svg viewBox="0 0 16 16" width="14" height="14"><path d="M10 3L5 8l5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>Retour</button>
-      <button class="btn btn-p" id="btnSaveStep3" onclick="saveStep3()"><svg viewBox="0 0 16 16" width="14" height="14"><path d="M12.7 1H3a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2V3.3L12.7 1zM8 13a2.5 2.5 0 110-5 2.5 2.5 0 010 5zM11 5H5V2h6v3z" fill="currentColor"/></svg>Sauver &amp; Continuer &rarr;</button>
+      <button class="btn btn-s" onclick="goStep(2)"><svg viewBox="0 0 16 16" width="14" height="14"><path d="M10 3L5 8l5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>Back</button>
+      <button class="btn btn-p" id="btnSaveStep3" onclick="saveStep3()"><svg viewBox="0 0 16 16" width="14" height="14"><path d="M12.7 1H3a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2V3.3L12.7 1zM8 13a2.5 2.5 0 110-5 2.5 2.5 0 010 5zM11 5H5V2h6v3z" fill="currentColor"/></svg>Save &amp; Continue &rarr;</button>
     </div>
   </div>
 
   <!-- STEP 4: EXPRESSION -->
   <div id="step4" class="step-panel" style="display:none">
     <div class="section">
-      <h3>Comportement du souffle</h3>
-      <p style="font-size:.8em;color:#888;margin:0 0 12px">Definissez comment le servo airflow reagit au debut de chaque note (attaque) et l'influence de la velocite MIDI sur le volume de souffle.<br>Ces valeurs servent de defaut ; <b>CC73 (Attack Time)</b> peut changer le mode en temps reel via MIDI : 0-42=Stable, 43-84=Accent, 85-127=Crescendo.</p>
-      <div class="cfg-row"><label>Mode d'attaque</label>
+      <h3>Breath behavior</h3>
+      <p style="font-size:.8em;color:#888;margin:0 0 12px">Define how the airflow servo reacts at the start of each note (attack) and how MIDI velocity affects breath volume.<br>These values are defaults; <b>CC73 (Attack Time)</b> peut changer le mode en temps reel via MIDI : 0-42=Stable, 43-84=Accent, 85-127=Crescendo.</p>
+      <div class="cfg-row"><label>Attack mode</label>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
           <button class="btn btn-s expr-mode" data-mode="0" onclick="setExprMode(0)">Stable</button>
           <button class="btn btn-s expr-mode" data-mode="1" onclick="setExprMode(1)">Accent</button>
@@ -560,7 +560,7 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
           <input type="range" min="5" max="50" value="20" id="airAtkOff" oninput="CFG.air_atk_off=parseInt(this.value);$('atkOffVal').textContent=this.value+'%';drawExprCurve();markDirty()">
           <span id="atkOffVal" style="min-width:36px">20%</span>
         </div>
-        <div class="cfg-row"><label>Duree attaque (ms)</label>
+        <div class="cfg-row"><label>Duration attaque (ms)</label>
           <input type="range" min="10" max="1000" step="10" value="150" id="airAtkMs" oninput="CFG.air_atk_ms=parseInt(this.value);$('atkMsVal').textContent=this.value+'ms';drawExprCurve();markDirty()">
           <span id="atkMsVal" style="min-width:48px">150ms</span>
         </div>
@@ -582,7 +582,7 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
         <input type="range" min="1" max="12" step="0.5" value="5" id="exVibF" oninput="CFG.vib_freq=parseFloat(this.value);$('exVibFVal').textContent=this.value+'Hz';markDirty()">
         <span id="exVibFVal" style="min-width:40px">5Hz</span>
       </div>
-      <div class="cfg-row"><label>Amplitude max (deg)</label>
+      <div class="cfg-row"><label>Max amplitude (deg)</label>
         <input type="range" min="0" max="20" step="0.5" value="3" id="exVibA" oninput="CFG.vib_amp=parseFloat(this.value);$('exVibAVal').textContent=this.value+'\u00b0';markDirty()">
         <span id="exVibAVal" style="min-width:36px">3&deg;</span>
       </div>
@@ -590,8 +590,8 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
 
     <div class="section">
       <h3>Breath Controller (CC2)</h3>
-      <p style="font-size:.8em;color:#888;margin:0 0 12px">Controle continu du souffle par CC2. Si aucun CC2 n'est recu, la velocite noteOn est utilisee en fallback.</p>
-      <div class="cfg-row"><label>Actif</label><input type="checkbox" id="exCC2On" style="width:auto;flex:0" onchange="CFG.cc2_on=this.checked;markDirty()"></div>
+      <p style="font-size:.8em;color:#888;margin:0 0 12px">Continuous breath control via CC2. If no CC2 is received, Note On velocity is used as fallback.</p>
+      <div class="cfg-row"><label>Active</label><input type="checkbox" id="exCC2On" style="width:auto;flex:0" onchange="CFG.cc2_on=this.checked;markDirty()"></div>
       <div class="cfg-row"><label>Seuil silence</label>
         <input type="range" min="0" max="30" value="5" id="exCC2Thr" oninput="CFG.cc2_thr=parseInt(this.value);$('exCC2ThrVal').textContent=this.value;markDirty()">
         <span id="exCC2ThrVal" style="min-width:28px">5</span>
@@ -607,8 +607,8 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
     </div>
 
     <div class="btn-row" style="justify-content:space-between">
-      <button class="btn btn-s" onclick="goStep(3)"><svg viewBox="0 0 16 16" width="14" height="14"><path d="M10 3L5 8l5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>Retour</button>
-      <button class="btn btn-g" id="btnSaveStep4" onclick="saveStep4()"><svg viewBox="0 0 16 16" width="14" height="14"><path d="M3 8l3.5 4L13 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>Sauver &amp; Terminer</button>
+      <button class="btn btn-s" onclick="goStep(3)"><svg viewBox="0 0 16 16" width="14" height="14"><path d="M10 3L5 8l5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>Back</button>
+      <button class="btn btn-g" id="btnSaveStep4" onclick="saveStep4()"><svg viewBox="0 0 16 16" width="14" height="14"><path d="M3 8l3.5 4L13 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>Save &amp; Finish</button>
     </div>
   </div>
 </div>
@@ -628,18 +628,18 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
       <svg id="airSvgFull" viewBox="0 0 520 280" style="width:100%;max-height:280px"></svg>
     </div>
     <div id="airLiveStats" style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px">
-      <div id="airStatPump" style="display:none" title="PWM actuel de la pompe (0-255). OFF = pompe arretee"><span style="font-size:.7em;color:#9aa">Pompe</span><div style="font-weight:bold" id="airPumpPwm">OFF</div></div>
-      <div id="airStatActivePumps" style="display:none" title="Nombre de pompes actives (mode cascade)"><span style="font-size:.7em;color:#9aa">Actives</span><div style="font-weight:bold" id="airActivePumps">0</div></div>
-      <div id="airStatFan" style="display:none" title="Vitesse ventilateur. Orange = rampe en cours"><span style="font-size:.7em;color:#9aa">Ventilateur</span><div style="font-weight:bold" id="airFanPwm">OFF</div></div>
-      <div id="airStatRes" style="display:none" title="Remplissage reservoir (0-100%). Vert>80%, Orange>30%, Rouge<30%"><span style="font-size:.7em;color:#9aa">Reservoir</span><div style="font-weight:bold" id="airResPct">--%</div>
+      <div id="airStatPump" style="display:none" title="Current pump PWM (0-255). OFF = pump stopped"><span style="font-size:.7em;color:#9aa">Pump</span><div style="font-weight:bold" id="airPumpPwm">OFF</div></div>
+      <div id="airStatActivePumps" style="display:none" title="Number of active pumps (cascade mode)"><span style="font-size:.7em;color:#9aa">Actives</span><div style="font-weight:bold" id="airActivePumps">0</div></div>
+      <div id="airStatFan" style="display:none" title="Fan speed. Orange = ramping"><span style="font-size:.7em;color:#9aa">Fan</span><div style="font-weight:bold" id="airFanPwm">OFF</div></div>
+      <div id="airStatRes" style="display:none" title="Fill reservoir (0-100%). Vert>80%, Orange>30%, Rouge<30%"><span style="font-size:.7em;color:#9aa">Reservoir</span><div style="font-weight:bold" id="airResPct">--%</div>
         <div style="width:40px;height:4px;background:#333;border-radius:2px;margin:2px auto 0"><div id="airResFillBar" style="height:100%;background:#e94560;border-radius:2px;width:0%;transition:width .3s"></div></div></div>
-      <div id="airStatDist" style="display:none" title="Distance mesuree par le capteur ToF (mm)"><span style="font-size:.7em;color:#9aa">Distance</span><div style="font-weight:bold" id="airResMm">--mm</div></div>
-      <div id="airStatHall" style="display:none" title="Valeur brute du capteur Hall (0-4095)"><span style="font-size:.7em;color:#9aa">Hall</span><div style="font-weight:bold" id="airHallVal">--</div></div>
-      <div id="airStatEndstop" style="display:none" title="Etat du fin de course (actif/inactif)"><span style="font-size:.7em;color:#9aa">Fin course</span><div style="font-weight:bold" id="airEndstopState">--</div></div>
-      <div id="airStatSensor" style="display:none" title="Detecte si le capteur est connecte et repond"><span style="font-size:.7em;color:#9aa">Capteur</span><div style="font-weight:bold" id="airSensorOk">--</div></div>
-      <div id="airStatPidErr" style="display:none" title="Erreur PID: difference entre cible et mesure"><span style="font-size:.7em;color:#9aa">Erreur PID</span><div style="font-weight:bold" id="airPidErrVal">--</div></div>
-      <div id="airStatValve" title="Etat de la valve: ouvert = air circule"><span style="font-size:.7em;color:#9aa">Valve</span><div style="font-weight:bold" id="airValveState">--</div></div>
-      <div title="Angle actuel du servo flow. Gris=repos, Vert=actif, Rouge=max"><span style="font-size:.7em;color:#9aa">Servo air</span><div style="font-weight:bold" id="airServoAngle">--&deg;</div></div>
+      <div id="airStatDist" style="display:none" title="Distance measured by the ToF sensor (mm)"><span style="font-size:.7em;color:#9aa">Distance</span><div style="font-weight:bold" id="airResMm">--mm</div></div>
+      <div id="airStatHall" style="display:none" title="Raw Hall sensor value (0-4095)"><span style="font-size:.7em;color:#9aa">Hall</span><div style="font-weight:bold" id="airHallVal">--</div></div>
+      <div id="airStatEndstop" style="display:none" title="Endstop state (active/inactive)"><span style="font-size:.7em;color:#9aa">Endstop</span><div style="font-weight:bold" id="airEndstopState">--</div></div>
+      <div id="airStatSensor" style="display:none" title="Detects whether the sensor is connected and responding"><span style="font-size:.7em;color:#9aa">Sensor</span><div style="font-weight:bold" id="airSensorOk">--</div></div>
+      <div id="airStatPidErr" style="display:none" title="Error PID: difference between target and measurement"><span style="font-size:.7em;color:#9aa">Error PID</span><div style="font-weight:bold" id="airPidErrVal">--</div></div>
+      <div id="airStatValve" title="Valve state: open = air flows"><span style="font-size:.7em;color:#9aa">Valve</span><div style="font-weight:bold" id="airValveState">--</div></div>
+      <div title="Current flow servo angle. Gray=rest, green=active, red=max"><span style="font-size:.7em;color:#9aa">Servo air</span><div style="font-weight:bold" id="airServoAngle">--&deg;</div></div>
     </div>
     <div id="airMiniChart" style="display:none;margin-top:8px">
       <canvas id="airChartCanvas" width="400" height="60" style="width:100%;height:60px;background:#111;border-radius:4px"></canvas>
@@ -647,16 +647,16 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
     </div>
   </div>
   <div class="section" id="airCtrlSection" style="display:none">
-    <h3 id="airCtrlTitle">Controle</h3>
-    <div id="airCtrlPumpRow" class="cfg-row"><label id="airTargetLabel">Cible</label>
+    <h3 id="airCtrlTitle">Control</h3>
+    <div id="airCtrlPumpRow" class="cfg-row"><label id="airTargetLabel">Target</label>
       <input type="range" min="0" max="100" value="0" id="pumpTarget" oninput="setAirTarget(this.value)">
       <span id="pumpTargetVal" style="min-width:36px;text-align:right">0%</span>
     </div>
     <div id="airTargetHint" style="font-size:.6em;color:#667;margin:-4px 0 4px;display:none"></div>
-    <div class="cfg-row"><label>Ouverture flow</label>
+    <div class="cfg-row"><label>Flow opening</label>
       <input type="range" min="0" max="180" value="10" id="airFlowTest" oninput="testServoFlow(this.value)">
       <span id="airFlowTestVal" style="min-width:36px;text-align:right">0%</span>
-      <button class="btn btn-s" onclick="sweepServoFlow()" title="Balaye de min a max et retour" style="padding:4px 8px;font-size:.7em">Sweep</button>
+      <button class="btn btn-s" onclick="sweepServoFlow()" title="Sweeps from min to max and back" style="padding:4px 8px;font-size:.7em">Sweep</button>
     </div>
     <div id="airAngleShortcuts" style="display:flex;gap:4px;margin:-4px 0 4px">
       <button class="btn btn-s" id="btnGotoOff" onclick="gotoServoAngle('cfgAirOff')" style="padding:2px 6px;font-size:.65em;display:none" title="Aller a la position note Off">Off</button>
@@ -664,11 +664,11 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
       <button class="btn btn-s" onclick="gotoServoAngle('cfgAirMax')" style="padding:2px 6px;font-size:.65em" title="Aller a l'angle maximum">Max</button>
     </div>
     <div class="btn-row">
-      <button class="btn btn-p" id="btnAirStop" onclick="stopAirSource()">Arreter</button>
-      <button class="btn btn-s" id="btnValveOpen" onclick="wsSend({t:'test_sol',o:1})">Ouvrir valve</button>
-      <button class="btn btn-s" id="btnValveClose" onclick="wsSend({t:'test_sol',o:0})">Fermer valve</button>
-      <button class="btn btn-s" id="btnAirTest" onclick="testAirSystem()" style="display:none">Test rapide</button>
-      <select id="airTestDur" style="display:none;font-size:.7em;padding:2px;background:#1a1a2e;color:#eee;border:1px solid #333;border-radius:3px" title="Duree du test rapide">
+      <button class="btn btn-p" id="btnAirStop" onclick="stopAirSource()">Stop</button>
+      <button class="btn btn-s" id="btnValveOpen" onclick="wsSend({t:'test_sol',o:1})">Open valve</button>
+      <button class="btn btn-s" id="btnValveClose" onclick="wsSend({t:'test_sol',o:0})">Close valve</button>
+      <button class="btn btn-s" id="btnAirTest" onclick="testAirSystem()" style="display:none">Quick test</button>
+      <select id="airTestDur" style="display:none;font-size:.7em;padding:2px;background:#1a1a2e;color:#eee;border:1px solid #333;border-radius:3px" title="Duration du test rapide">
         <option value="1000">1s</option><option value="2000" selected>2s</option><option value="5000">5s</option><option value="10000">10s</option></select>
       <button class="btn btn-s" id="btnAirDiag" onclick="runAirDiagnostic()" title="Teste tous les composants en sequence">Diagnostic</button>
     </div>
@@ -679,19 +679,19 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
     <div style="display:flex;justify-content:space-between;align-items:center">
       <h3>Configuration</h3>
       <div style="display:flex;gap:4px">
-        <button class="btn btn-s" onclick="toggleAirHelp()" style="font-size:.65em;padding:2px 8px" title="Aide rapide">?</button>
+        <button class="btn btn-s" onclick="toggleAirHelp()" style="font-size:.65em;padding:2px 8px" title="Help rapide">?</button>
         <button class="btn btn-s" onclick="toggleAllAirBlocks()" style="font-size:.65em;padding:2px 8px">Tout plier/deplier</button>
       </div>
     </div>
     <div id="airHelpPanel" style="display:none;font-size:.75em;color:#aaa;background:rgba(78,204,163,.05);border:1px solid rgba(78,204,163,.15);border-radius:6px;padding:8px 12px;margin:6px 0;line-height:1.5">
-      <b style="color:#4ecca3">Guide rapide</b><br>
+      <b style="color:#4ecca3">Quick guide</b><br>
       1. Choisir le mode correspondant au materiel<br>
-      2. Configurer les parametres dans chaque bloc<br>
-      3. Utiliser les boutons de test pour verifier<br>
+      2. Configure the settings in each block<br>
+      3. Use the test buttons to verify<br>
       4. Lancer le diagnostic pour valider le tout<br>
-      5. Sauvegarder la configuration<br>
-      <span style="color:#888">Astuce: les badges sous le mode montrent les composants necessaires</span><br>
-      <span style="color:#888">Raccourcis clavier: <b>Ctrl+S</b>=Sauver, <b>T</b>=Test, <b>Esc</b>=Stop, <b>H</b>=Aide, <b>?</b>=Raccourcis</span>
+      5. Save the configuration<br>
+      <span style="color:#888">Tip: badges below the mode show the required components</span><br>
+      <span style="color:#888">Keyboard shortcuts: <b>Ctrl+S</b>=Save, <b>T</b>=Test, <b>Esc</b>=Stop, <b>H</b>=Help, <b>?</b>=Raccourcis</span>
     </div>
     <div class="cfg-row" style="gap:10px">
       <label>Source air</label>
@@ -699,22 +699,22 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
         <label class="air-layout-btn selected" id="airLayoutPump" onclick="setAirLayout(0)">
           <input type="radio" name="airLayout" value="0" checked style="display:none">
           <svg viewBox="0 0 20 20" width="14" height="14"><circle cx="10" cy="10" r="6" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="10" y1="4" x2="10" y2="16" stroke="currentColor" stroke-width="1.5"/></svg>
-          Pompe / Reservoir
+          Pump / Reservoir
         </label>
         <label class="air-layout-btn" id="airLayoutFan" onclick="setAirLayout(1)">
           <input type="radio" name="airLayout" value="1" style="display:none">
           <svg viewBox="0 0 20 20" width="14" height="14"><circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M10 3C10 7 13 10 10 10S4 7 4 10 7 17 10 17" fill="none" stroke="currentColor" stroke-width="1"/></svg>
-          Ventilateur
+          Fan
         </label>
       </div>
     </div>
     <input type="hidden" id="airModeSelect" value="0">
     <div id="airModeDesc" style="font-size:.78em;color:#aaa;margin:4px 0 12px;padding:6px 10px;background:rgba(255,255,255,.04);border-radius:6px"></div>
 
-    <!-- BLOCK: Pompe -->
+    <!-- BLOCK: Pump -->
     <div class="air-block" id="airBlockPump" style="display:none">
-      <div class="air-block-hdr" tabindex="0" role="button" aria-label="Configuration pompe" onclick="toggleAirBlock('airBlockPump')" onkeydown="toggleAirBlock('airBlockPump',event)">
-        <h4><svg viewBox="0 0 16 16" width="14" height="14"><circle cx="8" cy="8" r="5" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="8" y1="3" x2="8" y2="13" stroke="currentColor" stroke-width="1.5"/></svg>Pompe</h4>
+      <div class="air-block-hdr" tabindex="0" role="button" aria-label="Pump configuration" onclick="toggleAirBlock('airBlockPump')" onkeydown="toggleAirBlock('airBlockPump',event)">
+        <h4><svg viewBox="0 0 16 16" width="14" height="14"><circle cx="8" cy="8" r="5" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="8" y1="3" x2="8" y2="13" stroke="currentColor" stroke-width="1.5"/></svg>Pump</h4>
         <div class="air-block-toggle on" id="airBlockPumpToggle" role="switch" aria-checked="true" onclick="event.stopPropagation();toggleAirBlockEnable('airBlockPump')"></div>
       </div>
       <div class="air-block-body">
@@ -725,41 +725,41 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
           </select>
           <div id="airMotorHelp" style="font-size:.65em;color:#888;margin-top:2px"></div>
         </div>
-        <div class="cfg-row"><label>Nombre pompes</label>
+        <div class="cfg-row"><label>Number of pumps</label>
           <select id="airNumPumps" onchange="buildPumpRows();toggleCascadeRow()">
-            <option value="1">1 pompe</option>
+            <option value="1">1 pump</option>
             <option value="2">2 pompes</option>
             <option value="3">3 pompes</option>
           </select>
         </div>
         <div id="airCascadeRow" style="display:none;border-left:2px solid #e94560;padding-left:8px;margin:8px 0">
           <div style="font-size:.7em;color:#e94560;font-weight:bold;margin-bottom:4px">Gestion multi-pompes (cascade)</div>
-          <div class="cfg-row"><label>Seuil cascade (%)</label>
-            <input type="number" id="airCascadeThreshold" min="0" max="100" value="80" title="Seuil de demande (%) pour activer la pompe suivante. 0 = toutes en parallele">
+          <div class="cfg-row"><label>Cascade threshold (%)</label>
+            <input type="number" id="airCascadeThreshold" min="0" max="100" value="80" title="Demand threshold (%) to enable the next pump. 0 = all in parallel">
             <span style="font-size:.6em;color:#888;margin-left:4px">0=parallele</span>
           </div>
-          <div class="cfg-row"><label>Delai stagger (ms)</label>
-            <input type="number" id="airStaggerMs" min="0" max="1000" value="150" title="Delai entre chaque demarrage de pompe (anti-pic courant)">
+          <div class="cfg-row"><label>Stagger delay (ms)</label>
+            <input type="number" id="airStaggerMs" min="0" max="1000" value="150" title="Delay between each pump startup (anti current spike)">
           </div>
         </div>
         <div id="airBangbangRow" style="display:none;border-left:2px solid #4ecca3;padding-left:8px;margin:8px 0">
-          <div style="font-size:.7em;color:#4ecca3;font-weight:bold;margin-bottom:4px">Bang-bang (moteur On/Off + capteur continu)</div>
+          <div style="font-size:.7em;color:#4ecca3;font-weight:bold;margin-bottom:4px">Bang-bang (On/Off motor + continuous sensor)</div>
           <div class="cfg-row"><label>Hysteresis (%)</label>
-            <input type="number" id="airBbHysteresis" min="1" max="50" value="5" title="Bande d'hysteresis autour de la cible. Pompe ON si fill < cible-hyst, OFF si fill > cible+hyst">
+            <input type="number" id="airBbHysteresis" min="1" max="50" value="5" title="Hysteresis band around the target. Pump ON if fill < target-hyst, OFF if fill > target+hyst">
           </div>
         </div>
         <div id="airPumpRows"></div>
       </div>
     </div>
 
-    <!-- BLOCK: Ventilateur -->
+    <!-- BLOCK: Fan -->
     <div class="air-block" id="airBlockFan" style="display:none">
-      <div class="air-block-hdr" tabindex="0" role="button" aria-label="Configuration ventilateur" onclick="toggleAirBlock('airBlockFan')" onkeydown="toggleAirBlock('airBlockFan',event)">
-        <h4><svg viewBox="0 0 16 16" width="14" height="14"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M8 2C8 5 10 8 8 8S4 5 4 8 6 14 8 14" fill="none" stroke="currentColor" stroke-width="1"/></svg>Ventilateur</h4>
+      <div class="air-block-hdr" tabindex="0" role="button" aria-label="Fan configuration" onclick="toggleAirBlock('airBlockFan')" onkeydown="toggleAirBlock('airBlockFan',event)">
+        <h4><svg viewBox="0 0 16 16" width="14" height="14"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M8 2C8 5 10 8 8 8S4 5 4 8 6 14 8 14" fill="none" stroke="currentColor" stroke-width="1"/></svg>Fan</h4>
         <div class="air-block-toggle on" id="airBlockFanToggle" role="switch" aria-checked="true" onclick="event.stopPropagation();toggleAirBlockEnable('airBlockFan')"></div>
       </div>
       <div class="air-block-body">
-        <div class="cfg-row"><label>GPIO ventilateur</label>
+        <div class="cfg-row"><label>Fan GPIO</label>
           <select id="airFanPin"></select>
         </div>
         <div class="cfg-row"><label>PWM min</label>
@@ -768,20 +768,20 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
         <div class="cfg-row"><label>PWM max</label>
           <input type="number" id="airFanMax" min="0" max="255" value="255">
         </div>
-        <div style="font-size:.7em;color:#4ecca3;padding:6px 0 2px;font-weight:600">Mode idle (entre notes)</div>
-        <div class="cfg-row"><label>Vitesse idle (%)</label>
-          <input type="number" id="airFanIdlePct" min="0" max="100" value="20" title="Vitesse du ventilateur entre les notes (0=couper immediatement). Garder une rotation basse permet un redemarrage plus rapide.">
+        <div style="font-size:.7em;color:#4ecca3;padding:6px 0 2px;font-weight:600">Idle mode (between notes)</div>
+        <div class="cfg-row"><label>Speed idle (%)</label>
+          <input type="number" id="airFanIdlePct" min="0" max="100" value="20" title="Fan speed between notes (0=stop immediately). Keeping a low rotation allows faster restart.">
         </div>
         <div class="cfg-row"><label>Timeout idle (ms)</label>
-          <input type="number" id="airFanIdleTimeout" min="0" max="30000" value="5000" title="Couper le ventilateur apres ce delai sans note On (0=ne jamais couper, rester en idle)">
+          <input type="number" id="airFanIdleTimeout" min="0" max="30000" value="5000" title="Stop the fan after this delay without Note On (0=never stop, stay idle)">
         </div>
-        <div style="font-size:.65em;color:#888;padding:2px 0">Idle: reduit la vitesse a X% entre les notes. Apres le timeout sans note, coupe completement.</div>
+        <div style="font-size:.65em;color:#888;padding:2px 0">Idle: reduces speed to X% between notes. After the timeout without notes, stops completely.</div>
       </div>
     </div>
 
     <!-- BLOCK: Reservoir -->
     <div class="air-block" id="airBlockRes" style="display:none">
-      <div class="air-block-hdr" tabindex="0" role="button" aria-label="Configuration reservoir" onclick="toggleAirBlock('airBlockRes')" onkeydown="toggleAirBlock('airBlockRes',event)">
+      <div class="air-block-hdr" tabindex="0" role="button" aria-label="Reservoir configuration" onclick="toggleAirBlock('airBlockRes')" onkeydown="toggleAirBlock('airBlockRes',event)">
         <h4><svg viewBox="0 0 16 16" width="14" height="14"><rect x="3" y="4" width="10" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M5 8h6" stroke="currentColor" stroke-width="1" stroke-dasharray="2,1"/></svg>Reservoir</h4>
         <div class="air-block-toggle on" id="airBlockResToggle" role="switch" aria-checked="true" onclick="event.stopPropagation();toggleAirBlockEnable('airBlockRes')"></div>
       </div>
@@ -789,10 +789,10 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
         <div class="cfg-row"><label>Format</label>
           <select id="airResFormat" onchange="buildAirSvg('airSvgFull',true)">
             <option value="balloon">Ballon</option>
-            <option value="bellows">Soufflet</option>
+            <option value="bellows">Bellows</option>
           </select>
         </div>
-        <div class="cfg-row"><label>Capteur reservoir</label>
+        <div class="cfg-row"><label>Sensor reservoir</label>
           <select id="airSensorType" onchange="toggleSensorParams()">
             <optgroup label="Distance (I2C)">
               <option value="0">VL53L0X (50-1200mm)</option>
@@ -808,30 +808,30 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
           </select>
         </div>
         <div id="airSensLive" style="display:none;background:rgba(78,204,163,.08);border:1px solid rgba(78,204,163,.2);border-radius:6px;padding:6px 10px;margin:6px 0">
-          <span style="font-size:.75em;color:#4ecca3" id="airSensLiveLabel">Lecture live</span>
+          <span style="font-size:.75em;color:#4ecca3" id="airSensLiveLabel">Live reading</span>
           <span style="font-weight:bold;margin-left:8px" id="airSensLiveVal">--</span>
-          <span style="font-size:.7em;margin-left:4px;color:#e44;display:none" id="airSensLiveWarn">capteur absent</span>
+          <span style="font-size:.7em;margin-left:4px;color:#e44;display:none" id="airSensLiveWarn">sensor missing</span>
         </div>
         <div id="airSensParamsTof">
-          <div class="cfg-row"><label>Cible (mm)</label>
-            <input type="number" id="airSensTarget" min="1" max="300" value="50" title="Distance cible du capteur ToF. La pompe maintient cette distance. Typique: 30-80mm">
+          <div class="cfg-row"><label>Target (mm)</label>
+            <input type="number" id="airSensTarget" min="1" max="300" value="50" title="Target distance for the ToF sensor. The pump maintains this distance. Typical: 30-80mm">
           </div>
           <div class="cfg-row"><label>Min (mm)</label>
-            <input type="number" id="airSensMin" min="1" max="300" value="10" title="Distance = reservoir plein. Pompe s'arrete a cette distance.">
+            <input type="number" id="airSensMin" min="1" max="300" value="10" title="Distance = reservoir full. Pump stops at this distance.">
           </div>
           <div class="cfg-row"><label>Max (mm)</label>
-            <input type="number" id="airSensMax" min="1" max="300" value="150" title="Distance = reservoir vide. Pompe demarre a cette distance.">
+            <input type="number" id="airSensMax" min="1" max="300" value="150" title="Distance = reservoir empty. Pump starts at this distance.">
           </div>
         </div>
         <div id="airSensParamsHall" style="display:none">
           <div class="cfg-row"><label>GPIO analogique</label>
             <select id="airHallPin"><option value="34">GPIO 34</option><option value="35">GPIO 35</option><option value="36">GPIO 36</option><option value="39">GPIO 39</option></select>
           </div>
-          <div class="cfg-row"><label>Seuil bas</label>
-            <input type="number" id="airHallLow" min="0" max="4095" value="1500" title="Lecture Hall = vide. Ajuster quand le reservoir est vide." oninput="updateHallBar()">
+          <div class="cfg-row"><label>Low threshold</label>
+            <input type="number" id="airHallLow" min="0" max="4095" value="1500" title="Hall reading = vide. Ajuster quand le reservoir est vide." oninput="updateHallBar()">
           </div>
-          <div class="cfg-row"><label>Seuil haut</label>
-            <input type="number" id="airHallHigh" min="0" max="4095" value="2500" title="Lecture Hall = plein. Ajuster quand le reservoir est plein." oninput="updateHallBar()">
+          <div class="cfg-row"><label>High threshold</label>
+            <input type="number" id="airHallHigh" min="0" max="4095" value="2500" title="Hall reading = plein. Ajuster quand le reservoir est plein." oninput="updateHallBar()">
           </div>
           <div id="airHallBar" style="margin:4px 0;height:12px;background:#222;border-radius:6px;position:relative;overflow:hidden">
             <div id="airHallThreshLow" style="position:absolute;top:0;height:100%;width:1px;background:#e94560"></div>
@@ -843,29 +843,29 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
           <div class="cfg-row"><label>GPIO fin course</label>
             <select id="airEndstopPin"><option value="34">GPIO 34</option><option value="35">GPIO 35</option><option value="36">GPIO 36</option><option value="39">GPIO 39</option></select>
           </div>
-          <div class="cfg-row"><label>Logique active</label>
-            <select id="airEndstopHigh"><option value="0">Actif LOW (NC recommande)</option><option value="1">Actif HIGH</option></select>
+          <div class="cfg-row"><label>Active logic</label>
+            <select id="airEndstopHigh"><option value="0">Active LOW (NC recommended)</option><option value="1">Active HIGH</option></select>
           </div>
-          <div class="cfg-row"><label>Pompe si capteur</label>
-            <select id="airEndstopPumpOn" title="Quand activer/arreter la pompe par rapport au capteur">
-              <option value="0">Pompe ON quand capteur inactif (remplir)</option>
-              <option value="1">Pompe ON quand capteur actif (vider)</option>
+          <div class="cfg-row"><label>Pump with sensor</label>
+            <select id="airEndstopPumpOn" title="When to enable/stop the pump relative to the sensor">
+              <option value="0">Pump ON when sensor inactive (fill)</option>
+              <option value="1">Pump ON when sensor active (empty)</option>
             </select>
           </div>
-          <div style="font-size:.65em;color:#888;padding:2px 0">NC (normalement ferme) recommande pour les endstops mecaniques/optiques : detecte aussi le fil coupe.</div>
+          <div style="font-size:.65em;color:#888;padding:2px 0">NC (normally closed) is recommended for mechanical/optical endstops: also detects a cut wire.</div>
         </div>
         <div id="airSensParamsPid" style="display:none">
           <div class="cfg-row"><label>PID Kp (x10)</label>
-            <input type="number" id="airPidKp" min="1" max="100" value="30" title="Proportionnel: reactivite aux ecarts. Plus haut = correction rapide mais risque oscillation">
+            <input type="number" id="airPidKp" min="1" max="100" value="30" title="Proportionnel: reactivite aux ecarts. Plus haut = correction quick mais risque oscillation">
           </div>
           <div class="cfg-row"><label>PID Ki (x10)</label>
-            <input type="number" id="airPidKi" min="0" max="50" value="5" title="Integral: corrige les erreurs persistantes. Plus haut = plus precis mais risque depassement">
+            <input type="number" id="airPidKi" min="0" max="50" value="5" title="Integral: corrects persistent errors. Higher = more precise but overshoot risk">
           </div>
           <div style="font-size:.7em;color:#888;padding:2px 0">Kp: reactivite, Ki: precision long terme. Valeurs /10 (ex: 30 = 3.0)</div>
           <div class="btn-row" style="margin-top:4px">
             <button class="btn btn-s" onclick="$('airPidKp').value=45;$('airPidKi').value=8;markDirty();validateAirConfig()" style="font-size:.7em;padding:3px 8px" title="Reponse rapide, risque leger depassement">Rapide</button>
             <button class="btn btn-s" onclick="$('airPidKp').value=30;$('airPidKi').value=5;markDirty();validateAirConfig()" style="font-size:.7em;padding:3px 8px" title="Bon compromis reactivite/stabilite">Equilibre</button>
-            <button class="btn btn-s" onclick="$('airPidKp').value=15;$('airPidKi').value=2;markDirty();validateAirConfig()" style="font-size:.7em;padding:3px 8px" title="Montee lente et stable, sans depassement">Doux</button>
+            <button class="btn btn-s" onclick="$('airPidKp').value=15;$('airPidKi').value=2;markDirty();validateAirConfig()" style="font-size:.7em;padding:3px 8px" title="Montee lente et stable, sans depassement">Soft</button>
           </div>
         </div>
       </div>
@@ -873,7 +873,7 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
 
     <!-- BLOCK: Valve -->
     <div class="air-block" id="airBlockValve">
-      <div class="air-block-hdr" tabindex="0" role="button" aria-label="Configuration valve" onclick="toggleAirBlock('airBlockValve')" onkeydown="toggleAirBlock('airBlockValve',event)">
+      <div class="air-block-hdr" tabindex="0" role="button" aria-label="Valve configuration" onclick="toggleAirBlock('airBlockValve')" onkeydown="toggleAirBlock('airBlockValve',event)">
         <h4><svg viewBox="0 0 16 16" width="14" height="14"><rect x="4" y="2" width="8" height="12" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/><rect x="6" y="4" width="4" height="4" rx="0.5" fill="currentColor" opacity=".5"/></svg>Valve</h4>
         <div class="air-block-toggle on" id="airBlockValveToggle" role="switch" aria-checked="true" onclick="event.stopPropagation();toggleAirBlockEnable('airBlockValve')"></div>
       </div>
@@ -886,20 +886,20 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
         </div>
         <div id="airValveSolParams">
           <div class="cfg-row"><label>GPIO Pin</label><select id="cfgSolPin" title="Pin GPIO connectee au MOSFET/relais du solenoide"></select></div>
-          <div class="cfg-row"><label>PWM activation</label><input type="number" id="cfgSolAct" min="0" max="255" title="PWM pour ouvrir la valve (180-255 typique)" oninput="updPwmPct(this)"><span class="pwm-pct" style="font-size:.65em;color:#888;min-width:30px;text-align:right"></span></div>
-          <div class="cfg-row"><label>PWM maintien</label><input type="number" id="cfgSolHold" min="0" max="255" title="PWM pour maintenir ouvert (60-120 typique, economise courant)" oninput="updPwmPct(this)"><span class="pwm-pct" style="font-size:.65em;color:#888;min-width:30px;text-align:right"></span></div>
-          <div class="cfg-row"><label>Temps actif avant maintien (ms)</label><input type="number" id="cfgSolTime" min="0" max="500" title="Duree en ms de la phase activation avant passage au maintien (20-50 typique)"></div>
-          <div class="cfg-row"><label>Temps inter-note valve ouverte (ms)</label><input type="number" id="cfgSolInter" min="0" max="2000" value="0" title="Si l'ecart entre 2 notes est inferieur a cette valeur, la valve reste ouverte (0=toujours fermer)"></div>
-          <div style="font-size:.65em;color:#888;padding:2px 0">Activation: impulsion forte pour ouvrir. Maintien: courant reduit pour garder ouvert.</div>
-          <button class="btn btn-s" onclick="wsSend({t:'test_sol',o:1});setTimeout(()=>wsSend({t:'test_sol',o:0}),500)" style="font-size:.65em;padding:2px 8px;margin-top:4px" title="Ouvre le solenoide pendant 0.5s">Test solenoide</button>
+          <div class="cfg-row"><label>PWM activation</label><input type="number" id="cfgSolAct" min="0" max="255" title="PWM to open the valve (180-255 typique)" oninput="updPwmPct(this)"><span class="pwm-pct" style="font-size:.65em;color:#888;min-width:30px;text-align:right"></span></div>
+          <div class="cfg-row"><label>Hold PWM</label><input type="number" id="cfgSolHold" min="0" max="255" title="PWM to keep open (60-120 typique, economise courant)" oninput="updPwmPct(this)"><span class="pwm-pct" style="font-size:.65em;color:#888;min-width:30px;text-align:right"></span></div>
+          <div class="cfg-row"><label>Active time before hold (ms)</label><input type="number" id="cfgSolTime" min="0" max="500" title="Duration in ms for the activation phase before switching to hold (20-50 typical)"></div>
+          <div class="cfg-row"><label>Inter-note valve-open time (ms)</label><input type="number" id="cfgSolInter" min="0" max="2000" value="0" title="If the gap between 2 notes is below this value, the valve remains open (0=always close)"></div>
+          <div style="font-size:.65em;color:#888;padding:2px 0">Activation: strong pulse to open. Hold: reduced current to stay open.</div>
+          <button class="btn btn-s" onclick="wsSend({t:'test_sol',o:1});setTimeout(()=>wsSend({t:'test_sol',o:0}),500)" style="font-size:.65em;padding:2px 8px;margin-top:4px" title="Opens the solenoid for 0.5s">Test solenoid</button>
         </div>
         <div id="airValveServoParams" style="display:none">
-          <div class="cfg-row"><label>Canal PCA valve</label>
-            <input type="number" id="airValveCh" min="0" max="31" value="11" title="Canal PCA9685 (0-15 carte 1, 16-31 carte 2). Ne pas utiliser le meme canal que le servo flow.">
+          <div class="cfg-row"><label>Channel PCA valve</label>
+            <input type="number" id="airValveCh" min="0" max="31" value="11" title="Channel PCA9685 (0-15 carte 1, 16-31 carte 2). Ne pas utiliser le meme canal que le servo flow.">
           </div>
-          <div class="cfg-row"><label>Angle ferme</label><input type="number" id="cfgVlvClose" min="0" max="180" value="0" title="Angle servo quand la valve est fermee"></div>
-          <div class="cfg-row"><label>Angle ouvert</label><input type="number" id="cfgVlvOpen" min="0" max="180" value="90" title="Angle servo quand la valve est ouverte"></div>
-          <div class="cfg-row"><label>Sens ouverture</label>
+          <div class="cfg-row"><label>Closed angle</label><input type="number" id="cfgVlvClose" min="0" max="180" value="0" title="Angle servo quand la valve est closed"></div>
+          <div class="cfg-row"><label>Open angle</label><input type="number" id="cfgVlvOpen" min="0" max="180" value="90" title="Angle servo quand la valve est open"></div>
+          <div class="cfg-row"><label>Opening direction</label>
             <select id="cfgVlvDir">
               <option value="0">Horaire</option>
               <option value="1">Anti-horaire</option>
@@ -911,19 +911,19 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
 
     <!-- BLOCK: Servo Flow -->
     <div class="air-block active" id="airBlockServo">
-      <div class="air-block-hdr" tabindex="0" role="button" aria-label="Configuration servo flow" onclick="toggleAirBlock('airBlockServo')" onkeydown="toggleAirBlock('airBlockServo',event)">
+      <div class="air-block-hdr" tabindex="0" role="button" aria-label="Flow servo configuration" onclick="toggleAirBlock('airBlockServo')" onkeydown="toggleAirBlock('airBlockServo',event)">
         <h4><svg viewBox="0 0 16 16" width="14" height="14"><rect x="2" y="5" width="12" height="6" rx="2" fill="none" stroke="currentColor" stroke-width="1.2"/><line x1="8" y1="5" x2="12" y2="2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>Servo Flow</h4>
         <div class="air-block-toggle on" id="airBlockServoToggle" role="switch" aria-checked="true" onclick="event.stopPropagation();toggleAirBlockEnable('airBlockServo')"></div>
       </div>
       <div class="air-block-body">
         <div class="cfg-row" id="cfgAirOffRow" style="display:none"><label>Position note Off</label><input type="number" id="cfgAirOff" min="0" max="180" title="Angle quand aucune note ne joue (coupe l'air). Typique: 0-20°" oninput="updateFlowSliderRange()"></div>
-        <div class="cfg-row"><label id="cfgAirMinLabel">Angle min</label><input type="number" id="cfgAirMin" min="0" max="180" title="Angle minimal pour les notes les plus douces (pp). Typique: 5-15°" oninput="updateFlowSliderRange()"></div>
-        <div class="cfg-row"><label id="cfgAirMaxLabel">Angle max</label><input type="number" id="cfgAirMax" min="0" max="180" title="Angle maximal pour les notes les plus fortes (ff). Typique: 60-120°" oninput="updateFlowSliderRange()"></div>
+        <div class="cfg-row"><label id="cfgAirMinLabel">Angle min</label><input type="number" id="cfgAirMin" min="0" max="180" title="Minimum angle for the softest notes (pp). Typique: 5-15°" oninput="updateFlowSliderRange()"></div>
+        <div class="cfg-row"><label id="cfgAirMaxLabel">Angle max</label><input type="number" id="cfgAirMax" min="0" max="180" title="Maximum angle for the strongest notes (ff). Typique: 60-120°" oninput="updateFlowSliderRange()"></div>
         <div id="airServoOffHint" style="font-size:.65em;color:#888;padding:2px 0"></div>
         <div class="btn-row" style="margin-top:4px">
-          <button class="btn btn-s" onclick="applyServoPreset(5,60)" style="font-size:.7em;padding:3px 8px" title="Souffle leger, ideal pour flute a bec">Doux</button>
+          <button class="btn btn-s" onclick="applyServoPreset(5,60)" style="font-size:.7em;padding:3px 8px" title="Light breath, ideal for recorder">Soft</button>
           <button class="btn btn-s" onclick="applyServoPreset(10,90)" style="font-size:.7em;padding:3px 8px" title="Bon compromis pour la plupart des flutes">Standard</button>
-          <button class="btn btn-s" onclick="applyServoPreset(15,120)" style="font-size:.7em;padding:3px 8px" title="Souffle fort, flute traversiere ou gros volume">Puissant</button>
+          <button class="btn btn-s" onclick="applyServoPreset(15,120)" style="font-size:.7em;padding:3px 8px" title="Strong breath, transverse flute or high volume">Powerful</button>
         </div>
       </div>
     </div>
@@ -932,12 +932,12 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
     <div class="air-block trav-only" id="airBlockAngle">
       <div class="air-block-hdr" tabindex="0" role="button" aria-label="Configuration servo angle" onclick="toggleAirBlock('airBlockAngle')" onkeydown="toggleAirBlock('airBlockAngle',event)">
         <h4><svg viewBox="0 0 16 16" width="14" height="14"><path d="M8 2L2 14h12L8 2z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><line x1="8" y1="6" x2="8" y2="10" stroke="currentColor" stroke-width="1.2"/></svg>Servo Angle (traversiere)</h4>
-        <span class="air-block-toggle" id="airBlockAngleToggle" role="switch" aria-checked="false" onclick="event.stopPropagation();toggleAngleServo()" title="Activer/desactiver le servo angle"></span>
+        <span class="air-block-toggle" id="airBlockAngleToggle" role="switch" aria-checked="false" onclick="event.stopPropagation();toggleAngleServo()" title="Enable/desactiver le servo angle"></span>
       </div>
       <div class="air-block-body">
-        <p style="font-size:.72em;color:#888;margin:0 0 8px">Angle du jet d'air par rapport au biseau. Visible uniquement pour les flutes traversieres. CC74 (Brightness) module l'angle en temps reel.</p>
-        <div class="cfg-row"><label>Canal PCA angle</label><select id="cfgAngPca" style="max-width:80px" onchange="syncAngPca(this.value);checkPca()"></select></div>
-        <div class="cfg-row"><label>Angle repos</label><input type="number" id="cfgAngOff" min="0" max="180" title="Position au repos (centre)"></div>
+        <p style="font-size:.72em;color:#888;margin:0 0 8px">Air-jet angle d'air par rapport au biseau. Visible uniquement pour les flutes traversieres. CC74 (Brightness) module l'angle en temps reel.</p>
+        <div class="cfg-row"><label>Channel PCA angle</label><select id="cfgAngPca" style="max-width:80px" onchange="syncAngPca(this.value);checkPca()"></select></div>
+        <div class="cfg-row"><label>Rest angle</label><input type="number" id="cfgAngOff" min="0" max="180" title="Position au repos (centre)"></div>
         <div class="cfg-row"><label>Angle min</label><input type="number" id="cfgAngMin" min="0" max="180" title="Angle minimum calibre"></div>
         <div class="cfg-row"><label>Angle max</label><input type="number" id="cfgAngMax" min="0" max="180" title="Angle maximum calibre"></div>
         <div class="cfg-row"><label>Test angle</label><input type="range" min="0" max="180" value="90" id="testAngSlider" oninput="$('testAngVal').textContent=this.value+'&deg;';wsSend({t:'test_angle',a:parseInt(this.value)})"><span id="testAngVal" style="min-width:30px;font-size:.8em">90&deg;</span></div>
@@ -950,10 +950,10 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
     </div>
     <div id="airValidationMsg" style="display:none;font-size:.78em;color:#e94560;background:rgba(233,69,96,.08);border:1px solid rgba(233,69,96,.25);border-radius:6px;padding:8px 10px;margin:8px 0"></div>
     <div class="btn-row" style="margin-top:12px;gap:8px">
-      <button class="btn btn-g" id="btnAirSave" onclick="saveAirSettings()">Sauvegarder</button>
-      <button class="btn btn-s" onclick="resetAirDefaults()" style="font-size:.8em" title="Reinitialiser les valeurs par defaut pour le mode actuel">Defauts</button>
-      <button class="btn btn-s" onclick="copyAirConfig()" style="font-size:.8em" title="Copier la configuration air au presse-papier (JSON)">Copier</button>
-      <button class="btn btn-s" onclick="importAirConfig()" style="font-size:.8em" title="Importer une configuration depuis le presse-papier (JSON)">Importer</button>
+      <button class="btn btn-g" id="btnAirSave" onclick="saveAirSettings()">Save</button>
+      <button class="btn btn-s" onclick="resetAirDefaults()" style="font-size:.8em" title="Reset default values for the current mode">Defaults</button>
+      <button class="btn btn-s" onclick="copyAirConfig()" style="font-size:.8em" title="Copy air configuration to clipboard (JSON)">Copy</button>
+      <button class="btn btn-s" onclick="importAirConfig()" style="font-size:.8em" title="Import configuration from clipboard (JSON)">Import</button>
     </div>
     <div id="airSettingsMsg" style="font-size:.75em;color:#0f0;margin-top:6px"></div>
     <div id="airConfigSummary" style="display:none;font-size:.7em;color:#888;margin-top:6px;padding:4px 8px;background:rgba(255,255,255,.02);border-radius:4px"></div>
@@ -964,34 +964,34 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
 <!-- WIZARD OVERLAY (first boot) -->
 <div class="settings-overlay" id="wizardOverlay">
 <div class="settings-box" style="max-width:540px">
-  <h2>Bienvenue ! Configuration initiale</h2>
+  <h2>Welcome! Initial setup</h2>
   <div id="wizStep1">
-    <p style="color:#9aa;font-size:.85em;margin-bottom:12px">Choisissez votre type d'instrument :</p>
+    <p style="color:#9aa;font-size:.85em;margin-bottom:12px">Choose your instrument type:</p>
     <div id="wizPresets" style="display:flex;flex-direction:column;gap:8px"></div>
     <div class="btn-row" style="margin-top:16px">
-      <button class="btn btn-g" onclick="wizNext(2)">Suivant</button>
+      <button class="btn btn-g" onclick="wizNext(2)">Next</button>
     </div>
   </div>
   <div id="wizStep2" style="display:none">
     <h3 style="color:#e94560;margin:0 0 4px">Systeme d'air</h3>
-    <p style="color:#9aa;font-size:.8em;margin:0 0 14px">Comment l'air est-il envoye dans la flute ?</p>
+    <p style="color:#9aa;font-size:.8em;margin:0 0 14px">How is air sent into the flute?</p>
     <div style="display:flex;flex-direction:column;gap:8px;max-height:55vh;overflow-y:auto">
       <label class="wiz-card" onclick="wizSetAir(0)"><input type="radio" name="wizAir" value="0" checked>
-        <span><b>Solenoide + servo flow</b><br><span style="font-size:.75em;color:#9aa">Valve solenoide coupe l'air, servo flow regle le debit. Classique.</span></span></label>
+        <span><b>Solenoid + servo flow</b><br><span style="font-size:.75em;color:#9aa">Solenoid valve cuts air; the flow servo adjusts the flow. Classic.</span></span></label>
       <label class="wiz-card" onclick="wizSetAir(1)"><input type="radio" name="wizAir" value="1">
-        <span><b>Servo-valve (PCA)</b><br><span style="font-size:.75em;color:#9aa">Un servo PCA9685 remplace le solenoide pour couper l'air.</span></span></label>
+        <span><b>Servo-valve (PCA)</b><br><span style="font-size:.75em;color:#9aa">A PCA9685 servo replaces the solenoid to cut air.</span></span></label>
       <label class="wiz-card" onclick="wizSetAir(2)"><input type="radio" name="wizAir" value="2">
-        <span><b>Servo flow seul</b><br><span style="font-size:.75em;color:#9aa">Juste un servo flow, pas de valve. Le servo passe a l'angle off entre les notes.</span></span></label>
+        <span><b>Servo flow only</b><br><span style="font-size:.75em;color:#9aa">Only a flow servo, no valve. The servo moves to the off angle between notes.</span></span></label>
       <label class="wiz-card" onclick="wizSetAir(3)"><input type="radio" name="wizAir" value="3">
-        <span><b>Ventilateur + servo flow</b><br><span style="font-size:.75em;color:#9aa">Ventilateur PWM souffle en continu, servo flow dirige vers le bec.</span></span></label>
+        <span><b>Fan + servo flow</b><br><span style="font-size:.75em;color:#9aa">PWM fan blows continuously; the flow servo directs air to the mouthpiece.</span></span></label>
       <label class="wiz-card" onclick="wizSetAir(4)"><input type="radio" name="wizAir" value="4">
-        <span><b>Pompe(s) + valve</b><br><span style="font-size:.75em;color:#9aa">1 a 3 pompes PWM + valve ON/OFF. Souffle direct dans la flute.</span></span></label>
+        <span><b>Pump(s) + valve</b><br><span style="font-size:.75em;color:#9aa">1 to 3 PWM pumps + ON/OFF valve. Direct breath into the flute.</span></span></label>
       <label class="wiz-card" onclick="wizSetAir(5)"><input type="radio" name="wizAir" value="5">
-        <span><b>Pompe(s) + reservoir + valve</b><br><span style="font-size:.75em;color:#9aa">Pompe remplit un reservoir, capteur (ToF/Hall/endstop) regule le niveau.</span></span></label>
+        <span><b>Pump(s) + reservoir + valve</b><br><span style="font-size:.75em;color:#9aa">Pump fills a reservoir; sensor (ToF/Hall/endstop) regulates the level.</span></span></label>
     </div>
     <div class="btn-row" style="margin-top:16px">
-      <button class="btn btn-s" onclick="wizNext(1)">Retour</button>
-      <button class="btn btn-g" onclick="wizFinish()">Terminer</button>
+      <button class="btn btn-s" onclick="wizNext(1)">Back</button>
+      <button class="btn btn-g" onclick="wizFinish()">Finish</button>
     </div>
   </div>
 </div>
@@ -1000,35 +1000,35 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
 <!-- SETTINGS OVERLAY -->
 <div class="settings-overlay" id="settingsOverlay">
 <div class="settings-box">
-  <h2>Reglages <button class="close-btn" onclick="toggleSettings()">&times;</button></h2>
+  <h2>Settings <button class="close-btn" onclick="toggleSettings()">&times;</button></h2>
 
-  <div class="section"><h3>Appareil</h3>
-    <div class="cfg-row"><label>Nom</label><input type="text" id="cfgDevice" maxlength="31"></div>
-    <div class="cfg-row"><label>Canal MIDI</label><select id="cfgMidiCh">
+  <div class="section"><h3>Device</h3>
+    <div class="cfg-row"><label>Name</label><input type="text" id="cfgDevice" maxlength="31"></div>
+    <div class="cfg-row"><label>Channel MIDI</label><select id="cfgMidiCh">
       <option value="0">Omni (tous)</option>
     </select></div>
   </div>
 
   <div class="section"><h3>MIDI Serial (DIN)</h3>
-    <div class="cfg-row"><label>Activer</label><input type="checkbox" id="cfgSmidiOn" style="width:auto;flex:0"></div>
+    <div class="cfg-row"><label>Enable</label><input type="checkbox" id="cfgSmidiOn" style="width:auto;flex:0"></div>
     <div class="cfg-row"><label>Pin RX (GPIO)</label><select id="cfgSmidiRx" style="width:auto"><option value="16">16 (RX2)</option><option value="17">17</option><option value="18">18</option><option value="19">19</option><option value="23">23</option><option value="25">25</option><option value="26">26</option><option value="27">27</option><option value="33">33</option><option value="34">34 (input only)</option><option value="35">35 (input only)</option><option value="36">36 (input only)</option><option value="39">39 (input only)</option></select></div>
-    <div style="font-size:.7em;color:#666;margin-top:2px">Connecter un circuit optocoupler MIDI DIN au GPIO choisi. Les pins 34-39 sont en entree uniquement (ideal pour RX). Redemarrage requis.</div>
+    <div style="font-size:.7em;color:#666;margin-top:2px">Connect a MIDI DIN optocoupler circuit to the selected GPIO. Pins 34-39 are input-only (ideal for RX). Restart required.</div>
   </div>
 
-  <div class="section"><h3>Timing des notes</h3>
-    <div class="cfg-row"><label>Delai doigts &rarr; souffle (ms)</label><input type="number" id="cfgDelay" min="0" max="1000"></div>
-    <div style="font-size:.7em;color:#666;margin:-4px 0 6px 148px">Temps entre le positionnement des doigts et l'ouverture de la valve</div>
-    <div class="cfg-row"><label>Fermeture valve inter-notes (ms)</label><input type="number" id="cfgValveInt" min="0" max="500"></div>
-    <div style="font-size:.7em;color:#666;margin:-4px 0 6px 148px">Intervalle minimum entre 2 notes pour fermer la valve (0 = legato)</div>
-    <div class="cfg-row"><label>Duree minimum d'une note (ms)</label><input type="number" id="cfgMinNote" min="0" max="500"></div>
+  <div class="section"><h3>Note timing</h3>
+    <div class="cfg-row"><label>Finger &rarr; breath delay (ms)</label><input type="number" id="cfgDelay" min="0" max="1000"></div>
+    <div style="font-size:.7em;color:#666;margin:-4px 0 6px 148px">Time between finger positioning and valve opening</div>
+    <div class="cfg-row"><label>Inter-note valve close (ms)</label><input type="number" id="cfgValveInt" min="0" max="500"></div>
+    <div style="font-size:.7em;color:#666;margin:-4px 0 6px 148px">Minimum interval between 2 notes before closing the valve (0 = legato)</div>
+    <div class="cfg-row"><label>Duration minimum d'une note (ms)</label><input type="number" id="cfgMinNote" min="0" max="500"></div>
   </div>
 
-  <div class="section"><h3>Valeurs MIDI par defaut</h3>
+  <div class="section"><h3>Default MIDI values</h3>
     <div style="font-size:.7em;color:#666;margin-bottom:6px">Valeurs initiales au demarrage (0-127). Modifiables en temps reel via MIDI CC.</div>
     <div class="cfg-row"><label>Volume (CC7)</label><input type="number" id="cfgCCVol" min="0" max="127"></div>
     <div class="cfg-row"><label>Expression (CC11)</label><input type="number" id="cfgCCExpr" min="0" max="127"></div>
     <div class="cfg-row"><label>Vibrato (CC1)</label><input type="number" id="cfgCCMod" min="0" max="127"></div>
-    <div class="cfg-row"><label>Souffle (CC2)</label><input type="number" id="cfgCCBreath" min="0" max="127"></div>
+    <div class="cfg-row"><label>Breath (CC2)</label><input type="number" id="cfgCCBreath" min="0" max="127"></div>
     <div class="cfg-row"><label>Brillance (CC74)</label><input type="number" id="cfgCCBright" min="0" max="127"></div>
   </div>
 
@@ -1039,11 +1039,11 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
 
   <div class="section"><h3>Stockage fichiers MIDI</h3>
     <div class="cfg-row"><label>Espace maximum (KB)</label><input type="number" id="cfgMidiLimit" min="50" max="2000" step="50"></div>
-    <div style="font-size:.7em;color:#666;margin:-4px 0 6px 148px">Limite de stockage pour les fichiers .mid uploades</div>
+    <div style="font-size:.7em;color:#666;margin:-4px 0 6px 148px">Storage limit for uploaded .mid files</div>
   </div>
 
   <div class="section"><h3>Affichage</h3>
-    <div class="cfg-row"><label>Couleur de l'instrument</label><input type="color" id="cfgColor" value="#D4B044" style="width:48px;height:48px;flex:0;padding:0;border:2px solid #555;border-radius:6px;cursor:pointer"></div>
+    <div class="cfg-row"><label>Instrument color</label><input type="color" id="cfgColor" value="#D4B044" style="width:48px;height:48px;flex:0;padding:0;border:2px solid #555;border-radius:6px;cursor:pointer"></div>
     <div class="cfg-row"><label>Masquer onglet Calibration</label><input type="checkbox" id="cfgHideCalib" style="width:auto;flex:0"></div>
     <div class="cfg-row"><label>Masquer onglet Air</label><input type="checkbox" id="cfgHideAir" style="width:auto;flex:0"></div>
   </div>
@@ -1054,8 +1054,8 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
       <span style="font-size:.75em;color:#555" id="scanStatus"></span></div>
     <div id="wifiList" style="margin:8px 0"></div>
     <div class="cfg-row"><label>SSID</label><input type="text" id="wifiSsid" maxlength="32"></div>
-    <div class="cfg-row"><label>Mot de passe</label><input type="password" id="wifiPass" maxlength="64"></div>
-    <div class="btn-row"><button class="btn btn-g" onclick="connectWifi()">Connecter</button></div>
+    <div class="cfg-row"><label>Password</label><input type="password" id="wifiPass" maxlength="64"></div>
+    <div class="btn-row"><button class="btn btn-g" onclick="connectWifi()">Connect</button></div>
     <div style="font-size:.75em;color:#888;margin-top:4px" id="wifiMsg"></div>
   </div>
 
@@ -1073,22 +1073,22 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
   </div>
 
   <div class="btn-row" style="justify-content:center;margin-top:16px">
-    <button class="btn btn-g" id="btnSaveSettings" onclick="saveSettings()"><svg viewBox="0 0 16 16" width="14" height="14"><path d="M12.7 1H3a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2V3.3L12.7 1zM8 13a2.5 2.5 0 110-5 2.5 2.5 0 010 5zM11 5H5V2h6v3z" fill="currentColor"/></svg>Sauvegarder</button>
-    <button class="btn btn-s" onclick="resetConfig()">Reset defauts</button>
+    <button class="btn btn-g" id="btnSaveSettings" onclick="saveSettings()"><svg viewBox="0 0 16 16" width="14" height="14"><path d="M12.7 1H3a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2V3.3L12.7 1zM8 13a2.5 2.5 0 110-5 2.5 2.5 0 010 5zM11 5H5V2h6v3z" fill="currentColor"/></svg>Save</button>
+    <button class="btn btn-s" onclick="resetConfig()">Reset defaults</button>
   </div>
   <div style="font-size:.75em;color:#9aa;text-align:center;margin-top:8px" id="settingsMsg"></div>
 
   <div style="border-top:1px solid #333;margin-top:20px;padding-top:16px">
     <div class="btn-row" style="justify-content:center">
-      <button class="btn btn-p" onclick="factoryReset()">Reset usine (changer instrument)</button>
+      <button class="btn btn-p" onclick="factoryReset()">Factory reset (change instrument)</button>
     </div>
-    <div style="font-size:.7em;color:#666;text-align:center;margin-top:6px">Remet tous les parametres par defaut et relance l'assistant de configuration</div>
+    <div style="font-size:.7em;color:#666;text-align:center;margin-top:6px">Resets all settings to defaults and restarts the setup wizard</div>
   </div>
 </div>
 </div>
 
 <div class="status-bar">
-  <span id="sText">Deconnecte</span>
+  <span id="sText">Disconnected</span>
   <span id="heapBar">-</span>
 </div>
 
@@ -1096,11 +1096,11 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
 <div class="modal-overlay" id="seqModal" onclick="if(event.target===this)closeSeqModal()">
   <div class="modal">
     <div class="modal-hdr">
-      <h3>Editeur de sequences</h3>
+      <h3>Sequence editor</h3>
       <button class="modal-close" onclick="closeSeqModal()">&times;</button>
     </div>
     <div class="modal-body">
-      <p style="font-size:.78em;color:#888;margin:0 0 8px">Creer une sequence. Cliquer sur la grille pour placer/retirer des notes.</p>
+      <p style="font-size:.78em;color:#888;margin:0 0 8px">Create a sequence. Click the grid to place/remove notes.</p>
       <div class="cfg-row">
         <label>BPM</label><input type="number" id="seqBpm" value="120" min="40" max="300" style="width:60px" onchange="drawSeqGrid()">
         <label style="margin-left:12px">Mesures</label><input type="number" id="seqBars" value="4" min="1" max="16" style="width:50px" onchange="drawSeqGrid()">
@@ -1230,11 +1230,11 @@ function redoFp(){if(!fpFuture.length||!CFG)return;
   buildFingeringRows();updUndoUI();markDirty()}
 function updUndoUI(){$('undoBtn').disabled=!fpHistory.length;$('redoBtn').disabled=!fpFuture.length;
   $('undoInfo').textContent=fpHistory.length?fpHistory.length+' modif.':''}
-function checkPca(){if(!CFG)return;const used={};const airP=parseInt($('airPca').value);used[airP]='Souffle';
+function checkPca(){if(!CFG)return;const used={};const airP=parseInt($('airPca').value);used[airP]='Breath';
   if(CFG.embouchure==='trav'&&CFG.angle_on){const angP=$('cfgAngPca');if(angP){const av=parseInt(angP.value);used[av]='Servo Angle'}}
   document.querySelectorAll('.cal-card').forEach((card,i)=>{const ch=CFG.fingers[i]?CFG.fingers[i].ch:i;
     let conflict=used[ch]!==undefined;card.classList.toggle('pca-conflict',conflict);
-    const w=card.querySelector('.pca-warn');if(w)w.textContent=conflict?'Conflit PCA '+ch+' avec '+used[ch]:'';
+    const w=card.querySelector('.pca-warn');if(w)w.textContent=conflict?'PCA conflict '+ch+' avec '+used[ch]:'';
     used[ch]='Doigt '+(i+1)})}
 function updDualFill(ni){if(!CFG)return;
   if(CFG.notes[ni].amn>CFG.notes[ni].amx){const t=CFG.notes[ni].amn;CFG.notes[ni].amn=CFG.notes[ni].amx;CFG.notes[ni].amx=t;
@@ -1262,24 +1262,24 @@ function showTab(id,btn){
 }
 // --- Air System (modulaire) ---
 const AIR_LAYOUT_DESCS=[
-  'Source air par pompe(s). Activez/desactivez chaque composant avec le bouton toggle. Desactivez pompe et reservoir pour une alimentation externe (compresseur, bouche).',
-  'Ventilateur radial PWM souffle en continu. Le servo flow dirige le flux vers la flute.'
+  'Pump-based air source. Enable/disable each component with the toggle button. Disable pump and reservoir for an external supply (compressor, mouth).',
+  'PWM radial fan blows continuously. The flow servo directs airflow to the flute.'
 ];
 const AIR_DESCS=[
-  'Valve solenoide coupe l\'air, servo flow regle le debit. Ideal pour alimentation externe (compresseur, bouche).',
+  'Valve solenoid coupe l\'air, servo flow regle le debit. Ideal pour alimentation externe (compresseur, bouche).',
   'Valve servo PCA coupe l\'air, servo flow regle le debit. Alternative silencieuse au solenoide.',
-  'Servo flow seul. L\'angle min coupe l\'air entre les notes. Simple, un seul servo suffit.',
-  'Ventilateur PWM souffle en continu. Le servo flow dirige le flux vers la flute. Bonne puissance.',
-  'Pompe(s) directe(s) + valve. Souffle direct sans reservoir. 1-3 pompes en parallele.',
-  'Pompe(s) + reservoir + capteur. Regulation PID automatique de la pression. Configuration la plus complete.'
+  'Servo flow only. L\'angle min coupe l\'air entre les notes. Simple, un seul servo suffit.',
+  'PWM fan blows continuously. The flow servo directs airflow to the flute. Good power.',
+  'Direct pump(s) + valve. Direct breath without reservoir. 1-3 pumps in parallel.',
+  'Pump(s) + reservoir + sensor. Automatic PID pressure regulation. Most complete configuration.'
 ];
 const AIR_PARTS=[
   ['Servo flow PCA','Valve solenoide'],
   ['Servo flow PCA','Valve servo PCA'],
   ['Servo flow PCA'],
-  ['Servo flow PCA','Ventilateur PWM'],
-  ['Servo flow PCA','Pompe(s)','Valve'],
-  ['Servo flow PCA','Pompe(s)','Valve','Reservoir','Capteur']
+  ['Servo flow PCA','Fan PWM'],
+  ['Servo flow PCA','Pump(s)','Valve'],
+  ['Servo flow PCA','Pump(s)','Valve','Reservoir','Sensor']
 ];
 const PWM_GPIOS=[2,4,5,12,13,14,15,16,17,18,19,21,22,23,25,26,27,32,33];
 let lastAirData=null;
@@ -1328,16 +1328,16 @@ function refreshKbdPumpPanel(){
   const hasRes=(m===5),st=CFG.sens_type||0,mt=CFG.motor_type||0;
   const lbl=$('kbdPumpTargetLabel'),hint=$('kbdPumpHint'),mode=$('kbdPumpMode'),title=$('kbdPumpTitle');
   if(hasRes){
-    if(st>=3){lbl.textContent='Remplissage';hint.textContent='Fin de course: pompe ON/OFF selon capteur';
+    if(st>=3){lbl.textContent='Fill';hint.textContent='Endstop: pump ON/OFF based on sensor';
       mode.textContent='Endstop '+(st===3?'mecanique':'optique')}
-    else if(st===2){lbl.textContent='Niveau cible';hint.textContent='Hall: regulation '+(mt===0?'bang-bang':'PID');
+    else if(st===2){lbl.textContent='Target level';hint.textContent='Hall: regulation '+(mt===0?'bang-bang':'PID');
       mode.textContent='Hall + '+(mt===0?'Bang-bang':'PID')}
-    else{lbl.textContent='Hauteur cible';hint.textContent='ToF: regulation '+(mt===0?'bang-bang':'PID');
+    else{lbl.textContent='Target height';hint.textContent='ToF: regulation '+(mt===0?'bang-bang':'PID');
       mode.textContent='ToF + '+(mt===0?'Bang-bang':'PID')}
-    title.textContent='Pompe + Reservoir';
+    title.textContent='Pump + Reservoir';
   }else{
-    lbl.textContent='Puissance pompe';hint.textContent='PWM proportionnel direct';
-    mode.textContent='Direct';title.textContent='Pompe directe';
+    lbl.textContent='Pump power';hint.textContent='PWM proportionnel direct';
+    mode.textContent='Direct';title.textContent='Pump directe';
   }
 }
 function kbdTogglePump(){
@@ -1346,10 +1346,10 @@ function kbdTogglePump(){
   if(_kbdPumpOn){
     const v=parseInt($('kbdPumpTarget').value)||50;
     wsSend({t:'pump_target',v:v});
-    btn.textContent='Arreter pompe';btn.className='on';
+    btn.textContent='Stop pump';btn.className='on';
   }else{
     wsSend({t:'pump_stop'});
-    btn.textContent='Demarrer pompe';btn.className='off';
+    btn.textContent='Start pump';btn.className='off';
   }
 }
 function kbdSetPumpTarget(v){
@@ -1403,7 +1403,7 @@ function testAirSystem(){
 function testSinglePump(idx){
   wsSend({t:'pump_target',v:30,pump:idx});
   setTimeout(()=>wsSend({t:'pump_stop',pump:idx}),2000);
-  showToast('Test pompe '+(idx+1)+' en cours...','success');
+  showToast('Test pump '+(idx+1)+' en cours...','success');
 }
 function rotateServoNeedle(angle){
   const mn=CFG?(CFG.air_min||0):0,mx=CFG?(CFG.air_max||180):180;
@@ -1476,12 +1476,12 @@ function cancelDiagnostic(){
 }
 function runAirDiagnostic(){
   if(_diagRunning){cancelDiagnostic();return}
-  if(!(ws&&ws.readyState===1)){showToast('Non connecte - diagnostic impossible','error');return}
+  if(!(ws&&ws.readyState===1)){showToast('Not connected - diagnostic impossible','error');return}
   const dm=$('airDiagMsg');if(!dm)return;
   const db=$('btnAirDiag'),dbar=$('airDiagBar'),dfill=$('airDiagFill');
   _diagRunning=true;_diagTimeouts=[];
   dm.style.display='';dm.style.opacity='1';dm.style.color='#9aa';
-  if(db){db.disabled=false;db.textContent='Annuler'}
+  if(db){db.disabled=false;db.textContent='Cancel'}
   if(dbar)dbar.style.display='';
   if(dfill)dfill.style.width='0';
   const m=getAirMode();
@@ -1500,19 +1500,19 @@ function runAirDiagnostic(){
     steps.push({t:t,msg:'Servo flow -> min',fn:()=>testServoFlow(parseInt($('cfgAirMin').value)||0)});t+=800;
   }
   if(hasValve){
-    steps.push({t:t,msg:'Valve -> ouvrir...',fn:()=>wsSend({t:'test_sol',o:1})});t+=800;
-    steps.push({t:t,msg:'Valve -> fermer',fn:()=>wsSend({t:'test_sol',o:0})});t+=800;
+    steps.push({t:t,msg:'Valve -> open...',fn:()=>wsSend({t:'test_sol',o:1})});t+=800;
+    steps.push({t:t,msg:'Valve -> close',fn:()=>wsSend({t:'test_sol',o:0})});t+=800;
   }
   if(hasPump){
-    steps.push({t:t,msg:'Pompe -> 30%...',fn:()=>{wsSend({t:'pump_target',v:30});const pt2=$('pumpTarget');if(pt2)pt2.value=30;const pv=$('pumpTargetVal');if(pv)pv.textContent='30%'}});
-    steps.push({t:t+1300,msg:'Pompe -> arret',fn:()=>stopAirSource()});t+=2100;
+    steps.push({t:t,msg:'Pump -> 30%...',fn:()=>{wsSend({t:'pump_target',v:30});const pt2=$('pumpTarget');if(pt2)pt2.value=30;const pv=$('pumpTargetVal');if(pv)pv.textContent='30%'}});
+    steps.push({t:t+1300,msg:'Pump -> arret',fn:()=>stopAirSource()});t+=2100;
   }
   if(hasFan){
-    steps.push({t:t,msg:'Ventilateur -> 30%...',fn:()=>{wsSend({t:'fan_target',v:30});const pt2=$('pumpTarget');if(pt2)pt2.value=30;const pv=$('pumpTargetVal');if(pv)pv.textContent='30%'}});
-    steps.push({t:t+1300,msg:'Ventilateur -> arret',fn:()=>stopAirSource()});t+=2100;
+    steps.push({t:t,msg:'Fan -> 30%...',fn:()=>{wsSend({t:'fan_target',v:30});const pt2=$('pumpTarget');if(pt2)pt2.value=30;const pv=$('pumpTargetVal');if(pv)pv.textContent='30%'}});
+    steps.push({t:t+1300,msg:'Fan -> arret',fn:()=>stopAirSource()});t+=2100;
   }
   if(hasRes){
-    steps.push({t:t,msg:'Capteur reservoir -> verification...',fn:()=>{
+    steps.push({t:t,msg:'Sensor reservoir -> verification...',fn:()=>{
       const sok=$('airSensorOk');
       if(sok&&sok.textContent==='OK'){dm.style.color='#4ecca3'}
       else{dm.style.color='#e9a645'}
@@ -1614,7 +1614,7 @@ function syncAirModeFromToggles(){
   const needsOff=!hasValve;
   const offRow=$('cfgAirOffRow');if(offRow)offRow.style.display=needsOff?'':'none';
   const offHint=$('airServoOffHint');
-  if(offHint)offHint.textContent=needsOff?'Position Off = coupure d\'air entre les notes. Min/Max = plage souffle note active.':'La valve coupe l\'air. Min/Max = plage de debit du servo flow.';
+  if(offHint)offHint.textContent=needsOff?'Off position = air cutoff between notes. Min/Max = active note breath range.':'The valve cuts air. Min/Max = flow servo range.';
   const mnLabel=$('cfgAirMinLabel');if(mnLabel)mnLabel.textContent=needsOff?'Position note On min':'Angle min';
   const mxLabel=$('cfgAirMaxLabel');if(mxLabel)mxLabel.textContent=needsOff?'Position note On max':'Angle max';
   const bgo=$('btnGotoOff');if(bgo)bgo.style.display=needsOff?'':'none';
@@ -1634,24 +1634,24 @@ function syncAirModeFromToggles(){
   // Control section
   const cs=$('airCtrlSection');if(cs){cs.style.display='';
     $('airCtrlTitle').textContent=(hasPump||hasFan)?
-      (hasFan?'Controle ventilateur':'Controle pompe'):'Controle servo flow';
-    $('btnAirStop').textContent=hasFan?'Arreter ventilateur':'Arreter pompe';
+      (hasFan?'Fan control':'Pump control'):'Control servo flow';
+    $('btnAirStop').textContent=hasFan?'Stop fan':'Stop pump';
     // Adapter label slider selon contexte mesure
-    if(hasFan){$('airTargetLabel').textContent='Vitesse'}
+    if(hasFan){$('airTargetLabel').textContent='Speed'}
     else if(hasRes){
       const st=CFG?CFG.sens_type:0;
-      if(st>=3)$('airTargetLabel').textContent='Remplissage';
-      else if(st===2)$('airTargetLabel').textContent='Niveau cible';
-      else $('airTargetLabel').textContent='Hauteur cible';
-    }else if(hasPump){$('airTargetLabel').textContent='Puissance pompe'}
+      if(st>=3)$('airTargetLabel').textContent='Fill';
+      else if(st===2)$('airTargetLabel').textContent='Target level';
+      else $('airTargetLabel').textContent='Target height';
+    }else if(hasPump){$('airTargetLabel').textContent='Pump power'}
     // Hint contextuel sous le slider
     const th=$('airTargetHint');if(th){
       if(hasRes){const st=CFG?CFG.sens_type:0;
-        if(st>=3){th.textContent='Fin de course: pompe ON tant que non declenche';th.style.display=''}
-        else if(st===2){th.textContent='Capteur Hall: regulation niveau par bang-bang ou PID';th.style.display=''}
-        else{th.textContent='Capteur ToF: regulation distance par bang-bang ou PID';th.style.display=''}
-      }else if(hasPump){th.textContent='Mode direct: PWM proportionnel a la demande';th.style.display=''}
-      else if(hasFan){th.textContent='PWM ventilateur proportionnel';th.style.display=''}
+        if(st>=3){th.textContent='Endstop: pump ON until triggered';th.style.display=''}
+        else if(st===2){th.textContent='Sensor Hall: level regulation by bang-bang or PID';th.style.display=''}
+        else{th.textContent='Sensor ToF: distance regulation by bang-bang or PID';th.style.display=''}
+      }else if(hasPump){th.textContent='Direct mode: PWM proportional to demand';th.style.display=''}
+      else if(hasFan){th.textContent='Proportional fan PWM';th.style.display=''}
       else{th.style.display='none'}
     }
     $('btnAirStop').style.display=(hasPump||hasFan)?'':'none';
@@ -1666,16 +1666,16 @@ function syncAirModeFromToggles(){
   const md=$('airModeDesc');if(md){
     const layout=getAirLayout();
     const activeParts=[];
-    if(hasFan)activeParts.push('Ventilateur PWM');
-    if(hasPump)activeParts.push('Pompe(s)');
-    if(hasRes)activeParts.push('Reservoir + capteur');
+    if(hasFan)activeParts.push('Fan PWM');
+    if(hasPump)activeParts.push('Pump(s)');
+    if(hasRes)activeParts.push('Reservoir + sensor');
     if(hasValve)activeParts.push('Valve');
     activeParts.push('Servo flow PCA');
     const badges=activeParts.map(p=>'<span style="display:inline-block;font-size:.7em;background:#0f3460;color:#4ecca3;padding:1px 6px;border-radius:8px;margin:2px 2px 0 0">'+p+'</span>').join('');
     md.innerHTML=(AIR_LAYOUT_DESCS[layout]||'')+'<div style="margin-top:4px">'+badges+'</div>';
   }
   // Update status bar
-  const modeNames=['Valve+flow','Servo-valve','Servo seul','Ventilateur','Pompe directe','Pompe+reservoir'];
+  const modeNames=['Valve+flow','Servo-valve','Servo seul','Fan','Pump directe','Pump+reservoir'];
   const sm=$('airStatusMode');if(sm)sm.textContent=modeNames[m]||'?';
   validateAirConfig();
   buildAirSvg('airSvgFull',true);
@@ -1763,7 +1763,7 @@ function toggleValveParams(noMark){
 function toggleMotorType(){
   buildPumpRows();
   toggleCascadeRow();
-  const mh=$('airMotorHelp');if(mh)mh.textContent=$('airMotorType').value==='1'?'On/Off: pompe demarre/arrete uniquement':'PWM: controle vitesse 0-255';
+  const mh=$('airMotorHelp');if(mh)mh.textContent=$('airMotorType').value==='1'?'On/Off: pump only starts/stops':'PWM: speed control 0-255';
 }
 function toggleCascadeRow(){
   const np=parseInt($('airNumPumps').value)||1;
@@ -1817,17 +1817,17 @@ function buildPumpRows(){
   const c=$('airPumpRows');if(!c)return;
   let h='';
   for(let i=0;i<n;i++){
-    const label=n>1?'Pompe '+(i+1)+' ':'';
+    const label=n>1?'Pump '+(i+1)+' ':'';
     h+='<div style="border-left:2px solid #0f3460;padding-left:8px;margin:8px 0">';
-    if(n>1)h+='<div style="font-size:.78em;color:#e94560;font-weight:bold;margin-bottom:4px">Pompe '+(i+1)+'</div>';
+    if(n>1)h+='<div style="font-size:.78em;color:#e94560;font-weight:bold;margin-bottom:4px">Pump '+(i+1)+'</div>';
     h+='<div class="cfg-row"><label>'+label+'GPIO</label><select id="airPumpPin'+i+'">';
     PWM_GPIOS.forEach(g=>{h+='<option value="'+g+'">GPIO '+g+'</option>'});
     h+='</select></div>';
     if(isPwm){
-      h+='<div class="cfg-row"><label>'+label+'PWM min</label><input type="number" id="airPumpMin'+i+'" min="0" max="255" value="80" title="PWM minimum pour demarrer la pompe (seuil de rotation)" oninput="updPwmPct(this)"><span class="pwm-pct" style="font-size:.65em;color:#888;min-width:30px;text-align:right">31%</span></div>';
+      h+='<div class="cfg-row"><label>'+label+'PWM min</label><input type="number" id="airPumpMin'+i+'" min="0" max="255" value="80" title="Minimum PWM to start the pump (rotation threshold)" oninput="updPwmPct(this)"><span class="pwm-pct" style="font-size:.65em;color:#888;min-width:30px;text-align:right">31%</span></div>';
       h+='<div class="cfg-row"><label>'+label+'PWM max</label><input type="number" id="airPumpMax'+i+'" min="0" max="255" value="255" title="PWM maximum (pleine puissance)" oninput="updPwmPct(this)"><span class="pwm-pct" style="font-size:.65em;color:#888;min-width:30px;text-align:right">100%</span></div>';
     }
-    if(n>1)h+='<button class="btn btn-s" onclick="testSinglePump('+i+')" style="font-size:.65em;padding:2px 8px;margin-top:4px" title="Teste cette pompe a 30% pendant 2s">Test pompe '+(i+1)+'</button>';
+    if(n>1)h+='<button class="btn btn-s" onclick="testSinglePump('+i+')" style="font-size:.65em;padding:2px 8px;margin-top:4px" title="Test this pump at 30% for 2s">Test pump '+(i+1)+'</button>';
     h+='</div>';
   }
   c.innerHTML=h;
@@ -1866,8 +1866,8 @@ function validateAirConfig(){
   // Fan PWM validation
   if(m===3){
     const fmin=parseInt($('airFanMin').value)||0,fmax=parseInt($('airFanMax').value)||255;
-    if(fmin>=fmax){warns.push('Ventilateur: PWM min doit etre inferieur a max');errBlocks.add('airBlockFan')}
-    if(fmin<0||fmax>255){warns.push('Ventilateur: PWM doit etre entre 0 et 255');errBlocks.add('airBlockFan')}
+    if(fmin>=fmax){warns.push('Fan: PWM min doit etre inferieur a max');errBlocks.add('airBlockFan')}
+    if(fmin<0||fmax>255){warns.push('Fan: PWM doit etre entre 0 et 255');errBlocks.add('airBlockFan')}
   }
   // Pump validation
   if(m>=4){
@@ -1877,11 +1877,11 @@ function validateAirConfig(){
     for(let i=0;i<n;i++){
       const pe=$('airPumpPin'+i);if(!pe)continue;
       const p=parseInt(pe.value);
-      if(usedPins.includes(p)){warns.push('Pompe '+(i+1)+': GPIO '+p+' deja utilise');errBlocks.add('airBlockPump')}
+      if(usedPins.includes(p)){warns.push('Pump '+(i+1)+': GPIO '+p+' deja utilise');errBlocks.add('airBlockPump')}
       usedPins.push(p);
       if(mt===0){
         const mn=parseInt($('airPumpMin'+i).value)||0,mx=parseInt($('airPumpMax'+i).value)||255;
-        if(mn>=mx){warns.push('Pompe '+(i+1)+': PWM min >= max');errBlocks.add('airBlockPump')}
+        if(mn>=mx){warns.push('Pump '+(i+1)+': PWM min >= max');errBlocks.add('airBlockPump')}
       }
     }
   }
@@ -1913,7 +1913,7 @@ function validateAirConfig(){
     if(st<=1){
       const smin=parseInt($('airSensMin').value)||0,smax=parseInt($('airSensMax').value)||300,stgt=parseInt($('airSensTarget').value)||50;
       if(smin>=smax){warns.push('ToF: min >= max');errBlocks.add('airBlockRes')}
-      if(stgt<smin||stgt>smax){warns.push('ToF: cible hors plage min-max');errBlocks.add('airBlockRes')}
+      if(stgt<smin||stgt>smax){warns.push('ToF: target out of min-max range');errBlocks.add('airBlockRes')}
     }
   }
   // Highlight error blocks and auto-scroll to first error
@@ -1937,7 +1937,7 @@ function validateAirConfig(){
 }
 function saveAirSettings(){
   if(!validateAirConfig()){
-    const msg=$('airSettingsMsg');if(msg){msg.textContent='Corriger les erreurs avant de sauver';msg.style.color='#e94560';
+    const msg=$('airSettingsMsg');if(msg){msg.textContent='Fix errors before saving';msg.style.color='#e94560';
       setTimeout(()=>{msg.textContent='';msg.style.color='#0f0'},3000)}
     const vm=$('airValidationMsg');if(vm){vm.style.animation='airShake .4s';setTimeout(()=>vm.style.animation='',400)}
     return;
@@ -2000,18 +2000,18 @@ function saveAirSettings(){
     const _ap=parseInt($('cfgAngPca').value),_ao=parseInt($('cfgAngOff').value),_an=parseInt($('cfgAngMin').value),_ax=parseInt($('cfgAngMax').value);
     d.ang_pca=isNaN(_ap)?12:_ap;d.ang_off=isNaN(_ao)?90:_ao;d.ang_min=isNaN(_an)?60:_an;d.ang_max=isNaN(_ax)?120:_ax;
     d.angle_ch=d.ang_pca}
-  const sb=$('btnAirSave');if(sb){sb.disabled=true;sb.textContent='Sauvegarde...'}
+  const sb=$('btnAirSave');if(sb){sb.disabled=true;sb.textContent='Saving...'}
   fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)})
     .then(r=>r.json()).then(j=>{
-    if(sb){sb.disabled=false;sb.textContent='Sauvegarder'}
-    if(j.ok){showToast('Configuration air sauvegardee','success');
+    if(sb){sb.disabled=false;sb.textContent='Save'}
+    if(j.ok){showToast('Air configuration saved','success');
       Object.assign(CFG,d);markClean();applyAirTabVisibility();buildAirSvg('airSvgFull',true);
-      const ts=$('airSettingsMsg');if(ts){ts.textContent='Sauvegarde a '+new Date().toLocaleTimeString();ts.style.color='#4ecca3';setTimeout(()=>{ts.textContent=''},5000)}}
-    else{showToast('Erreur sauvegarde air','error')}
-    }).catch(()=>{if(sb){sb.disabled=false;sb.textContent='Sauvegarder'};showToast('Erreur reseau','error')})
+      const ts=$('airSettingsMsg');if(ts){ts.textContent='Saved at '+new Date().toLocaleTimeString();ts.style.color='#4ecca3';setTimeout(()=>{ts.textContent=''},5000)}}
+    else{showToast('Save error air','error')}
+    }).catch(()=>{if(sb){sb.disabled=false;sb.textContent='Save'};showToast('Network error','error')})
 }
 function resetAirDefaults(){
-  if(!confirm('Reinitialiser les valeurs par defaut pour le mode actuel ?'))return;
+  if(!confirm('Reset default values for the current mode?'))return;
   const layout=getAirLayout();
   $('cfgAirMin').value=10;$('cfgAirMax').value=90;
   $('airValveType').value='0';$('airValveCh').value=11;
@@ -2040,7 +2040,7 @@ function resetAirDefaults(){
   const an=$('cfgAngMin');if(an)an.value=60;
   const ax=$('cfgAngMax');if(ax)ax.value=120;
   toggleValveParams();syncAirModeFromToggles();markDirty();
-  showToast('Valeurs par defaut appliquees','success');
+  showToast('Default values applied','success');
 }
 function copyAirConfig(){
   const keys=['air_mode','valve_type','valve_ch','vlv_close','vlv_open','vlv_dir','air_off','air_min','air_max','motor_type','num_pumps',
@@ -2053,9 +2053,9 @@ function copyAirConfig(){
   else{const ta=document.createElement('textarea');ta.value=json;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();showToast('Config copiee','success')}
 }
 const CFG_LABELS={air_mode:'Mode',air_off:'Off',air_min:'Min',air_max:'Max',fan_min:'Fan min',fan_max:'Fan max',fan_idle_pct:'Fan idle%',fan_idle_timeout:'Fan timeout',pid_kp:'Kp',pid_ki:'Ki',
-  valve_type:'Valve',valve_ch:'Canal valve',vlv_close:'Vlv ferme',vlv_open:'Vlv ouvert',vlv_dir:'Vlv sens',
+  valve_type:'Valve',valve_ch:'Channel valve',vlv_close:'Vlv closed',vlv_open:'Vlv open',vlv_dir:'Vlv sens',
   sol_pin:'Sol GPIO',sol_act:'Sol act',sol_hold:'Sol hold',sol_time:'Sol temps',sol_inter:'Sol inter-note',
-  sens_type:'Capteur',sens_target:'Cible',sens_min:'Sens min',sens_max:'Sens max',show_air:'Afficher air'};
+  sens_type:'Sensor',sens_target:'Target',sens_min:'Sens min',sens_max:'Sens max',show_air:'Afficher air'};
 function updateConfigSummary(){
   const cs=$('airConfigSummary');if(!cs||!CFG)return;
   const fields=[['air_mode','airModeSelect'],['air_off','cfgAirOff'],['air_min','cfgAirMin'],['air_max','cfgAirMax'],
@@ -2077,17 +2077,17 @@ function updateConfigSummary(){
   }else cs.style.display='none';
 }
 function importAirConfig(){
-  const input=prompt('Coller le JSON de configuration air:');
+  const input=prompt('Paste air configuration JSON:');
   if(!input)return;
   try{
     const d=JSON.parse(input);
     if(typeof d!=='object'||d===null){showToast('JSON invalide','error');return}
-    if(d.air_mode!=null&&(d.air_mode<0||d.air_mode>5)){showToast('Mode air invalide','error');return}
+    if(d.air_mode!=null&&(d.air_mode<0||d.air_mode>5)){showToast('Invalid air mode','error');return}
     // Remap legacy mode 1
     if(d.air_mode===1){d.air_mode=0;d.valve_type=1}
     Object.assign(CFG,d);
     fillAirSettings();buildAirUI();markDirty();
-    showToast('Config importee - Sauvegarder pour appliquer','success');
+    showToast('Config importee - Save pour appliquer','success');
   }catch(e){showToast('JSON invalide: '+e.message,'error')}
 }
 function fillAirSettings(){
@@ -2328,7 +2328,7 @@ function buildAirSvg(svgId,full){
     s+='<rect x="'+(pivotX+ductLen-2)+'" y="'+(pivotY-7)+'" width="4" height="14" rx="1" fill="#222" stroke="#556" stroke-width=".5"/>';
     s+='</g>';
     // Labels (on top of everything)
-    s+='<text x="'+fanCx+'" y="'+(chB+14)+'" text-anchor="middle" style="font-size:8px;fill:#9aa">Ventilateur</text>';
+    s+='<text x="'+fanCx+'" y="'+(chB+14)+'" text-anchor="middle" style="font-size:8px;fill:#9aa">Fan</text>';
     s+='<text x="'+fanCx+'" y="'+(chT-6)+'" text-anchor="middle" style="font-size:6px;fill:#667">Aspiration</text>';
     s+='<text x="'+(pivotX+ductLen/2)+'" y="'+(pivotY-14)+'" text-anchor="middle" style="font-size:7px;fill:#9aa">Servo Flow</text>';
     s+='<text x="'+(pivotX+ductLen)+'" y="'+(pivotY+22)+'" text-anchor="middle" style="font-size:5px;fill:#569">CH'+ach+'</text>';
@@ -2343,7 +2343,7 @@ function buildAirSvg(svgId,full){
   // Layout:
   //        [Reservoir/Balloon]     [Servo Flow]
   //              |                      |
-  //  [Pompe] -- T --------[Valve] --> [Flute]
+  //  [Pump] -- T --------[Valve] --> [Flute]
   //      or [Air] if no pump
   //
   // Positions:
@@ -2362,7 +2362,7 @@ function buildAirSvg(svgId,full){
       s+='<line x1="'+(px-6)+'" y1="'+pumpY+'" x2="'+(px+6)+'" y2="'+pumpY+'" stroke="#dde" stroke-width="1.5"/>';
       if(np>1)s+='<text x="'+px+'" y="'+(pumpY+22)+'" text-anchor="middle" style="font-size:7px;fill:#9aa">P'+(i+1)+'</text>';
     }
-    if(np===1)s+='<text x="'+colX+'" y="'+(pumpY+24)+'" text-anchor="middle" style="font-size:8px;fill:#9aa">'+(CFG.motor_type===1?'On/Off':'Pompe')+'</text>';
+    if(np===1)s+='<text x="'+colX+'" y="'+(pumpY+24)+'" text-anchor="middle" style="font-size:8px;fill:#9aa">'+(CFG.motor_type===1?'On/Off':'Pump')+'</text>';
     // Pipe UP from pump to T-connector
     s+='<line x1="'+colX+'" y1="'+(pumpY-14)+'" x2="'+colX+'" y2="'+(teeY+6)+'" stroke="#7799bb" stroke-width="3"/>';
     s+='<line class="airFlowAnim" x1="'+colX+'" y1="'+(pumpY-14)+'" x2="'+colX+'" y2="'+(teeY+6)+'"/>';
@@ -2681,14 +2681,14 @@ function updateAirDiagram(d){
   const rp=$('airResPct');if(rp)rp.textContent=(d.res_pct!=null?d.res_pct:'-')+'%';
   const rfb=$('airResFillBar');if(rfb&&d.res_pct!=null){rfb.style.width=d.res_pct+'%';rfb.style.background=d.res_pct>80?'#4ecca3':d.res_pct>30?'#e9a645':'#e94560'}
   const rm=$('airResMm');if(rm)rm.textContent=(d.res_mm!=null?d.res_mm:'-')+'mm';
-  const vs=$('airValveState');if(vs){vs.textContent=d.valve_open?'OUVERT':'FERME';vs.style.color=d.valve_open?'#4ecca3':'#e94560'}
+  const vs=$('airValveState');if(vs){vs.textContent=d.valve_open?'OPEN':'CLOSED';vs.style.color=d.valve_open?'#4ecca3':'#e94560'}
   const sa=$('airServoAngle');if(sa){
     sa.textContent=(d.air_angle!=null?d.air_angle:'-')+'°';
     if(d.air_angle!=null&&CFG){const m=CFG.air_mode||0;const off=(m===2||m===3)?(CFG.air_off||0):(CFG.air_min||0);const mx=CFG.air_max||180;
       sa.style.color=d.air_angle<=off?'#888':d.air_angle>=mx?'#e94560':'#4ecca3'}
   }
   const hv=$('airHallVal');if(hv)hv.textContent=(d.hall_val!=null?d.hall_val:'--');
-  const es=$('airEndstopState');if(es){es.textContent=(d.endstop_st?'ACTIF':'inactif');es.style.color=d.endstop_st?'#4ecca3':'#888'}
+  const es=$('airEndstopState');if(es){es.textContent=(d.endstop_st?'ACTIVE':'inactive');es.style.color=d.endstop_st?'#4ecca3':'#888'}
   document.querySelectorAll('[id=airEndstopLed]').forEach(el=>{el.setAttribute('fill',d.endstop_st?'#4e4':'#a33')});
   // PID error display (mode 5 with ToF or Hall)
   const pidEv=$('airPidErrVal');
@@ -2710,7 +2710,7 @@ function updateAirDiagram(d){
     if(st<=1&&d.res_mm!=null)slv.textContent=d.res_mm+' mm ('+(d.res_pct!=null?d.res_pct:'--')+'%)';
     else if(st===2&&d.hall_val!=null){slv.textContent=d.hall_val+' ('+(d.res_pct!=null?d.res_pct:'--')+'%)';
       const hc=$('airHallCursor');if(hc)hc.style.left=(d.hall_val/4095*100)+'%'}
-    else if(st>=3)slv.textContent=d.endstop_st?'ACTIF':'inactif';
+    else if(st>=3)slv.textContent=d.endstop_st?'ACTIVE':'inactive';
   }
   // Status bar indicator
   const si=$('airStatusInd'),stt=$('airStatusText');
@@ -2718,7 +2718,7 @@ function updateAirDiagram(d){
     const active=(d.pump_pwm>0||d.fan_pwm>0||d.valve_open);
     const warn=(d.sens_ok===false);
     si.style.background=warn?'#e94560':active?'#4ecca3':'#555';
-    stt.textContent=warn?'Capteur absent':active?'Actif':'Repos';
+    stt.textContent=warn?'Sensor absent':active?'Active':'Rest';
     stt.style.color=warn?'#e94560':active?'#4ecca3':'#9aa';
   }
   // Update keyboard tab compact air stats
@@ -2732,7 +2732,7 @@ function updateAirDiagram(d){
     const ksr=$('kbdStatRes');if(ksr)ksr.style.display=(m===5)?'':'none';
     const kpv=$('kbdPumpVal');if(kpv){kpv.textContent=d.pump_pwm>0?Math.round(d.pump_pwm/255*100)+'%':'OFF';kpv.style.color=d.pump_pwm>0?'#4ecca3':''}
     const kfv=$('kbdFanVal');if(kfv){kfv.textContent=d.fan_pwm>0?(d.fan_speed!=null?d.fan_speed+'%':d.fan_pwm):'OFF';kfv.style.color=d.fan_pwm>0?'#4ecca3':''}
-    const kvv=$('kbdValveVal');if(kvv){kvv.textContent=d.valve_open?'OUVERT':'FERME';kvv.style.color=d.valve_open?'#4ecca3':'#e94560'}
+    const kvv=$('kbdValveVal');if(kvv){kvv.textContent=d.valve_open?'OPEN':'CLOSED';kvv.style.color=d.valve_open?'#4ecca3':'#e94560'}
     const ksv2=$('kbdServoVal');if(ksv2){ksv2.textContent=(d.air_angle!=null?d.air_angle:'--')+'°';ksv2.style.color=d.air_angle>0?'#4ecca3':'#888'}
     const krv=$('kbdResVal');if(krv&&d.res_pct!=null){krv.textContent=d.res_pct+'%';krv.style.color=d.res_pct>80?'#4ecca3':d.res_pct>30?'#e9a645':'#e94560'}
   }else if(kas){kas.style.display='none'}
@@ -2780,7 +2780,7 @@ function drawMiniChart(){
     ctx.setLineDash([4,4]);ctx.strokeStyle='#4ecca355';ctx.lineWidth=1;
     ctx.beginPath();ctx.moveTo(lm,tY);ctx.lineTo(w,tY);ctx.stroke();ctx.setLineDash([]);
     ctx.fillStyle='#4ecca355';ctx.font='7px sans-serif';ctx.textAlign='left';
-    ctx.fillText('cible '+target+'%',lm+2,tY-2);
+    ctx.fillText('target '+target+'%',lm+2,tY-2);
   }
   // Pump PWM bars (background, faint)
   ctx.fillStyle='rgba(78,204,163,0.08)';
@@ -2803,8 +2803,8 @@ function drawMiniChart(){
   ctx.fillText(lastPct+'%',w-2,lastY-4);
   // Legend
   ctx.font='7px sans-serif';ctx.textAlign='right';
-  const sLabel=st>=3?'Etat':st===2?'Niveau Hall':'Remplissage';
-  const pLabel=(CFG&&CFG.motor_type===1)?'Pompe On/Off':'Pompe PWM';
+  const sLabel=st>=3?'Etat':st===2?'Niveau Hall':'Fill';
+  const pLabel=(CFG&&CFG.motor_type===1)?'Pump On/Off':'Pump PWM';
   ctx.fillStyle='#e94560';ctx.fillText(sLabel,w-2,9);
   ctx.fillStyle='rgba(78,204,163,0.4)';ctx.fillText(pLabel,w-2,18);
   // Draw tooltip crosshair if hovering
@@ -2848,7 +2848,7 @@ function togglePump(){
   // Show red cross overlay
   document.querySelectorAll('[id=pumpCrossOff]').forEach(el=>{
     el.style.display=pumpDisabled?'':'none'});
-  showToast(pumpDisabled?'Pompe desactivee':'Pompe activee','info')
+  showToast(pumpDisabled?'Pump disabled':'Pump enabled','info')
 }
 // --- First boot wizard ---
 let wizAirMode=0;
@@ -2863,7 +2863,7 @@ function showWizard(){
       '</span></span></label>';
   });
   h+='<label class="wiz-card"><input type="radio" name="wizPreset" value="-1">'+
-    '<span><b>Personnalise</b><br><span style="font-size:.75em;color:#9aa">Configurer manuellement dans Calibration</span></span></label>';
+    '<span><b>Custom</b><br><span style="font-size:.75em;color:#9aa">Configure manually in Calibration</span></span></label>';
   wp.innerHTML=h;
   $('wizardOverlay').classList.add('open');
 }
@@ -2892,9 +2892,9 @@ function wizFinish(){
   fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
     .then(r=>r.json()).then(d=>{
       $('wizardOverlay').classList.remove('open');
-      if(d.ok){showToast('Configuration sauvegardee','success');loadConfig()}
-      else{showToast('Erreur sauvegarde','error')}
-    }).catch(()=>{$('wizardOverlay').classList.remove('open');showToast('Erreur reseau','error')});
+      if(d.ok){showToast('Configuration saved','success');loadConfig()}
+      else{showToast('Save error','error')}
+    }).catch(()=>{$('wizardOverlay').classList.remove('open');showToast('Network error','error')});
 }
 function toggleSettings(){$('settingsOverlay').classList.toggle('open');if($('settingsOverlay').classList.contains('open')&&CFG)fillSettings()}
 function applyCalibVisibility(){
@@ -2909,11 +2909,11 @@ let wsRetry=0;
 function wsConnect(){
   const p=location.protocol==='https:'?'wss:':'ws:';
   ws=new WebSocket(p+'//'+location.host+'/ws');
-  ws.onopen=()=>{wsRetry=0;$('sDot').className='dot on';$('sText').textContent='Connecte';addLog('WS connecte');
+  ws.onopen=()=>{wsRetry=0;$('sDot').className='dot on';$('sText').textContent='Connected';addLog('WS connecte');
     const si=$('airStatusInd');if(si)si.style.outline=''};
-  ws.onclose=()=>{$('sDot').className='dot off';$('sText').textContent='Deconnecte';
+  ws.onclose=()=>{$('sDot').className='dot off';$('sText').textContent='Disconnected';
     const si=$('airStatusInd');if(si){si.style.background='#e94560';si.style.outline='2px solid rgba(233,69,96,.3)'}
-    const st=$('airStatusText');if(st){st.textContent='Deconnecte';st.style.color='#e94560'};
+    const st=$('airStatusText');if(st){st.textContent='Disconnected';st.style.color='#e94560'};
     if(_diagRunning)cancelDiagnostic();
     const d=Math.min(30000,2000*Math.pow(1.5,wsRetry));wsRetry++;setTimeout(wsConnect,d)};
   ws.onerror=()=>{ws.close()};
@@ -2921,7 +2921,7 @@ function wsConnect(){
 }
 let _wsSendWarnT=0;
 function wsSend(o){if(ws&&ws.readyState===1){ws.send(JSON.stringify(o));return true}
-  const now=Date.now();if(now-_wsSendWarnT>3000){_wsSendWarnT=now;showToast('Non connecte - commande ignoree','error')}return false}
+  const now=Date.now();if(now-_wsSendWarnT>3000){_wsSendWarnT=now;showToast('Not connected - command ignored','error')}return false}
 
 function handleWs(d){
   if(d.t==='status'){
@@ -2943,9 +2943,9 @@ function handleWs(d){
     $('btnPlay').disabled=false;$('btnStop').disabled=false;addLog('MIDI: '+d.file);
     // Canaux presents
     if(d.channels!==undefined){
-      const sel=$('midiCh');sel.innerHTML='<option value="255">Tous</option>';
+      const sel=$('midiCh');sel.innerHTML='<option value="255">All</option>';
       for(let c=0;c<16;c++){if(d.channels&(1<<c)){
-        const o=document.createElement('option');o.value=c;o.textContent='Canal '+(c+1);sel.appendChild(o)}}
+        const o=document.createElement('option');o.value=c;o.textContent='Channel '+(c+1);sel.appendChild(o)}}
       $('chSelect').style.display=sel.options.length>2?'':'none'}
   }else if(d.t==='midi_error'){addLog('ERR: '+d.msg)}
   else if(d.t==='audio'){
@@ -2978,7 +2978,7 @@ function handleWs(d){
     $('rfFill').style.width='100%';
     if(d.ok&&d.min!=null){$('rfMinVal').textContent=d.min;$('rfMaxVal').textContent=d.max;
       $('rfResult').style.display='block';$('rfStep').textContent='Plage detectee !'}
-    else{$('rfStep').textContent='Aucun son detecte'}
+    else{$('rfStep').textContent='No sound detected'}
   }else if(d.t==='rf_applied'){
     showToast('Plage servo mise a jour: '+d.min+'deg-'+d.max+'deg','success');
     $('rfProgress').style.display='none';$('btnRfStart').style.display='';
@@ -3002,7 +3002,7 @@ function loadConfig(){
     if(CFG.first_boot){showWizard()}
     if(micDetected){$('micSection').style.display='';wsSend({t:'mic_mon',on:1})}
     else $('micSection').style.display='none';
-  }).catch(e=>{addLog('Erreur config: '+e);showToast('Erreur chargement config','error')})
+  }).catch(e=>{addLog('Config error: '+e);showToast('Config load error','error')})
 }
 
 function updateTravVisibility(){
@@ -3020,7 +3020,7 @@ function updateTravVisibility(){
 
 // --- KEYBOARD ---
 function buildKeyboard(){
-  const c=$('pianoKeys');c.innerHTML='';if(!CFG||!CFG.notes||!CFG.notes.length){c.innerHTML='<div style="color:#888;padding:16px;text-align:center">Aucune note</div>';return}
+  const c=$('pianoKeys');c.innerHTML='';if(!CFG||!CFG.notes||!CFG.notes.length){c.innerHTML='<div style="color:#888;padding:16px;text-align:center">No notes</div>';return}
   if(CFG.kbd_mode===1){buildPianoKeyboard(c)}else{buildFluteKeyboard(c)}
   buildKeyMap();updKbdToggle()
 }
@@ -3029,7 +3029,7 @@ function toggleKbdMode(){
   if(!CFG)return;const prev=CFG.kbd_mode;CFG.kbd_mode=CFG.kbd_mode===1?0:1;
   buildKeyboard();
   fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kbd_mode:CFG.kbd_mode})})
-    .catch(()=>{CFG.kbd_mode=prev;buildKeyboard();showToast('Erreur reseau','error')})
+    .catch(()=>{CFG.kbd_mode=prev;buildKeyboard();showToast('Network error','error')})
 }
 function addKeyEvents(el,midi){
   el.addEventListener('touchstart',e=>{e.preventDefault();e.stopPropagation();if(noteOn(midi))el.classList.add('pressed')},{passive:false});
@@ -3054,10 +3054,10 @@ function buildFluteKeyboard(c){
 }
 function buildPianoKeyboard(c){
   c.className='piano-keys';
-  // Construire un piano optimise pour les notes jouables uniquement
+  // Build a piano optimized for playable notes only
   const midiSet=new Set(CFG.notes.map(n=>n.midi));
   const lo=Math.min(...midiSet),hi=Math.max(...midiSet);
-  // Padding minimal: 1 note blanche de chaque cote pour un rendu propre
+  // Padding minimal: 1 white note on each side pour un rendu propre
   const startMidi=Math.max(0,lo-2);const endMidi=Math.min(127,hi+2);
   const blacks=new Set([1,3,6,8,10]);
   // Passe 1: creer les blanches, passe 2: inserer les noires
@@ -3080,7 +3080,7 @@ function buildPianoKeyboard(c){
     if(inSet){addKeyEvents(key,m)}
     else{key.style.opacity='0.3';key.style.pointerEvents='none'}
   }
-  // Inserer les noires par-dessus (positionnement absolu relatif au conteneur)
+  // Inserer les noires par-dessus (positioning absolu relatif au conteneur)
   blackKeys.forEach(bk=>{c.appendChild(bk.el)});
   // Positionner les noires apres layout
   requestAnimationFrame(()=>{
@@ -3114,10 +3114,10 @@ function noteOn(midi){
   if(curNote!==null&&curNote!==midi)return false;
   curNote=midi;updateFluteForNote(midi);
   document.querySelectorAll('#fluteSvg .flute-hole.open').forEach(h=>h.classList.add('playing'));
-  // Souffle: pre-positionner le servo airflow pendant le positionnement des doigts
-  // Seulement pour les modes avec valve physique (0,1,4,5) ou la valve bloque l'air
-  // Modes 2 (servo seul) et 3 (ventilateur): ne pas envoyer air_live car le servo
-  // controle directement l'air et produirait du son avant le positionnement des doigts
+  // Breath: pre-position le servo airflow pendant le positioning des doigts
+  // Only pour les modes avec valve physique (0,1,4,5) ou la valve bloque l'air
+  // Modes 2 (servo only) and 3 (fan): do not send air_live because the servo
+  // directly controls l'air et produirait du son avant le positioning des doigts
   if(CFG){const am=CFG.air_mode||0;
     if(am!==2&&am!==3){const nd=CFG.notes.find(n=>n.midi===midi);if(nd){
     const airPct=nd.amn+Math.round((nd.amx-nd.amn)*velocity/127);
@@ -3148,12 +3148,12 @@ document.addEventListener('keydown',e=>{
   if(e.ctrlKey||e.altKey||e.metaKey)return;
   const airTab=$('tab-air');if(!airTab||!airTab.classList.contains('active'))return;
   const m=CFG?CFG.air_mode||0:0;
-  if(e.key==='Escape'){e.preventDefault();wsSend({t:'pump_stop'});wsSend({t:'fan_stop'});showToast('Arret envoye','info')}
+  if(e.key==='Escape'){e.preventDefault();wsSend({t:'pump_stop'});wsSend({t:'fan_stop'});showToast('Stop sent','info')}
   if(e.key==='t'){e.preventDefault();const dur=parseInt(($('airTestDur')||{}).value)||2;
     wsSend({t:'pump_target',v:50});setTimeout(()=>wsSend({t:'pump_stop'}),dur*1000);showToast('Test '+dur+'s','success')}
   if(e.key==='h'){e.preventDefault();toggleAirHelp()}
   if(e.key==='?'){e.preventDefault();
-    showToast('Raccourcis: Ctrl+S=Sauver, T=Test, Esc=Stop, H=Aide, ?=Info','info')}
+    showToast('Raccourcis: Ctrl+S=Save, T=Test, Esc=Stop, H=Help, ?=Info','info')}
 });
 
 // --- SVG FLUTE ---
@@ -3201,7 +3201,7 @@ function fluteMouth(g,em,ty,by,th,cy,ox){
     // Traversiere: rectangle embouchure + trou rond centre partie haute
     m+='<rect x="'+(ox+4)+'" y="'+(ty-2)+'" width="56" height="'+(th+4)+'" rx="2" fill="url(#wg_'+g+')" stroke="#5C4A0A" stroke-width="1.2"/>';
     m+='<rect x="'+(ox+4)+'" y="'+(ty-2)+'" width="56" height="5" rx="1" fill="#D4B044" opacity=".15"/>';
-    // Bague de jonction tete/corps
+    // Head/body joint ring
     m+='<rect x="'+(ox+58)+'" y="'+(ty-3)+'" width="5" height="'+(th+6)+'" rx="1" fill="#A8862A" stroke="#5C4A0A" stroke-width=".6" opacity=".7"/>';
     // Trou rond d\'embouchure centre dans la partie haute
     m+='<circle cx="'+(ox+32)+'" cy="'+(ty+4)+'" r="6" fill="url(#eh_'+g+')" stroke="#3D2A08" stroke-width="1"/>';
@@ -3229,7 +3229,7 @@ function buildFlute(cfg,svgId,showNums){
   const g=svgId,ty=cy-16,by=cy+16,th=by-ty;
   let h=fluteGrad(g,em);
   const fluteStartX=4;
-  // Corps du tube (demarre apres l'embouchure)
+  // Tube body (starts after l'embouchure)
   const bx=fluteStartX+(em==='trav'?59:54);
   h+='<rect x="'+bx+'" y="'+ty+'" width="'+(tw-bx-10)+'" height="'+th+'" rx="0" fill="url(#wg_'+g+')" stroke="#5C4A0A" stroke-width="1.5"/>';
   h+='<rect x="'+bx+'" y="'+ty+'" width="'+(tw-bx-10)+'" height="6" rx="0" fill="#D4B044" opacity=".18"/>';
@@ -3247,16 +3247,16 @@ function buildFlute(cfg,svgId,showNums){
     h+='<circle id="fh_'+svgId+'_'+fi+'" cx="'+posBot[i]+'" cy="'+h_bot+'" r="'+(r-2)+'" class="flute-hole closed thumb"/>';
     if(showNums)h+='<text x="'+posBot[i]+'" y="'+(h_bot+4)+'" text-anchor="middle" class="flute-num">'+(fi+1)+'</text>'
   });
-  if(botHoles.length>0)h+='<text x="'+(posBot[0])+'" y="'+(h_bot+20)+'" text-anchor="middle" class="flute-lbl">Pouce</text>';
+  if(botHoles.length>0)h+='<text x="'+(posBot[0])+'" y="'+(h_bot+20)+'" text-anchor="middle" class="flute-lbl">Thumb</text>';
   svg.innerHTML=h
 }
 
-// Ocarina: corps ovale en ceramique avec arrangement compact des trous
+// Ocarina: ceramic oval body with compact hole layout
 function buildOcarina(cfg,svgId,showNums){
   const svg=$(svgId);if(!svg||!cfg)return;
   const nf=cfg.num_fingers||4,fingers=cfg.fingers||[];
   const g=svgId;
-  // Vue de dessus: forme oeuf/larme + embouchure courte avec chanfrein centre
+  // Top view: forme oeuf/larme + embouchure courte avec chanfrein centre
   const bw=Math.min(160,Math.max(100,nf*22+20));// largeur corps
   const bh=Math.min(80,Math.max(55,nf*5+40));   // hauteur corps
   const cx=bw/2+40,cy=50;  // centre du corps
@@ -3275,13 +3275,13 @@ function buildOcarina(cfg,svgId,showNums){
   // Reflet ceramique
   h+='<ellipse cx="'+(cx+15)+'" cy="'+(cy-ry1*0.35)+'" rx="'+(rx1*0.5)+'" ry="'+(ry1*0.3)+'" fill="#D88050" opacity=".1"/>';
   // Embouchure: petit bec centre qui sort a gauche du corps
-  const mx=lx-5,my=cy;// point de sortie
+  const mx=lx-5,my=cy;// outlet point
   h+='<path d="M'+mx+','+(my-6)+' L'+(mx-mw)+','+(my-4)+' Q'+(mx-mw-4)+','+my+' '+(mx-mw)+','+(my+4)+
     ' L'+mx+','+(my+6)+' Z" fill="url(#lp_'+g+')" stroke="#5C2810" stroke-width="1"/>';
-  // Chanfrein au centre de l'embouchure (fente d'air)
+  // Chanfrein au center of the mouthpiece (fente d'air)
   const chx=mx-mw/2;
   h+='<ellipse cx="'+chx+'" cy="'+my+'" rx="5" ry="2" fill="url(#eh_'+g+')" stroke="#3D2A08" stroke-width=".6"/>';
-  // Trous: repartis sur le corps vu de dessus
+  // Holes: distributed on the body in top view
   // Impair=rangee haute, pair=rangee basse, pouces en bas
   const topRow=[],botRow=[];
   for(let i=0;i<nf;i++){
@@ -3328,13 +3328,13 @@ function validateAndUpload(file){
   // Verifier extension
   const name=file.name.toLowerCase();
   if(!name.endsWith('.mid')&&!name.endsWith('.midi')){
-    showToast('Fichier invalide : extension .mid ou .midi requise','error');return}
+    showToast('Invalid file: .mid or .midi extension required','error');return}
   // Verifier magic bytes MThd
   const reader=new FileReader();
   reader.onload=()=>{
     const arr=new Uint8Array(reader.result);
     if(arr.length<4||arr[0]!==0x4D||arr[1]!==0x54||arr[2]!==0x68||arr[3]!==0x64){
-      showToast('Fichier invalide : pas un fichier MIDI (MThd absent)','error');return}
+      showToast('Invalid file: not a MIDI file (missing MThd)','error');return}
     uploadMidiFile(file)};
   reader.readAsArrayBuffer(file.slice(0,4))
 }
@@ -3345,8 +3345,8 @@ function uploadMidiFile(file){
   xhr.upload.onprogress=e=>{if(e.lengthComputable)uf.style.width=(e.loaded/e.total*100)+'%'};
   xhr.onload=()=>{uf.style.width='100%';setTimeout(()=>ub.style.display='none',1000);
     try{const d=JSON.parse(xhr.responseText);if(d.ok){showToast('Upload OK: '+d.events+' evt','success');addLog('Upload OK');loadMidiList()}
-    else{showToast('Erreur: '+(d.msg||'echec'),'error')}}catch(e){showToast('Erreur upload','error')}};
-  xhr.onerror=()=>{ub.style.display='none';showToast('Erreur upload reseau','error')};
+    else{showToast('Error: '+(d.msg||'echec'),'error')}}catch(e){showToast('Upload error','error')}};
+  xhr.onerror=()=>{ub.style.display='none';showToast('Network upload error','error')};
   xhr.open('POST','/api/midi');xhr.send(fd)
 }
 function setMidiCh(v){wsSend({t:'ch_filter',ch:parseInt(v)})}
@@ -3355,7 +3355,7 @@ function loadMidiList(){
   fetch('/api/midi/list').then(r=>r.json()).then(d=>{
     updateMidiStorage(d.used,d.limit);
     const list=$('midiFileList');list.innerHTML='';
-    if(!d.files||!d.files.length){list.innerHTML='<div style="font-size:.78em;color:#666">Aucun fichier</div>';return}
+    if(!d.files||!d.files.length){list.innerHTML='<div style="font-size:.78em;color:#666">No file</div>';return}
     d.files.forEach(f=>{
       const row=document.createElement('div');
       row.style.cssText='display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid #333';
@@ -3379,17 +3379,17 @@ function updateMidiStorage(used,limit){
   $('midiStorageText').textContent=(used/1024|0)+' / '+(limit/1024|0)+' KB'
 }
 function deleteMidiFile(name){
-  if(!confirm('Supprimer '+name+' ?'))return;
+  if(!confirm('Delete '+name+' ?'))return;
   fetch('/api/midi/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file:name})})
-    .then(r=>r.json()).then(d=>{if(d.ok){showToast('Supprime','success');loadMidiList()}else showToast(d.msg||'Erreur','error')})
-    .catch(()=>showToast('Erreur reseau','error'))
+    .then(r=>r.json()).then(d=>{if(d.ok){showToast('Deleted','success');loadMidiList()}else showToast(d.msg||'Error','error')})
+    .catch(()=>showToast('Network error','error'))
 }
 function loadMidiFile(name){
   fetch('/api/midi/load',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file:name})})
     .then(r=>r.json()).then(d=>{
       if(d.ok){showToast('Charge: '+d.events+' evt','success');loadMidiList()}
-      else showToast(d.msg||'Erreur','error')
-    }).catch(()=>showToast('Erreur reseau','error'))
+      else showToast(d.msg||'Error','error')
+    }).catch(()=>showToast('Network error','error'))
 }
 
 // --- SEQUENCE EDITOR MODAL ---
@@ -3414,7 +3414,7 @@ function drawSeqGrid(){
   const cw=22,ch=16,lw=36,pw=lw+steps*cw,ph=notes.length*ch+4;
   svg.setAttribute('viewBox','0 0 '+pw+' '+ph);svg.setAttribute('width',pw);
   let s='';
-  // Lignes notes (de l'aigu en haut au grave en bas)
+  // Note lines (high at top to low at bottom)
   for(let r=0;r<notes.length;r++){
     const y=r*ch,ni=notes.length-1-r;
     s+='<rect x="0" y="'+y+'" width="'+lw+'" height="'+ch+'" fill="'+(r%2?'#1a1a2e':'#16213e')+'" stroke="#333" stroke-width=".5"/>';
@@ -3427,7 +3427,7 @@ function drawSeqGrid(){
       if(on)s+='<rect x="'+(x+3)+'" y="'+(y+3)+'" width="'+(cw-6)+'" height="'+(ch-6)+'" rx="2" fill="#3dbdb5" opacity=".6" pointer-events="none"/>'
     }
   }
-  // Barres de mesure
+  // Measure bars
   for(let b=0;b<=bars;b++){const x=lw+b*8*cw;
     s+='<line x1="'+x+'" y1="0" x2="'+x+'" y2="'+ph+'" stroke="#666" stroke-width="'+(b===0||b===bars?1.5:.8)+'"/>';
     if(b<bars)s+='<text x="'+(x+4)+'" y="'+(ph-1)+'" style="font-size:7px;fill:#555">'+(b+1)+'</text>'}
@@ -3442,7 +3442,7 @@ function toggleSeqNote(step,noteIdx){
 function clearSeq(){seqNotes=[];drawSeqGrid();updateSeqMemInfo()}
 
 function uploadSeqMidi(){
-  if(!seqNotes.length){showToast('Sequence vide','error');return}
+  if(!seqNotes.length){showToast('Empty sequence','error');return}
   const nr=SEQ_NOTE_RANGE(),notes=nr.notes;
   const bpm=parseInt($('seqBpm').value)||120;
   const ticksPerBeat=480,ticksPerStep=ticksPerBeat/2;// croche = 1/2 beat
@@ -3465,7 +3465,7 @@ function uploadSeqMidi(){
     trk.push({t:e.tick,d:[...vlq,e.on?0x90:0x80,e.midi,e.vel]})});
   // End of track
   trk.push({t:lastTick+ticksPerStep,d:[...encVLQ(ticksPerStep),0xFF,0x2F,0x00]});
-  // Assembler les bytes de piste
+  // Assemble track bytes
   let trkBytes=[];trk.forEach(e=>trkBytes.push(...e.d));
   // Header MIDI
   const hdr=[0x4D,0x54,0x68,0x64,0,0,0,6,0,0,0,1,...u16(ticksPerBeat)];
@@ -3477,8 +3477,8 @@ function uploadSeqMidi(){
   const xhr=new XMLHttpRequest();
   xhr.onload=()=>{try{const d=JSON.parse(xhr.responseText);
     if(d.ok){showToast('Sequence chargee','success');wsSend({t:'play'})}
-    else showToast('Erreur: '+(d.msg||''),'error')}catch(e){showToast('Erreur','error')}};
-  xhr.onerror=()=>showToast('Erreur reseau','error');
+    else showToast('Error: '+(d.msg||''),'error')}catch(e){showToast('Error','error')}};
+  xhr.onerror=()=>showToast('Network error','error');
   xhr.open('POST','/api/midi');xhr.send(fd)
 }
 function encVLQ(v){if(v<128)return[v];const b=[];b.unshift(v&0x7F);v>>=7;
@@ -3504,7 +3504,7 @@ function goStep(s){
   updStepDots();
   if(s===2){buildPresetSelect();
     const iv=$('instrumentSelect');if(iv&&iv.value){$('presetSelect').value=iv.value;
-      // Auto-apply si les notes ne sont pas encore remplies ou viennent d'un autre preset
+      // Auto-apply if notes are not filled yet or come from another preset
       if(!CFG.notes.length||CFG._lastInst!==iv.value){applyPreset(iv.value);CFG._lastInst=iv.value}}
     buildFingeringRows();fpHistory=[];fpFuture=[];updUndoUI()}
   if(s===3)buildAirflowRows();
@@ -3555,17 +3555,17 @@ function buildFingerCards(){
         '<select id="fd'+i+'" style="max-width:60px" onchange="CFG.fingers['+i+'].d=parseInt(this.value);markDirty()">'+
           '<option value="1"'+(f.d===1?' selected':'')+'>\u21BB</option><option value="-1"'+(f.d===-1?' selected':'')+'>\u21BA</option></select>'+
       '</div></div>';
-    if(i===0&&CFG.embouchure!=='oca') html+='<div class="cfg-row"><label>Pouce (arriere)</label><input type="checkbox" id="fth'+i+'"'+(f.th?' checked':'')+
+    if(i===0&&CFG.embouchure!=='oca') html+='<div class="cfg-row"><label>Thumb (arriere)</label><input type="checkbox" id="fth'+i+'"'+(f.th?' checked':'')+
       ' style="width:auto;flex:0" onchange="CFG.fingers['+i+'].th=this.checked?1:0;buildFlute(CFG,\'calFluteSvg\',true);markDirty()"></div>';
     html+='<div style="margin:6px 0"><div style="display:flex;justify-content:space-between;font-size:.75em;color:#888;margin-bottom:2px">'+
-      '<span>Angle ferme</span><span id="fav'+i+'">'+f.a+'&deg;</span></div>'+
+      '<span>Closed angle</span><span id="fav'+i+'">'+f.a+'&deg;</span></div>'+
       '<input type="range" min="0" max="180" value="'+f.a+'" id="fa'+i+'" style="width:100%"'+
         ' oninput="CFG.fingers['+i+'].a=parseInt(this.value);$(\'fav'+i+'\').textContent=this.value+\'&deg;\';testFinger('+i+',parseInt(this.value))"></div>'+
-      '<div class="btn-row"><button class="btn btn-s" onclick="testPulse(this);testFinger('+i+',CFG.fingers['+i+'].a)">Fermer</button>'+
+      '<div class="btn-row"><button class="btn btn-s" onclick="testPulse(this);testFinger('+i+',CFG.fingers['+i+'].a)">Close</button>'+
         '<button class="btn btn-s" onclick="testPulse(this);testFinger('+i+',CFG.fingers['+i+'].a+(CFG.angle_open||30)*CFG.fingers['+i+'].d)">Ouvrir</button>'+
-        '<button class="btn btn-s" onclick="testPulse(this);testFingerHalf('+i+')">Demi</button></div>'+
+        '<button class="btn btn-s" onclick="testPulse(this);testFingerHalf('+i+')">Half</button></div>'+
       '<div style="margin:6px 0"><div style="display:flex;justify-content:space-between;font-size:.75em;color:#888;margin-bottom:2px">'+
-        '<span>Demi %</span><span id="fhpv'+i+'">'+(f.hp||0)+'% <span style="color:#555">'+(f.hp?'':'(global)')+'</span></span></div>'+
+        '<span>Half %</span><span id="fhpv'+i+'">'+(f.hp||0)+'% <span style="color:#555">'+(f.hp?'':'(global)')+'</span></span></div>'+
         '<input type="range" min="0" max="100" value="'+(f.hp||0)+'" id="fhp'+i+'" style="width:100%"'+
           ' oninput="CFG.fingers['+i+'].hp=parseInt(this.value);$(\'fhpv'+i+'\').innerHTML=this.value+\'% <span style=color:#555>\'+(this.value>0?\'\':\'(global)\')+\'</span>\';markDirty()"></div>'+
       '<div class="pca-warn"></div>';
@@ -3619,8 +3619,8 @@ function saveStep1(){
   }
   const body={num_fingers:CFG.num_fingers,air_pca:CFG.air_pca,angle_open:CFG.angle_open,half_hole_pct:CFG.half_hole_pct,embouchure:CFG.embouchure||'bec',fingers:CFG.fingers.slice(0,CFG.num_fingers)};
   fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
-    .then(r=>r.json()).then(d=>{btnLoad('btnSaveStep1',false);if(d.ok){showToast('Doigts sauvegardes','success');markClean();buildFlute(CFG,'fluteSvg',false);goStep(2)}else showToast('Erreur sauvegarde','error')})
-    .catch(e=>{btnLoad('btnSaveStep1',false);showToast('Erreur: '+e,'error')})
+    .then(r=>r.json()).then(d=>{btnLoad('btnSaveStep1',false);if(d.ok){showToast('Fingers saved','success');markClean();buildFlute(CFG,'fluteSvg',false);goStep(2)}else showToast('Save error','error')})
+    .catch(e=>{btnLoad('btnSaveStep1',false);showToast('Error: '+e,'error')})
 }
 
 // --- STEP 2: FINGERINGS ---
@@ -3660,7 +3660,7 @@ function buildPresetSelect(){
   const s=$('presetSelect');if(!s||!CFG)return;
   s.innerHTML='<option value="">-- Personnalis\u00e9 --</option>';
   const nf=CFG.num_fingers;
-  // Uniquement les presets compatibles (meme nombre de trous)
+  // Uniquement les presets compatibles (meme number of holes)
   const compat=PR.filter(p=>p.h===nf);
   if(compat.length){
     const og=document.createElement('optgroup');og.label='Accordages '+nf+' trous';
@@ -3676,10 +3676,10 @@ function updPresetInfo(){
     el.style.cssText='font-size:.8em;color:#aaa;margin-top:4px;padding:6px 10px;background:rgba(255,255,255,.04);border-radius:6px';
     p.parentNode.appendChild(el)}
   const val=$('presetSelect').value;
-  if(!val){el.innerHTML=CFG&&CFG.notes.length?'<b>Personnalis\u00e9</b> - '+CFG.notes.length+' notes ('+mn(CFG.notes[0].midi)+'\u2192'+mn(CFG.notes[CFG.notes.length-1].midi)+')':'Selectionnez un preset ou ajoutez des notes manuellement';return}
+  if(!val){el.innerHTML=CFG&&CFG.notes.length?'<b>Personnalis\u00e9</b> - '+CFG.notes.length+' notes ('+mn(CFG.notes[0].midi)+'\u2192'+mn(CFG.notes[CFG.notes.length-1].midi)+')':'Select a preset or add notes manually';return}
   const p=PR.find(x=>x.id===val);if(!p){el.innerHTML='';return}
   const lo=mn(p.d[0][0]),hi=mn(p.d[p.d.length-1][0]);
-  el.innerHTML='<b>'+esc(p.n)+'</b> - '+p.d.length+' notes, de '+lo+' a '+hi+(p.th>=0?' (pouce doigt '+(p.th+1)+')':'')
+  el.innerHTML='<b>'+esc(p.n)+'</b> - '+p.d.length+' notes, from '+lo+' to '+hi+(p.th>=0?' (thumb finger '+(p.th+1)+')':'')
 }
 
 function applyPreset(val){
@@ -3697,8 +3697,8 @@ function saveStep2(){
   if(!CFG)return;btnLoad('btnSaveStep2',true);
   const body={num_fingers:CFG.num_fingers,notes:CFG.notes.map(n=>({midi:n.midi,fp:n.fp.slice(0,CFG.num_fingers),amn:n.amn,amx:n.amx,ang:n.ang!=null?n.ang:50}))};
   fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
-    .then(r=>r.json()).then(d=>{btnLoad('btnSaveStep2',false);if(d.ok){showToast('Doigtes sauvegardes','success');markClean();fpHistory=[];fpFuture=[];updUndoUI();goStep(3);buildKeyboard();buildFlute(CFG,'fluteSvg',false)}else showToast('Erreur sauvegarde','error')})
-    .catch(e=>{btnLoad('btnSaveStep2',false);showToast('Erreur: '+e,'error')})
+    .then(r=>r.json()).then(d=>{btnLoad('btnSaveStep2',false);if(d.ok){showToast('Fingerings saved','success');markClean();fpHistory=[];fpFuture=[];updUndoUI();goStep(3);buildKeyboard();buildFlute(CFG,'fluteSvg',false)}else showToast('Save error','error')})
+    .catch(e=>{btnLoad('btnSaveStep2',false);showToast('Error: '+e,'error')})
 }
 
 // --- STEP 3: AIRFLOW ---
@@ -3747,15 +3747,15 @@ function saveStep3(){
   const body={notes_air:CFG.notes.map(n=>({amn:n.amn,amx:n.amx,ang:n.ang!=null?n.ang:50}))};
   if(CFG.embouchure==='trav'){body.ang_pca=CFG.ang_pca;body.ang_off=CFG.ang_off;body.ang_min=CFG.ang_min;body.ang_max=CFG.ang_max}
   fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
-    .then(r=>r.json()).then(d=>{btnLoad('btnSaveStep3',false);if(d.ok){showToast('Souffle sauvegarde','success');markClean();goStep(4)}else showToast('Erreur sauvegarde','error')})
-    .catch(e=>{btnLoad('btnSaveStep3',false);showToast('Erreur: '+e,'error')})
+    .then(r=>r.json()).then(d=>{btnLoad('btnSaveStep3',false);if(d.ok){showToast('Breath saved','success');markClean();goStep(4)}else showToast('Save error','error')})
+    .catch(e=>{btnLoad('btnSaveStep3',false);showToast('Error: '+e,'error')})
 }
 
 // --- STEP 4: EXPRESSION ---
 const EXPR_MODES=[
-  {n:'Stable',d:'Le souffle atteint directement la valeur cible et reste constant pendant toute la note.'},
-  {n:'Accent',d:'Le souffle demarre plus fort que la cible puis reduit progressivement (comme un accent naturel de flutiste).'},
-  {n:'Crescendo',d:'Le souffle demarre plus faible que la cible puis augmente progressivement (entree douce).'}
+  {n:'Stable',d:'Breath reaches the target value directly and stays constant for the whole note.'},
+  {n:'Accent',d:'Breath starts stronger than the target, then gradually decreases (like a natural flute accent).'},
+  {n:'Crescendo',d:'Breath starts lower than the target, then gradually increases (soft entry).'}
 ];
 
 function buildExprUI(){
@@ -3796,7 +3796,7 @@ function drawExprCurve(){
   let s='<line x1="'+pad+'" y1="'+(h-pad)+'" x2="'+(w-pad)+'" y2="'+(h-pad)+'" stroke="#444" stroke-width="1"/>';
   s+='<line x1="'+pad+'" y1="10" x2="'+pad+'" y2="'+(h-pad)+'" stroke="#444" stroke-width="1"/>';
   s+='<text x="'+(w/2)+'" y="'+(h-4)+'" text-anchor="middle" style="font-size:9px;fill:#666">Temps (ms)</text>';
-  s+='<text x="8" y="'+(h/2-10)+'" style="font-size:9px;fill:#666" transform="rotate(-90 8 '+(h/2-10)+')">Souffle %</text>';
+  s+='<text x="8" y="'+(h/2-10)+'" style="font-size:9px;fill:#666" transform="rotate(-90 8 '+(h/2-10)+')">Breath %</text>';
   for(let t=0;t<=maxMs;t+=100){const x=pad+(t/maxMs)*gw;
     s+='<line x1="'+x+'" y1="'+(h-pad)+'" x2="'+x+'" y2="'+(h-pad+4)+'" stroke="#555" stroke-width=".5"/>';
     if(t%200===0)s+='<text x="'+x+'" y="'+(h-pad+14)+'" text-anchor="middle" style="font-size:8px;fill:#555">'+t+'</text>'}
@@ -3828,8 +3828,8 @@ function saveStep4(){
     vib_freq:CFG.vib_freq||5,vib_amp:CFG.vib_amp!=null?CFG.vib_amp:3,
     cc2_on:!!CFG.cc2_on,cc2_thr:CFG.cc2_thr||5,cc2_curve:CFG.cc2_curve||1,cc2_timeout:CFG.cc2_timeout||2000};
   fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
-    .then(r=>r.json()).then(d=>{btnLoad('btnSaveStep4',false);if(d.ok){showToast('Calibration terminee !','success');markClean();buildKeyboard();buildFlute(CFG,'fluteSvg',false)}else showToast('Erreur sauvegarde','error')})
-    .catch(e=>{btnLoad('btnSaveStep4',false);showToast('Erreur: '+e,'error')})
+    .then(r=>r.json()).then(d=>{btnLoad('btnSaveStep4',false);if(d.ok){showToast('Calibration complete!','success');markClean();buildKeyboard();buildFlute(CFG,'fluteSvg',false)}else showToast('Save error','error')})
+    .catch(e=>{btnLoad('btnSaveStep4',false);showToast('Error: '+e,'error')})
 }
 
 // --- SETTINGS ---
@@ -3837,7 +3837,7 @@ function fillSettings(){
   if(!CFG)return;
   $('cfgDevice').value=CFG.device||'';
   const sel=$('cfgMidiCh');sel.innerHTML='<option value="0">Omni (tous)</option>';
-  for(let i=1;i<=16;i++){const o=document.createElement('option');o.value=i;o.textContent='Canal '+i;sel.appendChild(o)}
+  for(let i=1;i<=16;i++){const o=document.createElement('option');o.value=i;o.textContent='Channel '+i;sel.appendChild(o)}
   sel.value=CFG.midi_ch||0;
   $('cfgSmidiOn').checked=!!CFG.smidi_on;
   $('cfgSmidiRx').value=CFG.smidi_rx!=null?CFG.smidi_rx:16;
@@ -3872,32 +3872,32 @@ function saveSettings(){
     hide_calib:$('cfgHideCalib').checked,hide_air:$('cfgHideAir').checked};
   fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
     .then(r=>r.json()).then(d=>{btnLoad('btnSaveSettings',false);
-      if(d.ok){showToast('Parametres sauvegardes','success');markClean();loadConfig()}
-      else showToast('Erreur sauvegarde','error');
-      $('settingsMsg').textContent=d.ok?'Sauvegarde OK':'Erreur';$('settingsMsg').style.color=d.ok?'#4ecca3':'#e94560'})
-    .catch(e=>{btnLoad('btnSaveSettings',false);showToast('Erreur: '+e,'error');$('settingsMsg').textContent='Erreur: '+e;$('settingsMsg').style.color='#e94560'})
+      if(d.ok){showToast('Settings saved','success');markClean();loadConfig()}
+      else showToast('Save error','error');
+      $('settingsMsg').textContent=d.ok?'Save OK':'Error';$('settingsMsg').style.color=d.ok?'#4ecca3':'#e94560'})
+    .catch(e=>{btnLoad('btnSaveSettings',false);showToast('Error: '+e,'error');$('settingsMsg').textContent='Error: '+e;$('settingsMsg').style.color='#e94560'})
 }
 
-function resetConfig(){if(!confirm('Remettre tous les parametres par defaut ?'))return;
+function resetConfig(){if(!confirm('Reset all settings to defaults?'))return;
   fetch('/api/config/reset',{method:'POST'}).then(r=>r.json()).then(d=>{if(d.ok){addLog('Reset OK');loadConfig();fillSettings()}})
-    .catch(e=>addLog('Erreur: '+e))}
+    .catch(e=>addLog('Error: '+e))}
 
 function factoryReset(){
-  if(!confirm('Reset usine : tous les parametres seront remis par defaut et l\'assistant de configuration s\'ouvrira.\n\nContinuer ?'))return;
+  if(!confirm('Factory reset: all settings will be restored to defaults and the setup wizard will open.\n\nContinue?'))return;
   fetch('/api/config/factory',{method:'POST'}).then(r=>r.json()).then(d=>{
     if(d.ok){
-      addLog('Reset usine OK');
+      addLog('Factory reset OK');
       toggleSettings();
       loadConfig();
     }
-  }).catch(e=>addLog('Erreur: '+e))
+  }).catch(e=>addLog('Error: '+e))
 }
 
 // --- WIFI ---
 let _scanRetries=0;
 function startWifiScan(){$('scanStatus').textContent='Scan...';_scanRetries=0;
   fetch('/api/wifi/scan').then(()=>{setTimeout(checkScan,3000)})
-    .catch(()=>{$('scanStatus').textContent='Erreur lancement scan'})}
+    .catch(()=>{$('scanStatus').textContent='Scan start error'})}
 function checkScan(){fetch('/api/wifi/results').then(r=>r.json()).then(d=>{
     if(!d.done){if(_scanRetries<10){_scanRetries++;setTimeout(checkScan,2000)}else{$('scanStatus').textContent='Timeout'}return}
     $('scanStatus').textContent='';const c=$('wifiList');c.innerHTML='';_scanRetries=0;
@@ -3905,9 +3905,9 @@ function checkScan(){fetch('/api/wifi/results').then(r=>r.json()).then(d=>{
       const el=document.createElement('div');el.className='wifi-item';
       el.innerHTML='<span>'+esc(n.ssid)+'</span><span style="color:#888">'+esc(n.rssi)+' dBm</span>';
       el.onclick=()=>{$('wifiSsid').value=n.ssid};c.appendChild(el)})}
-    else{$('scanStatus').textContent='Aucun reseau trouve'}
+    else{$('scanStatus').textContent='No network found'}
   }).catch(()=>{if(_scanRetries<5){_scanRetries++;$('scanStatus').textContent='Retry ('+_scanRetries+')...';setTimeout(checkScan,3000)}
-    else{$('scanStatus').textContent='Erreur scan';_scanRetries=0}})}
+    else{$('scanStatus').textContent='Scan error';_scanRetries=0}})}
 
 function connectWifi(){const ssid=$('wifiSsid').value,pass=$('wifiPass').value;
   if(!ssid){$('wifiMsg').textContent='SSID requis';return}
@@ -3915,7 +3915,7 @@ function connectWifi(){const ssid=$('wifiSsid').value,pass=$('wifiPass').value;
   fetch('/api/wifi/connect',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({ssid:ssid,pass:pass})})
     .then(r=>r.json()).then(d=>{$('wifiMsg').textContent=d.msg||'OK'})
-    .catch(e=>{$('wifiMsg').textContent='Erreur: '+e})}
+    .catch(e=>{$('wifiMsg').textContent='Error: '+e})}
 
 // --- INIT ---
 window.addEventListener('load',()=>{$('velVal').textContent=WEB_DEF_VEL;$('velSlider').value=WEB_DEF_VEL;wsConnect();loadConfig();loadMidiList()});
