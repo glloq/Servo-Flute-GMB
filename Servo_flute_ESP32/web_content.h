@@ -418,7 +418,7 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
   <!-- STEP 1: FINGERS -->
   <div id="step1" class="step-panel">
     <div class="section">
-      <h3>Type d'instrument</h3>
+      <h3>Instrument type</h3>
       <p style="font-size:.8em;color:#888;margin:0 0 8px">Choose the instrument to automatically configure the number of holes and mouthpiece type.</p>
       <div class="cfg-row"><label>Instrument</label>
         <select id="instrumentSelect" style="flex:1;max-width:300px" onchange="selectInstrument(this.value)"></select>

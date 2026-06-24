@@ -1,131 +1,30 @@
-# Modes WiFi
+# WiFi Modes
 
-## Vue d'ensemble
+The firmware supports Bluetooth mode and WiFi mode. A physical switch selects the active wireless mode.
 
-L'ESP32 supporte deux modes WiFi, plus le mode Bluetooth :
+## Bluetooth mode
 
-```
-                    Switch GPIO4
-                   /            \
-                LOW              HIGH
-                 |                |
-            Bluetooth          WiFi
-            (BLE-MIDI)           |
-                          +------+------+
-                          |             |
-                     cfg.wifiSsid    (vide)
-                      renseigne        |
-                          |          Mode AP
-                     Mode STA       (hotspot)
-                          |
-                    Connexion OK ?
-                     /        \
-                   Oui        Non (timeout 10s)
-                    |           |
-              STA connecte   Fallback AP
-```
+Bluetooth mode exposes BLE-MIDI through NimBLE. It is useful for phones, tablets, and computers that support BLE-MIDI.
 
-## Mode Bluetooth (BLE-MIDI)
+## WiFi mode
 
-- Active quand le switch GPIO4 est LOW
-- NimBLE stack pour BLE-MIDI
-- Compatible avec :
-  - iOS (natif depuis iOS 8)
-  - macOS (natif dans Audio MIDI Setup)
-  - Windows (via BLE-MIDI apps)
-  - Android (via MIDI apps supportant BLE)
-- Nom du peripherique : `cfg.deviceName` (defaut: "ServoFlute")
+WiFi mode provides:
 
-### LED
-- Clignotement rapide : advertising (en attente de connexion)
-- Clignotement lent : connecte
+- the embedded web interface;
+- rtpMIDI / AppleMIDI on the local network;
+- mDNS access through `servo-flute.local` when available;
+- captive-portal setup in AP mode.
 
-### Bouton
-- Appui court : restart advertising (si deconnecte)
+## Access point mode
 
-## Mode WiFi STA (Station)
+On first boot, or when no WiFi credentials are stored, the ESP32 starts the `ServoFlute-Setup` hotspot. Connect to it to open the setup portal.
 
-- Active quand le switch GPIO4 est HIGH ET `cfg.wifiSsid` est renseigne
-- Se connecte au reseau WiFi sauvegarde
-- Timeout de connexion : 10 secondes
-- Si echec : fallback automatique vers AP
+## Station mode
 
-### Services disponibles
-- rtpMIDI (port 5004) : compatible macOS MIDI Network, Windows rtpMIDI
-- Serveur web (port 80) : interface de controle
-- mDNS : accessible via `servo-flute.local`
+After credentials are saved, the ESP32 connects to the configured WiFi network and exposes the web UI and rtpMIDI on that network.
 
-### LED
-- Double flash : STA connecte
+## Button behavior
 
-## Mode WiFi AP (Access Point / Hotspot)
-
-Active dans 3 cas :
-1. Switch WiFi HIGH et aucun SSID configure
-2. Echec de connexion STA (fallback automatique)
-3. Appui long (3s) sur le bouton en mode WiFi
-
-### Configuration AP
-- SSID : `ServoFlute-Setup` (defini dans settings.h, non modifiable a chaud)
-- Mot de passe : aucun (portail ouvert)
-- Canal : 1
-- Max connexions : 2
-- IP : `192.168.4.1`
-
-### LED
-- Triple flash : AP actif
-
-## Changer de reseau WiFi
-
-### Depuis le hotspot (premiere utilisation ou changement)
-
-1. L'ESP32 est en mode AP (pas de SSID configure ou appui long bouton)
-2. Se connecter au WiFi `ServoFlute-Setup` depuis un telephone
-3. Ouvrir `192.168.4.1`
-4. Onglet **WiFi**
-5. Cliquer **Scanner** pour voir les reseaux disponibles
-6. Selectionner un reseau dans la liste
-7. Entrer le mot de passe
-8. Cliquer **Connecter**
-9. L'ESP32 sauvegarde les credentials et tente la connexion STA
-10. En cas de succes, le hotspot se ferme. L'ESP32 est accessible via la nouvelle IP ou `servo-flute.local`
-
-### Forcer le retour en hotspot
-
-Si le reseau WiFi change ou n'est plus accessible :
-- **Appui long (3s)** sur le bouton physique (GPIO0)
-- L'ESP32 passe immediatement en mode AP
-- Les anciens credentials restent sauvegardes (reessayer au prochain reboot)
-
-## Flux de connexion WiFi
-
-```
-boot
-  |
-  v
-WirelessManager.begin()
-  |
-  +-- switch = BT ? --> BleMidiHandler.begin()
-  |
-  +-- switch = WiFi
-        |
-        +-- strlen(cfg.wifiSsid) > 0 ?
-        |     |
-        |     Oui --> WifiMidiHandler.startSTA(ssid, pass)
-        |              |
-        |              +-- WiFi.status() == WL_CONNECTED ? (polling dans update())
-        |              |     |
-        |              |     Oui --> setupMDNS() + setupRtpMidi()
-        |              |     Non --> timeout 10s --> forceAP()
-        |              |
-        |     Non --> startAP() directement
-        |
-        +-- WebConfigurator.begin() (serveur web demarre dans tous les cas)
-```
-
-## Securite
-
-- Le hotspot AP est ouvert (pas de mot de passe) pour faciliter la premiere connexion depuis un telephone
-- Le mot de passe WiFi STA est stocke en clair dans `/config.json` sur LittleFS
-- Pas de HTTPS (contrainte memoire ESP32)
-- L'API REST n'a pas d'authentification (reseau local ou hotspot isole)
+- Short press: restart BLE advertising or show the WiFi IP address.
+- Double press: open all fingers.
+- Long press in WiFi mode: force AP setup mode.
