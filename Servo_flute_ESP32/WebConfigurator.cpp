@@ -262,7 +262,7 @@ void WebConfigurator::setupRoutes() {
   _server.on("/api/wifi/connect", HTTP_POST,
     [this](AsyncWebServerRequest* request) {
       if (_configBody.length() == 0) {
-        request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Body vide\"}");
+        request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Empty body\"}");
       }
     },
     NULL,
@@ -274,11 +274,11 @@ void WebConfigurator::setupRoutes() {
         JsonDocument doc;
         DeserializationError err = deserializeJson(doc, _configBody);
         if (err || !doc.containsKey("ssid")) {
-          request->send(400, "application/json", "{\"ok\":false,\"msg\":\"JSON invalide\"}");
+          request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Invalid JSON\"}");
         } else if (_wirelessManager) {
           const char* ssid = doc["ssid"];
           const char* pass = doc["pass"] | "";
-          request->send(200, "application/json", "{\"ok\":true,\"msg\":\"Connexion en cours...\"}");
+          request->send(200, "application/json", "{\"ok\":true,\"msg\":\"Connecting...\"}");
           _wirelessManager->getWifiMidi().connectToNetwork(ssid, pass);
         } else {
           request->send(500, "application/json", "{\"ok\":false}");
@@ -562,7 +562,7 @@ void WebConfigurator::handleApiConfig(AsyncWebServerRequest* request) {
 
 void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
   if (_configBody.length() == 0) {
-    request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Body vide\"}");
+    request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Empty body\"}");
     return;
   }
 
@@ -571,7 +571,7 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
     DeserializationError err = deserializeJson(doc, _configBody);
 
     if (err) {
-      request->send(400, "application/json", "{\"ok\":false,\"msg\":\"JSON invalide\"}");
+      request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Invalid JSON\"}");
       _configBody = "";
       return;
     }
@@ -835,7 +835,7 @@ void WebConfigurator::handleMidiUpload(AsyncWebServerRequest* request, const Str
     _uploadFile = LittleFS.open(MIDI_FILE_PATH, "w");
     if (!_uploadFile) {
       if (DEBUG) {
-        Serial.println("ERREUR: WebConfigurator - Impossible de creer fichier temp");
+        Serial.println("ERREUR: WebConfigurator - Unable to create temp file");
       }
       _uploadError = true;
       return;
@@ -865,22 +865,22 @@ void WebConfigurator::handleMidiUpload(AsyncWebServerRequest* request, const Str
 void WebConfigurator::handleMidiUploadComplete(AsyncWebServerRequest* request) {
   // Verifier si une erreur est survenue pendant l'upload (ex: echec creation fichier temp)
   if (_uploadError) {
-    String resp = "{\"ok\":false,\"msg\":\"Erreur ecriture fichier temporaire\"}";
+    String resp = "{\"ok\":false,\"msg\":\"Temporary file write error\"}";
     request->send(500, "application/json", resp);
-    _ws.textAll("{\"t\":\"midi_error\",\"msg\":\"Erreur ecriture fichier temporaire\"}");
+    _ws.textAll("{\"t\":\"midi_error\",\"msg\":\"Temporary file write error\"}");
     return;
   }
 
   if (_uploadSize > MIDI_FILE_MAX_SIZE) {
     LittleFS.remove(MIDI_FILE_PATH);
-    String resp = "{\"ok\":false,\"msg\":\"Fichier trop volumineux (max " + String(MIDI_FILE_MAX_SIZE / 1024) + "KB)\"}";
+    String resp = "{\"ok\":false,\"msg\":\"File too large (max " + String(MIDI_FILE_MAX_SIZE / 1024) + "KB)\"}";
     request->send(400, "application/json", resp);
-    _ws.textAll("{\"t\":\"midi_error\",\"msg\":\"Fichier trop volumineux\"}");
+    _ws.textAll("{\"t\":\"midi_error\",\"msg\":\"File too large\"}");
     return;
   }
 
   if (_uploadSize == 0) {
-    String resp = "{\"ok\":false,\"msg\":\"Aucun fichier recu\"}";
+    String resp = "{\"ok\":false,\"msg\":\"No file received\"}";
     request->send(400, "application/json", resp);
     return;
   }
@@ -897,9 +897,9 @@ void WebConfigurator::handleMidiUploadComplete(AsyncWebServerRequest* request) {
   }
   if (currentUsed - existingSize + _uploadSize > limitBytes) {
     LittleFS.remove(MIDI_FILE_PATH);
-    String resp = "{\"ok\":false,\"msg\":\"Stockage MIDI plein (" + String(currentUsed / 1024) + "/" + String(cfg.midiStorageLimitKb) + " KB)\"}";
+    String resp = "{\"ok\":false,\"msg\":\"MIDI storage full (" + String(currentUsed / 1024) + "/" + String(cfg.midiStorageLimitKb) + " KB)\"}";
     request->send(400, "application/json", resp);
-    _ws.textAll("{\"t\":\"midi_error\",\"msg\":\"Stockage MIDI plein\"}");
+    _ws.textAll("{\"t\":\"midi_error\",\"msg\":\"MIDI storage full\"}");
     return;
   }
 
@@ -939,9 +939,9 @@ void WebConfigurator::handleMidiUploadComplete(AsyncWebServerRequest* request) {
 
   if (!moved) {
     LittleFS.remove(MIDI_FILE_PATH);
-    String resp = "{\"ok\":false,\"msg\":\"Erreur stockage fichier MIDI\"}";
+    String resp = "{\"ok\":false,\"msg\":\"MIDI file storage error\"}";
     request->send(500, "application/json", resp);
-    _ws.textAll("{\"t\":\"midi_error\",\"msg\":\"Erreur stockage fichier\"}");
+    _ws.textAll("{\"t\":\"midi_error\",\"msg\":\"File storage error\"}");
     return;
   }
 
@@ -965,9 +965,9 @@ void WebConfigurator::handleMidiUploadComplete(AsyncWebServerRequest* request) {
     _ws.textAll(wsMsg);
   } else {
     LittleFS.remove(destPath);
-    String resp = "{\"ok\":false,\"msg\":\"Format MIDI invalide\"}";
+    String resp = "{\"ok\":false,\"msg\":\"Invalid MIDI format\"}";
     request->send(400, "application/json", resp);
-    _ws.textAll("{\"t\":\"midi_error\",\"msg\":\"Format MIDI invalide\"}");
+    _ws.textAll("{\"t\":\"midi_error\",\"msg\":\"Invalid MIDI format\"}");
   }
 }
 
@@ -1016,14 +1016,14 @@ void WebConfigurator::handleMidiList(AsyncWebServerRequest* request) {
 
 void WebConfigurator::handleMidiDelete(AsyncWebServerRequest* request) {
   if (_configBody.length() == 0) {
-    request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Body vide\"}");
+    request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Empty body\"}");
     return;
   }
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, _configBody);
   _configBody = "";
   if (err || !doc.containsKey("file")) {
-    request->send(400, "application/json", "{\"ok\":false,\"msg\":\"JSON invalide\"}");
+    request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Invalid JSON\"}");
     return;
   }
   String filename = doc["file"].as<String>();
@@ -1031,17 +1031,17 @@ void WebConfigurator::handleMidiDelete(AsyncWebServerRequest* request) {
   int lastSlash = filename.lastIndexOf('/');
   if (lastSlash >= 0) filename = filename.substring(lastSlash + 1);
   if (filename.length() == 0 || filename.indexOf("..") >= 0) {
-    request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Nom invalide\"}");
+    request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Invalid name\"}");
     return;
   }
   String path = String(MIDI_DIR) + "/" + filename;
   if (!LittleFS.exists(path)) {
-    request->send(404, "application/json", "{\"ok\":false,\"msg\":\"Fichier introuvable\"}");
+    request->send(404, "application/json", "{\"ok\":false,\"msg\":\"File not found\"}");
     return;
   }
   LittleFS.remove(path);
   if (DEBUG) {
-    Serial.print("DEBUG: WebConfigurator - MIDI supprime: ");
+    Serial.print("DEBUG: WebConfigurator - MIDI deleted: ");
     Serial.println(filename);
   }
   String resp = "{\"ok\":true,\"used\":" + String(getMidiStorageUsed()) + ",\"limit\":" + String((size_t)cfg.midiStorageLimitKb * 1024) + "}";
@@ -1050,14 +1050,14 @@ void WebConfigurator::handleMidiDelete(AsyncWebServerRequest* request) {
 
 void WebConfigurator::handleMidiLoad(AsyncWebServerRequest* request) {
   if (_configBody.length() == 0) {
-    request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Body vide\"}");
+    request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Empty body\"}");
     return;
   }
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, _configBody);
   _configBody = "";
   if (err || !doc.containsKey("file")) {
-    request->send(400, "application/json", "{\"ok\":false,\"msg\":\"JSON invalide\"}");
+    request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Invalid JSON\"}");
     return;
   }
   String filename = doc["file"].as<String>();
@@ -1065,7 +1065,7 @@ void WebConfigurator::handleMidiLoad(AsyncWebServerRequest* request) {
   if (ls >= 0) filename = filename.substring(ls + 1);
   String path = String(MIDI_DIR) + "/" + filename;
   if (!LittleFS.exists(path)) {
-    request->send(404, "application/json", "{\"ok\":false,\"msg\":\"Fichier introuvable\"}");
+    request->send(404, "application/json", "{\"ok\":false,\"msg\":\"File not found\"}");
     return;
   }
   if (_player && _player->loadFile(path.c_str())) {
@@ -1085,7 +1085,7 @@ void WebConfigurator::handleMidiLoad(AsyncWebServerRequest* request) {
     wsMsg += "}";
     _ws.textAll(wsMsg);
   } else {
-    request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Echec chargement MIDI\"}");
+    request->send(400, "application/json", "{\"ok\":false,\"msg\":\"MIDI load failed\"}");
   }
 }
 
@@ -1096,14 +1096,14 @@ void WebConfigurator::onWsEvent(AsyncWebSocket* server, AsyncWebSocketClient* cl
   switch (type) {
     case WS_EVT_CONNECT:
       if (DEBUG) {
-        Serial.print("DEBUG: WS client connecte #");
+        Serial.print("DEBUG: WS client connected #");
         Serial.println(client->id());
       }
       break;
 
     case WS_EVT_DISCONNECT:
       if (DEBUG) {
-        Serial.print("DEBUG: WS client deconnecte #");
+        Serial.print("DEBUG: WS client disconnected #");
         Serial.println(client->id());
       }
       break;
