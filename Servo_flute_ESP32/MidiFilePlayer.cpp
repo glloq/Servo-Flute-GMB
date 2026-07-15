@@ -291,6 +291,15 @@ bool MidiFilePlayer::parseMThd(File& file, uint16_t& format, uint16_t& numTracks
     return false;
   }
 
+  // Garde: une division nulle (ticks/beat = 0) provoquerait un divide-by-zero
+  // dans ticksToMs() sur fichier corrompu/malforme -> rejeter le fichier.
+  if (division == 0) {
+    if (DEBUG) {
+      Serial.println("ERREUR: Division ticks/beat nulle (fichier MIDI invalide)");
+    }
+    return false;
+  }
+
   return true;
 }
 

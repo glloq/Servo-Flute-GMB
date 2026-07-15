@@ -26,7 +26,11 @@ const int8_t SIN_LUT[256] PROGMEM = {
 // Fonction helper pour lookup rapide sin()
 // Sur ESP32, pgm_read_byte() est un simple acces memoire (pas de flash separation)
 inline float fastSin(unsigned long timeMs, float frequency) {
+  // Garde: une frequence <= 0 ou trop haute (>1000 Hz -> period 0) provoquerait
+  // un modulo par zero. Peut arriver si vibratoFrequencyHz est mal configure.
+  if (frequency <= 0.0f) return 0.0f;
   unsigned long period = (unsigned long)(1000.0 / frequency);
+  if (period == 0) return 0.0f;
   unsigned long phase = timeMs % period;
   uint8_t index = (uint8_t)((phase * 256UL) / period);
 
