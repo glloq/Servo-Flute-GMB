@@ -42,3 +42,9 @@ def test_restart_ui_and_api_present():
     assert 'restartNow()' in web
     assert '"/api/restart"' in api
     assert 'ESP.restart()' in api
+
+def test_pressure_pid_outputs_logical_pwm_not_physical_pwm():
+    src = read('Servo_flute_ESP32/PressureController.cpp')
+    assert 'constrain(output * 2.55f, cfg.pumpMinPwm[0], cfg.pumpMaxPwm[0])' not in src
+    assert src.count('constrain(output * 2.55f, 0, 255)') == 2
+    assert 'pumpVal = cfg.pumpMinPwm[index] + (uint16_t)(cfg.pumpMaxPwm[index] - cfg.pumpMinPwm[index]) * pwm / 255' in src

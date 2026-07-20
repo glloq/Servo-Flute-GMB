@@ -317,7 +317,7 @@ void PressureController::update() {
         if (output <= 0) {
           setPumpPwm(0);
         } else {
-          uint8_t pwm = (uint8_t)constrain(output * 2.55f, cfg.pumpMinPwm[0], cfg.pumpMaxPwm[0]);
+          uint8_t pwm = (uint8_t)constrain(output * 2.55f, 0, 255);
           setPumpPwm(pwm);
         }
       }
@@ -387,7 +387,7 @@ void PressureController::update() {
       if (output <= 0) {
         setPumpPwm(0);
       } else {
-        uint8_t pwm = (uint8_t)constrain(output * 2.55f, cfg.pumpMinPwm[0], cfg.pumpMaxPwm[0]);
+        uint8_t pwm = (uint8_t)constrain(output * 2.55f, 0, 255);
         setPumpPwm(pwm);
       }
     }
