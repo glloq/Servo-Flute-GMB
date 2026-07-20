@@ -1,0 +1,34 @@
+"""Compile and execute native C++ behavioral tests against production sources."""
+import subprocess
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+SOURCES = [
+    "native_test/src/arduino_stubs.cpp",
+    "native_test/src/config_test_stub.cpp",
+    "Servo_flute_ESP32/PressureController.cpp",
+    "Servo_flute_ESP32/EventQueue.cpp",
+    "Servo_flute_ESP32/FingerController.cpp",
+    "Servo_flute_ESP32/AirflowController.cpp",
+    "Servo_flute_ESP32/FanController.cpp",
+    "Servo_flute_ESP32/NoteSequencer.cpp",
+    "tests/cpp/test_behavior.cpp",
+]
+
+
+def test_cpp_behavioral_production_sources(tmp_path):
+    binary = tmp_path / "behavior"
+    cmd = [
+        "g++",
+        "-std=c++17",
+        "-DUNIT_TEST",
+        "-Inative_test/include",
+        "-IServo_flute_ESP32",
+        *SOURCES,
+        "-o",
+        str(binary),
+    ]
+    subprocess.run(cmd, cwd=ROOT, check=True)
+    result = subprocess.run([str(binary)], cwd=ROOT, text=True, capture_output=True, check=True)
+    assert "behavior tests passed" in result.stdout
