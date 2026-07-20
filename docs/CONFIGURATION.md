@@ -52,3 +52,16 @@ Configuration is validated by the firmware, not only by HTML controls. PCA chann
 Parameters that change `pinMode()`, I2C/PCA routing, controller `begin()` behavior, sensor setup, or serial MIDI setup require a restart. Dynamic musical values such as CC defaults, note airflow/angle percentages, fingering patterns, and temporary fan/pump test targets can be applied without hardware reinitialization.
 
 Manual hardware tests must always be time-limited and followed by a safe state. In software-only validation, hardware procedures are documented but marked `NOT TESTED — requires hardware` in `Servo_flute_ESP32/docs/HARDWARE_TEST_MATRIX.md`.
+
+## Real-time monophonic policy
+
+The sequencer is intentionally monophonic. Due events are drained from the head of the MIDI queue on every update, regardless of the current note state, so an old event can never block access to later events. The priority order is:
+
+1. panic / all-sound-off: immediate queue clear, valve close, airflow rest, fingers safe;
+2. due `NOTE_ON`: replaces the current note immediately, even if `minNoteDurationMs` has not elapsed;
+3. `minNoteDurationMs`: delays only a matching normal `NOTE_OFF` for the active note;
+4. normal `NOTE_OFF`: stops only the active note and stale note-offs for replaced notes are ignored.
+
+On replacement, the current valve/airflow is transitioned through the same inter-note policy as a normal stop. If the next note is within `valve_interval`, the valve may stay open while the new fingering is positioned; otherwise the valve is closed and airflow returns to rest before the new note starts.
+
+`valve_interval` is the canonical inter-note setting. Legacy JSON using `sol_inter` is migrated on load/API update, but saves and REST responses expose only `valve_interval`.

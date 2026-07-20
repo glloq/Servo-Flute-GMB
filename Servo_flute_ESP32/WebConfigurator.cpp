@@ -481,7 +481,6 @@ void WebConfigurator::handleApiConfig(AsyncWebServerRequest* request) {
   json += ",\"valve_ch\":" + String(cfg.valveServoPcaChannel);
   json += ",\"vlv_close\":" + String(cfg.valveServoCloseAngle);
   json += ",\"vlv_open\":" + String(cfg.valveServoOpenAngle);
-  json += ",\"sol_inter\":" + String(cfg.solenoidInterNoteMs);
   json += ",\"motor_type\":" + String(cfg.motorType);
   json += ",\"fan_pin\":" + String(cfg.fanPin);
   json += ",\"fan_min\":" + String(cfg.fanMinPwm);
@@ -681,7 +680,8 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
     if (doc.containsKey("vlv_close")) cfg.valveServoCloseAngle = doc["vlv_close"];
     if (doc.containsKey("vlv_open")) cfg.valveServoOpenAngle = doc["vlv_open"];
     // vlv_dir is intentionally ignored; close/open angles fully define valve direction.
-    if (doc.containsKey("sol_inter")) cfg.solenoidInterNoteMs = doc["sol_inter"];
+    if (!doc.containsKey("valve_interval") && doc.containsKey("sol_inter")) cfg.minNoteIntervalForValveCloseMs = doc["sol_inter"];
+    cfg.solenoidInterNoteMs = cfg.minNoteIntervalForValveCloseMs;
     if (doc.containsKey("motor_type")) cfg.motorType = doc["motor_type"];
     if (doc.containsKey("fan_pin")) cfg.fanPin = doc["fan_pin"];
     if (doc.containsKey("fan_min")) cfg.fanMinPwm = doc["fan_min"];
@@ -830,6 +830,13 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
       return;
     }
 
+    ConfigApplyResult applyResult{false, validation.restartRequired, "", ""};
+    if (_instrument) {
+      applyResult = _instrument->applyRuntimeConfig(previousConfig, cfg);
+    } else {
+      applyResult.applied = !validation.restartRequired;
+    }
+
     // Sauvegarder sur LittleFS
     bool saved = ConfigStorage::save();
 
@@ -840,10 +847,20 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
     JsonDocument respDoc;
     respDoc["ok"] = saved;
     respDoc["saved"] = saved;
-    respDoc["restart_required"] = validation.restartRequired;
+    respDoc["applied"] = applyResult.applied;
+    respDoc["restart_required"] = validation.restartRequired || applyResult.restartRequired;
     respDoc["corrected"] = validation.corrected;
+    JsonArray reinitialized = respDoc["reinitialized"].to<JsonArray>();
+    int start = 0;
+    while (start < (int)applyResult.reinitialized.length()) {
+      int comma = applyResult.reinitialized.indexOf(',', start);
+      if (comma < 0) comma = applyResult.reinitialized.length();
+      if (comma > start) reinitialized.add(applyResult.reinitialized.substring(start, comma));
+      start = comma + 1;
+    }
     JsonArray warnings = respDoc["warnings"].to<JsonArray>();
     if (validation.warnings.length() > 0) warnings.add(validation.warnings);
+    if (applyResult.warnings.length() > 0) warnings.add(applyResult.warnings);
     String resp;
     serializeJson(respDoc, resp);
     request->send(saved ? 200 : 500, "application/json", resp);

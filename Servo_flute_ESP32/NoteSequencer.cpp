@@ -17,6 +17,7 @@ void NoteSequencer::begin() {
 }
 
 void NoteSequencer::update() {
+  processDueEvents();
   switch (_currentState) {
     case STATE_IDLE:
       handleIdle();
@@ -42,9 +43,7 @@ bool NoteSequencer::isPlaying() const {
 }
 
 void NoteSequencer::handleIdle() {
-  if (!_eventQueue.isEmpty()) {
-    processNextEvent();
-  }
+  processDueEvents();
 }
 
 void NoteSequencer::handlePositioning() {
@@ -72,24 +71,7 @@ void NoteSequencer::handlePositioning() {
 }
 
 void NoteSequencer::handlePlaying() {
-  MidiEvent* nextEvent = _eventQueue.peek();
-
-  if (nextEvent != nullptr && nextEvent->type == EVENT_NOTE_OFF &&
-      nextEvent->midiNote == _currentNote) {
-    unsigned long eventAbsoluteTime = nextEvent->timestamp;
-
-    if (millis() >= eventAbsoluteTime) {
-      _eventQueue.dequeue();
-      unsigned long playedFor = millis() - _noteSoundStartTime;
-      if (playedFor < cfg.minNoteDurationMs) {
-        _pendingStopAfterMinDuration = true;
-      } else {
-        stopCurrentNote();
-      }
-    }
-  }
-
-  if (_pendingStopAfterMinDuration && millis() - _noteSoundStartTime >= cfg.minNoteDurationMs) {
+  if (_pendingStopAfterMinDuration && (long)(millis() - (_noteSoundStartTime + cfg.minNoteDurationMs)) >= 0) {
     _pendingStopAfterMinDuration = false;
     stopCurrentNote();
   }
@@ -99,47 +81,56 @@ void NoteSequencer::handleStopping() {
   transitionTo(STATE_IDLE);
 }
 
-void NoteSequencer::processNextEvent() {
-  MidiEvent* event = _eventQueue.peek();
+void NoteSequencer::processDueEvents() {
+  while (!_eventQueue.isEmpty()) {
+    MidiEvent* event = _eventQueue.peek();
+    if (event == nullptr) return;
 
-  if (event == nullptr) {
-    return;
-  }
-
-  unsigned long eventAbsoluteTime = event->timestamp;
-
-  if (_playbackStartTime == 0) {
-    _playbackStartTime = _eventQueue.getReferenceTime();
-  }
-
-  const unsigned long MECHANICAL_DELAY = cfg.servoToSolenoidDelayMs;
-
-  unsigned long startTime;
-  if (event->type == EVENT_NOTE_ON) {
-    if (eventAbsoluteTime > MECHANICAL_DELAY) {
-      startTime = eventAbsoluteTime - MECHANICAL_DELAY;
-    } else {
-      startTime = 0;
+    if (_playbackStartTime == 0) {
+      _playbackStartTime = _eventQueue.getReferenceTime();
     }
-  } else {
-    startTime = eventAbsoluteTime;
-  }
 
-  if (millis() >= startTime) {
+    unsigned long dueTime = event->timestamp;
     if (event->type == EVENT_NOTE_ON) {
-      if (_currentState != STATE_IDLE) {
-        stopCurrentNote();
-      }
-      startNoteSequence(event->midiNote, event->velocity, eventAbsoluteTime);
-      _eventQueue.dequeue();
+      dueTime = (event->timestamp > cfg.servoToSolenoidDelayMs) ? event->timestamp - cfg.servoToSolenoidDelayMs : 0;
+    }
+    if ((long)(millis() - dueTime) < 0) return;
 
-    } else if (event->type == EVENT_NOTE_OFF) {
-      if (_currentState == STATE_PLAYING && event->midiNote == _currentNote) {
-        stopCurrentNote();
+    MidiEvent due = *event;
+    _eventQueue.dequeue();
+
+    if (due.type == EVENT_NOTE_ON) {
+      // Monophonic policy: any due NOTE_ON has priority over min duration and replaces
+      // the current note/positioning immediately so no stale NOTE_OFF can block the FIFO.
+      _pendingStopAfterMinDuration = false;
+      if (_currentState != STATE_IDLE) {
+        stopCurrentNoteForReplacement();
       }
-      _eventQueue.dequeue();
+      startNoteSequence(due.midiNote, due.velocity, due.timestamp);
+      continue;
+    }
+
+    if (due.type == EVENT_NOTE_OFF) {
+      // Old NOTE_OFF events for notes already replaced are intentionally ignored.
+      if ((_currentState == STATE_PLAYING || _currentState == STATE_POSITIONING) && due.midiNote == _currentNote) {
+        if (_currentState == STATE_PLAYING) {
+          unsigned long playedFor = millis() - _noteSoundStartTime;
+          if (playedFor < cfg.minNoteDurationMs) {
+            _pendingStopAfterMinDuration = true;
+          } else {
+            stopCurrentNote();
+          }
+        } else {
+          stopCurrentNote();
+        }
+      }
+      continue;
     }
   }
+}
+
+void NoteSequencer::processNextEvent() {
+  processDueEvents();
 }
 
 void NoteSequencer::startNoteSequence(byte note, byte velocity, unsigned long scheduledTime) {
@@ -187,6 +178,17 @@ bool NoteSequencer::shouldCloseValveBetweenNotes() {
   }
 
   return true;
+}
+
+void NoteSequencer::stopCurrentNoteForReplacement() {
+  bool closeValve = shouldCloseValveBetweenNotes();
+
+  if (closeValve) {
+    _airflowCtrl.closeSolenoid();
+    _airflowCtrl.setAirflowToRest();
+  } else {
+    _airflowCtrl.setAirflowVelocity(1);
+  }
 }
 
 void NoteSequencer::stopCurrentNote() {
