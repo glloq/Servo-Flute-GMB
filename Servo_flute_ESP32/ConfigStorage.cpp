@@ -110,7 +110,7 @@ void ConfigStorage::initDefaults() {
   cfg.valveServoCloseAngle = 0;
   cfg.valveServoOpenAngle = 90;
   cfg.valveServoDir = 0;
-  cfg.solenoidInterNoteMs = 0;
+  cfg.solenoidInterNoteMs = MIN_NOTE_INTERVAL_FOR_VALVE_CLOSE_MS;
   cfg.motorType = DEFAULT_MOTOR_TYPE;
   cfg.fanPin = DEFAULT_FAN_PIN;
   cfg.fanMinPwm = DEFAULT_FAN_MIN_PWM;
@@ -314,7 +314,8 @@ ConfigLoadStatus ConfigStorage::loadWithStatus() {
   cfg.valveServoCloseAngle = doc["vlv_close"] | cfg.valveServoCloseAngle;
   cfg.valveServoOpenAngle = doc["vlv_open"] | cfg.valveServoOpenAngle;
   // vlv_dir is legacy and intentionally ignored; close/open angles define movement.
-  cfg.solenoidInterNoteMs = doc["sol_inter"] | cfg.solenoidInterNoteMs;
+  if (!doc.containsKey("valve_interval") && doc.containsKey("sol_inter")) cfg.minNoteIntervalForValveCloseMs = doc["sol_inter"] | cfg.minNoteIntervalForValveCloseMs;
+  cfg.solenoidInterNoteMs = cfg.minNoteIntervalForValveCloseMs;
   cfg.motorType = doc["motor_type"] | cfg.motorType;
   cfg.fanPin = doc["fan_pin"] | cfg.fanPin;
   cfg.fanMinPwm = doc["fan_min"] | cfg.fanMinPwm;
@@ -508,7 +509,6 @@ bool ConfigStorage::save() {
   doc["valve_ch"] = cfg.valveServoPcaChannel;
   doc["vlv_close"] = cfg.valveServoCloseAngle;
   doc["vlv_open"] = cfg.valveServoOpenAngle;
-  doc["sol_inter"] = cfg.solenoidInterNoteMs;
   doc["motor_type"] = cfg.motorType;
   doc["fan_pin"] = cfg.fanPin;
   doc["fan_min"] = cfg.fanMinPwm;

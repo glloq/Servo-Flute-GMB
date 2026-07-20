@@ -43,6 +43,7 @@ private:
   bool _pendingStopAfterMinDuration;
 
   void processNextEvent();
+  void processDueEvents();
   void transitionTo(NoteState newState);
   void handleIdle();
   void handlePositioning();
@@ -50,6 +51,7 @@ private:
   void handleStopping();
   void startNoteSequence(byte note, byte velocity, unsigned long scheduledTime);
   void stopCurrentNote();
+  void stopCurrentNoteForReplacement();
   bool shouldCloseValveBetweenNotes();
 };
 

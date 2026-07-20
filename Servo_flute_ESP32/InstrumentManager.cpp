@@ -154,7 +154,7 @@ void InstrumentManager::noteOn(byte midiNote, byte velocity) {
     }
   }
 
-  _lastActivityTime = millis();
+  registerActuatorActivity();
 }
 
 void InstrumentManager::noteOff(byte midiNote) {
@@ -187,6 +187,10 @@ NoteSequencer& InstrumentManager::getSequencer() {
 }
 
 void InstrumentManager::managePower() {
+  if (cfg.timeUnpower == 0) {
+    ensureServosPowered();
+    return;
+  }
   if (_sequencer.isPlaying() || _sequencer.getState() != STATE_IDLE) {
     if (!_servosPowered) {
       powerOnServos();
@@ -198,6 +202,17 @@ void InstrumentManager::managePower() {
       powerOffServos();
     }
   }
+}
+
+void InstrumentManager::ensureServosPowered() {
+  if (!_servosPowered) {
+    powerOnServos();
+  }
+}
+
+void InstrumentManager::registerActuatorActivity() {
+  ensureServosPowered();
+  _lastActivityTime = millis();
 }
 
 void InstrumentManager::powerOnServos() {
@@ -324,6 +339,61 @@ void InstrumentManager::handleControlChange(byte ccNumber, byte ccValue) {
   }
 }
 
+
+ConfigApplyResult InstrumentManager::applyRuntimeConfig(const RuntimeConfig& oldConfig, const RuntimeConfig& newConfig) {
+  ConfigApplyResult result{true, false, "", ""};
+
+  bool restartNeeded =
+    oldConfig.numFingers != newConfig.numFingers ||
+    oldConfig.numPumps != newConfig.numPumps ||
+    oldConfig.airMode != newConfig.airMode ||
+    oldConfig.sensorType != newConfig.sensorType ||
+    oldConfig.serialMidiEnabled != newConfig.serialMidiEnabled ||
+    oldConfig.serialMidiRxPin != newConfig.serialMidiRxPin ||
+    oldConfig.airflowPcaChannel != newConfig.airflowPcaChannel ||
+    oldConfig.valveServoPcaChannel != newConfig.valveServoPcaChannel ||
+    oldConfig.angleServoPcaChannel != newConfig.angleServoPcaChannel ||
+    oldConfig.solenoidPin != newConfig.solenoidPin ||
+    oldConfig.fanPin != newConfig.fanPin;
+
+  for (uint8_t i = 0; i < MAX_FINGER_SERVOS && !restartNeeded; i++) {
+    if (oldConfig.fingers[i].pcaChannel != newConfig.fingers[i].pcaChannel) restartNeeded = true;
+  }
+  for (uint8_t i = 0; i < MAX_PUMPS && !restartNeeded; i++) {
+    if (oldConfig.pumpPins[i] != newConfig.pumpPins[i]) restartNeeded = true;
+  }
+
+  result.restartRequired = restartNeeded;
+  result.applied = !restartNeeded;
+  if (restartNeeded) {
+    result.warnings = "GPIO, PCA channels, counts, air mode, sensor type, or MIDI UART changes require restart";
+    return result;
+  }
+
+  _ccVolume = newConfig.ccVolumeDefault;
+  _ccExpression = newConfig.ccExpressionDefault;
+  _ccModulation = newConfig.ccModulationDefault;
+  _ccBreath = newConfig.ccBreathDefault;
+  _ccBrightness = newConfig.ccBrightnessDefault;
+  _airflowCtrl.setCCValues(_ccVolume, _ccExpression, _ccModulation);
+  _airflowCtrl.setCC74Brightness(_ccBrightness);
+
+  bool fanChanged = oldConfig.fanMinPwm != newConfig.fanMinPwm || oldConfig.fanMaxPwm != newConfig.fanMaxPwm ||
+                    oldConfig.fanIdlePercent != newConfig.fanIdlePercent || oldConfig.fanIdleTimeoutMs != newConfig.fanIdleTimeoutMs ||
+                    oldConfig.fanDefaultPercent != newConfig.fanDefaultPercent || oldConfig.fanMaxNotePercent != newConfig.fanMaxNotePercent ||
+                    oldConfig.fanFollowAirflow != newConfig.fanFollowAirflow;
+  bool pressureChanged = oldConfig.pidKp != newConfig.pidKp || oldConfig.pidKi != newConfig.pidKi ||
+                         oldConfig.sensorTargetMm != newConfig.sensorTargetMm || oldConfig.pumpCascadeThreshold != newConfig.pumpCascadeThreshold ||
+                         oldConfig.pumpStaggerMs != newConfig.pumpStaggerMs;
+  if (fanChanged) result.reinitialized += "fan";
+  if (pressureChanged) {
+    if (result.reinitialized.length() > 0) result.reinitialized += ",";
+    result.reinitialized += "pressure";
+  }
+  registerActuatorActivity();
+  return result;
+}
+
 void InstrumentManager::allSoundOff() {
   while (!_eventQueue.isEmpty()) {
     _eventQueue.dequeue();
@@ -359,6 +429,7 @@ void InstrumentManager::resetAllControllers() {
 }
 
 void InstrumentManager::setPWM(uint8_t channel, uint16_t on, uint16_t off) {
+  registerActuatorActivity();
   if (channel < 16) {
     _pwm0.setPWM(channel, on, off);
   } else if (_secondBoardEnabled) {

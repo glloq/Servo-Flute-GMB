@@ -889,7 +889,6 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
           <div class="cfg-row"><label>PWM activation</label><input type="number" id="cfgSolAct" min="0" max="255" title="PWM to open the valve (180-255 typique)" oninput="updPwmPct(this)"><span class="pwm-pct" style="font-size:.65em;color:#888;min-width:30px;text-align:right"></span></div>
           <div class="cfg-row"><label>Hold PWM</label><input type="number" id="cfgSolHold" min="0" max="255" title="PWM to keep open (60-120 typique, economise courant)" oninput="updPwmPct(this)"><span class="pwm-pct" style="font-size:.65em;color:#888;min-width:30px;text-align:right"></span></div>
           <div class="cfg-row"><label>Active time before hold (ms)</label><input type="number" id="cfgSolTime" min="0" max="500" title="Duration in ms for the activation phase before switching to hold (20-50 typical)"></div>
-          <div class="cfg-row"><label>Inter-note valve-open time (ms)</label><input type="number" id="cfgSolInter" min="0" max="2000" value="0" title="If the gap between 2 notes is below this value, the valve remains open (0=always close)"></div>
           <div style="font-size:.65em;color:#888;padding:2px 0">Activation: strong pulse to open. Hold: reduced current to stay open.</div>
           <button class="btn btn-s" onclick="wsSend({t:'test_sol',o:1});setTimeout(()=>wsSend({t:'test_sol',o:0}),500)" style="font-size:.65em;padding:2px 8px;margin-top:4px" title="Opens the solenoid for 0.5s">Test solenoid</button>
         </div>
@@ -1958,7 +1957,7 @@ function saveAirSettings(){
   // Valve params depending on type
   if(hasValve&&vt===0){d.sol_pin=parseInt($('cfgSolPin').value)||13;
     d.sol_act=parseInt($('cfgSolAct').value)||255;d.sol_hold=parseInt($('cfgSolHold').value)||80;
-    d.sol_time=parseInt($('cfgSolTime').value)||30;d.sol_inter=parseInt($('cfgSolInter').value)||0}
+    d.sol_time=parseInt($('cfgSolTime').value)||30}
   if(hasValve&&vt===1){d.valve_ch=parseInt($('airValveCh').value)||11;
     d.vlv_close=parseInt($('cfgVlvClose').value)||0;d.vlv_open=parseInt($('cfgVlvOpen').value)||90;
     d.vlv_dir=parseInt($('cfgVlvDir').value)||0}
@@ -2020,7 +2019,7 @@ function resetAirDefaults(){
   $('airValveType').value='0';$('airValveCh').value=11;
   $('cfgVlvClose').value=0;$('cfgVlvOpen').value=90;$('cfgVlvDir').value='0';
   // Solenoid defaults
-  $('cfgSolPin').value=13;$('cfgSolAct').value=255;$('cfgSolHold').value=80;$('cfgSolTime').value=30;$('cfgSolInter').value=0;
+  $('cfgSolPin').value=13;$('cfgSolAct').value=255;$('cfgSolHold').value=80;$('cfgSolTime').value=30;
   if(layout===1){
     // Fan defaults
     $('cfgAirOff').value=5;
@@ -2047,7 +2046,7 @@ function resetAirDefaults(){
 }
 function copyAirConfig(){
   const keys=['air_mode','valve_type','valve_ch','vlv_close','vlv_open','vlv_dir','air_off','air_min','air_max','motor_type','num_pumps',
-    'fan_pin','fan_min','fan_max','fan_idle_pct','fan_idle_timeout','sol_pin','sol_act','sol_hold','sol_time','sol_inter','sens_type','sens_target',
+    'fan_pin','fan_min','fan_max','fan_idle_pct','fan_idle_timeout','sol_pin','sol_act','sol_hold','sol_time','sens_type','sens_target',
     'sens_min','sens_max','pid_kp','pid_ki','hall_pin','hall_low','hall_high','endstop_pin','endstop_high','endstop_pump_on','res_format','show_air',
     'angle_on','angle_ch','ang_pca','ang_off','ang_min','ang_max'];
   const out={};keys.forEach(k=>{if(CFG[k]!=null)out[k]=CFG[k]});
@@ -2057,14 +2056,14 @@ function copyAirConfig(){
 }
 const CFG_LABELS={air_mode:'Mode',air_off:'Off',air_min:'Min',air_max:'Max',fan_min:'Fan min',fan_max:'Fan max',fan_idle_pct:'Fan idle%',fan_idle_timeout:'Fan timeout',pid_kp:'Kp',pid_ki:'Ki',
   valve_type:'Valve',valve_ch:'Channel valve',vlv_close:'Vlv closed',vlv_open:'Vlv open',vlv_dir:'Vlv sens',
-  sol_pin:'Sol GPIO',sol_act:'Sol act',sol_hold:'Sol hold',sol_time:'Sol temps',sol_inter:'Sol inter-note',
+  sol_pin:'Sol GPIO',sol_act:'Sol act',sol_hold:'Sol hold',sol_time:'Sol temps',
   sens_type:'Sensor',sens_target:'Target',sens_min:'Sens min',sens_max:'Sens max',show_air:'Afficher air'};
 function updateConfigSummary(){
   const cs=$('airConfigSummary');if(!cs||!CFG)return;
   const fields=[['air_mode','airModeSelect'],['air_off','cfgAirOff'],['air_min','cfgAirMin'],['air_max','cfgAirMax'],
     ['fan_min','airFanMin'],['fan_max','airFanMax'],['fan_idle_pct','airFanIdlePct'],['fan_idle_timeout','airFanIdleTimeout'],['pid_kp','airPidKp'],['pid_ki','airPidKi'],
     ['valve_type','airValveType'],['valve_ch','airValveCh'],['vlv_close','cfgVlvClose'],['vlv_open','cfgVlvOpen'],['vlv_dir','cfgVlvDir'],
-    ['sol_inter','cfgSolInter'],['sens_type','airSensorType'],['sens_target','airSensTarget'],
+['sens_type','airSensorType'],['sens_target','airSensTarget'],
     ['show_air','cfgShowAir']];
   const changed=[];
   fields.forEach(([k,id])=>{
@@ -2129,7 +2128,6 @@ function fillAirSettings(){
   sa.value=CFG.sol_act!=null?CFG.sol_act:255;updPwmPct(sa);
   sh.value=CFG.sol_hold!=null?CFG.sol_hold:80;updPwmPct(sh);
   $('cfgSolTime').value=CFG.sol_time!=null?CFG.sol_time:30;
-  $('cfgSolInter').value=CFG.sol_inter!=null?CFG.sol_inter:0;
   // Servo valve settings
   $('cfgVlvClose').value=CFG.vlv_close!=null?CFG.vlv_close:0;
   $('cfgVlvOpen').value=CFG.vlv_open!=null?CFG.vlv_open:90;

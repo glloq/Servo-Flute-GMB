@@ -10,6 +10,14 @@
 #include "FanController.h"
 #include "NoteSequencer.h"
 #include "settings.h"
+#include "ConfigStorage.h"
+
+struct ConfigApplyResult {
+  bool applied;
+  bool restartRequired;
+  String reinitialized;
+  String warnings;
+};
 
 class InstrumentManager {
 public:
@@ -40,6 +48,8 @@ public:
   void allSoundOff();
   void resetAllControllers();
   void powerOnServos();
+  void ensureServosPowered();
+  void registerActuatorActivity();
 
   // Ecriture PWM multi-PCA9685 : route vers la bonne carte (canal 0-15 = carte 0, 16-31 = carte 1)
   void setPWM(uint8_t channel, uint16_t on, uint16_t off);
@@ -49,6 +59,7 @@ public:
   AirflowController& getAirflowCtrl() { return _airflowCtrl; }
   PressureController& getPressureCtrl() { return _pressureCtrl; }
   FanController& getFanCtrl() { return _fanCtrl; }
+  ConfigApplyResult applyRuntimeConfig(const RuntimeConfig& oldConfig, const RuntimeConfig& newConfig);
 
 private:
   Adafruit_PWMServoDriver _pwm0;    // Carte 1 (0x40) — toujours active
