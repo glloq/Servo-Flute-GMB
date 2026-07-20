@@ -466,7 +466,7 @@ bool AirflowController::isAngleServoActive() const {
 
 void AirflowController::setAngleServoAngle(uint16_t angle) {
   uint16_t pwmValue = angleToPWM(angle);
-  _writePwm(cfg.anglePcaChannel, 0, pwmValue);
+  _writePwm(cfg.angleServoPcaChannel, 0, pwmValue);
   _currentAngleServo = angle;
 }
 

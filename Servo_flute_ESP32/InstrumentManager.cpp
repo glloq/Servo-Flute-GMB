@@ -47,7 +47,7 @@ void InstrumentManager::begin() {
     }
   }
   if (cfg.airflowPcaChannel >= 16 || cfg.valveServoPcaChannel >= 16 ||
-      cfg.anglePcaChannel >= 16 || cfg.angleServoPcaChannel >= 16) {
+      cfg.angleServoPcaChannel >= 16) {
     _secondBoardEnabled = true;
   }
 
@@ -67,6 +67,11 @@ void InstrumentManager::begin() {
   // Initialiser le controleur de pression (pompe/reservoir) si active
   if (cfg.airMode >= AIR_MODE_PUMP_VALVE) {
     bool sensorOk = _pressureCtrl.begin();
+    if (cfg.airMode == AIR_MODE_PUMP_RESERVOIR && cfg.reservoirAutoStart) {
+      _pressureCtrl.setTargetPercent(cfg.reservoirTargetPercent);
+    } else if (cfg.airMode == AIR_MODE_PUMP_VALVE && cfg.pumpDirectIdlePercent > 0) {
+      _pressureCtrl.setTargetPercent(cfg.pumpDirectIdlePercent);
+    }
     if (DEBUG) {
       Serial.print("DEBUG: InstrumentManager - PressureController: ");
       Serial.println(sensorOk ? "capteur OK" : "sans capteur");
@@ -76,6 +81,7 @@ void InstrumentManager::begin() {
   // Initialiser le ventilateur si mode 3
   if (cfg.airMode == AIR_MODE_FAN_SERVO) {
     _fanCtrl.begin();
+    if (cfg.fanDefaultPercent > 0) { _fanCtrl.setSpeed(cfg.fanDefaultPercent); }
     if (DEBUG) {
       Serial.println("DEBUG: InstrumentManager - FanController initialise");
     }
@@ -127,7 +133,18 @@ void InstrumentManager::noteOn(byte midiNote, byte velocity) {
     return;
   }
 
-  bool success = _eventQueue.enqueue(EVENT_NOTE_ON, midiNote, velocity, millis());
+  if (cfg.airMode == AIR_MODE_FAN_SERVO) {
+    uint8_t fanDemand = cfg.fanFollowAirflow ? (uint8_t)((uint16_t)cfg.fanMaxNotePercent * velocity / 127) : cfg.fanMaxNotePercent;
+    if (fanDemand < cfg.fanDefaultPercent) fanDemand = cfg.fanDefaultPercent;
+    _fanCtrl.setSpeed(fanDemand);
+  }
+  if (cfg.airMode == AIR_MODE_PUMP_VALVE) {
+    uint8_t pumpDemand = cfg.pumpFollowAirflow ? (uint8_t)((uint16_t)cfg.pumpDirectMaxPercent * velocity / 127) : cfg.pumpDirectMaxPercent;
+    if (pumpDemand < cfg.pumpDirectIdlePercent) pumpDemand = cfg.pumpDirectIdlePercent;
+    _pressureCtrl.setTargetPercent(pumpDemand);
+  }
+
+  bool success = _eventQueue.enqueueLiveEvent(EVENT_NOTE_ON, midiNote, velocity);
 
   if (!success) {
     if (DEBUG) {
@@ -147,7 +164,11 @@ void InstrumentManager::noteOn(byte midiNote, byte velocity) {
 }
 
 void InstrumentManager::noteOff(byte midiNote) {
-  bool success = _eventQueue.enqueue(EVENT_NOTE_OFF, midiNote, 0, millis());
+  if (cfg.airMode == AIR_MODE_PUMP_VALVE) {
+    _pressureCtrl.setTargetPercent(cfg.pumpDirectIdlePercent);
+  }
+
+  bool success = _eventQueue.enqueueLiveEvent(EVENT_NOTE_OFF, midiNote, 0);
 
   if (!success) {
     if (DEBUG) {

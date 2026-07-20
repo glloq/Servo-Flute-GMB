@@ -15,7 +15,7 @@ struct MidiEvent {
   EventType type;
   byte midiNote;
   byte velocity;
-  unsigned long timestamp;  // Timestamp relatif en ms depuis premier evenement
+  unsigned long timestamp;  // Absolute execution time in millis()
 
   MidiEvent() : type(EVENT_NONE), midiNote(0), velocity(0), timestamp(0) {}
 
@@ -28,8 +28,10 @@ class EventQueue {
 public:
   EventQueue(int capacity);
 
-  // Ajoute un evenement avec timestamp relatif au premier evenement
+  // Ajoute un evenement live avec heure absolue millis()
   bool enqueue(EventType type, byte note, byte velocity, unsigned long absoluteTime);
+  bool enqueueLiveEvent(EventType type, byte note, byte velocity);
+  bool enqueueScheduledEvent(EventType type, byte note, byte velocity, unsigned long executeAtMs);
 
   // Recupere le prochain evenement sans le retirer
   MidiEvent* peek();

@@ -112,3 +112,11 @@ Servo-Flute-Midi-Boop/
 ## License
 
 MIT
+
+## 2026 safety/configuration audit notes
+
+This firmware now validates `RuntimeConfig` centrally after LittleFS load, before save, and after web configuration updates. Invalid impossible configurations are rejected by the REST API with HTTP 400; recoverable bounds are normalized. Hardware-affecting changes are reported with `restart_required` so the web UI can request a safe reboot instead of silently applying pin/PCA changes at runtime.
+
+Supported instruments remain simple wind instruments without reed/lip embouchure control: transverse flute, recorder, tin whistle, Native American flute, ocarina, shakuhachi, ney, kaval, and similar flute-family instruments.
+
+See `Servo_flute_ESP32/docs/AUDIT_CODE.md` and `Servo_flute_ESP32/docs/HARDWARE_TEST_MATRIX.md` for the current audit and bench-test plan.

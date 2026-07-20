@@ -1073,6 +1073,7 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
   </div>
 
   <div class="btn-row" style="justify-content:center;margin-top:16px">
+    <div id="restartRequiredBanner" style="display:none;margin:8px 0;padding:8px;border:1px solid #f7b731;color:#f7b731;border-radius:6px">Restart required for hardware changes. <button class="btn btn-w" onclick="restartNow()">Restart now</button></div>
     <button class="btn btn-g" id="btnSaveSettings" onclick="saveSettings()"><svg viewBox="0 0 16 16" width="14" height="14"><path d="M12.7 1H3a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2V3.3L12.7 1zM8 13a2.5 2.5 0 110-5 2.5 2.5 0 010 5zM11 5H5V2h6v3z" fill="currentColor"/></svg>Save</button>
     <button class="btn btn-s" onclick="resetConfig()">Reset defaults</button>
   </div>
@@ -1216,6 +1217,8 @@ function showToast(msg,type){type=type||'info';const c=$('toastContainer');
 var _suppressDirty=false;
 function markDirty(){if(_suppressDirty)return;dirty=true;$('unsavedBadge').classList.add('show');updStepDots();const sb=$('btnAirSave');if(sb)sb.style.boxShadow='0 0 8px #4ecca3';updateConfigSummary()}
 function markClean(){dirty=false;$('unsavedBadge').classList.remove('show');updStepDots();const sb=$('btnAirSave');if(sb)sb.style.boxShadow='';const cs=$('airConfigSummary');if(cs)cs.style.display='none'}
+function handleSaveResponse(j){if(j&&j.restart_required){const b=$('restartRequiredBanner');if(b)b.style.display='block';showToast('Restart required for hardware changes','info')}}
+function restartNow(){if(confirm('Put actuators in safe state and restart now?'))fetch('/api/restart',{method:'POST'}).then(()=>showToast('Restarting...','info'))}
 function btnLoad(id,on){const b=$(id);if(!b)return;if(on){b.classList.add('loading');b.disabled=true}else{b.classList.remove('loading');b.disabled=false}}
 function testPulse(el){el.classList.add('test-pulse');setTimeout(()=>el.classList.remove('test-pulse'),600)}
 function fpSnap(){if(!CFG)return;fpHistory.push(JSON.stringify(CFG.notes.map(n=>({midi:n.midi,fp:[...n.fp]}))));
@@ -2004,7 +2007,7 @@ function saveAirSettings(){
   fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)})
     .then(r=>r.json()).then(j=>{
     if(sb){sb.disabled=false;sb.textContent='Save'}
-    if(j.ok){showToast('Air configuration saved','success');
+    if(j.ok){handleSaveResponse(j);showToast('Air configuration saved','success');
       Object.assign(CFG,d);markClean();applyAirTabVisibility();buildAirSvg('airSvgFull',true);
       const ts=$('airSettingsMsg');if(ts){ts.textContent='Saved at '+new Date().toLocaleTimeString();ts.style.color='#4ecca3';setTimeout(()=>{ts.textContent=''},5000)}}
     else{showToast('Save error air','error')}
@@ -3619,7 +3622,7 @@ function saveStep1(){
   }
   const body={num_fingers:CFG.num_fingers,air_pca:CFG.air_pca,angle_open:CFG.angle_open,half_hole_pct:CFG.half_hole_pct,embouchure:CFG.embouchure||'bec',fingers:CFG.fingers.slice(0,CFG.num_fingers)};
   fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
-    .then(r=>r.json()).then(d=>{btnLoad('btnSaveStep1',false);if(d.ok){showToast('Fingers saved','success');markClean();buildFlute(CFG,'fluteSvg',false);goStep(2)}else showToast('Save error','error')})
+    .then(r=>r.json()).then(d=>{btnLoad('btnSaveStep1',false);if(d.ok){handleSaveResponse(d);showToast('Fingers saved','success');markClean();buildFlute(CFG,'fluteSvg',false);goStep(2)}else showToast('Save error','error')})
     .catch(e=>{btnLoad('btnSaveStep1',false);showToast('Error: '+e,'error')})
 }
 
@@ -3697,7 +3700,7 @@ function saveStep2(){
   if(!CFG)return;btnLoad('btnSaveStep2',true);
   const body={num_fingers:CFG.num_fingers,notes:CFG.notes.map(n=>({midi:n.midi,fp:n.fp.slice(0,CFG.num_fingers),amn:n.amn,amx:n.amx,ang:n.ang!=null?n.ang:50}))};
   fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
-    .then(r=>r.json()).then(d=>{btnLoad('btnSaveStep2',false);if(d.ok){showToast('Fingerings saved','success');markClean();fpHistory=[];fpFuture=[];updUndoUI();goStep(3);buildKeyboard();buildFlute(CFG,'fluteSvg',false)}else showToast('Save error','error')})
+    .then(r=>r.json()).then(d=>{btnLoad('btnSaveStep2',false);if(d.ok){handleSaveResponse(d);showToast('Fingerings saved','success');markClean();fpHistory=[];fpFuture=[];updUndoUI();goStep(3);buildKeyboard();buildFlute(CFG,'fluteSvg',false)}else showToast('Save error','error')})
     .catch(e=>{btnLoad('btnSaveStep2',false);showToast('Error: '+e,'error')})
 }
 
@@ -3747,7 +3750,7 @@ function saveStep3(){
   const body={notes_air:CFG.notes.map(n=>({amn:n.amn,amx:n.amx,ang:n.ang!=null?n.ang:50}))};
   if(CFG.embouchure==='trav'){body.ang_pca=CFG.ang_pca;body.ang_off=CFG.ang_off;body.ang_min=CFG.ang_min;body.ang_max=CFG.ang_max}
   fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
-    .then(r=>r.json()).then(d=>{btnLoad('btnSaveStep3',false);if(d.ok){showToast('Breath saved','success');markClean();goStep(4)}else showToast('Save error','error')})
+    .then(r=>r.json()).then(d=>{btnLoad('btnSaveStep3',false);if(d.ok){handleSaveResponse(d);showToast('Breath saved','success');markClean();goStep(4)}else showToast('Save error','error')})
     .catch(e=>{btnLoad('btnSaveStep3',false);showToast('Error: '+e,'error')})
 }
 
@@ -3828,7 +3831,7 @@ function saveStep4(){
     vib_freq:CFG.vib_freq||5,vib_amp:CFG.vib_amp!=null?CFG.vib_amp:3,
     cc2_on:!!CFG.cc2_on,cc2_thr:CFG.cc2_thr||5,cc2_curve:CFG.cc2_curve||1,cc2_timeout:CFG.cc2_timeout||2000};
   fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
-    .then(r=>r.json()).then(d=>{btnLoad('btnSaveStep4',false);if(d.ok){showToast('Calibration complete!','success');markClean();buildKeyboard();buildFlute(CFG,'fluteSvg',false)}else showToast('Save error','error')})
+    .then(r=>r.json()).then(d=>{btnLoad('btnSaveStep4',false);if(d.ok){handleSaveResponse(d);showToast('Calibration complete!','success');markClean();buildKeyboard();buildFlute(CFG,'fluteSvg',false)}else showToast('Save error','error')})
     .catch(e=>{btnLoad('btnSaveStep4',false);showToast('Error: '+e,'error')})
 }
 
@@ -3872,7 +3875,7 @@ function saveSettings(){
     hide_calib:$('cfgHideCalib').checked,hide_air:$('cfgHideAir').checked};
   fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
     .then(r=>r.json()).then(d=>{btnLoad('btnSaveSettings',false);
-      if(d.ok){showToast('Settings saved','success');markClean();loadConfig()}
+      if(d.ok){handleSaveResponse(d);showToast('Settings saved','success');markClean();loadConfig()}
       else showToast('Save error','error');
       $('settingsMsg').textContent=d.ok?'Save OK':'Error';$('settingsMsg').style.color=d.ok?'#4ecca3':'#e94560'})
     .catch(e=>{btnLoad('btnSaveSettings',false);showToast('Error: '+e,'error');$('settingsMsg').textContent='Error: '+e;$('settingsMsg').style.color='#e94560'})

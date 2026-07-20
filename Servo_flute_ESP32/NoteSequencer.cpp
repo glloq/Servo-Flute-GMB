@@ -4,7 +4,8 @@
 NoteSequencer::NoteSequencer(EventQueue& eventQueue, FingerController& fingerCtrl, AirflowController& airflowCtrl)
   : _eventQueue(eventQueue), _fingerCtrl(fingerCtrl), _airflowCtrl(airflowCtrl),
     _currentState(STATE_IDLE), _currentNote(0), _currentVelocity(0),
-    _stateStartTime(0), _eventScheduledTime(0), _playbackStartTime(0) {
+    _stateStartTime(0), _eventScheduledTime(0), _playbackStartTime(0),
+    _noteSoundStartTime(0), _pendingStopAfterMinDuration(false) {
 }
 
 void NoteSequencer::begin() {
@@ -52,6 +53,8 @@ void NoteSequencer::handlePositioning() {
   if (elapsed >= cfg.servoToSolenoidDelayMs) {
     _airflowCtrl.setAirflowForNote(_currentNote, _currentVelocity);
     _airflowCtrl.openSolenoid();
+    _noteSoundStartTime = millis();
+    _pendingStopAfterMinDuration = false;
     transitionTo(STATE_PLAYING);
 
     if (DEBUG) {
@@ -73,12 +76,22 @@ void NoteSequencer::handlePlaying() {
 
   if (nextEvent != nullptr && nextEvent->type == EVENT_NOTE_OFF &&
       nextEvent->midiNote == _currentNote) {
-    unsigned long eventAbsoluteTime = _playbackStartTime + nextEvent->timestamp;
+    unsigned long eventAbsoluteTime = nextEvent->timestamp;
 
     if (millis() >= eventAbsoluteTime) {
       _eventQueue.dequeue();
-      stopCurrentNote();
+      unsigned long playedFor = millis() - _noteSoundStartTime;
+      if (playedFor < cfg.minNoteDurationMs) {
+        _pendingStopAfterMinDuration = true;
+      } else {
+        stopCurrentNote();
+      }
     }
+  }
+
+  if (_pendingStopAfterMinDuration && millis() - _noteSoundStartTime >= cfg.minNoteDurationMs) {
+    _pendingStopAfterMinDuration = false;
+    stopCurrentNote();
   }
 }
 
@@ -93,11 +106,10 @@ void NoteSequencer::processNextEvent() {
     return;
   }
 
-  unsigned long eventAbsoluteTime = _playbackStartTime + event->timestamp;
+  unsigned long eventAbsoluteTime = event->timestamp;
 
   if (_playbackStartTime == 0) {
-    _playbackStartTime = millis();
-    eventAbsoluteTime = _playbackStartTime + event->timestamp;
+    _playbackStartTime = _eventQueue.getReferenceTime();
   }
 
   const unsigned long MECHANICAL_DELAY = cfg.servoToSolenoidDelayMs;
@@ -160,7 +172,7 @@ bool NoteSequencer::shouldCloseValveBetweenNotes() {
   }
 
   unsigned long currentTime = millis();
-  unsigned long nextNoteTime = _playbackStartTime + nextEvent->timestamp;
+  unsigned long nextNoteTime = nextEvent->timestamp;
 
   if (nextNoteTime > currentTime) {
     unsigned long interval = nextNoteTime - currentTime;
@@ -198,6 +210,10 @@ void NoteSequencer::transitionTo(NoteState newState) {
 void NoteSequencer::stop() {
   _currentNote = 0;
   _currentVelocity = 0;
+  _pendingStopAfterMinDuration = false;
+  _eventQueue.clear();
+  _airflowCtrl.closeSolenoid();
+  _airflowCtrl.setAirflowToRest();
   transitionTo(STATE_IDLE);
 
   if (DEBUG) {
