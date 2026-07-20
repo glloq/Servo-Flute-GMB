@@ -143,4 +143,3 @@ ConfigValidationResult validateAndNormalizeConfig(RuntimeConfig& config, const R
   r.valid = (r.error.length() == 0);
   return r;
 }
-
