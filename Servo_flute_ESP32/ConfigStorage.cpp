@@ -1,4 +1,7 @@
 #include "ConfigStorage.h"
+
+static ConfigLoadStatus s_lastLoadStatus = CONFIG_DEFAULTS;
+static String s_lastLoadError;
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 
@@ -161,18 +164,29 @@ void ConfigStorage::initDefaults() {
   cfg.kbdMode = 0;
 }
 
+ConfigLoadStatus ConfigStorage::lastLoadStatus() { return s_lastLoadStatus; }
+const String& ConfigStorage::lastLoadError() { return s_lastLoadError; }
+
 bool ConfigStorage::load() {
+  return loadWithStatus() == CONFIG_LOADED;
+}
+
+ConfigLoadStatus ConfigStorage::loadWithStatus() {
   // D'abord initialiser les defauts
   initDefaults();
+  s_lastLoadStatus = CONFIG_DEFAULTS;
+  s_lastLoadError = "";
 
   File file = LittleFS.open(CONFIG_FILE_PATH, "r");
   if (!file) {
     if (DEBUG) {
       Serial.println("DEBUG: ConfigStorage - Pas de config sauvegardee, utilisation des defauts");
     }
-    return false;
+    s_lastLoadStatus = CONFIG_DEFAULTS;
+    return s_lastLoadStatus;
   }
 
+  RuntimeConfig defaults = cfg;
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, file);
   file.close();
@@ -182,7 +196,10 @@ bool ConfigStorage::load() {
       Serial.print("ERREUR: ConfigStorage - JSON invalide: ");
       Serial.println(err.c_str());
     }
-    return false;
+    s_lastLoadStatus = CONFIG_STORAGE_ERROR;
+    s_lastLoadError = String("JSON invalide: ") + err.c_str();
+    cfg = defaults;
+    return s_lastLoadStatus;
   }
 
   // --- Instrument ---
@@ -222,7 +239,12 @@ bool ConfigStorage::load() {
     cfg.numNotes = count;
     for (int i = 0; i < count; i++) {
       JsonObject n = notes[i];
-      cfg.notes[i].midiNote = n["midi"] | cfg.notes[i].midiNote;
+      int midiValue = n["midi"] | cfg.notes[i].midiNote;
+      if (midiValue < 0 || midiValue > 127) {
+        cfg.notes[i].midiNote = 255;  // sentinel rejected by validator before midiSeen indexing
+      } else {
+        cfg.notes[i].midiNote = (uint8_t)midiValue;
+      }
       cfg.notes[i].airflowMinPercent = n["amn"] | cfg.notes[i].airflowMinPercent;
       cfg.notes[i].airflowMaxPercent = n["amx"] | cfg.notes[i].airflowMaxPercent;
       cfg.notes[i].anglePercent = n["ang"] | cfg.notes[i].anglePercent;
@@ -370,10 +392,18 @@ bool ConfigStorage::load() {
   if (name) { strncpy(cfg.deviceName, name, sizeof(cfg.deviceName) - 1); cfg.deviceName[sizeof(cfg.deviceName) - 1] = '\0'; }
 
   ConfigValidationResult validation = validateAndNormalizeConfig(cfg);
-  if (!validation.valid && DEBUG) {
-    Serial.print("ERREUR: ConfigStorage - Config invalide normalisee/rejetee: ");
-    Serial.println(validation.error);
+  if (!validation.valid) {
+    if (DEBUG) {
+      Serial.print("ERREUR: ConfigStorage - Config invalide, retour aux defauts: ");
+      Serial.println(validation.error);
+    }
+    s_lastLoadStatus = CONFIG_INVALID_FALLBACK;
+    s_lastLoadError = validation.error;
+    cfg = defaults;
+    validateAndNormalizeConfig(cfg);
+    return s_lastLoadStatus;
   }
+  s_lastLoadStatus = CONFIG_LOADED;
 
   if (DEBUG) {
     Serial.println("DEBUG: ConfigStorage - Config chargee depuis LittleFS");
@@ -385,7 +415,7 @@ bool ConfigStorage::load() {
     Serial.println(cfg.airflowPcaChannel);
   }
 
-  return true;
+  return s_lastLoadStatus;
 }
 
 bool ConfigStorage::save() {

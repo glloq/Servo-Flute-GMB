@@ -16,6 +16,8 @@ public:
   InstrumentManager();
 
   void begin();
+  bool beginSafe();
+  void initializeSafeOutputs();
   void update();
 
   // Interface MIDI (appelee par BleMidiHandler ou WifiMidiHandler)

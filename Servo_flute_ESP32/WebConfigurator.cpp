@@ -863,7 +863,15 @@ void WebConfigurator::handleApiDiagnostics(AsyncWebServerRequest* request) {
     c["message"] = message;
   };
 
+  String loadMsg;
+  switch (ConfigStorage::lastLoadStatus()) {
+    case CONFIG_DEFAULTS: loadMsg = "defaults active"; break;
+    case CONFIG_LOADED: loadMsg = "configuration loaded"; break;
+    case CONFIG_INVALID_FALLBACK: loadMsg = "invalid /config.json, safe defaults active: " + ConfigStorage::lastLoadError(); break;
+    case CONFIG_STORAGE_ERROR: loadMsg = "storage/JSON error, safe defaults active: " + ConfigStorage::lastLoadError(); break;
+  }
   addCheck("config", validation.valid ? "ok" : "error", validation.valid ? "Runtime configuration is valid" : validation.error);
+  addCheck("boot_config", (ConfigStorage::lastLoadStatus() == CONFIG_INVALID_FALLBACK || ConfigStorage::lastLoadStatus() == CONFIG_STORAGE_ERROR) ? "error" : "ok", loadMsg);
   addCheck("littlefs", LittleFS.totalBytes() > 0 ? "ok" : "error", String(LittleFS.usedBytes()) + "/" + String(LittleFS.totalBytes()) + " bytes used");
   addCheck("config_file", LittleFS.exists(CONFIG_FILE_PATH) ? "ok" : "warning", LittleFS.exists(CONFIG_FILE_PATH) ? "Configuration file is present" : "Using defaults; /config.json is absent");
   addCheck("pca0", "warning", "Runtime probe requires hardware; expected address 0x40");
@@ -877,7 +885,9 @@ void WebConfigurator::handleApiDiagnostics(AsyncWebServerRequest* request) {
 #endif
   addCheck("restart", "ok", "Restart-required state is reported by POST /api/config responses");
   addCheck("heap", "ok", String(ESP.getFreeHeap()) + " bytes free heap");
-  doc["ok"] = validation.valid;
+  doc["ok"] = validation.valid && ConfigStorage::lastLoadStatus() != CONFIG_INVALID_FALLBACK && ConfigStorage::lastLoadStatus() != CONFIG_STORAGE_ERROR;
+  doc["config_load_status"] = (int)ConfigStorage::lastLoadStatus();
+  doc["config_load_error"] = ConfigStorage::lastLoadError();
   String out;
   serializeJson(doc, out);
   request->send(200, "application/json", out);
@@ -1291,7 +1301,7 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
     if (strcmp(mode, "air") == 0 && _autoCal && _audio && _audio->isMicDetected()) {
       _audio->setActive(true); _micMonitorEnabled = true; _autoCal->start(ACAL_MODE_AIRFLOW);
     } else if (strcmp(mode, "range") == 0 && _autoCal && _audio && _audio->isMicDetected()) {
-      _audio->setActive(true); _micMonitorEnabled = true; _autoCal->start(ACAL_MODE_RANGE_FINDER);
+      _audio->setActive(true); _micMonitorEnabled = true; _autoCal->start(ACAL_MODE_RANGE_FIND);
     }
   } else if (strcmp(type, "auto_stop") == 0) {
     if (_autoCal) _autoCal->stop();
