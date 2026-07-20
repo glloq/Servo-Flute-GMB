@@ -3,6 +3,7 @@
 #include "FanController.h"
 #include "WirelessManager.h"
 #include "web_content.h"
+#include "WebValueParsers.h"
 #include <WiFi.h>
 
 WebConfigurator::WebConfigurator(uint16_t port)
@@ -209,14 +210,16 @@ void WebConfigurator::setupRoutes() {
     NULL,
     [this](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
       // Accumuler le body (data n'est pas null-termine)
-      if (total > CONFIG_MAX_POST_BYTES) { return; }
       if (index == 0) {
         _configBody = "";
-        _configBody.reserve(total + 1);
+        _configBodyTooLarge = false;
+        _configBody.reserve(min(total + 1, (size_t)CONFIG_MAX_POST_BYTES + 1));
       }
-      if (_configBody.length() + len <= CONFIG_MAX_POST_BYTES) {
-        _configBody.concat((const char*)data, len);
+      if (total > CONFIG_MAX_POST_BYTES || _configBody.length() + len > CONFIG_MAX_POST_BYTES) {
+        _configBodyTooLarge = true;
+        return;
       }
+      _configBody.concat((const char*)data, len);
     }
   );
 
@@ -264,9 +267,9 @@ void WebConfigurator::setupRoutes() {
     },
     NULL,
     [this](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
-      if (index == 0) { _configBody = ""; _configBody.reserve(total + 1); }
-      char* buf = (char*)malloc(len + 1);
-      if (buf) { memcpy(buf, data, len); buf[len] = '\0'; _configBody += buf; free(buf); }
+      if (index == 0) { _configBody = ""; _configBodyTooLarge = false; _configBody.reserve(min(total + 1, (size_t)CONFIG_MAX_POST_BYTES + 1)); }
+      if (total > CONFIG_MAX_POST_BYTES || _configBody.length() + len > CONFIG_MAX_POST_BYTES) { _configBodyTooLarge = true; return; }
+      _configBody.concat((const char*)data, len);
       if (index + len == total) {
         JsonDocument doc;
         DeserializationError err = deserializeJson(doc, _configBody);
@@ -314,9 +317,9 @@ void WebConfigurator::setupRoutes() {
     },
     NULL,
     [this](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
-      if (index == 0) { _configBody = ""; _configBody.reserve(total + 1); }
-      char* buf = (char*)malloc(len + 1);
-      if (buf) { memcpy(buf, data, len); buf[len] = '\0'; _configBody += buf; free(buf); }
+      if (index == 0) { _configBody = ""; _configBodyTooLarge = false; _configBody.reserve(min(total + 1, (size_t)CONFIG_MAX_POST_BYTES + 1)); }
+      if (total > CONFIG_MAX_POST_BYTES || _configBody.length() + len > CONFIG_MAX_POST_BYTES) { _configBodyTooLarge = true; return; }
+      _configBody.concat((const char*)data, len);
     }
   );
 
@@ -327,9 +330,9 @@ void WebConfigurator::setupRoutes() {
     },
     NULL,
     [this](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
-      if (index == 0) { _configBody = ""; _configBody.reserve(total + 1); }
-      char* buf = (char*)malloc(len + 1);
-      if (buf) { memcpy(buf, data, len); buf[len] = '\0'; _configBody += buf; free(buf); }
+      if (index == 0) { _configBody = ""; _configBodyTooLarge = false; _configBody.reserve(min(total + 1, (size_t)CONFIG_MAX_POST_BYTES + 1)); }
+      if (total > CONFIG_MAX_POST_BYTES || _configBody.length() + len > CONFIG_MAX_POST_BYTES) { _configBodyTooLarge = true; return; }
+      _configBody.concat((const char*)data, len);
     }
   );
 
@@ -394,33 +397,31 @@ void WebConfigurator::handleRoot(AsyncWebServerRequest* request) {
 }
 
 void WebConfigurator::handleApiStatus(AsyncWebServerRequest* request) {
-  String json = "{";
-  json += "\"mode\":\"" + String(_wirelessManager ? _wirelessManager->getStatusText() : "N/A") + "\"";
-  json += ",\"connected\":" + String(_wirelessManager ? (_wirelessManager->isMidiConnected() ? "true" : "false") : "false");
-  json += ",\"uptime\":" + String(millis() / 1000);
+  JsonDocument doc;
+  doc["mode"] = _wirelessManager ? _wirelessManager->getStatusText() : "N/A";
+  doc["connected"] = _wirelessManager ? _wirelessManager->isMidiConnected() : false;
+  doc["uptime"] = millis() / 1000;
 
-  // CC values
   if (_instrument) {
-    json += ",\"cc7\":" + String(_instrument->getCCVolume());
-    json += ",\"cc11\":" + String(_instrument->getCCExpression());
-    json += ",\"cc1\":" + String(_instrument->getCCModulation());
-    json += ",\"cc2\":" + String(_instrument->getCCBreath());
+    doc["cc7"] = _instrument->getCCVolume();
+    doc["cc11"] = _instrument->getCCExpression();
+    doc["cc1"] = _instrument->getCCModulation();
+    doc["cc2"] = _instrument->getCCBreath();
   }
 
-  // Player state
   if (_player) {
-    json += ",\"player\":{";
-    json += "\"state\":" + String(_player->getState());
-    json += ",\"loaded\":" + String(_player->isFileLoaded() ? "true" : "false");
-    json += ",\"file\":\"" + _player->getFileName() + "\"";
-    json += ",\"events\":" + String(_player->getEventCount());
-    json += ",\"duration\":" + String(_player->getDurationMs());
-    json += ",\"position\":" + String(_player->getPositionMs());
-    json += ",\"progress\":" + String(_player->getProgressPercent(), 1);
-    json += "}";
+    JsonObject player = doc["player"].to<JsonObject>();
+    player["state"] = _player->getState();
+    player["loaded"] = _player->isFileLoaded();
+    player["file"] = _player->getFileName();
+    player["events"] = _player->getEventCount();
+    player["duration"] = _player->getDurationMs();
+    player["position"] = _player->getPositionMs();
+    player["progress"] = _player->getProgressPercent();
   }
 
-  json += "}";
+  String json;
+  serializeJson(doc, json);
   request->send(200, "application/json", json);
 }
 
@@ -866,6 +867,7 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
     request->send(saved ? 200 : 500, "application/json", resp);
   }
   _configBody = "";
+  _configBodyTooLarge = false;
 }
 
 void WebConfigurator::handleApiDiagnostics(AsyncWebServerRequest* request) {
@@ -1100,42 +1102,46 @@ size_t WebConfigurator::getMidiStorageUsed() {
 }
 
 void WebConfigurator::handleMidiList(AsyncWebServerRequest* request) {
-  String json = "{\"files\":[";
+  JsonDocument doc;
+  JsonArray files = doc["files"].to<JsonArray>();
   File dir = LittleFS.open(MIDI_DIR);
-  bool first = true;
   if (dir && dir.isDirectory()) {
     File f = dir.openNextFile();
     while (f) {
       if (!f.isDirectory()) {
-        if (!first) json += ",";
-        // f.name() retourne le chemin complet sur ESP32 - extraire le nom seul
         String fname = String(f.name());
         int lastSlash = fname.lastIndexOf('/');
         if (lastSlash >= 0) fname = fname.substring(lastSlash + 1);
-        json += "{\"name\":\"" + fname + "\",\"size\":" + String(f.size()) + "}";
-        first = false;
+        JsonObject entry = files.add<JsonObject>();
+        entry["name"] = fname;
+        entry["size"] = f.size();
       }
       f = dir.openNextFile();
     }
   }
-  json += "],\"used\":" + String(getMidiStorageUsed());
-  json += ",\"limit\":" + String((size_t)cfg.midiStorageLimitKb * 1024);
-  // Fichier actuellement charge
+  doc["used"] = getMidiStorageUsed();
+  doc["limit"] = (size_t)cfg.midiStorageLimitKb * 1024;
   if (_player && _player->isFileLoaded()) {
-    json += ",\"loaded\":\"" + _player->getFileName() + "\"";
+    doc["loaded"] = _player->getFileName();
   }
-  json += "}";
+  String json;
+  serializeJson(doc, json);
   request->send(200, "application/json", json);
 }
 
 void WebConfigurator::handleMidiDelete(AsyncWebServerRequest* request) {
+  if (_configBodyTooLarge) {
+    request->send(413, "application/json", "{\"ok\":false,\"msg\":\"Body too large\"}");
+    _configBody = ""; _configBodyTooLarge = false;
+    return;
+  }
   if (_configBody.length() == 0) {
     request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Empty body\"}");
     return;
   }
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, _configBody);
-  _configBody = "";
+  _configBody = ""; _configBodyTooLarge = false;
   if (err || !doc.containsKey("file")) {
     request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Invalid JSON\"}");
     return;
@@ -1163,13 +1169,18 @@ void WebConfigurator::handleMidiDelete(AsyncWebServerRequest* request) {
 }
 
 void WebConfigurator::handleMidiLoad(AsyncWebServerRequest* request) {
+  if (_configBodyTooLarge) {
+    request->send(413, "application/json", "{\"ok\":false,\"msg\":\"Body too large\"}");
+    _configBody = ""; _configBodyTooLarge = false;
+    return;
+  }
   if (_configBody.length() == 0) {
     request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Empty body\"}");
     return;
   }
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, _configBody);
-  _configBody = "";
+  _configBody = ""; _configBodyTooLarge = false;
   if (err || !doc.containsKey("file")) {
     request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Invalid JSON\"}");
     return;
@@ -1251,24 +1262,23 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
   }
 
   const char* type = doc["t"] | "";
-  auto hasInt = [&doc](const char* key) { return doc[key].is<int>(); };
-  auto getPct = [&doc](const char* key, uint8_t def = 0) -> uint8_t { return (uint8_t)constrain(doc[key] | def, 0, 100); };
+  auto hasInt = [&doc](const char* key) { return isJsonInteger(doc[key]); };
 
   if (strcmp(type, "non") == 0) {
     if (!hasInt("n")) return;
-    uint8_t note = (uint8_t)constrain(doc["n"] | 0, 0, 127);
+    uint8_t note = getMidi7Bit(doc, "n", 0);
     uint8_t vel = (uint8_t)constrain(doc["v"] | _webVelocity, 1, MIDI_VELOCITY_MAX);
     _instrument->noteOn(note, vel);
   } else if (strcmp(type, "nof") == 0) {
     if (!hasInt("n")) return;
-    _instrument->noteOff((uint8_t)constrain(doc["n"] | 0, 0, 127));
+    _instrument->noteOff(getMidi7Bit(doc, "n", 0));
   } else if (strcmp(type, "cc") == 0) {
     if (!hasInt("c") || !hasInt("v")) return;
-    _instrument->handleControlChange((uint8_t)constrain(doc["c"] | 0, 0, 127), getPct("v", 0));
+    _instrument->handleControlChange((uint8_t)getMidi7Bit(doc, "c", 0), getMidi7Bit(doc, "v", 0));
   } else if (strcmp(type, "velocity") == 0) {
     _webVelocity = (uint8_t)constrain(doc["v"] | _webVelocity, 1, MIDI_VELOCITY_MAX);
   } else if (strcmp(type, "air_live") == 0) {
-    _instrument->getAirflowCtrl().setAirflowLivePercent(getPct("v", 0));
+    _instrument->getAirflowCtrl().setAirflowLivePercent(getPercent(doc, "v", 0));
   } else if (strcmp(type, "play") == 0) {
     if (_player) _player->play();
   } else if (strcmp(type, "pause") == 0) {
@@ -1285,28 +1295,28 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
     _instrument->allSoundOff();
   } else if (strcmp(type, "test_finger") == 0) {
     int fi = doc["i"] | -1;
-    int angle = constrain(doc["a"] | 0, 0, 180);
+    int angle = getServoAngle(doc, "a", 0);
     if (fi >= 0 && fi < cfg.numFingers) _instrument->getFingerCtrl().testFingerAngle(fi, (uint16_t)angle);
   } else if (strcmp(type, "test_air") == 0) {
-    _instrument->getAirflowCtrl().testAirflowAngle((uint16_t)constrain(doc["a"] | 0, 0, 180));
+    _instrument->getAirflowCtrl().testAirflowAngle(getServoAngle(doc, "a", 0));
   } else if (strcmp(type, "test_angle") == 0) {
-    _instrument->getAirflowCtrl().testAngleServoAngle((uint16_t)constrain(doc["a"] | 0, 0, 180));
+    _instrument->getAirflowCtrl().testAngleServoAngle(getServoAngle(doc, "a", 0));
   } else if (strcmp(type, "angle_live") == 0) {
-    _instrument->getAirflowCtrl().setAngleLivePercent(getPct("v", 0));
+    _instrument->getAirflowCtrl().setAngleLivePercent(getPercent(doc, "v", 0));
   } else if (strcmp(type, "test_sol") == 0) {
     _instrument->getAirflowCtrl().testSolenoid((doc["o"] | 0) != 0);
   } else if (strcmp(type, "test_note") == 0) {
-    uint8_t note = (uint8_t)constrain(doc["n"] | 0, 0, 127);
+    uint8_t note = getMidi7Bit(doc, "n", 0);
     if (_instrument->isNotePlayable(note)) {
       _instrument->getFingerCtrl().setFingerPatternForNote(note);
       _instrument->getAirflowCtrl().setAirflowForNote(note, _webVelocity);
     }
   } else if (strcmp(type, "pump_target") == 0) {
-    _instrument->getPressureCtrl().setTargetPercent(getPct("v", 0));
+    _instrument->getPressureCtrl().setTargetPercent(getPercent(doc, "v", 0));
   } else if (strcmp(type, "pump_stop") == 0) {
     _instrument->getPressureCtrl().stop();
   } else if (strcmp(type, "fan_target") == 0) {
-    _instrument->getFanCtrl().setSpeed(getPct("v", 0));
+    _instrument->getFanCtrl().setSpeed(getPercent(doc, "v", 0));
   } else if (strcmp(type, "fan_stop") == 0) {
     _instrument->getFanCtrl().stop();
 #if MIC_ENABLED

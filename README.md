@@ -120,3 +120,7 @@ This firmware now validates `RuntimeConfig` centrally after LittleFS load, befor
 Supported instruments remain simple wind instruments without reed/lip embouchure control: transverse flute, recorder, tin whistle, Native American flute, ocarina, shakuhachi, ney, kaval, and similar flute-family instruments.
 
 See `Servo_flute_ESP32/docs/AUDIT_CODE.md` and `Servo_flute_ESP32/docs/HARDWARE_TEST_MATRIX.md` for the current audit and bench-test plan.
+
+## Finalization validation status
+
+Software CI covers ESP32 firmware build, PlatformIO native behavior tests, pytest audits, JSON escaping regressions, MIDI 7-bit WebSocket bounds, request-size limits, diagnostics vocabulary, and supported air-management modes. Physical validation remains explicitly marked **NOT TESTED — requires hardware** until executed on the corresponding PCA9685, microphone, ToF, Hall, endstop, pump, fan, solenoid, and servo hardware.

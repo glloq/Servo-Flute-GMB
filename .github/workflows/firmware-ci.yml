@@ -3,15 +3,18 @@ name: Firmware CI
 on:
   push:
     branches:
-      - codex/executable-verification
-      - work
+      - main
   pull_request:
   workflow_dispatch:
 
 jobs:
   esp32-build:
-    name: ESP32 firmware build
+    name: ESP32 firmware build (${{ matrix.platform }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ["espressif32@6.10.0", "espressif32@6.11.0"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -24,10 +27,10 @@ jobs:
       - name: PlatformIO version
         run: python -m platformio --version
       - name: Build ESP32 firmware
-        run: python -m platformio run -e esp32dev
+        run: python -m platformio run -e esp32dev --project-option="env:esp32dev.platform=${{ matrix.platform }}"
 
   native-tests:
-    name: PlatformIO native tests and Python audits
+    name: PlatformIO native tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -36,11 +39,50 @@ jobs:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: requirements-ci.txt
-      - name: Install test dependencies
+      - name: Install PlatformIO
         run: python -m pip install --upgrade -r requirements-ci.txt
       - name: PlatformIO version
         run: python -m platformio --version
       - name: Run PlatformIO native tests
         run: python -m platformio test -e native
-      - name: Run Python audit tests
+
+  pytest:
+    name: Pytest behavioral and audit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-ci.txt
+      - name: Install Python dependencies
+        run: python -m pip install --upgrade -r requirements-ci.txt
+      - name: Run pytest
         run: python -m pytest -q
+
+  static-audit:
+    name: Static configuration and web UI audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check key files are present and synchronized
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          required = [
+              'platformio.ini', 'Servo_flute_ESP32/web_content.h',
+              'docs/CONFIGURATION.md', 'docs/AIR_MANAGEMENT.md', 'docs/API_WEB.md',
+              'docs/AUTO_CALIBRATION.md', 'Servo_flute_ESP32/docs/HARDWARE_TEST_MATRIX.md',
+          ]
+          missing = [p for p in required if not Path(p).exists()]
+          if missing:
+              raise SystemExit(f"Missing required docs/config/UI files: {missing}")
+          web = Path('Servo_flute_ESP32/WebConfigurator.cpp').read_text(encoding='utf-8')
+          for token in ['getMidi7Bit', 'getPercent', 'getServoAngle', '/api/diagnostics/run', 'serializeJson']:
+              if token not in web:
+                  raise SystemExit(f'Missing static audit token: {token}')
+          PY

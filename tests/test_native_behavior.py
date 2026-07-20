@@ -9,8 +9,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 SOURCES = [
-    "native_test/src/arduino_stubs.cpp",
-    "native_test/src/config_test_stub.cpp",
+    "lib/native_stubs/src/arduino_stubs.cpp",
+    "lib/native_stubs/src/config_test_stub.cpp",
     "Servo_flute_ESP32/ConfigValidator.cpp",
     "Servo_flute_ESP32/PressureController.cpp",
     "Servo_flute_ESP32/EventQueue.cpp",
@@ -28,7 +28,7 @@ def test_cpp_behavioral_production_sources(tmp_path):
         "g++",
         "-std=c++17",
         "-DUNIT_TEST",
-        "-Inative_test/include",
+        "-Ilib/native_stubs/include",
         "-IServo_flute_ESP32",
         *SOURCES,
         "-o",

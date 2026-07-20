@@ -100,3 +100,50 @@ def test_solenoid_modes_and_gpio_filter_helpers():
     assert 'pinMode(cfg.solenoidPin, OUTPUT)' in air
     assert 'closeSolenoid();  // apply closed level immediately' in air
     assert 'if (configurationUsesSolenoidValve(config)) gpios[gcount++] = config.solenoidPin;' in src
+
+def test_web_json_uses_arduinojson_for_unsafe_strings_and_special_cases_documented():
+    src = read('Servo_flute_ESP32/WebConfigurator.cpp')
+    for fn_name in ['handleApiStatus', 'handleMidiList', 'handleApiDiagnostics']:
+        fn = src.split(f'void WebConfigurator::{fn_name}', 1)[1].split('\nvoid ', 1)[0]
+        assert 'JsonDocument doc' in fn
+        assert 'serializeJson(doc' in fn
+    assert 'player["file"] = _player->getFileName()' in src
+    assert 'entry["name"] = fname' in src
+    docs = read('docs/API_WEB.md')
+    assert 'Flute "A"' in docs
+    assert 'atelier\\wifi' in docs
+    assert 'étude "test".mid' in docs
+
+
+def test_websocket_has_separate_midi_percent_and_servo_parsers():
+    src = read('Servo_flute_ESP32/WebConfigurator.cpp')
+    helpers = read('Servo_flute_ESP32/WebValueParsers.h')
+    assert 'uint8_t getMidi7Bit' in helpers
+    assert 'uint8_t getPercent' in helpers
+    assert 'uint16_t getServoAngle' in helpers
+    assert 'clampMidi7Bit(value.as<int>())' in helpers
+    assert 'clampPercent(value.as<int>())' in helpers
+    assert 'clampServoAngle(value.as<int>())' in helpers
+    assert '_instrument->handleControlChange((uint8_t)getMidi7Bit(doc, "c", 0), getMidi7Bit(doc, "v", 0))' in src
+    assert 'handleControlChange((uint8_t)constrain(doc["c"] | 0, 0, 127), getPercent(doc, "v", 0))' not in src
+
+
+def test_post_body_limits_reset_and_avoid_malloc_fragments():
+    src = read('Servo_flute_ESP32/WebConfigurator.cpp')
+    hdr = read('Servo_flute_ESP32/WebConfigurator.h')
+    assert '_configBodyTooLarge' in hdr and '_configBodyTooLarge' in src
+    assert 'Body too large' in src
+    assert 'CONFIG_MAX_POST_BYTES' in src
+    assert 'concat((const char*)data, len)' in src
+    assert 'malloc(len + 1)' not in src
+    assert '_configBodyTooLarge = false' in src
+
+
+def test_diagnostics_status_vocabulary_and_passive_active_split():
+    src = read('Servo_flute_ESP32/WebConfigurator.cpp')
+    api = read('docs/API_WEB.md')
+    for status in ['ok', 'warning', 'error', 'not_tested', 'not_applicable']:
+        assert status in src or status in api
+    assert '"/api/diagnostics"' in src
+    assert '"/api/diagnostics/run"' in src
+    assert 'passive' in api.lower() and 'active' in api.lower()

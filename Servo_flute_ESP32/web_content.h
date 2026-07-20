@@ -1,4 +1,8 @@
 /***********************************************************************************************
+ * Finalization note: calibration steps and diagnostics shown by this embedded UI must remain
+ * synchronized with docs/API_WEB.md, docs/AIR_MANAGEMENT.md, and docs/AUTO_CALIBRATION.md.
+ * Hardware-only checks stay labeled NOT TESTED — requires hardware until physically executed.
+ *
  * web_content.h - Embedded web interface en PROGMEM
  *
  * Single Page Application with 3 tabs + overlay settings :

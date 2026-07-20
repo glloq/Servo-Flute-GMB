@@ -112,8 +112,9 @@ private:
   // Broadcast status a tous les clients WS
   void broadcastStatus();
 
-  // Buffer body pour POST config
+  // Bounded body buffer shared by small JSON POST routes; reset after success, error, oversize, or interruption.
   String _configBody;
+  bool _configBodyTooLarge = false;
 
   // Fichier temporaire pour upload MIDI
   File _uploadFile;
