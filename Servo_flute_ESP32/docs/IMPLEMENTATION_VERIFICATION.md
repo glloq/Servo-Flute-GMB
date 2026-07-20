@@ -238,9 +238,9 @@ A PR could not be verified or created with the GitHub CLI in this environment. A
 `requires software corrections`
 # Implementation verification counter-audit
 
-Date: 2026-07-20  
-Branch audited: `work`  
-Base observed from history: `76edef7` / PR #68 merge; corrected scope merged by `67ca0fe` / PR #69.  
+Date: 2026-07-20
+Branch audited: `work`
+Base observed from history: `76edef7` / PR #68 merge; corrected scope merged by `67ca0fe` / PR #69.
 Physical hardware: not available in this execution environment.
 
 ## Global result
