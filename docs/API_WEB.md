@@ -56,3 +56,9 @@ Manual hardware tests must always be time-limited and followed by a safe state. 
 REST and WebSocket payloads that include user-provided strings are serialized with ArduinoJson so escaping is correct for examples such as `deviceName = Flute "A"`, `SSID = atelier\wifi`, and `fichier = étude "test".mid`.
 
 `GET /api/diagnostics` is passive: it reports `ok`, `warning`, `error`, `not_tested`, or `not_applicable` without moving actuators. `POST /api/diagnostics/run` is reserved for an explicit active, timeout-bounded hardware sequence that announces the tested components, supports stop/panic, returns outputs to a safe state, and keeps physical checks marked `NOT TESTED — requires hardware` until executed on real hardware.
+
+## Post-audit API safety contract
+
+`GET /api/diagnostics` is passive and must not move hardware. Active diagnostics must be requested explicitly, bounded by firmware timeouts, cancellable, and associated with the owning client. Variable strings in JSON responses must be emitted through a JSON serializer to preserve escaping for SSIDs, filenames, device names and error text.
+
+Configuration reset and factory reset responses must report `applied:false` and `restart_required:true` after stopping active notes and manual tests; they must not claim the defaults are already active until reboot.

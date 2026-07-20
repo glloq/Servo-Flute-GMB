@@ -12,6 +12,14 @@
 #include "settings.h"
 #include "ConfigStorage.h"
 
+enum HardwareInitStatus {
+  HW_INIT_OK,
+  HW_PCA0_MISSING,
+  HW_PCA1_MISSING,
+  HW_I2C_ERROR,
+  HW_CONFIG_INVALID
+};
+
 struct ConfigApplyResult {
   bool applied;
   bool restartRequired;
@@ -59,12 +67,15 @@ public:
   AirflowController& getAirflowCtrl() { return _airflowCtrl; }
   PressureController& getPressureCtrl() { return _pressureCtrl; }
   FanController& getFanCtrl() { return _fanCtrl; }
+  HardwareInitStatus hardwareInitStatus() const { return _hardwareInitStatus; }
+  bool isSecondBoardEnabled() const { return _secondBoardEnabled; }
   ConfigApplyResult applyRuntimeConfig(const RuntimeConfig& oldConfig, const RuntimeConfig& newConfig);
 
 private:
   Adafruit_PWMServoDriver _pwm0;    // Carte 1 (0x40) — toujours active
   Adafruit_PWMServoDriver _pwm1;    // Carte 2 (0x41) — active si canaux >= 16
   bool _secondBoardEnabled;
+  HardwareInitStatus _hardwareInitStatus;
   EventQueue _eventQueue;
   FingerController _fingerCtrl;
   AirflowController _airflowCtrl;
@@ -91,6 +102,8 @@ private:
 
   void managePower();
   void powerOffServos();
+  bool detectPca(uint8_t address) const;
+  bool requiresSecondPca() const;
 
   // Fan idle: track sequencer state transitions
   NoteState _prevSequencerState;

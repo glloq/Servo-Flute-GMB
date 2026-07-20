@@ -1,5 +1,6 @@
 #include "Arduino.h"
 #include "Wire.h"
+#include "Adafruit_PWMServoDriver.h"
 #include <map>
 unsigned long __test_millis = 0;
 SerialClass Serial;
@@ -11,3 +12,9 @@ void digitalWrite(uint8_t pin,uint8_t value){ __digital_writes[pin]=value; }
 int digitalRead(uint8_t pin){ return __digital_reads[pin]; }
 void analogWrite(uint8_t pin,int value){ __analog_writes[pin]=value; }
 int analogRead(uint8_t pin){ return __analog_reads[pin]; }
+
+uint8_t WireClass::endTransmission(bool){ auto it=presentMap.find(_addr); return (it!=presentMap.end() && it->second) ? 0 : 4; }
+int WireClass::available(){ auto it=presentMap.find(_addr); return (it!=presentMap.end() && it->second) ? _requestCount : 0; }
+uint8_t WireClass::read(){ auto it=readMap.find(_addr); return it==readMap.end()?0:it->second; }
+int __pwm_write_count = 0;
+void Adafruit_PWMServoDriver::setPWM(uint8_t, uint16_t, uint16_t){ __pwm_write_count++; }

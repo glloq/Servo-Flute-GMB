@@ -18,6 +18,7 @@ SOURCES = [
     "Servo_flute_ESP32/AirflowController.cpp",
     "Servo_flute_ESP32/FanController.cpp",
     "Servo_flute_ESP32/NoteSequencer.cpp",
+    "Servo_flute_ESP32/InstrumentManager.cpp",
     "tests/cpp/test_behavior.cpp",
 ]
 

@@ -73,3 +73,9 @@ Software CI covers ESP32 firmware build, PlatformIO native behavior tests, pytes
 ### JSON escaping regression values
 
 Configuration and API tests include special strings: device name `Flute "A"`, Wi-Fi SSID `atelier\\wifi`, and MIDI filename `étude "test".mid`.
+
+## Post-audit safety notes
+
+Configuration changes are validated before application. Changes that alter GPIO assignments, PCA9685 channels, counts, air mode, reservoir sensor type, or serial MIDI RX require a restart and must be treated as pending for the next boot rather than as fully active hardware state. Legacy JSON keys are read for compatibility, but obsolete valve timing/direction fields must not be relied on for new configurations.
+
+GPIO validation must consider active actuators and sensors; microphone builds reserve the INMP441 pins documented by the firmware. Hardware tests are still required before declaring any new wiring safe.
