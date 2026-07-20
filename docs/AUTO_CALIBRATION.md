@@ -45,3 +45,7 @@ Software CI covers ESP32 firmware build, PlatformIO native behavior tests, pytes
 ### Scope by hardware
 
 Microphone auto-calibration is software-supported for airflow range finding and per-note airflow min/max. Other hardware calibration is guided and manual unless a future hardware test report proves the active sequence safe on real hardware.
+
+## Post-audit calibration timeout rule
+
+Calibration and hardware diagnostic moves are manual actuator tests. They must have a firmware-side timeout and must stop on panic, owner disconnect, reset or replacement by another manual test session. Browser-side timers are not sufficient as a safety mechanism.

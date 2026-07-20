@@ -46,6 +46,7 @@ AirflowController::AirflowController(PwmWriteFn writePwm)
     _baseAngleWithoutVibrato(cfg.servoAirflowOff), _vibratoActive(false),
     _currentMinAngle(cfg.servoAirflowMin), _currentMaxAngle(cfg.servoAirflowMax),
     _attackActive(false), _attackStartTime(0), _attackStartAngle(0), _attackTargetAngle(0),
+    _runtimeAttackMode(cfg.airAttackMode), _runtimeAttackOffset(cfg.airAttackOffset),
     _ccBrightness(cfg.ccBrightnessDefault), _currentAngleServo(cfg.servoAngleOff),
     _lastAngleNote(0) {
   for (uint8_t i = 0; i < CC2_SMOOTHING_BUFFER_SIZE; i++) {
@@ -202,10 +203,10 @@ void AirflowController::setAirflowForNote(byte midiNote, byte velocity) {
 
   // 6. Mode d'attaque (accent / crescendo)
   _attackActive = false;
-  if (cfg.airAttackMode != 0 && cfg.airAttackMs > 0 && cfg.airAttackOffset > 0) {
-    int16_t offsetDeg = (int16_t)((_attackTargetAngle - minAngle) * cfg.airAttackOffset / 100);
+  if (_runtimeAttackMode != 0 && cfg.airAttackMs > 0 && _runtimeAttackOffset > 0) {
+    int16_t offsetDeg = (int16_t)((_attackTargetAngle - minAngle) * _runtimeAttackOffset / 100);
     if (offsetDeg < 1) offsetDeg = 1;
-    if (cfg.airAttackMode == 1) {
+    if (_runtimeAttackMode == 1) {
       // Accent: demarre plus fort (au-dessus de la cible)
       _attackStartAngle = _attackTargetAngle + offsetDeg;
       if (_attackStartAngle > cfg.servoAirflowMax) _attackStartAngle = cfg.servoAirflowMax;
@@ -434,22 +435,22 @@ void AirflowController::setCC73Attack(byte ccValue) {
   // 0-42 = stable, 43-84 = accent, 85-127 = crescendo
   // La position dans chaque plage definit l'intensite (offset %)
   if (ccValue <= 42) {
-    cfg.airAttackMode = 0;  // Stable
-    cfg.airAttackOffset = 0;
+    _runtimeAttackMode = 0;  // Stable
+    _runtimeAttackOffset = 0;
   } else if (ccValue <= 84) {
-    cfg.airAttackMode = 1;  // Accent
-    cfg.airAttackOffset = 5 + (ccValue - 43) * 45 / 41;  // 5-50%
+    _runtimeAttackMode = 1;  // Accent
+    _runtimeAttackOffset = 5 + (ccValue - 43) * 45 / 41;  // 5-50%
   } else {
-    cfg.airAttackMode = 2;  // Crescendo
-    cfg.airAttackOffset = 5 + (ccValue - 85) * 45 / 42;  // 5-50%
+    _runtimeAttackMode = 2;  // Crescendo
+    _runtimeAttackOffset = 5 + (ccValue - 85) * 45 / 42;  // 5-50%
   }
 
   if (DEBUG) {
     const char* modes[] = {"Stable", "Accent", "Crescendo"};
     Serial.print("DEBUG: CC73 Attack -> ");
-    Serial.print(modes[cfg.airAttackMode]);
+    Serial.print(modes[_runtimeAttackMode]);
     Serial.print(" offset=");
-    Serial.print(cfg.airAttackOffset);
+    Serial.print(_runtimeAttackOffset);
     Serial.println("%");
   }
 }

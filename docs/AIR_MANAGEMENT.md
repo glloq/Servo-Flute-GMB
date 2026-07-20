@@ -44,3 +44,9 @@ Software CI covers ESP32 firmware build, PlatformIO native behavior tests, pytes
 ### Calibration assistants by hardware type
 
 The web UI must expose only steps applicable to the selected air mode: microphone auto-calibration remains limited to airflow servo range and per-note min/max breath; guided manual assistants cover angle servo rest/min/max/per-note/CC74, servo valve closed/open/cycle/return-closed, solenoid polarity/PWM activation/PWM hold/activation time/auto-close, fan start threshold/min/max/idle/timeout/velocity tracking, direct pumps min/max/order/cascade/stagger/safety stop, and reservoir Hall/ToF/endstop/PID/hysteresis/sensor-absent checks.
+
+## Post-audit autonomous air safety
+
+Reservoir mode can autostart from the persisted `reservoirTargetPercent` only when `reservoirAutoStart=true` and the configured reservoir sensor is detected. If the sensor is absent, the firmware keeps pumps stopped and does not fall back to direct-pump behavior. `pump_stop`, panic, reset and factory-reset paths must stop pumps.
+
+Fan and direct-pump demands are intended to follow the effective acoustic note state, including monophonic replacement and minimum note duration. Hardware validation remains required for fan, pump and valve timing.

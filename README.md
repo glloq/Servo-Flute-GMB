@@ -124,3 +124,7 @@ See `Servo_flute_ESP32/docs/AUDIT_CODE.md` and `Servo_flute_ESP32/docs/HARDWARE_
 ## Finalization validation status
 
 Software CI covers ESP32 firmware build, PlatformIO native behavior tests, pytest audits, JSON escaping regressions, MIDI 7-bit WebSocket bounds, request-size limits, diagnostics vocabulary, and supported air-management modes. Physical validation remains explicitly marked **NOT TESTED — requires hardware** until executed on the corresponding PCA9685, microphone, ToF, Hall, endstop, pump, fan, solenoid, and servo hardware.
+
+## Post-audit safety status
+
+This branch adds software regressions for PCA detection before OE enable, reservoir autostart with sensor guard, and CC73 runtime-only attack state. Hardware validation is still required before merge for PCA/OE, solenoid, fan, pumps and sensors; no hardware PASS is claimed without physical tests.

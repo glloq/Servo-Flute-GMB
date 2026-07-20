@@ -32,4 +32,12 @@ Status convention: `NOT TESTED — requires hardware` means the procedure is def
 
 ## Finalization validation status
 
-Software CI covers ESP32 firmware build, PlatformIO native behavior tests, pytest audits, JSON escaping regressions, MIDI 7-bit WebSocket bounds, request-size limits, diagnostics vocabulary, and supported air-management modes. Physical validation remains explicitly marked **NOT TESTED — requires hardware** until executed on the corresponding PCA9685, microphone, ToF, Hall, endstop, pump, fan, solenoid, and servo hardware.
+Software CI covers ESP32 firmware build, PlatformIO native behavior tests, pytest audits, JSON escaping regressions, MIDI 7-bit WebSocket bounds, request-size limits, diagnostics vocabulary, and supported air-management modes. Physical validation remains explicitly marked **NOT TESTED — requires hardware** until executed; current post-audit software changes do not claim hardware PASS on the corresponding PCA9685, microphone, ToF, Hall, endstop, pump, fan, solenoid, and servo hardware.
+
+| POST-PCA0-MISSING | Boot with PCA0 absent | Disconnect PCA0 | Boot firmware | OE remains disabled, diagnostics report PCA0 missing | Not executed | NOT TESTED — requires hardware | Software stub regression added. |
+| POST-PCA1-MISSING | Boot with PCA1 required absent | Configure channel >=16, disconnect PCA1 | Boot firmware | OE remains disabled, diagnostics report PCA1 missing | Not executed | NOT TESTED — requires hardware | Software stub regression added. |
+| POST-RES-AUTOSTART | Reservoir autostart without browser | Reservoir mode + autostart | Boot without web client | Regulation starts only with sensor present | Not executed | NOT TESTED — requires hardware | Software stub regression added. |
+| POST-MANUAL-TIMEOUT | Solenoid/pump/fan timeout | Start manual test | Wait beyond firmware timeout | Actuator stops | Not executed | NOT TESTED — requires hardware | Required before merge. |
+| POST-TOF-BLOCKED | ToF absent/blocked | Disconnect or hold ToF bus | Run firmware | Loop remains responsive | Not executed | NOT TESTED — requires hardware | Required before merge. |
+| POST-DIAG-CANCEL | Active diagnostic cancelled | Start selected diagnostic | Cancel/disconnect | Hardware stops | Not executed | NOT TESTED — requires hardware | Required before merge. |
+| POST-WS-2CLIENTS | Two WebSocket clients | Connect two browsers | Disconnect non-owner then owner | Only owner disconnect stops manual test | Not executed | NOT TESTED — requires hardware | Required before merge. |

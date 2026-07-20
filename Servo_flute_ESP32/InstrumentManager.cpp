@@ -1,10 +1,12 @@
 #include "InstrumentManager.h"
 #include "ConfigStorage.h"
+#include <Wire.h>
 
 InstrumentManager::InstrumentManager()
   : _pwm0(PCA_ADDR_BOARD0),
     _pwm1(PCA_ADDR_BOARD1),
     _secondBoardEnabled(false),
+    _hardwareInitStatus(HW_CONFIG_INVALID),
     _eventQueue(EVENT_QUEUE_SIZE),
     _fingerCtrl([this](uint8_t ch, uint16_t on, uint16_t off) { setPWM(ch, on, off); }),
     _airflowCtrl([this](uint8_t ch, uint16_t on, uint16_t off) { setPWM(ch, on, off); }),
@@ -28,32 +30,41 @@ void InstrumentManager::begin() {
   beginSafe();
 }
 
-bool InstrumentManager::beginSafe() {
-  if (DEBUG) {
-    Serial.println("DEBUG: InstrumentManager - Initialisation sure");
+bool InstrumentManager::detectPca(uint8_t address) const {
+  Wire.beginTransmission(address);
+  return Wire.endTransmission() == 0;
+}
+
+bool InstrumentManager::requiresSecondPca() const {
+  for (int i = 0; i < cfg.numFingers; i++) {
+    if (cfg.fingers[i].pcaChannel >= 16) return true;
   }
+  return cfg.airflowPcaChannel >= 16 ||
+         (modeUsesPhysicalValve(cfg.airMode) && cfg.valveType == 1 && cfg.valveServoPcaChannel >= 16) ||
+         (cfg.angleServoEnabled && cfg.angleServoPcaChannel >= 16);
+}
+
+bool InstrumentManager::beginSafe() {
+  if (DEBUG) Serial.println("DEBUG: InstrumentManager - Initialisation sure");
 
   pinMode(PIN_SERVOS_OFF, OUTPUT);
   digitalWrite(PIN_SERVOS_OFF, HIGH);
   _servosPowered = false;
+  _secondBoardEnabled = requiresSecondPca();
+  _hardwareInitStatus = HW_CONFIG_INVALID;
+
+  if (!detectPca(PCA_ADDR_BOARD0)) {
+    _hardwareInitStatus = HW_PCA0_MISSING;
+    return false;
+  }
+  if (_secondBoardEnabled && !detectPca(PCA_ADDR_BOARD1)) {
+    _hardwareInitStatus = HW_PCA1_MISSING;
+    return false;
+  }
 
   _pwm0.begin();
   _pwm0.setPWMFreq(SERVO_FREQUENCY);
   delay(PWM_INIT_DELAY_MS);
-
-  _secondBoardEnabled = false;
-  for (int i = 0; i < cfg.numFingers; i++) {
-    if (cfg.fingers[i].pcaChannel >= 16) {
-      _secondBoardEnabled = true;
-      break;
-    }
-  }
-  if (cfg.airflowPcaChannel >= 16 ||
-      (modeUsesPhysicalValve(cfg.airMode) && cfg.valveType == 1 && cfg.valveServoPcaChannel >= 16) ||
-      (cfg.angleServoEnabled && cfg.angleServoPcaChannel >= 16)) {
-    _secondBoardEnabled = true;
-  }
-
   if (_secondBoardEnabled) {
     _pwm1.begin();
     _pwm1.setPWMFreq(SERVO_FREQUENCY);
@@ -67,12 +78,11 @@ bool InstrumentManager::beginSafe() {
   if (cfg.airMode >= AIR_MODE_PUMP_VALVE) {
     bool sensorOk = _pressureCtrl.begin();
     _pressureCtrl.stop();
-    if (DEBUG) {
-      Serial.print("DEBUG: InstrumentManager - PressureController: ");
-      Serial.println(sensorOk ? "capteur OK" : "sans capteur");
+    if (cfg.airMode == AIR_MODE_PUMP_RESERVOIR && cfg.reservoirAutoStart) {
+      if (sensorOk) _pressureCtrl.setTargetPercent(cfg.reservoirTargetPercent);
+      else _pressureCtrl.stop();
     }
   }
-
   if (cfg.airMode == AIR_MODE_FAN_SERVO) {
     _fanCtrl.begin();
     _fanCtrl.stop();
@@ -81,9 +91,8 @@ bool InstrumentManager::beginSafe() {
   _airflowCtrl.setCCValues(_ccVolume, _ccExpression, _ccModulation);
   _sequencer.begin();
   _lastActivityTime = millis();
-
+  _hardwareInitStatus = HW_INIT_OK;
   powerOnServos();
-  if (DEBUG) Serial.println("DEBUG: InstrumentManager - Pret (OE active apres sorties sures)");
   return true;
 }
 
