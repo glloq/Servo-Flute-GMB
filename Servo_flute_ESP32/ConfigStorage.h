@@ -191,6 +191,13 @@ struct ConfigValidationResult {
   String warnings;
 };
 
+enum ConfigLoadStatus {
+  CONFIG_DEFAULTS,
+  CONFIG_LOADED,
+  CONFIG_INVALID_FALLBACK,
+  CONFIG_STORAGE_ERROR
+};
+
 #define CONFIG_MAX_POST_BYTES 32768
 #define CONFIG_MIN_NOTE_DURATION_LIMIT_MS 0
 #define CONFIG_MAX_NOTE_DURATION_LIMIT_MS 5000
@@ -198,6 +205,11 @@ struct ConfigValidationResult {
 #define CONFIG_MAX_GPIO 39
 #define CONFIG_MAX_PWM 255
 
+bool modeUsesPhysicalValve(uint8_t airMode);
+bool configurationUsesSolenoidValve(const RuntimeConfig& config);
+bool configurationUsesFan(const RuntimeConfig& config);
+bool configurationUsesPumps(const RuntimeConfig& config);
+bool configurationUsesReservoirSensor(const RuntimeConfig& config);
 ConfigValidationResult validateAndNormalizeConfig(RuntimeConfig& config, const RuntimeConfig* previousConfig = nullptr);
 
 // Config globale accessible depuis tout le projet
@@ -238,6 +250,9 @@ public:
 
   // Charge la config depuis LittleFS (surcharge les defauts)
   static bool load();
+  static ConfigLoadStatus loadWithStatus();
+  static ConfigLoadStatus lastLoadStatus();
+  static const String& lastLoadError();
 
   // Sauvegarde la config actuelle sur LittleFS
   static bool save();

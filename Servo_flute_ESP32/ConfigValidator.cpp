@@ -21,6 +21,30 @@ static bool normalizeRangeU8(uint8_t& v, uint8_t lo, uint8_t hi) {
   return v != old;
 }
 
+
+bool modeUsesPhysicalValve(uint8_t airMode) {
+  return airMode == AIR_MODE_SOLENOID_SERVO ||
+         airMode == AIR_MODE_SERVO_VALVE ||
+         airMode == AIR_MODE_PUMP_VALVE ||
+         airMode == AIR_MODE_PUMP_RESERVOIR;
+}
+
+bool configurationUsesSolenoidValve(const RuntimeConfig& config) {
+  return modeUsesPhysicalValve(config.airMode) && config.valveType == 0;
+}
+
+bool configurationUsesFan(const RuntimeConfig& config) {
+  return config.airMode == AIR_MODE_FAN_SERVO;
+}
+
+bool configurationUsesPumps(const RuntimeConfig& config) {
+  return config.airMode == AIR_MODE_PUMP_VALVE || config.airMode == AIR_MODE_PUMP_RESERVOIR;
+}
+
+bool configurationUsesReservoirSensor(const RuntimeConfig& config) {
+  return config.airMode == AIR_MODE_PUMP_RESERVOIR;
+}
+
 static bool normalizeRangeU16(uint16_t& v, uint16_t lo, uint16_t hi) {
   uint16_t old = v;
   if (v < lo) v = lo;
@@ -73,8 +97,16 @@ ConfigValidationResult validateAndNormalizeConfig(RuntimeConfig& config, const R
   if (config.servoAirflowMin >= config.servoAirflowMax) appendIssue(r.error, "servoAirflowMin must be < servoAirflowMax");
   if (config.servoAngleMin >= config.servoAngleMax) appendIssue(r.error, "servoAngleMin must be < servoAngleMax");
   if (config.fanMinPwm > config.fanMaxPwm) appendIssue(r.error, "fanMinPwm must be <= fanMaxPwm");
-  if (config.hallThresholdLow >= config.hallThresholdHigh) appendIssue(r.error, "hallThresholdLow must be < hallThresholdHigh");
-  if (!(config.sensorMinMm < config.sensorTargetMm && config.sensorTargetMm < config.sensorMaxMm)) appendIssue(r.error, "sensorMinMm < sensorTargetMm < sensorMaxMm required");
+  if (configurationUsesReservoirSensor(config) && config.sensorType == SENSOR_TYPE_HALL_KY024 &&
+      config.hallThresholdLow >= config.hallThresholdHigh) appendIssue(r.error, "hallThresholdLow must be < hallThresholdHigh");
+  if (configurationUsesReservoirSensor(config) &&
+      (config.sensorType == SENSOR_TYPE_TOF_VL53L0X || config.sensorType == SENSOR_TYPE_TOF_VL6180X) &&
+      !(config.sensorMinMm < config.sensorTargetMm && config.sensorTargetMm < config.sensorMaxMm)) appendIssue(r.error, "sensorMinMm < sensorTargetMm < sensorMaxMm required");
+
+  if (!modeUsesPhysicalValve(config.airMode) && config.valveType == 1) appendIssue(r.warnings, "valveType ignored by selected airMode");
+  if (config.airMode == AIR_MODE_SERVO_VALVE && config.valveType != 1) appendIssue(r.error, "airMode servo-valve requires valveType=servo");
+  if (configurationUsesPumps(config) && config.numPumps < 1) appendIssue(r.error, "pump mode requires at least one pump");
+  if (!configurationUsesReservoirSensor(config) && config.sensorType != DEFAULT_SENSOR_TYPE) appendIssue(r.warnings, "reservoir sensor ignored by selected airMode");
 
   bool pcaUsed[32] = {false};
   for (uint8_t i = 0; i < config.numFingers; i++) {
@@ -87,7 +119,7 @@ ConfigValidationResult validateAndNormalizeConfig(RuntimeConfig& config, const R
   }
   if (pcaUsed[config.airflowPcaChannel]) appendIssue(r.error, "airflow servo PCA channel conflicts with finger");
   pcaUsed[config.airflowPcaChannel] = true;
-  if (config.valveType == 1) {
+  if (modeUsesPhysicalValve(config.airMode) && config.valveType == 1) {
     if (pcaUsed[config.valveServoPcaChannel]) appendIssue(r.error, "valve servo PCA channel conflicts with another servo");
     pcaUsed[config.valveServoPcaChannel] = true;
   }
@@ -98,8 +130,13 @@ ConfigValidationResult validateAndNormalizeConfig(RuntimeConfig& config, const R
 
   bool midiSeen[128] = {false};
   for (uint8_t i = 0; i < config.numNotes; i++) {
-    if (midiSeen[config.notes[i].midiNote]) appendIssue(r.error, "duplicate MIDI note " + String(config.notes[i].midiNote));
-    midiSeen[config.notes[i].midiNote] = true;
+    uint16_t midiNote = config.notes[i].midiNote;
+    if (midiNote > 127) {
+      appendIssue(r.error, "MIDI note out of range at index " + String(i) + ": " + String(midiNote));
+    } else {
+      if (midiSeen[midiNote]) appendIssue(r.error, "duplicate MIDI note " + String(midiNote));
+      midiSeen[midiNote] = true;
+    }
     r.corrected |= normalizeRangeU8(config.notes[i].airflowMinPercent, 0, 100);
     r.corrected |= normalizeRangeU8(config.notes[i].airflowMaxPercent, 0, 100);
     r.corrected |= normalizeRangeU8(config.notes[i].anglePercent, 0, 100);
@@ -113,15 +150,15 @@ ConfigValidationResult validateAndNormalizeConfig(RuntimeConfig& config, const R
   }
 
   uint8_t gpios[8]; uint8_t gcount = 0;
-  gpios[gcount++] = config.solenoidPin;
-  if (config.airMode == AIR_MODE_FAN_SERVO) gpios[gcount++] = config.fanPin;
-  for (uint8_t i = 0; i < config.numPumps && i < MAX_PUMPS; i++) gpios[gcount++] = config.pumpPins[i];
-  if (config.sensorType == SENSOR_TYPE_HALL_KY024) gpios[gcount++] = config.hallPin;
-  if (config.sensorType == SENSOR_TYPE_ENDSTOP_MECH || config.sensorType == SENSOR_TYPE_ENDSTOP_OPT) gpios[gcount++] = config.endstopPin;
+  if (configurationUsesSolenoidValve(config)) gpios[gcount++] = config.solenoidPin;
+  if (configurationUsesFan(config)) gpios[gcount++] = config.fanPin;
+  if (configurationUsesPumps(config)) for (uint8_t i = 0; i < config.numPumps && i < MAX_PUMPS; i++) gpios[gcount++] = config.pumpPins[i];
+  if (configurationUsesReservoirSensor(config) && config.sensorType == SENSOR_TYPE_HALL_KY024) gpios[gcount++] = config.hallPin;
+  if (configurationUsesReservoirSensor(config) && (config.sensorType == SENSOR_TYPE_ENDSTOP_MECH || config.sensorType == SENSOR_TYPE_ENDSTOP_OPT)) gpios[gcount++] = config.endstopPin;
   for (uint8_t i = 0; i < gcount; i++) {
     if (gpios[i] > CONFIG_MAX_GPIO) appendIssue(r.error, "GPIO out of range: " + String(gpios[i]));
     if (isReservedGpio(gpios[i])) appendIssue(r.error, "GPIO reserved by board function: " + String(gpios[i]));
-    bool outputUse = gpios[i] == config.solenoidPin || gpios[i] == config.fanPin;
+    bool outputUse = (configurationUsesSolenoidValve(config) && gpios[i] == config.solenoidPin) || (configurationUsesFan(config) && gpios[i] == config.fanPin);
     for (uint8_t p = 0; p < config.numPumps && p < MAX_PUMPS; p++) if (gpios[i] == config.pumpPins[p]) outputUse = true;
     if (outputUse && isInputOnlyGpio(gpios[i])) appendIssue(r.error, "input-only GPIO used as output: " + String(gpios[i]));
     for (uint8_t j = i + 1; j < gcount; j++) if (gpios[i] == gpios[j]) appendIssue(r.error, "duplicate incompatible GPIO: " + String(gpios[i]));

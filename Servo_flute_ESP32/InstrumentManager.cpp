@@ -25,20 +25,22 @@ InstrumentManager::InstrumentManager()
 }
 
 void InstrumentManager::begin() {
+  beginSafe();
+}
+
+bool InstrumentManager::beginSafe() {
   if (DEBUG) {
-    Serial.println("DEBUG: InstrumentManager - Initialisation");
+    Serial.println("DEBUG: InstrumentManager - Initialisation sure");
   }
 
-  // Configurer le pin de controle d'alimentation des servos
   pinMode(PIN_SERVOS_OFF, OUTPUT);
-  powerOnServos();
+  digitalWrite(PIN_SERVOS_OFF, HIGH);
+  _servosPowered = false;
 
-  // Initialiser le PCA9685 carte 1 (toujours active)
   _pwm0.begin();
   _pwm0.setPWMFreq(SERVO_FREQUENCY);
   delay(PWM_INIT_DELAY_MS);
 
-  // Detection automatique : carte 2 necessaire si un canal >= 16
   _secondBoardEnabled = false;
   for (int i = 0; i < cfg.numFingers; i++) {
     if (cfg.fingers[i].pcaChannel >= 16) {
@@ -46,8 +48,9 @@ void InstrumentManager::begin() {
       break;
     }
   }
-  if (cfg.airflowPcaChannel >= 16 || cfg.valveServoPcaChannel >= 16 ||
-      cfg.angleServoPcaChannel >= 16) {
+  if (cfg.airflowPcaChannel >= 16 ||
+      (modeUsesPhysicalValve(cfg.airMode) && cfg.valveType == 1 && cfg.valveServoPcaChannel >= 16) ||
+      (cfg.angleServoEnabled && cfg.angleServoPcaChannel >= 16)) {
     _secondBoardEnabled = true;
   }
 
@@ -55,49 +58,40 @@ void InstrumentManager::begin() {
     _pwm1.begin();
     _pwm1.setPWMFreq(SERVO_FREQUENCY);
     delay(PWM_INIT_DELAY_MS);
-    if (DEBUG) {
-      Serial.println("DEBUG: InstrumentManager - PCA9685 #2 (0x41) initialisee");
-    }
   }
 
-  // Initialiser les controleurs
   _fingerCtrl.begin();
   _airflowCtrl.begin();
+  initializeSafeOutputs();
 
-  // Initialiser le controleur de pression (pompe/reservoir) si active
   if (cfg.airMode >= AIR_MODE_PUMP_VALVE) {
     bool sensorOk = _pressureCtrl.begin();
-    if (cfg.airMode == AIR_MODE_PUMP_RESERVOIR && cfg.reservoirAutoStart) {
-      _pressureCtrl.setTargetPercent(cfg.reservoirTargetPercent);
-    } else if (cfg.airMode == AIR_MODE_PUMP_VALVE && cfg.pumpDirectIdlePercent > 0) {
-      _pressureCtrl.setTargetPercent(cfg.pumpDirectIdlePercent);
-    }
+    _pressureCtrl.stop();
     if (DEBUG) {
       Serial.print("DEBUG: InstrumentManager - PressureController: ");
       Serial.println(sensorOk ? "capteur OK" : "sans capteur");
     }
   }
 
-  // Initialiser le ventilateur si mode 3
   if (cfg.airMode == AIR_MODE_FAN_SERVO) {
     _fanCtrl.begin();
-    if (cfg.fanDefaultPercent > 0) { _fanCtrl.setSpeed(cfg.fanDefaultPercent); }
-    if (DEBUG) {
-      Serial.println("DEBUG: InstrumentManager - FanController initialise");
-    }
+    _fanCtrl.stop();
   }
 
-  // Initialiser les valeurs CC dans AirflowController
   _airflowCtrl.setCCValues(_ccVolume, _ccExpression, _ccModulation);
-
-  // Initialiser le sequenceur
   _sequencer.begin();
-
   _lastActivityTime = millis();
 
-  if (DEBUG) {
-    Serial.println("DEBUG: InstrumentManager - Pret");
-  }
+  powerOnServos();
+  if (DEBUG) Serial.println("DEBUG: InstrumentManager - Pret (OE active apres sorties sures)");
+  return true;
+}
+
+void InstrumentManager::initializeSafeOutputs() {
+  _fingerCtrl.closeAllFingers();
+  _airflowCtrl.closeValve();
+  _airflowCtrl.setAirflowToRest();
+  if (cfg.angleServoEnabled) _airflowCtrl.setAngleToRest();
 }
 
 void InstrumentManager::update() {

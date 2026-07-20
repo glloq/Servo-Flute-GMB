@@ -49,3 +49,54 @@ def test_pressure_pid_outputs_logical_pwm_not_physical_pwm():
     assert 'constrain(output * 2.55f, cfg.pumpMinPwm[0], cfg.pumpMaxPwm[0])' not in src
     assert src.count('constrain(output * 2.55f, 0, 255)') == 2
     assert 'pumpVal = cfg.pumpMinPwm[index] + (uint16_t)(cfg.pumpMaxPwm[index] - cfg.pumpMinPwm[index]) * pwm / 255' in src
+
+def test_autocalibrator_range_find_is_canonical():
+    files = ['Servo_flute_ESP32/AutoCalibrator.h','Servo_flute_ESP32/AutoCalibrator.cpp','Servo_flute_ESP32/WebConfigurator.cpp']
+    joined = '\n'.join(read(f) for f in files)
+    assert 'ACAL_MODE_RANGE_FIND' in joined
+    assert 'ACAL_MODE_RANGE_FINDER' not in joined
+
+
+def test_watchdog_has_idf_compatibility_layer():
+    ino = read('Servo_flute_ESP32/Servo_flute_ESP32.ino')
+    assert '#include <esp_idf_version.h>' in ino
+    assert 'bool initializeWatchdog()' in ino
+    assert 'ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)' in ino
+    assert 'esp_task_wdt_init(&wdt_config)' in ino
+    assert 'esp_task_wdt_init(WATCHDOG_TIMEOUT_MS / 1000, true)' in ino
+
+
+def test_boot_oe_stays_disabled_until_safe_outputs():
+    src = read('Servo_flute_ESP32/InstrumentManager.cpp')
+    fn = src.split('bool InstrumentManager::beginSafe()', 1)[1].split('void InstrumentManager::initializeSafeOutputs()', 1)[0]
+    assert 'digitalWrite(PIN_SERVOS_OFF, HIGH)' in fn
+    assert fn.index('_pwm0.begin()') < fn.index('initializeSafeOutputs()') < fn.index('powerOnServos()')
+    assert 'powerOnServos();' not in src.split('bool InstrumentManager::beginSafe()', 1)[0]
+
+
+def test_invalid_boot_config_prevents_actuators_and_reports_diagnostics():
+    ino = read('Servo_flute_ESP32/Servo_flute_ESP32.ino')
+    web = read('Servo_flute_ESP32/WebConfigurator.cpp')
+    assert 'ConfigStorage::loadWithStatus()' in ino
+    assert 'CONFIG_INVALID_FALLBACK' in ino
+    assert 'instrument = nullptr' in ino
+    assert 'config_load_status' in web and 'boot_config' in web
+
+
+def test_midi_bounds_checked_before_seen_index():
+    src = read('Servo_flute_ESP32/ConfigValidator.cpp')
+    midi = src.split('bool midiSeen[128]', 1)[1].split('for (uint8_t i = 0; i < MAX_PUMPS', 1)[0]
+    assert 'if (midiNote > 127)' in midi
+    assert midi.index('if (midiNote > 127)') < midi.index('midiSeen[midiNote]')
+
+
+def test_solenoid_modes_and_gpio_filter_helpers():
+    src = read('Servo_flute_ESP32/ConfigValidator.cpp')
+    air = read('Servo_flute_ESP32/AirflowController.cpp')
+    assert 'bool modeUsesPhysicalValve(uint8_t airMode)' in src
+    for mode in ['AIR_MODE_SOLENOID_SERVO', 'AIR_MODE_PUMP_VALVE', 'AIR_MODE_PUMP_RESERVOIR']:
+        assert mode in src
+    assert 'configurationUsesSolenoidValve(cfg)' in air
+    assert 'pinMode(cfg.solenoidPin, OUTPUT)' in air
+    assert 'closeSolenoid();  // apply closed level immediately' in air
+    assert 'if (configurationUsesSolenoidValve(config)) gpios[gcount++] = config.solenoidPin;' in src

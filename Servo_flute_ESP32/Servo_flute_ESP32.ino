@@ -38,6 +38,7 @@
 #include <Wire.h>
 #include <Adafruit_PWMServoDriver.h>
 #include <esp_task_wdt.h>
+#include <esp_idf_version.h>
 #include <LittleFS.h>
 
 #include "settings.h"
@@ -56,6 +57,25 @@ InstrumentManager* instrument = nullptr;
 StatusLed statusLed(STATUS_LED_PIN);
 HardwareInputs inputs(PAIRING_BUTTON_PIN, MODE_SWITCH_PIN);
 WirelessManager* wireless = nullptr;
+bool g_actuatorsEnabled = false;
+
+bool initializeWatchdog() {
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
+  esp_task_wdt_config_t wdt_config = {
+    .timeout_ms = WATCHDOG_TIMEOUT_MS,
+    .idle_core_mask = 0,
+    .trigger_panic = true
+  };
+  esp_task_wdt_deinit();
+  esp_err_t initErr = esp_task_wdt_init(&wdt_config);
+#else
+  esp_task_wdt_deinit();
+  esp_err_t initErr = esp_task_wdt_init(WATCHDOG_TIMEOUT_MS / 1000, true);
+#endif
+  if (initErr != ESP_OK && initErr != ESP_ERR_INVALID_STATE) return false;
+  esp_err_t addErr = esp_task_wdt_add(NULL);
+  return addErr == ESP_OK || addErr == ESP_ERR_INVALID_STATE;
+}
 
 /**
  * Etat sur en cas de crash/redemarrage
@@ -105,10 +125,15 @@ void setup() {
   }
 
   // Charger et valider la configuration depuis LittleFS avant tout mouvement servo.
-  ConfigStorage::load();
+  ConfigLoadStatus configStatus = ConfigStorage::loadWithStatus();
   ConfigValidationResult bootValidation = validateAndNormalizeConfig(cfg);
-  if (!bootValidation.valid) {
-    if (DEBUG) { Serial.print("ERREUR: configuration invalide au boot: "); Serial.println(bootValidation.error); }
+  bool bootConfigSafe = configStatus != CONFIG_INVALID_FALLBACK && configStatus != CONFIG_STORAGE_ERROR && bootValidation.valid &&
+                        (configStatus == CONFIG_DEFAULTS || configStatus == CONFIG_LOADED);
+  if (!bootConfigSafe) {
+    if (DEBUG) {
+      Serial.print("ERREUR: configuration invalide au boot: ");
+      Serial.println(ConfigStorage::lastLoadError().length() ? ConfigStorage::lastLoadError() : bootValidation.error);
+    }
     digitalWrite(PIN_SERVOS_OFF, HIGH);
   }
 
@@ -126,9 +151,14 @@ void setup() {
   statusLed.begin();
   statusLed.setPattern(LED_BLINK_FAST);  // Demarrage en cours
 
-  // Creer l'instrument manager
-  instrument = new InstrumentManager();
-  instrument->begin();
+  // Creer l'instrument manager seulement si la configuration valide permet une initialisation sure.
+  if (bootConfigSafe) {
+    instrument = new InstrumentManager();
+    g_actuatorsEnabled = instrument->beginSafe();
+  } else {
+    instrument = nullptr;
+    g_actuatorsEnabled = false;
+  }
 
   // Creer et initialiser le wireless manager
   // (inclut BLE/WiFi + serveur web + lecteur MIDI selon le mode)
@@ -164,18 +194,9 @@ void setup() {
     Serial.println();
   }
 
-  // Configurer le watchdog ESP32 (Task WDT)
-  esp_task_wdt_config_t wdt_config = {
-    .timeout_ms = WATCHDOG_TIMEOUT_MS,
-    .idle_core_mask = 0,       // Ne pas surveiller les taches idle
-    .trigger_panic = true      // Redemarrage si timeout
-  };
-  esp_task_wdt_deinit();               // Reinitialiser si deja configure
-  esp_task_wdt_init(&wdt_config);
-  esp_task_wdt_add(NULL);              // Inscrire la tache courante (loopTask)
-
+  bool watchdogOk = initializeWatchdog();
   if (DEBUG) {
-    Serial.println("DEBUG: Watchdog ESP32 active");
+    Serial.println(watchdogOk ? "DEBUG: Watchdog ESP32 active" : "ERREUR: Watchdog ESP32 non initialise");
   }
 }
 
@@ -187,10 +208,10 @@ void loop() {
   inputs.update();
 
   // Mettre a jour le wireless (BLE/WiFi MIDI + web server + lecteur MIDI)
-  wireless->update();
+  if (wireless) wireless->update();
 
   // Mettre a jour l'instrument (state machine + power management)
-  instrument->update();
+  if (instrument) instrument->update();
 
   // Mettre a jour la LED d'etat
   statusLed.update();

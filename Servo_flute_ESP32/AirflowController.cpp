@@ -54,13 +54,13 @@ AirflowController::AirflowController(PwmWriteFn writePwm)
 }
 
 void AirflowController::begin() {
-  // Configurer GPIO solenoide si mode classique (mode 0)
-  if (cfg.airMode == AIR_MODE_SOLENOID_SERVO) {
+  if (configurationUsesSolenoidValve(cfg)) {
     pinMode(cfg.solenoidPin, OUTPUT);
+    closeSolenoid();  // apply closed level immediately; no opening pulse during boot
   }
 
   // Modes sans valve physique: toujours "ouvert"
-  if (cfg.airMode == AIR_MODE_SERVO_ONLY || cfg.airMode == AIR_MODE_FAN_SERVO) {
+  if (!modeUsesPhysicalValve(cfg.airMode)) {
     _solenoidOpen = true;
   } else {
     closeSolenoid();
@@ -75,7 +75,7 @@ void AirflowController::begin() {
     Serial.print("DEBUG: AirflowController - Mode: ");
     Serial.println(cfg.airMode < 6 ? modeNames[cfg.airMode] : "?");
     #if SOLENOID_USE_PWM
-    if (cfg.airMode == AIR_MODE_SOLENOID_SERVO) {
+    if (configurationUsesSolenoidValve(cfg)) {
       Serial.println("DEBUG: AirflowController - Mode PWM solenoide active");
       Serial.print("DEBUG:   - PWM activation: ");
       Serial.println(cfg.solenoidPwmActivation);
@@ -253,7 +253,7 @@ void AirflowController::setAirflowForNote(byte midiNote, byte velocity) {
 
 void AirflowController::openValve() {
   // Modes sans valve physique: servo-only (2) et ventilateur (3)
-  if (cfg.airMode == AIR_MODE_SERVO_ONLY || cfg.airMode == AIR_MODE_FAN_SERVO) {
+  if (!modeUsesPhysicalValve(cfg.airMode)) {
     _solenoidOpen = true;
     return;
   }
@@ -286,7 +286,7 @@ void AirflowController::openValve() {
 
 void AirflowController::closeValve() {
   // Modes sans valve physique: servo-only (2) et ventilateur (3)
-  if (cfg.airMode == AIR_MODE_SERVO_ONLY || cfg.airMode == AIR_MODE_FAN_SERVO) {
+  if (!modeUsesPhysicalValve(cfg.airMode)) {
     _solenoidOpen = false;
     return;
   }
