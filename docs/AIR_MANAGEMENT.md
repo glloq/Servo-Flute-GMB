@@ -36,3 +36,11 @@ Configuration is validated by the firmware, not only by HTML controls. PCA chann
 Parameters that change `pinMode()`, I2C/PCA routing, controller `begin()` behavior, sensor setup, or serial MIDI setup require a restart. Dynamic musical values such as CC defaults, note airflow/angle percentages, fingering patterns, and temporary fan/pump test targets can be applied without hardware reinitialization.
 
 Manual hardware tests must always be time-limited and followed by a safe state. In software-only validation, hardware procedures are documented but marked `NOT TESTED — requires hardware` in `Servo_flute_ESP32/docs/HARDWARE_TEST_MATRIX.md`.
+
+## Finalization validation status
+
+Software CI covers ESP32 firmware build, PlatformIO native behavior tests, pytest audits, JSON escaping regressions, MIDI 7-bit WebSocket bounds, request-size limits, diagnostics vocabulary, and supported air-management modes. Physical validation remains explicitly marked **NOT TESTED — requires hardware** until executed on the corresponding PCA9685, microphone, ToF, Hall, endstop, pump, fan, solenoid, and servo hardware.
+
+### Calibration assistants by hardware type
+
+The web UI must expose only steps applicable to the selected air mode: microphone auto-calibration remains limited to airflow servo range and per-note min/max breath; guided manual assistants cover angle servo rest/min/max/per-note/CC74, servo valve closed/open/cycle/return-closed, solenoid polarity/PWM activation/PWM hold/activation time/auto-close, fan start threshold/min/max/idle/timeout/velocity tracking, direct pumps min/max/order/cascade/stagger/safety stop, and reservoir Hall/ToF/endstop/PID/hysteresis/sensor-absent checks.

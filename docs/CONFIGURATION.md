@@ -65,3 +65,11 @@ The sequencer is intentionally monophonic. Due events are drained from the head 
 On replacement, the current valve/airflow is transitioned through the same inter-note policy as a normal stop. If the next note is within `valve_interval`, the valve may stay open while the new fingering is positioned; otherwise the valve is closed and airflow returns to rest before the new note starts.
 
 `valve_interval` is the canonical inter-note setting. Legacy JSON using `sol_inter` is migrated on load/API update, but saves and REST responses expose only `valve_interval`.
+
+## Finalization validation status
+
+Software CI covers ESP32 firmware build, PlatformIO native behavior tests, pytest audits, JSON escaping regressions, MIDI 7-bit WebSocket bounds, request-size limits, diagnostics vocabulary, and supported air-management modes. Physical validation remains explicitly marked **NOT TESTED — requires hardware** until executed on the corresponding PCA9685, microphone, ToF, Hall, endstop, pump, fan, solenoid, and servo hardware.
+
+### JSON escaping regression values
+
+Configuration and API tests include special strings: device name `Flute "A"`, Wi-Fi SSID `atelier\\wifi`, and MIDI filename `étude "test".mid`.

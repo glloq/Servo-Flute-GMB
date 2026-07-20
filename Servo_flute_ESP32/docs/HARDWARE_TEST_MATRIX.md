@@ -29,3 +29,7 @@ Status convention: `NOT TESTED — requires hardware` means the procedure is def
 | SYS-WDT | Watchdog | Firmware running | Induce controlled stall in debug build | System restarts with safe OE disabled first | Not executed | NOT TESTED — requires hardware | Do not perform on unattended hardware. |
 | MIC | Microphone present/absent | INMP441 optional | Boot with/without mic and run diagnostics | Diagnostics distinguish detected/absent; calibration refuses absent mic | Not executed | NOT TESTED — requires hardware | No external network assets. |
 | ANGLE | Transverse angle servo present/absent | `embouchure=trav`, angle channel configured | Test angle and CC74 | Angle servo moves only when enabled and returns rest | Not executed | NOT TESTED — requires hardware | Validate PCA conflicts. |
+
+## Finalization validation status
+
+Software CI covers ESP32 firmware build, PlatformIO native behavior tests, pytest audits, JSON escaping regressions, MIDI 7-bit WebSocket bounds, request-size limits, diagnostics vocabulary, and supported air-management modes. Physical validation remains explicitly marked **NOT TESTED — requires hardware** until executed on the corresponding PCA9685, microphone, ToF, Hall, endstop, pump, fan, solenoid, and servo hardware.
