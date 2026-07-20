@@ -72,7 +72,6 @@ struct RuntimeConfig {
   uint16_t servoAirflowMax;
 
   // --- Angle servo (trav uniquement) ---
-  uint8_t  anglePcaChannel;                  // Canal PCA9685 pour servo angle
   uint16_t servoAngleOff;                    // Angle repos (centre)
   uint16_t servoAngleMin;                    // Angle min calibre
   uint16_t servoAngleMax;                    // Angle max calibre
@@ -130,6 +129,9 @@ struct RuntimeConfig {
   uint8_t fanMaxPwm;                // PWM max
   uint8_t fanIdlePercent;           // Vitesse idle entre notes (0-100%, 0=couper)
   uint16_t fanIdleTimeoutMs;        // Delai sans note avant coupure totale (ms, 0=jamais couper)
+  uint8_t fanDefaultPercent;        // Autonomous pre-spin/idle default (0-100)
+  uint8_t fanMaxNotePercent;        // Autonomous note demand ceiling (0-100)
+  bool fanFollowAirflow;            // true = note demand follows airflow/velocity
   // Pompes (modes 4-5, 1 a 3 pompes)
   uint8_t numPumps;                  // 1-3
   uint8_t pumpPins[MAX_PUMPS];       // GPIO pour chaque pompe
@@ -137,6 +139,11 @@ struct RuntimeConfig {
   uint8_t pumpMaxPwm[MAX_PUMPS];    // PWM max par pompe (si motorType=PWM)
   uint8_t pumpCascadeThreshold;     // Seuil cascade (%) : pompe N+1 demarre quand demande > seuil (0=parallele)
   uint16_t pumpStaggerMs;           // Delai demarrage entre pompes (ms, anti-inrush)
+  uint8_t pumpDirectIdlePercent;    // Autonomous direct-pump idle demand (0-100)
+  uint8_t pumpDirectMaxPercent;     // Autonomous direct-pump note demand ceiling (0-100)
+  bool pumpFollowAirflow;           // true = direct pump follows airflow/velocity
+  uint8_t reservoirTargetPercent;   // Persistent reservoir target fill/pressure (0-100)
+  bool reservoirAutoStart;          // true = regulate reservoir without web command
   uint8_t bangbangHysteresis;       // Hysteresis bang-bang (%) pour moteurs On/Off + capteur continu
   // Reservoir (mode 5) - capteur configurable
   uint8_t sensorType;               // 0=VL53L0X, 1=VL6180X, 2=Hall KY-024, 3=endstop meca, 4=endstop optique
@@ -171,6 +178,27 @@ struct RuntimeConfig {
   char instrumentColor[8];           // Couleur hex instrument "#RRGGBB"
   uint8_t kbdMode;                   // 0=flute (defaut), 1=piano
 };
+
+
+/*******************************************************************************
+ * Centralized runtime configuration validation
+ ******************************************************************************/
+struct ConfigValidationResult {
+  bool valid;
+  bool restartRequired;
+  bool corrected;
+  String error;
+  String warnings;
+};
+
+#define CONFIG_MAX_POST_BYTES 32768
+#define CONFIG_MIN_NOTE_DURATION_LIMIT_MS 0
+#define CONFIG_MAX_NOTE_DURATION_LIMIT_MS 5000
+#define CONFIG_MAX_SERVO_DELAY_MS 2000
+#define CONFIG_MAX_GPIO 39
+#define CONFIG_MAX_PWM 255
+
+ConfigValidationResult validateAndNormalizeConfig(RuntimeConfig& config, const RuntimeConfig* previousConfig = nullptr);
 
 // Config globale accessible depuis tout le projet
 extern RuntimeConfig cfg;

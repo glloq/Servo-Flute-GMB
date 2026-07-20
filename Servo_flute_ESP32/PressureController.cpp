@@ -231,15 +231,18 @@ void PressureController::update() {
 
   unsigned long now = millis();
 
-  // Mode pompe directe (sans reservoir)
-  if (cfg.airMode != AIR_MODE_PUMP_RESERVOIR || !_sensorDetected) {
-    // PWM proportionnel direct a la cible
-    if (_targetPercent == 0) {
-      setPumpPwm(0);
-    } else {
-      uint8_t pwm = cfg.pumpMinPwm[0] + (uint16_t)(cfg.pumpMaxPwm[0] - cfg.pumpMinPwm[0]) * _targetPercent / 100;
-      setPumpPwm(pwm);
-    }
+  // Mode pompe directe (sans reservoir). setPumpPwm() accepts a logical raw demand
+  // (0..255) and performs the physical min/max conversion exactly once.
+  if (cfg.airMode != AIR_MODE_PUMP_RESERVOIR) {
+    setPumpPwm((uint16_t)_targetPercent * 255 / 100);
+    return;
+  }
+
+  // Reservoir mode must not silently degrade to direct mode if the sensor is absent.
+  if (!_sensorDetected) {
+    setPumpPwm(0);
+    _bangbangPumpOn = false;
+    _pidIntegral = 0;
     return;
   }
 
@@ -272,7 +275,8 @@ void PressureController::update() {
       } else if (_hallValue >= cfg.hallThresholdHigh) {
         _fillPercent = 100;
       } else {
-        _fillPercent = (uint8_t)(((uint32_t)(_hallValue - cfg.hallThresholdLow) * 100) / (cfg.hallThresholdHigh - cfg.hallThresholdLow));
+        uint16_t hallSpan = cfg.hallThresholdHigh - cfg.hallThresholdLow;
+        _fillPercent = (hallSpan == 0) ? 0 : (uint8_t)(((uint32_t)(_hallValue - cfg.hallThresholdLow) * 100) / hallSpan);
       }
     }
     // Controle selon type moteur
@@ -330,7 +334,8 @@ void PressureController::update() {
     } else if (_distanceMm >= cfg.sensorMaxMm) {
       _fillPercent = 0;
     } else {
-      _fillPercent = 100 - (uint8_t)(((uint32_t)(_distanceMm - cfg.sensorMinMm) * 100) / (cfg.sensorMaxMm - cfg.sensorMinMm));
+      uint16_t sensorSpan = cfg.sensorMaxMm - cfg.sensorMinMm;
+      _fillPercent = (sensorSpan == 0) ? 0 : 100 - (uint8_t)(((uint32_t)(_distanceMm - cfg.sensorMinMm) * 100) / sensorSpan);
     }
   }
 
@@ -439,7 +444,8 @@ void PressureController::setPumpPwm(uint8_t pwm) {
   }
 
   // === Mode cascade : pompe 0 toujours active, les suivantes au seuil ===
-  uint8_t threshPwm = (uint16_t)cfg.pumpCascadeThreshold * 255 / 100;
+  uint8_t cascade = cfg.pumpCascadeThreshold > 99 ? 99 : cfg.pumpCascadeThreshold;
+  uint8_t threshPwm = (uint16_t)cascade * 255 / 100;
   _activePumpCount = 0;
 
   for (uint8_t i = 0; i < cfg.numPumps && i < MAX_PUMPS; i++) {
@@ -466,7 +472,8 @@ void PressureController::setPumpPwm(uint8_t pwm) {
         if (now - _pumpActivateTime[i] >= staggerDelay) {
           // PWM proportionnel au depassement du seuil
           uint8_t overflow = pwm - threshPwm;
-          uint8_t pumpPwm = (uint8_t)((uint16_t)overflow * 255 / (255 - threshPwm));
+          uint8_t denom = 255 - threshPwm;
+          uint8_t pumpPwm = (denom == 0) ? 255 : (uint8_t)((uint16_t)overflow * 255 / denom);
           writePumpHw(i, pumpPwm);
           _activePumpCount++;
         } else {

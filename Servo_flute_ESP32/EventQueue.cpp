@@ -7,18 +7,24 @@ EventQueue::EventQueue(int capacity)
 }
 
 bool EventQueue::enqueue(EventType type, byte note, byte velocity, unsigned long absoluteTime) {
+  return enqueueScheduledEvent(type, note, velocity, absoluteTime);
+}
+
+bool EventQueue::enqueueLiveEvent(EventType type, byte note, byte velocity) {
+  return enqueueScheduledEvent(type, note, velocity, millis());
+}
+
+bool EventQueue::enqueueScheduledEvent(EventType type, byte note, byte velocity, unsigned long executeAtMs) {
   if (isFull()) {
     return false;
   }
 
   if (!_hasReference) {
-    _referenceTime = absoluteTime;
+    _referenceTime = executeAtMs;
     _hasReference = true;
   }
 
-  unsigned long relativeTime = absoluteTime - _referenceTime;
-
-  _events[_head] = MidiEvent(type, note, velocity, relativeTime);
+  _events[_head] = MidiEvent(type, note, velocity, executeAtMs);
 
   _head = (_head + 1) % _capacity;
   _count++;

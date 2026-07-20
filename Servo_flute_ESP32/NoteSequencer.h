@@ -39,6 +39,8 @@ private:
   unsigned long _stateStartTime;
   unsigned long _eventScheduledTime;
   unsigned long _playbackStartTime;
+  unsigned long _noteSoundStartTime;
+  bool _pendingStopAfterMinDuration;
 
   void processNextEvent();
   void transitionTo(NoteState newState);

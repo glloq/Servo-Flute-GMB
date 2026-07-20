@@ -209,16 +209,13 @@ void WebConfigurator::setupRoutes() {
     NULL,
     [this](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
       // Accumuler le body (data n'est pas null-termine)
+      if (total > CONFIG_MAX_POST_BYTES) { return; }
       if (index == 0) {
         _configBody = "";
         _configBody.reserve(total + 1);
       }
-      char* buf = (char*)malloc(len + 1);
-      if (buf) {
-        memcpy(buf, data, len);
-        buf[len] = '\0';
-        _configBody += buf;
-        free(buf);
+      if (_configBody.length() + len <= CONFIG_MAX_POST_BYTES) {
+        _configBody.concat((const char*)data, len);
       }
     }
   );
@@ -348,6 +345,22 @@ void WebConfigurator::setupRoutes() {
     }
   );
 
+  // Safe restart API
+  _server.on("/api/restart", HTTP_POST, [this](AsyncWebServerRequest* request) {
+    if (_instrument) { _instrument->allSoundOff(); }
+    request->send(200, "application/json", "{\"ok\":true,\"msg\":\"Restarting\"}");
+    delay(50);
+    ESP.restart();
+  });
+
+  // Hardware diagnostics API
+  _server.on("/api/diagnostics", HTTP_GET, [this](AsyncWebServerRequest* request) {
+    handleApiDiagnostics(request);
+  });
+  _server.on("/api/diagnostics/run", HTTP_POST, [this](AsyncWebServerRequest* request) {
+    handleApiDiagnostics(request);
+  });
+
   // Captive portal detection endpoints (mode AP)
   _server.on("/generate_204", HTTP_GET, [](AsyncWebServerRequest* request) {
     request->redirect("http://192.168.4.1/");
@@ -432,7 +445,6 @@ void WebConfigurator::handleApiConfig(AsyncWebServerRequest* request) {
   json += ",\"air_off\":" + String(cfg.servoAirflowOff);
   json += ",\"air_min\":" + String(cfg.servoAirflowMin);
   json += ",\"air_max\":" + String(cfg.servoAirflowMax);
-  json += ",\"ang_pca\":" + String(cfg.anglePcaChannel);
   json += ",\"ang_off\":" + String(cfg.servoAngleOff);
   json += ",\"ang_min\":" + String(cfg.servoAngleMin);
   json += ",\"ang_max\":" + String(cfg.servoAngleMax);
@@ -469,7 +481,6 @@ void WebConfigurator::handleApiConfig(AsyncWebServerRequest* request) {
   json += ",\"valve_ch\":" + String(cfg.valveServoPcaChannel);
   json += ",\"vlv_close\":" + String(cfg.valveServoCloseAngle);
   json += ",\"vlv_open\":" + String(cfg.valveServoOpenAngle);
-  json += ",\"vlv_dir\":" + String(cfg.valveServoDir);
   json += ",\"sol_inter\":" + String(cfg.solenoidInterNoteMs);
   json += ",\"motor_type\":" + String(cfg.motorType);
   json += ",\"fan_pin\":" + String(cfg.fanPin);
@@ -477,6 +488,9 @@ void WebConfigurator::handleApiConfig(AsyncWebServerRequest* request) {
   json += ",\"fan_max\":" + String(cfg.fanMaxPwm);
   json += ",\"fan_idle_pct\":" + String(cfg.fanIdlePercent);
   json += ",\"fan_idle_timeout\":" + String(cfg.fanIdleTimeoutMs);
+  json += ",\"fan_default_pct\":" + String(cfg.fanDefaultPercent);
+  json += ",\"fan_note_max_pct\":" + String(cfg.fanMaxNotePercent);
+  json += ",\"fan_follow_air\":" + String(cfg.fanFollowAirflow ? "true" : "false");
   json += ",\"num_pumps\":" + String(cfg.numPumps);
   json += ",\"pump_pins\":[";
   for (int i = 0; i < MAX_PUMPS; i++) {
@@ -496,6 +510,11 @@ void WebConfigurator::handleApiConfig(AsyncWebServerRequest* request) {
   json += "]";
   json += ",\"pump_cascade\":" + String(cfg.pumpCascadeThreshold);
   json += ",\"pump_stagger\":" + String(cfg.pumpStaggerMs);
+  json += ",\"pump_idle_pct\":" + String(cfg.pumpDirectIdlePercent);
+  json += ",\"pump_direct_max_pct\":" + String(cfg.pumpDirectMaxPercent);
+  json += ",\"pump_follow_air\":" + String(cfg.pumpFollowAirflow ? "true" : "false");
+  json += ",\"res_target_pct\":" + String(cfg.reservoirTargetPercent);
+  json += ",\"res_autostart\":" + String(cfg.reservoirAutoStart ? "true" : "false");
   json += ",\"bb_hyst\":" + String(cfg.bangbangHysteresis);
   json += ",\"sens_type\":" + String(cfg.sensorType);
   json += ",\"sens_target\":" + String(cfg.sensorTargetMm);
@@ -567,6 +586,12 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
   }
 
   {
+    if (_configBody.length() > CONFIG_MAX_POST_BYTES) {
+      request->send(413, "application/json", "{\"ok\":false,\"msg\":\"Config body too large\"}");
+      _configBody = "";
+      return;
+    }
+    RuntimeConfig previousConfig = cfg;
     JsonDocument doc;
     DeserializationError err = deserializeJson(doc, _configBody);
 
@@ -606,7 +631,7 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
     if (doc.containsKey("air_off")) cfg.servoAirflowOff = doc["air_off"];
     if (doc.containsKey("air_min")) cfg.servoAirflowMin = doc["air_min"];
     if (doc.containsKey("air_max")) cfg.servoAirflowMax = doc["air_max"];
-    if (doc.containsKey("ang_pca")) cfg.anglePcaChannel = doc["ang_pca"];
+    if (doc.containsKey("ang_pca")) cfg.angleServoPcaChannel = doc["ang_pca"];  // legacy migration
     if (doc.containsKey("ang_off")) cfg.servoAngleOff = doc["ang_off"];
     if (doc.containsKey("ang_min")) cfg.servoAngleMin = doc["ang_min"];
     if (doc.containsKey("ang_max")) cfg.servoAngleMax = doc["ang_max"];
@@ -655,7 +680,7 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
     if (doc.containsKey("angle_ch")) cfg.angleServoPcaChannel = doc["angle_ch"];
     if (doc.containsKey("vlv_close")) cfg.valveServoCloseAngle = doc["vlv_close"];
     if (doc.containsKey("vlv_open")) cfg.valveServoOpenAngle = doc["vlv_open"];
-    if (doc.containsKey("vlv_dir")) cfg.valveServoDir = doc["vlv_dir"];
+    // vlv_dir is intentionally ignored; close/open angles fully define valve direction.
     if (doc.containsKey("sol_inter")) cfg.solenoidInterNoteMs = doc["sol_inter"];
     if (doc.containsKey("motor_type")) cfg.motorType = doc["motor_type"];
     if (doc.containsKey("fan_pin")) cfg.fanPin = doc["fan_pin"];
@@ -663,6 +688,9 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
     if (doc.containsKey("fan_max")) cfg.fanMaxPwm = doc["fan_max"];
     if (doc.containsKey("fan_idle_pct")) cfg.fanIdlePercent = doc["fan_idle_pct"];
     if (doc.containsKey("fan_idle_timeout")) cfg.fanIdleTimeoutMs = doc["fan_idle_timeout"];
+    if (doc.containsKey("fan_default_pct")) cfg.fanDefaultPercent = doc["fan_default_pct"];
+    if (doc.containsKey("fan_note_max_pct")) cfg.fanMaxNotePercent = doc["fan_note_max_pct"];
+    if (doc.containsKey("fan_follow_air")) cfg.fanFollowAirflow = doc["fan_follow_air"].as<bool>();
     if (doc.containsKey("num_pumps")) {
       uint8_t np = doc["num_pumps"];
       if (np >= 1 && np <= MAX_PUMPS) cfg.numPumps = np;
@@ -694,6 +722,11 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
       cfg.pumpCascadeThreshold = (v <= 100) ? v : 100;
     }
     if (doc.containsKey("pump_stagger")) cfg.pumpStaggerMs = doc["pump_stagger"];
+    if (doc.containsKey("pump_idle_pct")) cfg.pumpDirectIdlePercent = doc["pump_idle_pct"];
+    if (doc.containsKey("pump_direct_max_pct")) cfg.pumpDirectMaxPercent = doc["pump_direct_max_pct"];
+    if (doc.containsKey("pump_follow_air")) cfg.pumpFollowAirflow = doc["pump_follow_air"].as<bool>();
+    if (doc.containsKey("res_target_pct")) cfg.reservoirTargetPercent = doc["res_target_pct"];
+    if (doc.containsKey("res_autostart")) cfg.reservoirAutoStart = doc["res_autostart"].as<bool>();
     if (doc.containsKey("bb_hyst")) {
       uint8_t v = doc["bb_hyst"];
       cfg.bangbangHysteresis = (v <= 50) ? v : 50;
@@ -783,6 +816,20 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
       }
     }
 
+    ConfigValidationResult validation = validateAndNormalizeConfig(cfg, &previousConfig);
+    if (!validation.valid) {
+      cfg = previousConfig;
+      JsonDocument errDoc;
+      errDoc["ok"] = false;
+      errDoc["msg"] = "Invalid configuration";
+      errDoc["error"] = validation.error;
+      String errJson;
+      serializeJson(errDoc, errJson);
+      request->send(400, "application/json", errJson);
+      _configBody = "";
+      return;
+    }
+
     // Sauvegarder sur LittleFS
     bool saved = ConfigStorage::save();
 
@@ -790,10 +837,50 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
       Serial.println("DEBUG: WebConfigurator - Config mise a jour via web");
     }
 
-    String resp = "{\"ok\":" + String(saved ? "true" : "false") + "}";
-    request->send(200, "application/json", resp);
+    JsonDocument respDoc;
+    respDoc["ok"] = saved;
+    respDoc["saved"] = saved;
+    respDoc["restart_required"] = validation.restartRequired;
+    respDoc["corrected"] = validation.corrected;
+    JsonArray warnings = respDoc["warnings"].to<JsonArray>();
+    if (validation.warnings.length() > 0) warnings.add(validation.warnings);
+    String resp;
+    serializeJson(respDoc, resp);
+    request->send(saved ? 200 : 500, "application/json", resp);
   }
   _configBody = "";
+}
+
+void WebConfigurator::handleApiDiagnostics(AsyncWebServerRequest* request) {
+  RuntimeConfig tmp = cfg;
+  ConfigValidationResult validation = validateAndNormalizeConfig(tmp, &cfg);
+  JsonDocument doc;
+  JsonArray checks = doc["checks"].to<JsonArray>();
+  auto addCheck = [&checks](const char* id, const char* status, const String& message) {
+    JsonObject c = checks.add<JsonObject>();
+    c["id"] = id;
+    c["status"] = status;
+    c["message"] = message;
+  };
+
+  addCheck("config", validation.valid ? "ok" : "error", validation.valid ? "Runtime configuration is valid" : validation.error);
+  addCheck("littlefs", LittleFS.totalBytes() > 0 ? "ok" : "error", String(LittleFS.usedBytes()) + "/" + String(LittleFS.totalBytes()) + " bytes used");
+  addCheck("config_file", LittleFS.exists(CONFIG_FILE_PATH) ? "ok" : "warning", LittleFS.exists(CONFIG_FILE_PATH) ? "Configuration file is present" : "Using defaults; /config.json is absent");
+  addCheck("pca0", "warning", "Runtime probe requires hardware; expected address 0x40");
+  bool needPca1 = cfg.airflowPcaChannel >= 16 || cfg.valveServoPcaChannel >= 16 || cfg.angleServoPcaChannel >= 16;
+  for (uint8_t i = 0; i < cfg.numFingers; i++) if (cfg.fingers[i].pcaChannel >= 16) needPca1 = true;
+  addCheck("pca1", needPca1 ? "warning" : "ok", needPca1 ? "Second PCA9685 is required by configured channels; hardware probe requires device" : "Second PCA9685 not required");
+#if MIC_ENABLED
+  addCheck("microphone", (_audio && _audio->isMicDetected()) ? "ok" : "warning", (_audio && _audio->isMicDetected()) ? "Microphone detected" : "Microphone not detected or not initialized");
+#else
+  addCheck("microphone", "warning", "Microphone support disabled at compile time");
+#endif
+  addCheck("restart", "ok", "Restart-required state is reported by POST /api/config responses");
+  addCheck("heap", "ok", String(ESP.getFreeHeap()) + " bytes free heap");
+  doc["ok"] = validation.valid;
+  String out;
+  serializeJson(doc, out);
+  request->send(200, "application/json", out);
 }
 
 void WebConfigurator::handleApiConfigReset(AsyncWebServerRequest* request) {
@@ -1102,6 +1189,7 @@ void WebConfigurator::onWsEvent(AsyncWebSocket* server, AsyncWebSocketClient* cl
       break;
 
     case WS_EVT_DISCONNECT:
+      if (_instrument) { _instrument->allSoundOff(); }
       if (DEBUG) {
         Serial.print("DEBUG: WS client disconnected #");
         Serial.println(client->id());
@@ -1122,184 +1210,95 @@ void WebConfigurator::onWsEvent(AsyncWebSocket* server, AsyncWebSocketClient* cl
 }
 
 void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* data, size_t len) {
-  String msg = String((char*)data).substring(0, len);
-
   if (_instrument == nullptr) return;
+  if (len > 512) {
+    client->text("{\"t\":\"error\",\"msg\":\"WebSocket message too large\"}");
+    return;
+  }
 
-  // Extraire le type de message
-  int tIdx = msg.indexOf("\"t\":\"");
-  if (tIdx < 0) return;
-  tIdx += 5;
-  int tEnd = msg.indexOf("\"", tIdx);
-  if (tEnd < 0) return;
-  String type = msg.substring(tIdx, tEnd);
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, data, len);
+  if (err) {
+    client->text("{\"t\":\"error\",\"msg\":\"Invalid JSON\"}");
+    return;
+  }
 
-  if (type == "non") {
-    int nIdx = msg.indexOf("\"n\":");
-    int vIdx = msg.indexOf("\"v\":");
-    if (nIdx < 0) return;
-    uint8_t note = (uint8_t)msg.substring(nIdx + 4).toInt();
-    uint8_t vel = _webVelocity;
-    if (vIdx >= 0) {
-      vel = (uint8_t)msg.substring(vIdx + 4).toInt();
-    }
+  const char* type = doc["t"] | "";
+  auto hasInt = [&doc](const char* key) { return doc[key].is<int>(); };
+  auto getPct = [&doc](const char* key, uint8_t def = 0) -> uint8_t { return (uint8_t)constrain(doc[key] | def, 0, 100); };
+
+  if (strcmp(type, "non") == 0) {
+    if (!hasInt("n")) return;
+    uint8_t note = (uint8_t)constrain(doc["n"] | 0, 0, 127);
+    uint8_t vel = (uint8_t)constrain(doc["v"] | _webVelocity, 1, MIDI_VELOCITY_MAX);
     _instrument->noteOn(note, vel);
-
-  } else if (type == "nof") {
-    int nIdx = msg.indexOf("\"n\":");
-    if (nIdx < 0) return;
-    uint8_t note = (uint8_t)msg.substring(nIdx + 4).toInt();
-    _instrument->noteOff(note);
-
-  } else if (type == "cc") {
-    int cIdx = msg.indexOf("\"c\":");
-    int vIdx = msg.indexOf("\"v\":");
-    if (cIdx < 0 || vIdx < 0) return;
-    uint8_t ccNum = (uint8_t)msg.substring(cIdx + 4).toInt();
-    uint8_t ccVal = (uint8_t)msg.substring(vIdx + 4).toInt();
-    _instrument->handleControlChange(ccNum, ccVal);
-
-  } else if (type == "velocity") {
-    int vIdx = msg.indexOf("\"v\":");
-    if (vIdx >= 0) {
-      _webVelocity = (uint8_t)msg.substring(vIdx + 4).toInt();
-      if (_webVelocity < 1) _webVelocity = 1;
-      if (_webVelocity > MIDI_VELOCITY_MAX) _webVelocity = MIDI_VELOCITY_MAX;
-    }
-
-  } else if (type == "air_live") {
-    int vIdx = msg.indexOf("\"v\":");
-    if (vIdx >= 0) {
-      uint8_t pct = (uint8_t)msg.substring(vIdx + 4).toInt();
-      _instrument->getAirflowCtrl().setAirflowLivePercent(pct);
-    }
-
-  } else if (type == "play") {
+  } else if (strcmp(type, "nof") == 0) {
+    if (!hasInt("n")) return;
+    _instrument->noteOff((uint8_t)constrain(doc["n"] | 0, 0, 127));
+  } else if (strcmp(type, "cc") == 0) {
+    if (!hasInt("c") || !hasInt("v")) return;
+    _instrument->handleControlChange((uint8_t)constrain(doc["c"] | 0, 0, 127), getPct("v", 0));
+  } else if (strcmp(type, "velocity") == 0) {
+    _webVelocity = (uint8_t)constrain(doc["v"] | _webVelocity, 1, MIDI_VELOCITY_MAX);
+  } else if (strcmp(type, "air_live") == 0) {
+    _instrument->getAirflowCtrl().setAirflowLivePercent(getPct("v", 0));
+  } else if (strcmp(type, "play") == 0) {
     if (_player) _player->play();
-  } else if (type == "pause") {
+  } else if (strcmp(type, "pause") == 0) {
     if (_player) _player->pause();
-  } else if (type == "stop") {
+  } else if (strcmp(type, "stop") == 0) {
     if (_player) _player->stop();
-  } else if (type == "ch_filter") {
-    if (_player) {
-      int vi = msg.indexOf("\"ch\":");
-      if (vi >= 0) {
-        int ch = msg.substring(vi + 5).toInt();
-        _player->setChannelFilter(ch > 15 ? 255 : (uint8_t)ch);
-      }
-    }
-  } else if (type == "panic") {
     _instrument->allSoundOff();
-
-  } else if (type == "test_finger") {
-    int iIdx = msg.indexOf("\"i\":");
-    int aIdx = msg.indexOf("\"a\":");
-    if (iIdx >= 0 && aIdx >= 0) {
-      int fi = msg.substring(iIdx + 4).toInt();
-      int angle = msg.substring(aIdx + 4).toInt();
-      _instrument->getFingerCtrl().testFingerAngle(fi, (uint16_t)angle);
+  } else if (strcmp(type, "ch_filter") == 0) {
+    if (_player) {
+      int ch = doc["ch"] | 255;
+      _player->setChannelFilter(ch > 15 ? 255 : (uint8_t)ch);
     }
-
-  } else if (type == "test_air") {
-    int aIdx = msg.indexOf("\"a\":");
-    if (aIdx >= 0) {
-      int angle = msg.substring(aIdx + 4).toInt();
-      _instrument->getAirflowCtrl().testAirflowAngle((uint16_t)angle);
-    }
-
-  } else if (type == "test_angle") {
-    int aIdx = msg.indexOf("\"a\":");
-    if (aIdx >= 0) {
-      int angle = msg.substring(aIdx + 4).toInt();
-      _instrument->getAirflowCtrl().testAngleServoAngle((uint16_t)angle);
-    }
-
-  } else if (type == "angle_live") {
-    int vIdx = msg.indexOf("\"v\":");
-    if (vIdx >= 0) {
-      uint8_t pct = (uint8_t)msg.substring(vIdx + 4).toInt();
-      _instrument->getAirflowCtrl().setAngleLivePercent(pct);
-    }
-
-  } else if (type == "test_sol") {
-    int oIdx = msg.indexOf("\"o\":");
-    if (oIdx >= 0) {
-      int val = msg.substring(oIdx + 4).toInt();
-      _instrument->getAirflowCtrl().testSolenoid(val != 0);
-    }
-
-  } else if (type == "test_note") {
-    int nIdx = msg.indexOf("\"n\":");
-    if (nIdx >= 0) {
-      uint8_t note = (uint8_t)msg.substring(nIdx + 4).toInt();
+  } else if (strcmp(type, "panic") == 0) {
+    _instrument->allSoundOff();
+  } else if (strcmp(type, "test_finger") == 0) {
+    int fi = doc["i"] | -1;
+    int angle = constrain(doc["a"] | 0, 0, 180);
+    if (fi >= 0 && fi < cfg.numFingers) _instrument->getFingerCtrl().testFingerAngle(fi, (uint16_t)angle);
+  } else if (strcmp(type, "test_air") == 0) {
+    _instrument->getAirflowCtrl().testAirflowAngle((uint16_t)constrain(doc["a"] | 0, 0, 180));
+  } else if (strcmp(type, "test_angle") == 0) {
+    _instrument->getAirflowCtrl().testAngleServoAngle((uint16_t)constrain(doc["a"] | 0, 0, 180));
+  } else if (strcmp(type, "angle_live") == 0) {
+    _instrument->getAirflowCtrl().setAngleLivePercent(getPct("v", 0));
+  } else if (strcmp(type, "test_sol") == 0) {
+    _instrument->getAirflowCtrl().testSolenoid((doc["o"] | 0) != 0);
+  } else if (strcmp(type, "test_note") == 0) {
+    uint8_t note = (uint8_t)constrain(doc["n"] | 0, 0, 127);
+    if (_instrument->isNotePlayable(note)) {
       _instrument->getFingerCtrl().setFingerPatternForNote(note);
       _instrument->getAirflowCtrl().setAirflowForNote(note, _webVelocity);
     }
-
-  } else if (type == "pump_target") {
-    int vIdx = msg.indexOf("\"v\":");
-    if (vIdx >= 0) {
-      uint8_t pct = (uint8_t)msg.substring(vIdx + 4).toInt();
-      _instrument->getPressureCtrl().setTargetPercent(pct);
-    }
-
-  } else if (type == "pump_stop") {
+  } else if (strcmp(type, "pump_target") == 0) {
+    _instrument->getPressureCtrl().setTargetPercent(getPct("v", 0));
+  } else if (strcmp(type, "pump_stop") == 0) {
     _instrument->getPressureCtrl().stop();
-
-  } else if (type == "pump_enable") {
-    int vIdx = msg.indexOf("\"v\":");
-    if (vIdx >= 0) {
-      int val = msg.substring(vIdx + 4).toInt();
-      if (val == 0) {
-        _instrument->getPressureCtrl().stop();
-      }
-      // Enable/disable is handled by stop/resume - pump resumes on next target set
-    }
-
-  } else if (type == "fan_target") {
-    int vIdx = msg.indexOf("\"v\":");
-    if (vIdx >= 0) {
-      uint8_t pct = (uint8_t)msg.substring(vIdx + 4).toInt();
-      _instrument->getFanCtrl().setSpeed(pct);
-    }
-
-  } else if (type == "fan_stop") {
+  } else if (strcmp(type, "fan_target") == 0) {
+    _instrument->getFanCtrl().setSpeed(getPct("v", 0));
+  } else if (strcmp(type, "fan_stop") == 0) {
     _instrument->getFanCtrl().stop();
-
 #if MIC_ENABLED
-  } else if (type == "mic_mon") {
-    int oIdx = msg.indexOf("\"on\":");
-    if (oIdx >= 0) {
-      int val = msg.substring(oIdx + 5).toInt();
-      _micMonitorEnabled = (val != 0);
-      if (_audio) _audio->setActive(_micMonitorEnabled || (_autoCal && _autoCal->isRunning()));
+  } else if (strcmp(type, "mic_mon") == 0) {
+    _micMonitorEnabled = ((doc["on"] | 0) != 0);
+    if (_audio) _audio->setActive(_micMonitorEnabled || (_autoCal && _autoCal->isRunning()));
+  } else if (strcmp(type, "auto_cal") == 0) {
+    const char* mode = doc["mode"] | "";
+    if (strcmp(mode, "air") == 0 && _autoCal && _audio && _audio->isMicDetected()) {
+      _audio->setActive(true); _micMonitorEnabled = true; _autoCal->start(ACAL_MODE_AIRFLOW);
+    } else if (strcmp(mode, "range") == 0 && _autoCal && _audio && _audio->isMicDetected()) {
+      _audio->setActive(true); _micMonitorEnabled = true; _autoCal->start(ACAL_MODE_RANGE_FINDER);
     }
-
-  } else if (type == "auto_cal") {
-    int mIdx = msg.indexOf("\"mode\":\"");
-    if (mIdx >= 0) {
-      mIdx += 8;
-      int mEnd = msg.indexOf("\"", mIdx);
-      String mode = msg.substring(mIdx, mEnd);
-
-      if (mode == "air" && _autoCal && _audio && _audio->isMicDetected()) {
-        _audio->setActive(true);
-        _micMonitorEnabled = true;
-        _autoCal->start(ACAL_MODE_AIRFLOW);
-      } else if (mode == "range" && _autoCal && _audio && _audio->isMicDetected()) {
-        _audio->setActive(true);
-        _micMonitorEnabled = true;
-        _autoCal->start(ACAL_MODE_RANGE_FIND);
-      } else if (mode == "apply_range" && _autoCal) {
-        _autoCal->applyRangeResults();
-        String rj = "{\"t\":\"rf_applied\",\"min\":" + String(cfg.servoAirflowMin) +
-                    ",\"max\":" + String(cfg.servoAirflowMax) + "}";
-        _ws.textAll(rj);
-      } else if (mode == "stop") {
-        if (_autoCal) _autoCal->stop();
-      }
-    }
+  } else if (strcmp(type, "auto_stop") == 0) {
+    if (_autoCal) _autoCal->stop();
+    if (_audio) _audio->setActive(_micMonitorEnabled);
 #endif
+  } else {
+    client->text("{\"t\":\"error\",\"msg\":\"Unknown message type\"}");
   }
 }
 

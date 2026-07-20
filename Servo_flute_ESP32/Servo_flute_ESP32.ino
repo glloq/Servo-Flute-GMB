@@ -62,50 +62,17 @@ WirelessManager* wireless = nullptr;
  * Initialise le hardware en configuration sure AVANT toute autre operation.
  */
 void initSafeState() {
-  // Initialiser I2C avec les pins ESP32
-  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+  // Keep PCA9685 outputs disabled before LittleFS/configuration is available.
+  pinMode(PIN_SERVOS_OFF, OUTPUT);
+  digitalWrite(PIN_SERVOS_OFF, HIGH);  // OE HIGH = outputs disabled
 
-  // Initialiser la carte PCA9685 #1 (toujours presente)
-  Adafruit_PWMServoDriver pwm0(PCA_ADDR_BOARD0);
-  pwm0.begin();
-  pwm0.setPWMFreq(SERVO_FREQUENCY);
-
-  // Detecter si la carte #2 est necessaire (canaux >= 16 dans les defauts)
-  bool needBoard1 = (DEFAULT_AIRFLOW_PCA_CHANNEL >= 16);
-  for (int i = 0; i < DEFAULT_NUM_FINGERS && !needBoard1; i++) {
-    if (DEFAULT_FINGERS[i].pcaChannel >= 16) needBoard1 = true;
-  }
-
-  Adafruit_PWMServoDriver pwm1(PCA_ADDR_BOARD1);
-  if (needBoard1) {
-    pwm1.begin();
-    pwm1.setPWMFreq(SERVO_FREQUENCY);
-  }
-
-  // Lambda pour router setPWM vers la bonne carte
-  auto writePwm = [&](uint8_t channel, uint16_t on, uint16_t off) {
-    if (channel < 16) {
-      pwm0.setPWM(channel, on, off);
-    } else if (needBoard1) {
-      pwm1.setPWM(channel - 16, on, off);
-    }
-  };
-
-  // Solenoide en etat sur (FERME)
+  // Put known fixed boot-critical GPIOs in their safest electrical state only.
   pinMode(SOLENOID_PIN, OUTPUT);
-  digitalWrite(SOLENOID_PIN, LOW);
+  digitalWrite(SOLENOID_PIN, SOLENOID_ACTIVE_HIGH ? LOW : HIGH);
 
-  // Servo airflow en position repos (utilise defaut avant chargement config)
-  uint16_t pulseWidth = map(SERVO_AIRFLOW_OFF, SERVO_MIN_ANGLE, SERVO_MAX_ANGLE, SERVO_PULSE_MIN, SERVO_PULSE_MAX);
-  writePwm(DEFAULT_AIRFLOW_PCA_CHANNEL, 0, pulseWidth);
-
-  // Tous les servos doigts en position fermee (utilise defauts)
-  for (int i = 0; i < DEFAULT_NUM_FINGERS; i++) {
-    pulseWidth = map(DEFAULT_FINGERS[i].closedAngle, SERVO_MIN_ANGLE, SERVO_MAX_ANGLE, SERVO_PULSE_MIN, SERVO_PULSE_MAX);
-    writePwm(DEFAULT_FINGERS[i].pcaChannel, 0, pulseWidth);
-  }
-
-  delay(SAFE_STATE_SETTLE_MS);
+  // I2C is initialized here only for later hardware probing; no servo pulse is
+  // emitted until ConfigStorage::load() and validation have completed.
+  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
 }
 
 void setup() {
@@ -137,8 +104,13 @@ void setup() {
     }
   }
 
-  // Charger la configuration depuis LittleFS (ou defauts si pas de fichier)
+  // Charger et valider la configuration depuis LittleFS avant tout mouvement servo.
   ConfigStorage::load();
+  ConfigValidationResult bootValidation = validateAndNormalizeConfig(cfg);
+  if (!bootValidation.valid) {
+    if (DEBUG) { Serial.print("ERREUR: configuration invalide au boot: "); Serial.println(bootValidation.error); }
+    digitalWrite(PIN_SERVOS_OFF, HIGH);
+  }
 
   if (DEBUG) {
     Serial.print("DEBUG: Config - Canal MIDI: ");

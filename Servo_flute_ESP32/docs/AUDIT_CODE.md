@@ -1,92 +1,32 @@
-# Code Audit
+# Firmware and Web Configuration Audit
 
-## Overall verdict
+Date: 2026-07-20
+Scope: `RuntimeConfig`, `ConfigStorage`, `InstrumentManager`, `FingerController`, `AirflowController`, `PressureController`, `FanController`, `NoteSequencer`, `AutoCalibrator`, `WebConfigurator`, embedded `web_content.h`, BLE-MIDI, rtpMIDI/Wi-Fi MIDI, serial MIDI, MIDI file playback, PCA9685 routing, GPIO use, and servo power management.
 
-The firmware is functional and modular. The architecture cleanly separates MIDI input, sequencing, finger servos, airflow, storage, and the web interface. Remaining concerns are mostly robustness improvements and edge cases.
+## Summary of findings and fixes
 
-## BLE-MIDI
+| Area | Severity | Finding | Correction | Required tests |
+| --- | --- | --- | --- | --- |
+| Boot safety | Critical | `initSafeState()` initialized PCA9685 outputs and moved servos using compiled defaults before `/config.json` was loaded. | Boot safe state now disables PCA OE immediately, sets only known fixed critical GPIOs safe, starts LittleFS, loads and validates configuration before hardware managers can position actuators. | Power-on with custom `/config.json`; verify no default servo movement before config load. |
+| Runtime validation | Critical | Limits and conflicts were partly enforced in HTML or ad hoc request parsing only. | Added centralized `validateAndNormalizeConfig()` with explicit limits, PCA conflict checks, GPIO reserved/input-only checks, min/max relationship checks, MIDI/note/fingering checks, and restart-required detection. | Native validation tests plus invalid REST payloads returning HTTP 400. |
+| Configuration migration | High | `anglePcaChannel` and `angleServoPcaChannel` duplicated the same concept; legacy JSON keys existed. | `angleServoPcaChannel` is the canonical field. `ang_pca` and `angle_ch` are migrated on load/POST; saves emit `angle_ch` only. | Load old configs containing `ang_pca`; save and reload. |
+| Valve servo direction | Medium | `valveServoDir` was saved but close/open angles already define travel and direction. | Saves no longer emit `vlv_dir`; POST ignores it for backward compatibility. | Load old config with `vlv_dir`; test close/open angle commands. |
+| Sequencing timestamps | High | Live events and scheduled events shared relative timestamp logic that could keep stale references. | Event queue now has explicit live/scheduled enqueue methods and stores absolute execution times; queue reset clears timing reference. | Live note-on/off; MIDI file playback; queue-empty then new sequence. |
+| Minimum note duration | High | `minNoteDurationMs` was persisted but not enforced. | `NoteSequencer` defers normal note-off until the minimum duration expires while keeping panic/all-sound-off immediate. | Short note-off test and panic bypass test. |
+| Pressure calculations | Critical | Hall and ToF span divisions could divide by zero; pump cascade threshold 100 could divide by zero; direct pump demand was converted twice. | Validation rejects equal sensor thresholds/ranges, clamps cascade to 0..99, runtime guards zero denominators, and direct mode feeds logical demand to a single physical PWM conversion path. | Pump direct/reservoir tests for thresholds 0 and 99, equal sensor bounds, absent sensor. |
+| Reservoir sensor absence | Critical | Reservoir mode without sensor silently behaved like direct pump mode. | Reservoir mode now stops pumps, clears bang-bang/PID state, and does not run direct mode when the sensor is absent. | Disconnect sensor during mode 5 and verify pumps off/fault diagnostics. |
+| Autonomous fan/pump behavior | High | Fan and pump operation depended on WebSocket manual targets for some modes. | Added persistent autonomous defaults for fan note/idle behavior, direct pump note/idle behavior, and reservoir autostart target. MIDI note-on/off now drives fan/pump targets without a web page. | BLE-MIDI, DIN MIDI, rtpMIDI, and MIDI file playback without web client. |
+| REST/WebSocket parsing | High | WebSocket command parsing used `String::indexOf()` and accepted malformed/out-of-range data. | WebSocket messages are parsed with ArduinoJson, capped at 512 bytes, range-checked, and panic on disconnect returns hardware to safe state. Config POST is size-limited and returns structured JSON including `restart_required`. | Invalid JSON, oversize WS frame, bad finger index, out-of-range note/CC. |
+| Diagnostics | Medium | No structured hardware/config diagnostics API existed. | Added `GET /api/diagnostics` and `POST /api/diagnostics/run` with config, LittleFS, PCA requirement, microphone, restart, and heap checks. | Call endpoints before/after invalid config; hardware PCA checks require device. |
 
-- NimBLE backend is initialized correctly.
-- Note On with velocity 0 is handled as Note Off.
-- Static callbacks are protected against null pointers.
-- Advertising restart behavior depends on the BLE-MIDI library; explicit restart may be worth validating on hardware.
+## Fields requiring restart
 
-## WiFi / rtpMIDI
+The validator marks `restart_required` when persisted changes affect pin modes, I2C/PCA routing, controller initialization, or MIDI serial setup: number of fingers, finger PCA channels, airflow/valve/angle PCA channels, air mode, valve type, solenoid GPIO, fan GPIO, pump count or pump GPIOs, motor type, sensor type, Hall/endstop GPIOs, and serial MIDI enable/RX pin.
 
-- AP and STA modes are implemented with fallback behavior.
-- rtpMIDI uses AppleMIDI on port 5004.
-- mDNS advertises HTTP and AppleMIDI services.
-- WiFi credentials are persisted in configuration.
-- JSON escaping for scanned SSIDs should be reviewed if arbitrary SSIDs are expected.
+## Dynamic fields
 
-## MIDI file player
+CC defaults, note airflow percentages, note angle percentages, finger patterns, velocities, expression/vibrato values, fan/pump temporary targets, and PID target percentages are dynamic when they do not require a new `pinMode()`, PCA begin, sensor begin, or MIDI serial begin.
 
-- SMF Type 0 and Type 1 parsing is implemented.
-- Tempo changes and tick-to-ms conversion use 64-bit arithmetic.
-- Playback is non-blocking.
-- Event allocation is fixed-size to avoid fragmentation.
-- Unknown or malformed chunks should continue to be guarded against infinite loops.
+## Remaining hardware tests
 
-## Finger and note sequencing
-
-- Finger lookup and servo angle bounds checks are present.
-- Note sequencing positions fingers before opening air.
-- Overlapping notes are handled by stopping the current note before starting the next.
-
-## Airflow and pressure
-
-- Six air modes are supported.
-- CC7, CC11, CC2, CC73, and CC74 are integrated.
-- Pump/reservoir control supports cascade, stagger, bang-bang, and PID behavior.
-- CC73 intentionally changes live expression behavior and is not persisted unless saved through the UI.
-
-## Web configurator
-
-- REST and WebSocket APIs cover configuration, MIDI upload, playback, WiFi, and live testing.
-- MIDI upload validates size and storage limits.
-- Path traversal is mitigated by sanitizing stored MIDI file names.
-
-## Storage
-
-- LittleFS configuration is initialized from defaults and persisted to JSON.
-- Bounds checks are applied to variable-size arrays.
-- WiFi password is stored in plain text, which is acceptable for this embedded project but should be documented.
-
-## Recommendations
-
-1. Build JSON responses with ArduinoJson where user-provided strings are included.
-2. Keep EOF guards in MIDI parsing paths.
-3. Consider factoring shared angle-to-PWM math.
-4. Hardware-test BLE advertising restart behavior.
-5. Document volatile MIDI CC behavior for expression controls.
-
-## Hardening pass (2026-07)
-
-Fixed two reachable divide-by-zero crashes:
-
-- **`MidiFilePlayer::parseMThd`** — a malformed uploaded `.mid` with a `division`
-  (ticks/beat) of `0` reached `ticksToMs()` and triggered an integer
-  divide-by-zero panic on the ESP32. `parseMThd` now rejects `division == 0`
-  in addition to the existing SMPTE guard, so the upload fails cleanly with
-  "Invalid MIDI format".
-- **`fastSin` (AirflowController)** — if `vibratoFrequencyHz` was configured to
-  `0` (or above ~1000 Hz, which rounds the period to `0`) while modulation was
-  active, the `timeMs % period` computed a modulo-by-zero. `fastSin` now guards
-  both cases and returns `0` (vibrato disabled) instead of crashing.
-
-### Still open (defense-in-depth, not blocking)
-
-- REST/WebSocket JSON responses are hand-built by string concatenation; embedded
-  string fields (`device`, `wifi_ssid`, `instrumentColor`, and scanned SSIDs in
-  `getScanResultsJson`) are not escaped. A `"` or `\` in any of them yields
-  malformed JSON and breaks the corresponding UI panel. Scanned SSIDs are the
-  only externally-controlled source. Prefer ArduinoJson serialization here.
-- `POST /api/config` scalar fields (PCA channels, GPIO pins, angles) are stored
-  with minimal server-side range validation. The web UI constrains inputs, but
-  out-of-range values sent directly are accepted. Add range clamps for
-  defense-in-depth.
-- `NoteSequencer` keeps the relative-timestamp / `_playbackStartTime`
-  pre-scheduling machinery, but `_playbackStartTime` is never reset after the
-  first event, so live events always fire immediately (the intended behavior for
-  live play). The scheduling code is effectively vestigial and could be
-  simplified for clarity.
+No physical ESP32, PCA9685 board, sensor, pump, fan, valve, microphone, or MIDI hardware was available in this environment. All rows in `HARDWARE_TEST_MATRIX.md` are therefore marked `NOT TESTED — requires hardware` until executed on a real bench.
