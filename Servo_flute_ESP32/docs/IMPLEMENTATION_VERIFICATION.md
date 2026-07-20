@@ -1,3 +1,171 @@
+## Executable verification pass
+
+Status: FAIL
+
+Date: 2026-07-20 UTC.
+
+### Scope and repository checks
+
+Commands started with `git status`, `git branch --show-current`, `git log --oneline --decorate -20`, `git show --stat 87a4afe221d2f770fdc97e2ead07baa5bbfd60b8`, and `git merge-base work main`.
+
+Findings:
+
+- Active branch: `work`.
+- Working tree before changes: clean.
+- Local history contains the prior pressure-controller fix commit `965e003 fix: correct pressure controller PWM scaling audit` and the merge commit `108564b`.
+- The announced object `87a4afe221d2f770fdc97e2ead07baa5bbfd60b8` is not present in the local clone, even after `git fetch --all --prune`.
+- `main` is not present as a local ref, so `git merge-base work main` failed with `fatal: Not a valid object name main`.
+- The actual pressure fix is present in `PressureController.cpp`: PID branches now pass logical `0..255` PWM to `setPumpPwm()`, and `writePumpHw()` remains the single physical pump min/max mapper.
+
+### Tool versions
+
+- Python: `Python 3.14.4`.
+- PlatformIO: NOT INSTALLED. `python3 -m pip install --user --upgrade platformio` failed because the package index tunnel returned `403 Forbidden` for every retry. `python3 -m platformio --version` failed with `No module named platformio`.
+- Existing PlatformIO lookup checked `~/.platformio`, `~/.local/bin`, `/usr/local/bin`, `/opt`, and `import platformio`; no installation was found.
+- Native compiler used for fallback executable proof: `g++` with `-std=c++17`.
+
+### PlatformIO project definition added
+
+A repository `platformio.ini` was added with:
+
+- `env:esp32dev`: `platform = espressif32`, `board = esp32dev`, `framework = arduino`, ArduinoJson and Adafruit PCA9685/BusIO libraries.
+- `env:native`: `platform = native`, custom test framework, `-DUNIT_TEST`, native Arduino/Wire stubs, and source isolation so native tests compile selected production files instead of uncontrolled ESP32 hardware code.
+
+PlatformIO commands attempted:
+
+- `python3 -m platformio project config` — FAIL, module missing.
+- `python3 -m platformio run --list-targets` — FAIL, module missing.
+- `python3 -m platformio run` — FAIL, module missing.
+- `python3 -m platformio test -e native` — FAIL, module missing.
+
+Because the ESP32 firmware did not compile in PlatformIO, the overall result for this pass is `FAIL` under the requested criteria.
+
+### Executable native fallback proof
+
+A pytest-driven native C++ executable was added and run successfully as fallback evidence while PlatformIO was unavailable.
+
+Command:
+
+```text
+python3 -m pytest -q
+```
+
+Result:
+
+```text
+8 passed in 11.89s
+```
+
+C++ behavioral executable command used by pytest:
+
+```text
+g++ -std=c++17 -DUNIT_TEST -Inative_test/include -IServo_flute_ESP32 native_test/src/arduino_stubs.cpp native_test/src/config_test_stub.cpp Servo_flute_ESP32/PressureController.cpp Servo_flute_ESP32/EventQueue.cpp Servo_flute_ESP32/FingerController.cpp Servo_flute_ESP32/AirflowController.cpp Servo_flute_ESP32/FanController.cpp Servo_flute_ESP32/NoteSequencer.cpp tests/cpp/test_behavior.cpp -o <tmp>/behavior
+```
+
+Production files directly compiled and executed by the native behavioral executable:
+
+- `Servo_flute_ESP32/PressureController.cpp`
+- `Servo_flute_ESP32/EventQueue.cpp`
+- `Servo_flute_ESP32/FingerController.cpp`
+- `Servo_flute_ESP32/AirflowController.cpp`
+- `Servo_flute_ESP32/FanController.cpp`
+- `Servo_flute_ESP32/NoteSequencer.cpp`
+
+Native fakes/stubs capture GPIO/PWM writes, analog reads, digital reads, I2C calls, serial logging, and `millis()`.
+
+### Native behavioral coverage added
+
+C++ behavioral cases added:
+
+- PressureController direct logical PWM conversion for `0`, `64`, `128`, `192`, `255` with physical range `80..200`.
+- PressureController per-pump physical mapping for three pumps with ranges `60..180`, `90..220`, `110..255` equivalent coverage in configured arrays.
+- On/Off pump branch rejects intermediate PWM as a hardware state and writes only HIGH/LOW.
+- Hall PID branch executes production PID code and verifies that logical PID PWM is physically mapped exactly once.
+- Guard coverage for `hallThresholdLow == hallThresholdHigh`, `pumpCascadeThreshold = 100`, `numPumps = 0`, and `numPumps > MAX_PUMPS` through executable code and validation stub.
+- EventQueue empty, full, insertion failure, drain, reference reset, reuse, purge, and timestamp near `uint32_t` overflow.
+- NoteSequencer live note-on path, finger-before-air sequencing, minimum note duration (`100 ms`), deferred note-off at `t=20`, still playing at `t=99`, stop after minimum duration, and panic stop before the minimum duration.
+- FanController autonomous no-WebSocket operation: note-on speed, idle after note-off, idle timeout, and panic/stop.
+- Six airflow modes execute initialization, note-on/open, note-off/close, rest/safe path, and no-WebSocket operation through production `AirflowController` code.
+
+Remaining gaps keep the software verification from being a full `PASS`:
+
+- PlatformIO could not be installed due network/index `403 Forbidden`; ESP32 firmware compilation was not executed.
+- PlatformIO native environment could not be executed.
+- The validation tests call a native validation stub because production `ConfigStorage.cpp` still depends on ArduinoJson/LittleFS and was not isolated into a pure validation translation unit in this pass.
+- Hardware tests were not executed.
+
+### PWM mutation test
+
+Temporary mutation introduced in `PressureController.cpp`:
+
+```text
+setPumpPwm(cfg.pumpMinPwm[0] + (uint16_t)(cfg.pumpMaxPwm[0] - cfg.pumpMinPwm[0]) * pwm / 255);
+```
+
+This reintroduced double conversion in the Hall PID branch only. The mutation was restored before commit.
+
+Mutated command result:
+
+```text
+python3 -m pytest -q tests/test_native_behavior.py
+FAILED tests/test_native_behavior.py::test_cpp_behavioral_production_sources
+Assertion `__analog_writes[25]==physical(80,200,127)' failed.
+```
+
+After restoration:
+
+```text
+python3 -m pytest -q tests/test_native_behavior.py
+1 passed in 11.59s
+```
+
+### Test classification
+
+- `tests/test_static_audit.py`: static source inspection.
+- `tests/test_native_behavior.py`: integration-style host test that compiles and executes selected production C++ sources with native fakes.
+- `tests/cpp/test_behavior.cpp`: behavioral unit/integration executable for production controllers under fake hardware.
+- No hardware tests were executed.
+
+### Compilation and memory
+
+| Environment | Result | Flash | RAM | Warnings |
+| --- | --- | --- | --- | --- |
+| esp32dev | FAIL | NOT TESTED | NOT TESTED | PlatformIO unavailable (`No module named platformio`) |
+| native | PARTIAL | N/A | N/A | Native fallback executable passed under g++; PlatformIO native unavailable |
+
+### Tests
+
+| Suite | Type | Executed | Passed | Failed | Skipped |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `python3 -m pytest -q` | static source inspection + native C++ behavioral fallback | 8 | 8 | 0 | 0 |
+| `python3 -m pytest -q tests/test_native_behavior.py` | native C++ behavioral fallback | 1 | 1 | 0 | 0 |
+| `python3 -m platformio test -e native` | PlatformIO native | 0 | 0 | 1 | 0 |
+| `python3 -m platformio run` | ESP32 firmware build | 0 | 0 | 1 | 0 |
+
+### Hardware tests remaining
+
+Status: `NOT TESTED — requires hardware`.
+
+- ESP32 boot with custom `/config.json` and PCA9685 attached.
+- PCA9685 OE behavior during reset, invalid config, and panic.
+- Real pump PWM electrical response for PWM and On/Off pumps.
+- Reservoir sensor loss and recovery with VL53L0X/VL6180X/Hall/endstop hardware.
+- BLE-MIDI, MIDI DIN, rtpMIDI, and MIDI file playback on target hardware.
+- WebSocket manual actuator timeout/disconnect ownership on target hardware.
+- Fan current draw/ramp behavior under load.
+
+### Pull request status
+
+`gh` is not installed in the environment. Commands attempted:
+
+- `gh pr status` — FAIL: `gh: command not found`.
+- `gh pr list --head work` — FAIL: `gh: command not found`.
+
+A PR could not be verified or created with the GitHub CLI in this environment. A PR creation/update was requested via the repository PR helper after committing.
+
+### Recommendation
+
+`requires software corrections`
 # Implementation verification counter-audit
 
 Date: 2026-07-20  

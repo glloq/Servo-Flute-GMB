@@ -1,0 +1,7 @@
+
+# Python test cache
+__pycache__/
+.pytest_cache/
+# PlatformIO local build/cache
+.pio/
+.venv-platformio/
