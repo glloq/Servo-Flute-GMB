@@ -1,4 +1,8 @@
-"""Compile and execute native C++ behavioral tests against production sources."""
+"""Host-compiled behavioral integration tests against production sources.
+
+This pytest harness is a second line of defense. The authoritative native
+PlatformIO path is `python -m platformio test -e native`, configured in CI.
+"""
 import subprocess
 from pathlib import Path
 
@@ -7,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCES = [
     "native_test/src/arduino_stubs.cpp",
     "native_test/src/config_test_stub.cpp",
+    "Servo_flute_ESP32/ConfigValidator.cpp",
     "Servo_flute_ESP32/PressureController.cpp",
     "Servo_flute_ESP32/EventQueue.cpp",
     "Servo_flute_ESP32/FingerController.cpp",

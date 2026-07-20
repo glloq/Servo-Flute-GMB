@@ -1,3 +1,73 @@
+## GitHub Actions executable verification
+
+Status: FAIL (GitHub connectivity blocked from this environment; CI workflow added but not pushed or observed).
+
+Date: 2026-07-20 UTC.
+
+### Real repository/context checks requested for this pass
+
+Local commands executed before modifying files:
+
+- `git status`: branch `work`, clean tree.
+- `git branch --show-current`: `work`.
+- `git remote -v`: no configured remotes.
+- `git log --oneline --decorate --all -30`: local `HEAD` was `9d97a6f Merge pull request #71 from glloq/codex/poursuivre-la-contre-verification-du-depot`; the clone contains merge history through PR #71.
+- `git show --stat 79490e5835378a794468fa9c80f8f3c4f2e081d4`: failed with `fatal: bad object 79490e5835378a794468fa9c80f8f3c4f2e081d4`.
+
+GitHub/network checks attempted:
+
+- `git ls-remote https://github.com/glloq/Servo-Flute-GMB.git`: failed with `CONNECT tunnel failed, response 403`.
+- GitHub REST API requests to `https://api.github.com/repos/glloq/Servo-Flute-GMB`, `/branches`, and `/pulls?state=all`: failed with `Tunnel connection failed: 403 Forbidden`.
+- `python -m pip install --upgrade platformio`: failed with repeated `Tunnel connection failed: 403 Forbidden`.
+
+Because neither GitHub nor PyPI was reachable from this execution environment, no verified GitHub branch, PR URL, Actions run id, ESP32 flash/RAM usage, or PlatformIO-native run result can be claimed in this file. The workflow added in this pass is intended to make those checks reproducible once pushed from an environment with GitHub/PyPI access.
+
+### Commit presence table
+
+| Commit | Present on GitHub | Branch | Pull Request | Ancestor of current branch | Action required |
+| --- | --- | --- | --- | --- | --- |
+| `87a4afe221d2f770fdc97e2ead07baa5bbfd60b8` | Unknown: GitHub blocked | Unknown | Unknown | No: absent locally | Re-query GitHub from connected environment; pressure PWM equivalent is present locally in `965e003`. |
+| `79490e5835378a794468fa9c80f8f3c4f2e081d4` | Unknown: GitHub blocked | Unknown | Unknown | No: absent locally | Re-query GitHub; do not assume this disconnected clone contains it. |
+| `c7a6fd4` | Unknown: GitHub blocked | Unknown | Unknown | No: absent locally | Re-query GitHub; local equivalent PlatformIO/native work appears as `838e5eb`/PR #71 history. |
+| `67ca0fe` | Unknown: GitHub blocked | Local merge history | PR #69 by local commit message only | Yes | Use as historical local context only until GitHub is verified. |
+| `76edef7` | Unknown: GitHub blocked | Local merge history | PR #68 by local commit message only | Yes | Use as historical local context only until GitHub is verified. |
+
+### CI added
+
+`.github/workflows/firmware-ci.yml` adds a non-optional workflow with:
+
+- `ESP32 firmware build`: Python 3.12, PlatformIO install, `python -m platformio run -e esp32dev`.
+- `PlatformIO native tests and Python audits`: Python 3.12, PlatformIO + pytest install, `python -m platformio test -e native`, then `python -m pytest -q`.
+
+The workflow intentionally does not use `continue-on-error` or `|| true`; missing dependencies, firmware compile failures, native test failures, and pytest failures keep the PR red. Recommended required checks before merge are: `ESP32 firmware build`, `PlatformIO native tests and Python audits`, and the pytest step inside the native job.
+
+### PlatformIO project audit update
+
+`platformio.ini` now declares the real sketch/source directory as `Servo_flute_ESP32`, the ESP32 target as `esp32dev`, the Arduino framework on `espressif32@6.10.0`, and pinned dependencies for ArduinoJson, Adafruit PCA9685/BusIO, ESPAsyncWebServer/AsyncTCP, BLE-MIDI, AppleMIDI, and NimBLE. The native environment compiles selected production translation units, including the extracted production `ConfigValidator.cpp`, instead of relying on a validation stub.
+
+### Config validation update
+
+The pure validation function has been extracted from `ConfigStorage.cpp` into `ConfigValidator.cpp`. `ConfigStorage.cpp`, the firmware entry points, native host tests, and the future PlatformIO native test path use the same production `validateAndNormalizeConfig(RuntimeConfig&, const RuntimeConfig*)` implementation. The former native validation stub has been removed; only the global `RuntimeConfig cfg` test instance remains in `native_test/src/config_test_stub.cpp`.
+
+### Local executable checks in this pass
+
+- `python -m pytest -q`: PASS, `8 passed in 7.96s`.
+- `python -m platformio test -e native`: FAIL locally because PlatformIO is not installed and PyPI access is blocked.
+- `python -m platformio run -e esp32dev`: NOT EXECUTED locally for the same PlatformIO/PyPI limitation.
+
+### GitHub Actions run results
+
+| Job | Run URL | Commit | Result | Flash | RAM |
+| --- | --- | --- | --- | --- | --- |
+| ESP32 firmware build | Not available: workflow not pushed/observable from blocked environment | Not available | FAIL / not observed | Not available | Not available |
+| PlatformIO native tests and Python audits | Not available: workflow not pushed/observable from blocked environment | Not available | FAIL / not observed | N/A | N/A |
+
+### Result for this pass
+
+Overall result remains **FAIL** under the requested criteria because the branch is still not connected to a verified GitHub remote in this environment, no real PR URL was obtainable, GitHub Actions could not be observed, ESP32 firmware compilation was not proven, and PlatformIO native tests were not executed. Hardware rows remain **NOT TESTED — requires hardware**.
+
+---
+
 ## Executable verification pass
 
 Status: FAIL

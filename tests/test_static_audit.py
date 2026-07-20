@@ -6,6 +6,7 @@ def read(path):
 
 def test_validation_entry_points_present():
     assert 'validateAndNormalizeConfig(RuntimeConfig& config' in read('Servo_flute_ESP32/ConfigStorage.h')
+    assert 'validateAndNormalizeConfig(RuntimeConfig& config' in read('Servo_flute_ESP32/ConfigValidator.cpp')
     assert 'validateAndNormalizeConfig(cfg' in read('Servo_flute_ESP32/Servo_flute_ESP32.ino')
     assert 'validateAndNormalizeConfig(cfg, &previousConfig)' in read('Servo_flute_ESP32/WebConfigurator.cpp')
 
