@@ -57,6 +57,41 @@ def test_autocalibrator_range_find_is_canonical():
     assert 'ACAL_MODE_RANGE_FINDER' not in joined
 
 
+def test_autocal_nominal_persistence_and_validation():
+    # Nominal airflow is stored, migrated when absent, and validated 0<=min<=nominal<=max.
+    cs = read('Servo_flute_ESP32/ConfigStorage.cpp')
+    assert 'airflowNominalPercent' in cs
+    assert 'n["anm"] = cfg.notes[i].airflowNominalPercent' in cs   # save
+    assert 'containsKey("anm")' in cs                              # migration branch on load
+    val = read('Servo_flute_ESP32/ConfigValidator.cpp')
+    assert 'airflow nominal < min' in val
+    assert 'airflow nominal > max' in val
+
+
+def test_autocal_websocket_serialization_fields():
+    # Progress + result messages expose the new adaptive-calibration data.
+    web = read('Servo_flute_ESP32/WebConfigurator.cpp')
+    assert 'acal_prog' in web and 'acal_done' in web and 'acal_error' in web
+    for tok in ['phase', 'air', 'noise', 'confidence', 'validFrames', 'totalFrames',
+                'nominal', 'stability', 'snr']:
+        assert tok in web, tok
+    ui = read('Servo_flute_ESP32/web_content.h')
+    for tok in ['validFrames', 'acalNoise', "d.t==='acal_error'", 'r.nominal']:
+        assert tok in ui, tok
+
+
+def test_autocal_global_timeout_and_injection_layer():
+    # Firmware-side global timeout + a hardware-free audio injection interface.
+    st = read('Servo_flute_ESP32/settings.h')
+    assert 'AUTOCAL_GLOBAL_TIMEOUT_MS' in st
+    acc = read('Servo_flute_ESP32/AutoCalibrator.cpp')
+    assert 'AUTOCAL_GLOBAL_TIMEOUT_MS' in acc
+    assert 'delay(' not in acc                    # non-blocking state machine
+    assert Path(ROOT / 'Servo_flute_ESP32/IAudioSource.h').exists()
+    ah = read('Servo_flute_ESP32/AudioAnalyzer.h')
+    assert 'public IAudioSource' in ah
+
+
 def test_watchdog_has_idf_compatibility_layer():
     ino = read('Servo_flute_ESP32/Servo_flute_ESP32.ino')
     assert '#include <esp_idf_version.h>' in ino

@@ -42,6 +42,45 @@ Common client messages:
 
 Server messages include status broadcasts, MIDI file events, audio-monitoring data, and auto-calibration progress.
 
+### Microphone auto-calibration messages (server → client)
+
+Client control messages: `{"t":"auto_cal","mode":"air"}` starts per-note airflow
+calibration, `"mode":"range"` starts the servo range finder, `"mode":"stop"`
+stops, `"mode":"apply_range"` applies range-finder results.
+
+Live progress (`acal_prog`), one per airflow position:
+
+```json
+{
+  "t": "acal_prog", "idx": 0, "note": "C6", "total": 14,
+  "phase": "coarse", "air": 32,
+  "rms": 0.043, "noise": 0.006,
+  "hz": 1046.5, "midi": 84, "cents": -3.2,
+  "confidence": 91, "validFrames": 5, "totalFrames": 5
+}
+```
+
+`phase` is one of `prepare`, `noise`, `coarse`, `fine`, `nominal`, `done`.
+
+Completion (`acal_done`) reports one result per note:
+
+```json
+{
+  "name": "C6", "ok": true,
+  "min": 20, "nominal": 39, "max": 68,
+  "confidence": 91, "cents": -3.2, "stability": 0.94, "snr": 18.5
+}
+```
+
+A failed note has `ok:false` and its previous calibration is kept. On a global
+firmware-timeout abort the server sends `{"t":"acal_error","msg":"..."}`. The
+audio monitor stream (`{"t":"audio",...}`) additionally carries `conf` (0–100)
+and `valid` fields.
+
+Each `notes[]` entry in `GET/POST /api/config` includes `anm` (nominal airflow
+percent) next to `amn`/`amx`; it is derived from min/max when absent
+(backward-compatible migration) and validated as `0 ≤ amn ≤ anm ≤ amx ≤ 100`.
+
 ## 2026 runtime safety and validation update
 
 Configuration is validated by the firmware, not only by HTML controls. PCA channel conflicts, incompatible GPIO reuse, reserved ESP32 pins, input-only output pins, invalid min/max relationships, invalid MIDI channels, invalid fingering values, and unsafe pump/sensor bounds are detected before saving.

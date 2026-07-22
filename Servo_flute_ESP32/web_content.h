@@ -533,6 +533,17 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
       <div class="acal-progress" id="acalProgress">
         <div class="acal-info"><span id="acalStep">-</span><span id="acalState">-</span><span id="acalAngle"></span></div>
         <div class="acal-bar"><div class="acal-fill" id="acalFill"></div></div>
+        <div class="acal-info" id="acalMetrics" style="flex-wrap:wrap;gap:4px 10px;margin-top:6px;display:none">
+          <span>Air <b id="acalAir">-</b>%</span>
+          <span>Note <b id="acalDetNote">-</b></span>
+          <span><b id="acalDetHz">-</b> Hz</span>
+          <span><b id="acalDetCents">-</b> ct</span>
+          <span>Conf <b id="acalConf">-</b>%</span>
+          <span>RMS <b id="acalRms">-</b></span>
+          <span>Bruit <b id="acalNoise">-</b></span>
+          <span>Trames <b id="acalFrames">-</b></span>
+        </div>
+        <div id="acalMsg" style="margin-top:6px;font-size:.8em;color:#e94560;display:none"></div>
         <div id="acalResults" style="margin-top:8px;display:none"></div>
       </div>
     </div>
@@ -2962,18 +2973,39 @@ function handleWs(d){
       $('pitchCents').className='pitch-cents '+(Math.abs(c)<PITCH_OK_CT?'ok':c>0?'sharp':'flat')}
     else{$('pitchNote').textContent='-';$('pitchHz').textContent='- Hz';$('pitchCents').textContent='-'}
   }else if(d.t==='acal_prog'){
-    $('acalProgress').style.display='block';$('acalStep').textContent='Note '+(d.idx+1)+'/'+d.total+' '+d.note;
+    $('acalProgress').style.display='block';$('acalMsg').style.display='none';
+    $('acalStep').textContent='Note '+(d.idx+1)+'/'+d.total+' '+(d.note||'');
     $('acalFill').style.width=(((d.idx||0)/(d.total||1))*100)+'%';
-    const sn={0:'Attente',1:'Prep',2:'Stab',3:'Sweep...',4:'Analyse',5:'OK'};
-    $('acalState').textContent=sn[d.st]||'...';
-    $('acalAngle').textContent=d.st===3&&d.angle!=null?(d.angle+' deg'):''
+    const ph={prepare:'Preparation',noise:'Mesure bruit',coarse:'Balayage rapide',fine:'Balayage fin',nominal:'Debit nominal',done:'Analyse'};
+    $('acalState').textContent=ph[d.phase]||d.phase||'...';
+    $('acalAngle').textContent='';
+    // Live metrics
+    $('acalMetrics').style.display='flex';
+    $('acalAir').textContent=(d.air!=null?d.air:'-');
+    $('acalDetNote').textContent=(d.midi>0?mn(d.midi):'-');
+    $('acalDetHz').textContent=(d.hz>0?Math.round(d.hz):'-');
+    const cc=d.cents||0;$('acalDetCents').textContent=(d.midi>0?((cc>=0?'+':'')+cc.toFixed(0)):'-');
+    $('acalConf').textContent=(d.confidence!=null?d.confidence:'-');
+    $('acalRms').textContent=(d.rms!=null?d.rms.toFixed(3):'-');
+    $('acalNoise').textContent=(d.noise!=null?d.noise.toFixed(3):'-');
+    $('acalFrames').textContent=(d.validFrames!=null?(d.validFrames+'/'+d.totalFrames):'-');
   }else if(d.t==='acal_done'){
     autoCalRunning=false;$('btnAcalStart').style.display='';$('btnAcalStop').style.display='none';$('btnRfStart').style.display='';
-    $('acalFill').style.width='100%';$('acalState').textContent='Termine !';$('acalAngle').textContent='';addLog('Auto-cal OK');
-    if(d.results){let h='';d.results.forEach(r=>{h+='<div style="display:flex;justify-content:space-between;font-size:.8em;padding:2px 0">'+
-      '<span>'+esc(r.name)+'</span><span style="color:'+(r.ok?'#4ecca3':'#e94560')+'">'+(r.ok?esc(r.min+'%-'+r.max+'%'+(r.minA!=null?' ('+r.minA+'deg-'+r.maxA+'deg)':'')):'Echec')+'</span></div>'});
+    $('acalFill').style.width='100%';$('acalState').textContent='Termine !';$('acalAngle').textContent='';$('acalMetrics').style.display='none';addLog('Auto-cal OK');
+    if(d.results){let h='';d.results.forEach(r=>{
+      let detail;
+      if(r.ok){detail=esc(r.min+'/'+r.nominal+'/'+r.max+'%')+' <span style="color:#888">conf '+r.confidence+'% · '+(r.cents>=0?'+':'')+(r.cents||0).toFixed(0)+'ct · stab '+((r.stability||0)*100).toFixed(0)+'% · SNR '+(r.snr||0).toFixed(0)+'dB</span>';}
+      else{detail='Echec (aucune note stable detectee)';}
+      h+='<div style="display:flex;justify-content:space-between;gap:8px;font-size:.78em;padding:2px 0">'+
+      '<span>'+esc(r.name)+'</span><span style="color:'+(r.ok?'#4ecca3':'#e94560');
+      h+=';text-align:right">'+detail+'</span></div>'});
       $('acalResults').innerHTML=h;$('acalResults').style.display='block'}
     setTimeout(loadConfig,1000)
+  }else if(d.t==='acal_error'){
+    autoCalRunning=false;$('btnAcalStart').style.display='';$('btnAcalStop').style.display='none';$('btnRfStart').style.display='';
+    $('acalMetrics').style.display='none';$('acalState').textContent='Erreur';
+    $('acalMsg').textContent=d.msg||'Calibration interrompue';$('acalMsg').style.display='block';
+    addLog('Auto-cal ERREUR: '+(d.msg||''));showToast(d.msg||'Calibration interrompue','error')
   }else if(d.t==='rf_prog'){
     $('rfProgress').style.display='block';$('rfAngle').textContent=(d.angle||0)+' deg';
     $('rfFill').style.width=((d.angle||0)/180*100)+'%';
@@ -3743,7 +3775,7 @@ function applyRangeResult(){wsSend({t:'auto_cal',mode:'apply_range'})}
 function dismissRangeResult(){$('rfProgress').style.display='none';$('btnRfStart').style.display='';$('btnRfStop').style.display='none'}
 function startAutoCal(){autoCalRunning=true;$('btnAcalStart').style.display='none';$('btnAcalStop').style.display='';
   $('btnRfStart').style.display='none';
-  $('acalProgress').style.display='block';$('acalResults').style.display='none';wsSend({t:'auto_cal',mode:'air'})}
+  $('acalProgress').style.display='block';$('acalResults').style.display='none';$('acalMsg').style.display='none';$('acalMetrics').style.display='none';wsSend({t:'auto_cal',mode:'air'})}
 function stopAutoCal(){autoCalRunning=false;$('btnAcalStart').style.display='';$('btnAcalStop').style.display='none';
   $('btnRfStart').style.display='';wsSend({t:'auto_cal',mode:'stop'})}
 

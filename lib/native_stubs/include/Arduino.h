@@ -24,5 +24,5 @@ int digitalRead(uint8_t pin);
 void analogWrite(uint8_t pin,int value);
 int analogRead(uint8_t pin);
 class String: public std::string { public: using std::string::string; String():std::string(){} String(const char*s):std::string(s?s:""){} String(const std::string& s):std::string(s){} String(int v):std::string(std::to_string(v)){} bool isEmpty() const { return empty(); }};
-struct SerialClass { template<class T> void print(const T&){} template<class T> void println(const T&){} template<class T, class U> void println(const T&, const U&){} void println(){} };
+struct SerialClass { template<class T> void print(const T&){} template<class T, class U> void print(const T&, const U&){} template<class T> void println(const T&){} template<class T, class U> void println(const T&, const U&){} void println(){} };
 extern SerialClass Serial;

@@ -35,6 +35,7 @@ void ConfigStorage::initDefaults() {
     cfg.notes[i].midiNote = DEFAULT_NOTES[i].midiNote;
     cfg.notes[i].airflowMinPercent = DEFAULT_NOTES[i].airflowMinPercent;
     cfg.notes[i].airflowMaxPercent = DEFAULT_NOTES[i].airflowMaxPercent;
+    cfg.notes[i].airflowNominalPercent = DEFAULT_NOTES[i].airflowNominalPercent;
     cfg.notes[i].anglePercent = DEFAULT_NOTES[i].anglePercent;
     // Copy finger pattern (default has DEFAULT_NUM_FINGERS, pad rest with 0)
     for (int f = 0; f < MAX_FINGER_SERVOS; f++) {
@@ -247,6 +248,16 @@ ConfigLoadStatus ConfigStorage::loadWithStatus() {
       }
       cfg.notes[i].airflowMinPercent = n["amn"] | cfg.notes[i].airflowMinPercent;
       cfg.notes[i].airflowMaxPercent = n["amx"] | cfg.notes[i].airflowMaxPercent;
+      // Backward-compatible migration: if "anm" (nominal) is absent in the JSON,
+      // derive it from min/max so old configs keep working.
+      if (n.containsKey("anm")) {
+        cfg.notes[i].airflowNominalPercent = n["anm"] | cfg.notes[i].airflowNominalPercent;
+      } else {
+        uint8_t mn = cfg.notes[i].airflowMinPercent;
+        uint8_t mx = cfg.notes[i].airflowMaxPercent;
+        cfg.notes[i].airflowNominalPercent =
+            (mx >= mn) ? (uint8_t)(mn + (2 * (mx - mn)) / 5) : mn;  // min + 0.40*(max-min)
+      }
       cfg.notes[i].anglePercent = n["ang"] | cfg.notes[i].anglePercent;
       JsonArray fp = n["fp"];
       if (fp) {
@@ -458,6 +469,7 @@ bool ConfigStorage::save() {
     n["midi"] = cfg.notes[i].midiNote;
     n["amn"] = cfg.notes[i].airflowMinPercent;
     n["amx"] = cfg.notes[i].airflowMaxPercent;
+    n["anm"] = cfg.notes[i].airflowNominalPercent;
     n["ang"] = cfg.notes[i].anglePercent;
     JsonArray fp = n["fp"].to<JsonArray>();
     for (int f = 0; f < MAX_FINGER_SERVOS; f++) {

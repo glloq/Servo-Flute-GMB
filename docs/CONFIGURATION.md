@@ -16,10 +16,34 @@ Configuration is stored in `RuntimeConfig` and persisted as JSON on LittleFS. De
 
 - air mode;
 - flow servo PCA channel;
-- per-note airflow min/max;
+- per-note airflow min/max **and recommended nominal** (`airflowNominalPercent`,
+  JSON key `anm`), constrained to `0 ≤ min ≤ nominal ≤ max ≤ 100`;
 - optional angle servo for transverse flutes;
 - solenoid or servo-valve settings;
 - pump, fan, reservoir, and sensor settings.
+
+### Per-note nominal airflow (backward-compatible)
+
+Each note carries `airflowNominalPercent`, the recommended airflow within its
+min/max window, produced by microphone auto-calibration or edited manually.
+
+- Persisted as JSON key `anm` in each `notes[]` entry, alongside `amn`/`amx`.
+- **Migration:** an old config file (or an old web client) that omits `anm` is
+  loaded transparently — the nominal is derived as
+  `min + 0.40·(max − min)`.
+- The central `RuntimeConfig` validator rejects any note where
+  `nominal < min` or `nominal > max`.
+
+## Microphone auto-calibration constants
+
+`settings.h` exposes the microphone and auto-calibration parameters
+(`MIC_SAMPLE_RATE`, `MIC_RMS_ABSOLUTE_MIN`, `MIC_YIN_CONFIDENCE_MIN`,
+`AUTOCAL_NOISE_RATIO`, `AUTOCAL_NOISE_MEASURE_MS`,
+`AUTOCAL_PITCH_TOLERANCE_ONSET_CENTS`, `AUTOCAL_PITCH_TOLERANCE_STABLE_CENTS`,
+`AUTOCAL_AIR_SETTLE_MS`, `AUTOCAL_AUDIO_FRAMES_PER_STEP`,
+`AUTOCAL_REQUIRED_VALID_FRAMES`, `AUTOCAL_COARSE_STEP_PERCENT`,
+`AUTOCAL_FINE_STEP_PERCENT`, `AUTOCAL_GLOBAL_TIMEOUT_MS`, …). See
+`docs/AUTO_CALIBRATION.md`.
 
 ## MIDI
 

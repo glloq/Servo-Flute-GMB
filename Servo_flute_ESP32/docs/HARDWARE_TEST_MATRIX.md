@@ -28,6 +28,14 @@ Status convention: `NOT TESTED — requires hardware` means the procedure is def
 | SYS-WS | WebSocket loss | Web UI connected during test | Start pump/fan/servo test, close tab | All actuators return safe | Not executed | NOT TESTED — requires hardware | Disconnect handler invokes all-sound-off. |
 | SYS-WDT | Watchdog | Firmware running | Induce controlled stall in debug build | System restarts with safe OE disabled first | Not executed | NOT TESTED — requires hardware | Do not perform on unattended hardware. |
 | MIC | Microphone present/absent | INMP441 optional | Boot with/without mic and run diagnostics | Diagnostics distinguish detected/absent; calibration refuses absent mic | Not executed | NOT TESTED — requires hardware | No external network assets. |
+| MIC-WIRING | INMP441 I2S wiring | BCLK=14, WS=15, SD=32, L/R→GND, 3V3 | Boot, open mic monitor | Mic detected; VU + pitch update on sound | Not executed | NOT TESTED — requires hardware | 3V3 only; left slot. |
+| MIC-PLACEMENT | Mic placement / wind screen | Mic 5–15 cm off-axis with foam | Play sustained note near jet vs in jet | Off-axis + foam gives stable pitch; in-jet saturates | Not executed | NOT TESTED — requires hardware | Avoid direct air blast. |
+| MIC-NOISE | Adaptive noise floor | Pumps/fan running | Run per-note calibration | Per-note noise measured; threshold scales with noise | Not executed | NOT TESTED — requires hardware | Noise = valve closed, air at rest. |
+| MIC-CAL-AIR | Per-note airflow calibration | Instrument sounding | Run auto-calibrate all notes | min/nominal/max, confidence, cents, stability, SNR per note | Not executed | NOT TESTED — requires hardware | Neighbour/octave rejected; overblow = upper limit. |
+| MIC-CAL-FAIL | Failed note keeps old values | One note cannot sound | Run calibration | Failed note reported ok:false; old config unchanged | Not executed | NOT TESTED — requires hardware | No overwrite on failure. |
+| MIC-CAL-TIMEOUT | Global calibration timeout | Calibration running | Wait beyond AUTOCAL_GLOBAL_TIMEOUT_MS | Calibration aborts, valve closed, acal_error published | Not executed | NOT TESTED — requires hardware | Firmware-side timeout, not browser. |
+| MIC-CAL-DISCONNECT | Client disconnect during calibration | Web UI running calibration | Close the browser tab | Calibration stops, hardware returns to safe state | Not executed | NOT TESTED — requires hardware | Owner disconnect stops actuator test. |
+| MIC-RANGE | Servo range finder | Middle note sounding | Run range finder, apply | Usable servo min/max detected via exact-note pitch | Not executed | NOT TESTED — requires hardware | 0–180° sweep. |
 | ANGLE | Transverse angle servo present/absent | `embouchure=trav`, angle channel configured | Test angle and CC74 | Angle servo moves only when enabled and returns rest | Not executed | NOT TESTED — requires hardware | Validate PCA conflicts. |
 
 ## Finalization validation status
