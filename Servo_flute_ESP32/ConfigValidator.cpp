@@ -139,8 +139,12 @@ ConfigValidationResult validateAndNormalizeConfig(RuntimeConfig& config, const R
     }
     r.corrected |= normalizeRangeU8(config.notes[i].airflowMinPercent, 0, 100);
     r.corrected |= normalizeRangeU8(config.notes[i].airflowMaxPercent, 0, 100);
+    r.corrected |= normalizeRangeU8(config.notes[i].airflowNominalPercent, 0, 100);
     r.corrected |= normalizeRangeU8(config.notes[i].anglePercent, 0, 100);
     if (config.notes[i].airflowMinPercent > config.notes[i].airflowMaxPercent) appendIssue(r.error, "note airflow min > max at index " + String(i));
+    // Enforce 0 <= min <= nominal <= max <= 100.
+    if (config.notes[i].airflowNominalPercent < config.notes[i].airflowMinPercent) appendIssue(r.error, "note airflow nominal < min at index " + String(i));
+    if (config.notes[i].airflowNominalPercent > config.notes[i].airflowMaxPercent) appendIssue(r.error, "note airflow nominal > max at index " + String(i));
     for (uint8_t f = 0; f < config.numFingers; f++) if (config.notes[i].fingerPattern[f] > 2) appendIssue(r.error, "fingerPattern must be 0, 1, or 2");
   }
   for (uint8_t i = 0; i < MAX_PUMPS; i++) {

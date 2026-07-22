@@ -13,7 +13,55 @@
 #include "AirflowController.h"
 #include "NoteSequencer.h"
 #include "InstrumentManager.h"
+#include "IAudioSource.h"
+#include "PitchMath.h"
+#include "AutoCalMath.h"
+#include "AutoCalibrator.h"
+#include <cmath>
 extern std::map<uint8_t,int> __analog_writes, __digital_writes, __analog_reads, __digital_reads;
+
+// --- Simulated audio source for AutoCalibrator tests (no real I2S hardware) ---
+struct FakeAudio : public IAudioSource {
+  bool micDetected = true, active = false;
+  float rms = 0, hz = 0, cents = 0, conf = 0; int midi = 0; bool valid = false, snd = false;
+  bool isMicDetected() const override { return micDetected; }
+  void setActive(bool a) override { active = a; }
+  bool isActive() const override { return active; }
+  float getRMS() const override { return rms; }
+  bool isSoundDetected() const override { return snd; }
+  float getPitchHz() const override { return hz; }
+  int getPitchMidi() const override { return midi; }
+  float getPitchCents() const override { return cents; }
+  float getPitchConfidence() const override { return conf; }
+  bool isPitchValid() const override { return valid; }
+};
+static AutoCalMath::AudioFrame mkFrame(bool valid, float rms, int midi, float cents, float conf) {
+  AutoCalMath::AudioFrame f;
+  f.pitchValid = valid; f.rms = rms; f.hz = (midi > 0) ? PitchMath::midiToHz(midi) : 0.0f;
+  f.midi = midi; f.cents = cents; f.confidence = conf; return f;
+}
+// Drive a running calibration to completion, feeding simulated audio each cycle.
+template <class Model>
+static void driveAutoCal(AutoCalibrator& cal, FakeAudio& fa, Model model, int maxIter = 60000) {
+  int it = 0;
+  while (cal.isRunning() && it++ < maxIter) {
+    model(cal.getCurrentAirPercent(), cal.getCurrentNoteIndex(), fa);
+    __test_millis += 25;
+    cal.update();
+  }
+}
+// Realistic per-note audio model: silence below LO, the note in [LO,HI], overblow above.
+static void bandModel(int pct, int expectedMidi, int lo, int hi, FakeAudio& f) {
+  if (pct >= lo && pct <= hi) {
+    f.rms = 0.06f; f.valid = true; f.conf = 0.95f; f.midi = expectedMidi;
+    f.hz = PitchMath::midiToHz(expectedMidi); f.cents = -4.0f; f.snd = true;
+  } else if (pct > hi) {
+    f.rms = 0.06f; f.valid = true; f.conf = 0.95f; f.midi = expectedMidi + 12;
+    f.hz = PitchMath::midiToHz(expectedMidi + 12); f.cents = -4.0f; f.snd = true;
+  } else {
+    f.rms = 0.003f; f.valid = false; f.conf = 0.0f; f.midi = 0; f.hz = 0; f.cents = 0; f.snd = false;
+  }
+}
 static void resetCfg(){ memset(&cfg,0,sizeof(cfg)); cfg.numFingers=1; cfg.fingers[0].pcaChannel=0; cfg.fingers[0].closedAngle=90; cfg.fingers[0].direction=1; cfg.numPumps=1; cfg.pumpPins[0]=25; cfg.pumpPins[1]=26; cfg.pumpPins[2]=27; cfg.pumpMinPwm[0]=80; cfg.pumpMaxPwm[0]=200; cfg.pumpMinPwm[1]=90; cfg.pumpMaxPwm[1]=220; cfg.pumpMinPwm[2]=110; cfg.pumpMaxPwm[2]=255; cfg.motorType=MOTOR_TYPE_PWM; cfg.airMode=AIR_MODE_PUMP_VALVE; cfg.pumpCascadeThreshold=0; cfg.pumpStaggerMs=0; cfg.sensorType=SENSOR_TYPE_HALL_KY024; cfg.hallPin=36; cfg.hallThresholdLow=1000; cfg.hallThresholdHigh=2000; cfg.pidKp=10; cfg.pidKi=0; cfg.servoToSolenoidDelayMs=10; cfg.minNoteDurationMs=100; cfg.minNoteIntervalForValveCloseMs=0; cfg.airflowPcaChannel=10; cfg.solenoidPin=13; cfg.solenoidActivationTimeMs=50; cfg.solenoidPwmActivation=255; cfg.solenoidPwmHolding=128; cfg.servoAirflowOff=20; cfg.servoAirflowMin=60; cfg.servoAirflowMax=100; cfg.servoAngleOff=90; cfg.servoAngleMin=45; cfg.servoAngleMax=135; cfg.ccVolumeDefault=127; cfg.ccExpressionDefault=127; cfg.ccBreathDefault=127; cfg.ccBrightnessDefault=64; cfg.airVelocityResponse=100; strcpy(cfg.embouchure,"bec"); cfg.numNotes=3; cfg.notes[0].midiNote=60; cfg.notes[1].midiNote=61; cfg.notes[2].midiNote=62; cfg.notes[0].airflowMinPercent=0; cfg.notes[0].airflowMaxPercent=100; }
 static int physical(int minv,int maxv,int logical){ return logical==0?0:minv+(maxv-minv)*logical/255; }
 static void pressure_direct_pwm_once(){ resetCfg(); PressureController pc; for(int logical: {0,64,128,192,255}){ pc.setPumpPwm(logical); assert(__analog_writes[25]==physical(80,200,logical)); } cfg.numPumps=3; cfg.pumpCascadeThreshold=0; pc.setPumpPwm(128); assert(__analog_writes[25]==physical(80,200,128)); assert(__analog_writes[26]==physical(90,220,128)); assert(__analog_writes[27]==physical(110,255,128)); cfg.motorType=MOTOR_TYPE_ONOFF; pc.setPumpPwm(128); assert(__digital_writes[25]==HIGH); assert(__digital_writes[26]==HIGH); assert(__digital_writes[27]==HIGH); pc.setPumpPwm(0); assert(__digital_writes[25]==LOW); }
@@ -30,4 +78,159 @@ static void reservoir_autostart_behaviour(){ resetCfg(); extern WireClass Wire; 
 static void fan_autonomous(){ resetCfg(); __test_millis=0; cfg.airMode=AIR_MODE_FAN_SERVO; cfg.fanPin=26; cfg.fanMinPwm=60; cfg.fanMaxPwm=200; cfg.fanIdlePercent=20; cfg.fanIdleTimeoutMs=100; FanController f; f.begin(); f.onNoteOn(); f.setSpeed(50); __test_millis=300; f.update(); assert(__analog_writes[26]==130); f.onNoteOff(); __test_millis+=50; f.update(); assert(__analog_writes[26] < 130 && __analog_writes[26] > 0); __test_millis+=100; f.update(); __test_millis+=300; f.update(); assert(__analog_writes[26]==0); f.stop(); assert(__analog_writes[26]==0); }
 static void midi_validation_edges(){ resetCfg(); cfg.numNotes=1; cfg.notes[0].midiNote=0; assert(validateAndNormalizeConfig(cfg,nullptr).valid); resetCfg(); cfg.numNotes=1; cfg.notes[0].midiNote=127; assert(validateAndNormalizeConfig(cfg,nullptr).valid); resetCfg(); cfg.numNotes=1; cfg.notes[0].midiNote=128; assert(!validateAndNormalizeConfig(cfg,nullptr).valid); resetCfg(); cfg.notes[0].midiNote=200; assert(!validateAndNormalizeConfig(cfg,nullptr).valid); resetCfg(); cfg.notes[0].midiNote=(uint8_t)-1; assert(!validateAndNormalizeConfig(cfg,nullptr).valid); resetCfg(); cfg.numNotes=2; cfg.notes[0].midiNote=60; cfg.notes[1].midiNote=60; assert(!validateAndNormalizeConfig(cfg,nullptr).valid); }
 static void air_modes_paths(){ for(int mode=0; mode<=5; ++mode){ resetCfg(); cfg.airMode=mode; cfg.valveType=(mode==1); cfg.motorType=MOTOR_TYPE_PWM; int writes=0; AirflowController ac([&](uint8_t,uint16_t,uint16_t){writes++;}); ac.begin(); bool initiallySafe = !ac.isValveOpen() || mode==AIR_MODE_SERVO_ONLY || mode==AIR_MODE_FAN_SERVO; assert(initiallySafe); ac.setAirflowForNote(60,100); ac.openValve(); assert(ac.isValveOpen()); ac.closeValve(); assert(!ac.isValveOpen()); ac.setAirflowToRest(); assert(writes>0); } }
-int main(){ pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); std::cout << "behavior tests passed\n"; }
+// 1. Hz -> MIDI + cents conversion.
+static void autocal_pitch_conversions(){
+  assert(PitchMath::hzToMidi(440.0f)==69);
+  assert(std::fabs(PitchMath::hzToCents(440.0f,69))<0.5f);
+  assert(PitchMath::hzToMidi(880.0f)==81);
+  assert(PitchMath::hzToMidi(261.626f)==60);
+  float c=PitchMath::hzToCents(445.0f,69); assert(c>15.0f && c<25.0f);
+  // 2-3. neighbour + octave relationships
+  assert(PitchMath::isOctaveAbove(72,60)); assert(PitchMath::isOctaveAbove(84,60));
+  assert(!PitchMath::isOctaveAbove(67,60)); assert(!PitchMath::isOctaveAbove(61,60)); assert(!PitchMath::isOctaveAbove(48,60));
+  assert(PitchMath::isNoteMatch(60,-10.0f,60,50.0f));
+  assert(!PitchMath::isNoteMatch(60,-60.0f,60,50.0f));
+  assert(!PitchMath::isNoteMatch(61,0.0f,60,50.0f));
+}
+
+// 2-7. Pure aggregation helpers.
+static void autocal_math_helpers(){
+  using namespace AutoCalMath;
+  // 5. dynamic threshold from noise
+  assert(std::fabs(computeSoundThreshold(0.01f)-0.04f)<1e-6f);         // noise*ratio
+  assert(std::fabs(computeSoundThreshold(0.0001f)-MIC_RMS_ABSOLUTE_MIN)<1e-6f); // floor wins
+  // 6. median
+  float a[5]={3,1,2,5,4}; assert(std::fabs(median(a,5)-3.0f)<1e-6f);
+  float b[4]={1,2,3,4};   assert(std::fabs(median(b,4)-2.5f)<1e-6f);
+  const float TH=0.012f, TOL=50.0f, MC=0.80f;
+  AudioFrame good  = mkFrame(true,0.06f,60,-5.0f,0.95f);
+  AudioFrame neigh = mkFrame(true,0.06f,61, 0.0f,0.95f);
+  AudioFrame oct   = mkFrame(true,0.06f,72, 0.0f,0.95f);
+  AudioFrame lowc  = mkFrame(true,0.06f,60, 0.0f,0.50f);
+  AudioFrame quiet = mkFrame(true,0.005f,60,0.0f,0.95f);
+  AudioFrame sharp = mkFrame(true,0.06f,60,-70.0f,0.95f);
+  // 4. exact note accepted
+  assert(frameIsNote(good,60,TH,TOL,MC));
+  // 2. neighbour rejected  3. octave rejected (and flagged overblow)
+  assert(!frameIsNote(neigh,60,TH,TOL,MC));
+  assert(!frameIsNote(oct,60,TH,TOL,MC));
+  assert(frameIsOverblow(oct,60,TH,MC));
+  // low confidence / near-noise / wide-cents rejected
+  assert(!frameIsNote(lowc,60,TH,TOL,MC));
+  assert(!frameIsNote(quiet,60,TH,TOL,MC));
+  assert(!frameIsNote(sharp,60,TH,TOL,MC));
+  // 7. required valid frames (4 of 5)
+  AudioFrame f4[5]={good,good,good,good,neigh};
+  PositionStats s4=evaluatePosition(f4,5,60,TH,TOL,MC);
+  assert(s4.validFrames==4 && positionValid(s4,AUTOCAL_REQUIRED_VALID_FRAMES));
+  AudioFrame f3[5]={good,good,good,neigh,neigh};
+  PositionStats s3=evaluatePosition(f3,5,60,TH,TOL,MC);
+  assert(s3.validFrames==3 && !positionValid(s3,AUTOCAL_REQUIRED_VALID_FRAMES));
+  AudioFrame fo[5]={oct,oct,oct,good,good};
+  PositionStats so=evaluatePosition(fo,5,60,TH,TOL,MC);
+  assert(so.overblowFrames==3 && positionOverblown(so));
+  // 9. nominal computation + relationship clamping
+  assert(computeNominalPercent(20,68,0.40f)==39);
+  assert(computeNominalPercent(0,100,0.40f)==40);
+  assert(clampNominal(20,60,10,5)==25);   // below min+guard
+  assert(clampNominal(20,60,70,5)==55);   // above max-guard
+  assert(clampNominal(20,60,40,5)==40);   // inside band untouched
+  assert(snrDb(0.06f,0.003f)>20.0f);
+  assert(std::fabs(pitchStability(0.0f,100.0f)-1.0f)<1e-6f);
+  assert(std::fabs(pitchStability(100.0f,100.0f)-0.0f)<1e-6f);
+}
+
+// 10-11. Nominal migration formula + validator relationship (0<=min<=nominal<=max<=100).
+static void autocal_config_nominal_validation(){
+  // 10. migration: nominal derived from min/max == min + 0.40*(max-min)
+  uint8_t mn=20, mx=70; uint8_t nom=(uint8_t)(mn + (2*(mx-mn))/5);
+  assert(nom==40);
+  resetCfg(); cfg.numNotes=1; cfg.notes[0].midiNote=60;
+  cfg.notes[0].airflowMinPercent=20; cfg.notes[0].airflowMaxPercent=70; cfg.notes[0].airflowNominalPercent=40;
+  assert(validateAndNormalizeConfig(cfg,nullptr).valid);
+  // 11a. nominal < min rejected
+  cfg.notes[0].airflowNominalPercent=10; assert(!validateAndNormalizeConfig(cfg,nullptr).valid);
+  // 11b. nominal > max rejected
+  resetCfg(); cfg.numNotes=1; cfg.notes[0].midiNote=60;
+  cfg.notes[0].airflowMinPercent=20; cfg.notes[0].airflowMaxPercent=70; cfg.notes[0].airflowNominalPercent=80;
+  assert(!validateAndNormalizeConfig(cfg,nullptr).valid);
+}
+
+// 8-9. Integration: detect min/max band and a nominal inside it from simulated audio.
+static void autocal_integration_minmax_nominal(){
+  resetCfg(); cfg.numNotes=1; cfg.notes[0].midiNote=60;
+  cfg.servoAirflowMin=60; cfg.servoAirflowMax=100;
+  __test_millis=0;
+  FakeAudio fa;
+  FingerController fc([](uint8_t,uint16_t,uint16_t){});
+  AirflowController ac([](uint8_t,uint16_t,uint16_t){}); ac.begin();
+  AutoCalibrator cal(fc,ac,fa);
+  cal.start(ACAL_MODE_AIRFLOW);
+  assert(cal.isRunning());
+  driveAutoCal(cal, fa, [](int pct,int note,FakeAudio& f){ bandModel(pct,60,20,60,f); });
+  assert(cal.isComplete());
+  AutoCalNoteResult r=cal.getResult(0);
+  assert(r.valid);
+  assert(r.airMin>=16 && r.airMin<=24);
+  assert(r.airMax>=56 && r.airMax<=64);
+  assert(r.airNominal>=r.airMin && r.airNominal<=r.airMax);
+  assert(r.confidence>0 && r.confidence<=100);
+  assert(r.signalToNoiseRatio>0.0f);
+}
+
+// 13. A failed note must not overwrite a previously valid calibration.
+static void autocal_keep_old_on_fail(){
+  resetCfg(); cfg.numNotes=2; cfg.notes[0].midiNote=60; cfg.notes[1].midiNote=62;
+  cfg.servoAirflowMin=60; cfg.servoAirflowMax=100;
+  cfg.notes[0].airflowMinPercent=0; cfg.notes[0].airflowMaxPercent=100; cfg.notes[0].airflowNominalPercent=40;
+  cfg.notes[1].airflowMinPercent=11; cfg.notes[1].airflowMaxPercent=77; cfg.notes[1].airflowNominalPercent=33;
+  __test_millis=0;
+  FakeAudio fa;
+  FingerController fc([](uint8_t,uint16_t,uint16_t){});
+  AirflowController ac([](uint8_t,uint16_t,uint16_t){}); ac.begin();
+  AutoCalibrator cal(fc,ac,fa);
+  cal.start(ACAL_MODE_AIRFLOW);
+  // Only note 0 (index 0) ever sounds; note 1 stays silent -> fails.
+  driveAutoCal(cal, fa, [](int pct,int note,FakeAudio& f){ if(note==0) bandModel(pct,60,20,60,f); else bandModel(pct,62,200,201,f); });
+  assert(cal.isComplete());
+  assert(cal.getResult(0).valid);
+  assert(!cal.getResult(1).valid);
+  cal.applyResults();
+  // Note 1 keeps its old values; note 0 was overwritten by the valid result.
+  assert(cfg.notes[1].airflowMinPercent==11 && cfg.notes[1].airflowMaxPercent==77 && cfg.notes[1].airflowNominalPercent==33);
+  assert(cfg.notes[0].airflowMinPercent<=cfg.notes[0].airflowNominalPercent && cfg.notes[0].airflowNominalPercent<=cfg.notes[0].airflowMaxPercent);
+}
+
+// 12. Global timeout aborts safely (valve closed, one-shot timeout event).
+static void autocal_timeout_safe_stop(){
+  resetCfg(); cfg.numNotes=1; cfg.notes[0].midiNote=60; cfg.servoAirflowMin=60; cfg.servoAirflowMax=100;
+  __test_millis=0;
+  FakeAudio fa;
+  FingerController fc([](uint8_t,uint16_t,uint16_t){});
+  AirflowController ac([](uint8_t,uint16_t,uint16_t){}); ac.begin();
+  AutoCalibrator cal(fc,ac,fa);
+  cal.start(ACAL_MODE_AIRFLOW);
+  // Run past noise measurement so the valve is open, keeping the note silent.
+  for(int i=0;i<60;i++){ bandModel(cal.getCurrentAirPercent(),60,20,60,fa); if(cal.getCurrentAirPercent()<20) {} __test_millis+=25; cal.update(); }
+  __test_millis += AUTOCAL_GLOBAL_TIMEOUT_MS + 1000;
+  cal.update();
+  assert(!cal.isRunning());
+  assert(cal.takeTimeoutEvent());
+  assert(!cal.takeTimeoutEvent());   // one-shot: cleared after read
+  assert(!ac.isValveOpen());
+}
+
+// 15. Starting calibration with no microphone is a safe no-op.
+static void autocal_mic_absent(){
+  resetCfg(); cfg.numNotes=1; cfg.notes[0].midiNote=60;
+  FakeAudio fa; fa.micDetected=false;
+  FingerController fc([](uint8_t,uint16_t,uint16_t){});
+  AirflowController ac([](uint8_t,uint16_t,uint16_t){}); ac.begin();
+  AutoCalibrator cal(fc,ac,fa);
+  cal.start(ACAL_MODE_AIRFLOW);
+  assert(!cal.isRunning());
+  assert(!cal.isComplete());
+  assert(!ac.isValveOpen());
+}
+
+int main(){ pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); std::cout << "behavior tests passed\n"; }

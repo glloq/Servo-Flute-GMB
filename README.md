@@ -12,7 +12,9 @@ Turns a recorder, tin whistle, ocarina, Native American flute, or any other simp
 - **3 simultaneous MIDI inputs** — Bluetooth (BLE-MIDI), WiFi (rtpMIDI), and Serial (UART)
 - **6 air-management modes** — solenoid, servo valve, fan, pump, and more
 - **Web interface** — virtual keyboard, MIDI player, calibration, air management, and settings page
-- **Optional auto-calibration** with an INMP441 microphone (I2S)
+- **Optional auto-calibration** with an INMP441 microphone (I2S) — adaptive
+  per-note airflow min/nominal/max detection with a confidence score
+  ([details](docs/AUTO_CALIBRATION.md))
 - **MIDI file playback** (.mid SMF Type 0/1) without an external source
 - **Persistent configuration** in JSON on LittleFS, editable at runtime
 

@@ -36,6 +36,7 @@ struct NoteConfig {
   uint8_t fingerPattern[MAX_FINGER_SERVOS];  // Doigtes (0=ferme, 1=ouvert, 2=demi-ouvert)
   uint8_t airflowMinPercent;                 // % min servo flow (0-100)
   uint8_t airflowMaxPercent;                 // % max servo flow (0-100)
+  uint8_t airflowNominalPercent;             // % recommande servo flow (min <= nominal <= max)
   uint8_t anglePercent;                      // Angle jet d'air % (0-100), trav uniquement
 };
 

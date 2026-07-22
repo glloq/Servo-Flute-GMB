@@ -3,11 +3,23 @@
 #if MIC_ENABLED
 
 #include <math.h>
+#include "PitchMath.h"
 
 AudioAnalyzer::AudioAnalyzer()
   : _active(false), _initialized(false), _micDetected(false),
     _soundDetected(false), _rms(0), _pitchHz(0), _pitchMidi(0),
-    _pitchCents(0), _rxHandle(NULL), _validSamples(0), _lastUpdate(0) {
+    _pitchCents(0), _pitchConfidence(0), _pitchValid(false),
+    _rxHandle(NULL), _validSamples(0), _lastUpdate(0) {
+  buildHannWindow();
+}
+
+void AudioAnalyzer::buildHannWindow() {
+  // Hann window: w[n] = 0.5 * (1 - cos(2*pi*n/(N-1))).
+  // Precomputed once so update() performs no per-frame trig or allocation.
+  const int N = MIC_BUFFER_SIZE;
+  for (int n = 0; n < N; n++) {
+    _hannWindow[n] = 0.5f * (1.0f - cosf(2.0f * (float)M_PI * (float)n / (float)(N - 1)));
+  }
 }
 
 bool AudioAnalyzer::begin() {
@@ -128,7 +140,7 @@ void AudioAnalyzer::update() {
   if (!_initialized || !_active) return;
 
   unsigned long now = millis();
-  if (now - _lastUpdate < 40) return;  // ~25 Hz analysis rate
+  if (now - _lastUpdate < AUTOCAL_FRAME_SAMPLE_MS) return;  // throttle analysis rate
   _lastUpdate = now;
 
   readI2S();
@@ -158,24 +170,14 @@ void AudioAnalyzer::readI2S() {
   }
 }
 
-void AudioAnalyzer::analyzeBuffer() {
-  _rms = computeRMS();
-  _soundDetected = (_rms > MIC_RMS_THRESHOLD);
-
-  if (_soundDetected) {
-    _pitchHz = computePitchYIN();
-    if (_pitchHz > 0) {
-      _pitchMidi = hzToMidi(_pitchHz);
-      _pitchCents = hzToCents(_pitchHz, _pitchMidi);
-    } else {
-      _pitchMidi = 0;
-      _pitchCents = 0;
-    }
-  } else {
-    _pitchHz = 0;
-    _pitchMidi = 0;
-    _pitchCents = 0;
-  }
+void AudioAnalyzer::removeDcOffset() {
+  // The INMP441 carries a small DC bias; it must be removed before RMS and pitch
+  // detection so the level and the difference function are not skewed.
+  if (_validSamples == 0) return;
+  float mean = 0.0f;
+  for (size_t i = 0; i < _validSamples; i++) mean += _analysisBuffer[i];
+  mean /= (float)_validSamples;
+  for (size_t i = 0; i < _validSamples; i++) _analysisBuffer[i] -= mean;
 }
 
 float AudioAnalyzer::computeRMS() {
@@ -183,75 +185,127 @@ float AudioAnalyzer::computeRMS() {
   for (size_t i = 0; i < _validSamples; i++) {
     sum += _analysisBuffer[i] * _analysisBuffer[i];
   }
-  return sqrtf(sum / _validSamples);
+  return sqrtf(sum / (float)_validSamples);
 }
 
-float AudioAnalyzer::computePitchYIN() {
-  // Simplified YIN algorithm for pitch detection
-  const int tauMin = (int)(MIC_SAMPLE_RATE / MIC_PITCH_MAX_HZ);   // ~4
-  int tauMax = (int)(MIC_SAMPLE_RATE / MIC_PITCH_MIN_HZ);         // ~80
-  const int W = (int)_validSamples / 2;  // Window size
+void AudioAnalyzer::applyHannWindow() {
+  // Applied only for pitch detection (after RMS) to limit spectral/edge leakage.
+  for (size_t i = 0; i < _validSamples; i++) {
+    _analysisBuffer[i] *= _hannWindow[i];
+  }
+}
 
-  // Safety clamp: yinBuf is stack-allocated, limit to avoid overflow
-  const int TAU_LIMIT = 256;
-  if (tauMax > TAU_LIMIT) tauMax = TAU_LIMIT;
+void AudioAnalyzer::analyzeBuffer() {
+  // 1. Remove DC bias so both RMS and pitch see a zero-mean signal.
+  removeDcOffset();
 
-  if (W < tauMax + 1) return 0;
+  // 2. RMS on the DC-removed (un-windowed) buffer.
+  _rms = computeRMS();
+  _soundDetected = (_rms > MIC_RMS_THRESHOLD);
 
-  // Steps 1-2: Difference function + cumulative mean normalization
-  float runningSum = 0;
-  float bestTau = 0;
-  bool found = false;
+  // 3. Pitch detection: Hann-window the buffer, then run YIN.
+  _pitchHz = 0;
+  _pitchMidi = 0;
+  _pitchCents = 0;
+  _pitchConfidence = 0;
+  _pitchValid = false;
 
-  // Pre-allocate on stack (max TAU_LIMIT + 2)
-  float yinBuf[TAU_LIMIT + 2];
-  yinBuf[0] = 1.0f;
+  if (_rms > MIC_RMS_ABSOLUTE_MIN) {
+    applyHannWindow();
+    float hz = 0.0f, conf = 0.0f;
+    bool ok = computePitchYIN(hz, conf);
+    if (ok && hz > 0.0f) {
+      _pitchHz = hz;
+      _pitchConfidence = conf;
+      _pitchMidi = PitchMath::hzToMidi(hz);
+      _pitchCents = PitchMath::hzToCents(hz, _pitchMidi);
+      _pitchValid = (conf >= MIC_YIN_CONFIDENCE_MIN);
+    }
+  }
+}
 
+bool AudioAnalyzer::computePitchYIN(float& outHz, float& outConfidence) {
+  outHz = 0.0f;
+  outConfidence = 0.0f;
+
+  // Lag bounds from the configured pitch range, clamped to the buffer size.
+  int tauMin = (int)(MIC_SAMPLE_RATE / MIC_PITCH_MAX_HZ);
+  int tauMax = (int)(MIC_SAMPLE_RATE / MIC_PITCH_MIN_HZ);
+  if (tauMin < 1) tauMin = 1;
+  if (tauMax > MIC_YIN_TAU_MAX) tauMax = MIC_YIN_TAU_MAX;
+
+  const int W = (int)_validSamples / 2;  // Window (integration) size
+  if (W < tauMax + 1) return false;      // not enough samples for the largest lag
+  if (tauMin >= tauMax) return false;
+
+  // Steps 1-2: difference function + cumulative mean normalization.
+  _yinBuf[0] = 1.0f;
+  float runningSum = 0.0f;
   for (int tau = 1; tau <= tauMax; tau++) {
-    float sum = 0;
+    float sum = 0.0f;
     for (int i = 0; i < W; i++) {
       float delta = _analysisBuffer[i] - _analysisBuffer[i + tau];
       sum += delta * delta;
     }
     runningSum += sum;
-    yinBuf[tau] = (runningSum > 0) ? (sum * tau / runningSum) : 1.0f;
+    _yinBuf[tau] = (runningSum > 0.0f) ? (sum * (float)tau / runningSum) : 1.0f;
   }
 
-  // Step 3: Absolute threshold - find first dip below threshold
-  for (int tau = tauMin; tau <= tauMax; tau++) {
-    if (yinBuf[tau] < MIC_YIN_THRESHOLD) {
-      // Step 4: Parabolic interpolation for sub-sample accuracy
-      bestTau = (float)tau;
-      if (tau > tauMin && tau < tauMax) {
-        float s0 = yinBuf[tau - 1];
-        float s1 = yinBuf[tau];
-        float s2 = yinBuf[tau + 1];
-        float denom = 2.0f * (2.0f * s1 - s2 - s0);
-        if (fabsf(denom) > 1e-6f) {
-          bestTau = tau + (s0 - s2) / denom;
-        }
-      }
-      found = true;
+  // Step 3: absolute threshold - first dip below MIC_YIN_THRESHOLD.
+  int tauEst = -1;
+  for (int tau = tauMin; tau < tauMax; tau++) {
+    if (_yinBuf[tau] < MIC_YIN_THRESHOLD) {
+      // Walk down to the local minimum of this dip.
+      while (tau + 1 < tauMax && _yinBuf[tau + 1] < _yinBuf[tau]) tau++;
+      tauEst = tau;
       break;
     }
   }
+  if (tauEst < 0) return false;
 
-  if (!found || bestTau < 1.0f) return 0;
-  return (float)MIC_SAMPLE_RATE / bestTau;
-}
+  // Step 3b: conservative octave-error guard. The classic YIN failure is locking
+  // onto a half period (an octave too high) when a subharmonic dip crosses the
+  // threshold before the true period. We only correct to twice the lag (the octave
+  // below) when that dip is *dramatically* deeper - a genuine half-period artifact.
+  // A loose ratio here would instead force octave-DOWN errors on harmonic-rich
+  // tones (where d(2*tau) is naturally comparable to d(tau)), so the ratio is kept
+  // strict. Octave-up detections that slip through are still rejected at the
+  // calibration level by exact-MIDI matching (treated as overblow).
+  int tauDouble = tauEst * 2;
+  if (tauDouble <= tauMax) {
+    int lo = tauDouble - 1, hi = tauDouble + 1;
+    if (lo < tauMin) lo = tauMin;
+    if (hi > tauMax) hi = tauMax;
+    int bestD = lo;
+    for (int t = lo + 1; t <= hi; t++) if (_yinBuf[t] < _yinBuf[bestD]) bestD = t;
+    if (_yinBuf[bestD] < MIC_YIN_OCTAVE_RATIO * _yinBuf[tauEst]) {
+      tauEst = bestD;  // clearly more periodic an octave below -> genuine half-period error
+    }
+  }
 
-int AudioAnalyzer::hzToMidi(float hz) {
-  if (hz <= 0) return 0;
-  // MIDI note = 69 + 12 * log2(hz / 440)
-  return (int)roundf(69.0f + 12.0f * log2f(hz / 440.0f));
-}
+  // Step 4: parabolic interpolation for sub-sample accuracy.
+  float betterTau = (float)tauEst;
+  if (tauEst > tauMin && tauEst < tauMax) {
+    float s0 = _yinBuf[tauEst - 1];
+    float s1 = _yinBuf[tauEst];
+    float s2 = _yinBuf[tauEst + 1];
+    float denom = 2.0f * (2.0f * s1 - s2 - s0);
+    if (fabsf(denom) > 1e-6f) {
+      betterTau = (float)tauEst + (s0 - s2) / denom;
+    }
+  }
+  if (betterTau < 1.0f) return false;
 
-float AudioAnalyzer::hzToCents(float hz, int midi) {
-  if (hz <= 0 || midi <= 0) return 0;
-  // Expected frequency for MIDI note
-  float expected = 440.0f * powf(2.0f, (midi - 69.0f) / 12.0f);
-  // Cents = 1200 * log2(hz / expected)
-  return 1200.0f * log2f(hz / expected);
+  // Confidence = periodicity = 1 - aperiodicity at the estimated lag.
+  float aperiodicity = _yinBuf[tauEst];
+  if (aperiodicity < 0.0f) aperiodicity = 0.0f;
+  if (aperiodicity > 1.0f) aperiodicity = 1.0f;
+  outConfidence = 1.0f - aperiodicity;
+
+  float hz = (float)MIC_SAMPLE_RATE / betterTau;
+  if (hz < MIC_PITCH_MIN_HZ || hz > MIC_PITCH_MAX_HZ) return false;
+  outHz = hz;
+  return true;
 }
 
 #endif // MIC_ENABLED

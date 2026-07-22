@@ -66,29 +66,71 @@ Set MIC_ENABLED to false if no mic is connected.
 #define MIC_PIN_DIN   32         // GPIO32 - Data In (SD)
 
 // I2S Configuration
+// INMP441 outputs 24-bit samples left-aligned in a 32-bit I2S word. A 32 kHz
+// sample rate widens the usable pitch range (Nyquist 16 kHz) and improves YIN
+// tau resolution for the flute's upper octave while keeping DMA buffers small.
 #define MIC_I2S_PORT    I2S_NUM_0
-#define MIC_SAMPLE_RATE 16000
-#define MIC_BUFFER_SIZE 1024
-#define MIC_DMA_BUF_COUNT 4
-#define MIC_DMA_BUF_LEN   256
+#define MIC_SAMPLE_RATE 32000
+#define MIC_BUFFER_SIZE 1024            // Samples per analysis frame (~32 ms @ 32 kHz)
+#define MIC_DMA_BUF_COUNT 4             // Number of DMA descriptors
+#define MIC_DMA_BUF_LEN   256           // Frames per DMA descriptor (4*256 = 1024 buffered)
 
 // Audio analysis thresholds
-#define MIC_RMS_THRESHOLD       0.02f   // Min RMS for "sound detected"
+#define MIC_RMS_THRESHOLD       0.02f   // Legacy fixed RMS gate (fallback / monitoring only)
+#define MIC_RMS_ABSOLUTE_MIN    0.002f  // Absolute RMS floor: below this we never call it sound
 #define MIC_PITCH_MIN_HZ        200.0f  // Lowest detectable pitch
 #define MIC_PITCH_MAX_HZ        4000.0f // Highest detectable pitch
-#define MIC_PITCH_TOLERANCE_CENTS 200   // Pitch tolerance for auto-cal
-#define MIC_YIN_THRESHOLD       0.15f   // YIN confidence threshold
+#define MIC_PITCH_TOLERANCE_CENTS 200   // (legacy) coarse pitch tolerance for monitoring
+#define MIC_YIN_THRESHOLD       0.15f   // YIN absolute threshold (aperiodicity dip to accept)
+#define MIC_YIN_CONFIDENCE_MIN  0.80f   // Min confidence (1 - yin[tau]) to accept a pitch
+// Octave-up guard: only correct a detected lag to twice its value (the octave
+// below) when d(2*tau) is at least this much deeper than d(tau). Kept strict so
+// harmonic-rich tones are not pushed an octave down.
+#define MIC_YIN_OCTAVE_RATIO    0.60f
+// YIN lag buffer upper bound. tauMax = MIC_SAMPLE_RATE / MIC_PITCH_MIN_HZ.
+// At 32 kHz / 200 Hz that is 160; 200 leaves headroom while keeping the buffer
+// off the stack (stored as an AudioAnalyzer member, ~0.8 kB).
+#define MIC_YIN_TAU_MAX         200
 
-// Auto-calibration timing
-#define AUTOCAL_SETTLE_MS       300     // Wait after positioning servos
-#define AUTOCAL_STEP_MS         80      // Time per airflow step
-#define AUTOCAL_SILENCE_COUNT   3       // Consecutive silent steps = sound gone
-#define AUTOCAL_AUDIO_INTERVAL_MS 100   // Audio broadcast interval
-#define AUTOCAL_SWEEP_OVERSHOOT 5       // Degrees past max to check during sweep
-#define AUTOCAL_PITCH_TOLERANCE_SEMI 3  // Pitch tolerance in semitones
+/*----------------------------------------------------------------------------
+ * Auto-calibration (microphone-driven per-note airflow calibration)
+ *--------------------------------------------------------------------------*/
+
+// --- Adaptive noise floor (measured per note, valve closed, air at rest) ---
+#define AUTOCAL_NOISE_MEASURE_MS 500    // Background-noise capture window (ms)
+#define AUTOCAL_NOISE_RATIO      4.0f   // soundThreshold = max(MIC_RMS_ABSOLUTE_MIN, noiseRms * ratio)
+
+// --- Pitch tolerances (cents) ---
+// Wide tolerance is used only to detect the initial appearance of the note.
+// Strict tolerance defines the stable plateau and the nominal value.
+#define AUTOCAL_PITCH_TOLERANCE_ONSET_CENTS  80
+#define AUTOCAL_PITCH_TOLERANCE_STABLE_CENTS 50
+
+// --- Servo/audio synchronization (SET -> SETTLE -> COLLECT -> EVALUATE) ---
+#define AUTOCAL_AIR_SETTLE_MS       120 // Wait after changing airflow before collecting audio
+#define AUTOCAL_AUDIO_FRAMES_PER_STEP 5 // Audio frames collected per airflow position
+#define AUTOCAL_REQUIRED_VALID_FRAMES 4 // Frames (of the above) that must match to accept a position
+#define AUTOCAL_FRAME_SAMPLE_MS     40  // Interval between two sampled audio frames (~audio rate)
+
+// --- Coarse then fine sweep ---
+#define AUTOCAL_COARSE_STEP_PERCENT 4   // Airflow step (%) during the coarse pass
+#define AUTOCAL_FINE_STEP_PERCENT   1   // Airflow step (%) during the fine pass
+#define AUTOCAL_FINE_MARGIN_PERCENT 4   // How far below a coarse boundary the fine search restarts
+#define AUTOCAL_LOSS_CONFIRM_STEPS  2   // Consecutive invalid positions needed to confirm loss/overblow
+
+// --- Nominal airflow selection ---
+#define AUTOCAL_NOMINAL_FRACTION    0.40f // Default nominal = min + fraction*(max-min)
+#define AUTOCAL_NOMINAL_GUARD_PCT   5     // Keep nominal at least this far from min/max when possible
+
+// --- Global safety timeout (firmware side, not browser side) ---
+#define AUTOCAL_GLOBAL_TIMEOUT_MS   180000 // Abort whole calibration after 3 min
+
+// --- Broadcast / legacy timing (still used by range finder + WS throttling) ---
+#define AUTOCAL_SETTLE_MS       300     // Range finder: wait after positioning servos
+#define AUTOCAL_SILENCE_COUNT   3       // Range finder: consecutive silent steps = sound gone
+#define AUTOCAL_AUDIO_INTERVAL_MS 100   // WebSocket audio/progress broadcast interval
+#define AUTOCAL_PITCH_TOLERANCE_SEMI 3  // Range finder: coarse pitch tolerance in semitones
 #define AUTOCAL_MIN_RANGE_PCT   5       // Minimum range pct between air_min and air_max
-#define AUTOCAL_STORE_DELAY_MS  10      // Delay before storing result in NOTE_DONE state
-#define AUTOCAL_NOTE_INTERVAL_MS 200    // Pause between notes during auto-cal
 #define AUTOCAL_RF_STEP_MS      100     // Time per step for range finder (0-180 sweep)
 #define AUTOCAL_RF_MARGIN_DEG   3       // Safety margin (degrees) for range finder results
 
@@ -267,30 +309,31 @@ struct DefaultNoteConfig {
   bool fingerPattern[DEFAULT_NUM_FINGERS];
   uint8_t airflowMinPercent;
   uint8_t airflowMaxPercent;
+  uint8_t airflowNominalPercent;   // Recommended airflow (min <= nominal <= max)
   uint8_t anglePercent;            // Angle jet d'air (0-100%), trav uniquement
 };
 
 const DefaultNoteConfig DEFAULT_NOTES[DEFAULT_NUM_NOTES] = {
-  // MIDI  Doigtes            AirMin AirMax Angle
+  // MIDI  Doigtes            AirMin AirMax Nominal Angle
   // OCTAVE BASSE
-  {  82,  {0,1,1,1,1,1},  10,  60,  40  },  // A#5
-  {  83,  {1,1,1,1,1,1},  0,   50,  40  },  // B5
+  {  82,  {0,1,1,1,1,1},  10,  60,  30,  40  },  // A#5
+  {  83,  {1,1,1,1,1,1},  0,   50,  20,  40  },  // B5
 
   // OCTAVE 1 - MEDIUM
-  {  84,  {0,0,0,0,0,0},  20,  75,  45  },  // C6
-  {  86,  {0,0,0,0,0,1},  15,  70,  45  },  // D6
-  {  88,  {0,0,0,0,1,1},  10,  65,  48  },  // E6
-  {  89,  {0,0,0,1,1,1},  10,  60,  48  },  // F6
-  {  91,  {0,0,1,1,1,1},  5,   55,  50  },  // G6
-  {  93,  {0,1,1,1,1,1},  5,   50,  50  },  // A6
-  {  95,  {1,1,1,1,1,1},  0,   45,  52  },  // B6
+  {  84,  {0,0,0,0,0,0},  20,  75,  42,  45  },  // C6
+  {  86,  {0,0,0,0,0,1},  15,  70,  37,  45  },  // D6
+  {  88,  {0,0,0,0,1,1},  10,  65,  32,  48  },  // E6
+  {  89,  {0,0,0,1,1,1},  10,  60,  30,  48  },  // F6
+  {  91,  {0,0,1,1,1,1},  5,   55,  25,  50  },  // G6
+  {  93,  {0,1,1,1,1,1},  5,   50,  23,  50  },  // A6
+  {  95,  {1,1,1,1,1,1},  0,   45,  18,  52  },  // B6
 
   // OCTAVE 2 - AIGU
-  {  96,  {0,0,0,0,0,0},  50,  100, 60  },  // C7
-  {  98,  {0,0,0,0,0,1},  45,  95,  62  },  // D7
-  {  100, {0,0,0,0,1,1},  40,  90,  65  },  // E7
-  {  101, {0,0,0,1,1,1},  35,  85,  68  },  // F7
-  {  103, {0,0,1,1,1,1},  30,  80,  70  }   // G7
+  {  96,  {0,0,0,0,0,0},  50,  100, 70,  60  },  // C7
+  {  98,  {0,0,0,0,0,1},  45,  95,  65,  62  },  // D7
+  {  100, {0,0,0,0,1,1},  40,  90,  60,  65  },  // E7
+  {  101, {0,0,0,1,1,1},  35,  85,  55,  68  },  // F7
+  {  103, {0,0,1,1,1,1},  30,  80,  50,  70  }   // G7
 };
 
 /*******************************************************************************
