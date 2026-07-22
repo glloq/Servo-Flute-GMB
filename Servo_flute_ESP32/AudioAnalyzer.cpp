@@ -16,9 +16,11 @@ AudioAnalyzer::AudioAnalyzer()
 void AudioAnalyzer::buildHannWindow() {
   // Hann window: w[n] = 0.5 * (1 - cos(2*pi*n/(N-1))).
   // Precomputed once so update() performs no per-frame trig or allocation.
+  // Use a local constant instead of M_PI (not guaranteed by strict <math.h>).
+  const float kTwoPi = 6.28318530717958647692f;
   const int N = MIC_BUFFER_SIZE;
   for (int n = 0; n < N; n++) {
-    _hannWindow[n] = 0.5f * (1.0f - cosf(2.0f * (float)M_PI * (float)n / (float)(N - 1)));
+    _hannWindow[n] = 0.5f * (1.0f - cosf(kTwoPi * (float)n / (float)(N - 1)));
   }
 }
 
