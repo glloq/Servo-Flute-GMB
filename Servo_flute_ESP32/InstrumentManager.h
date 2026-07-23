@@ -60,6 +60,11 @@ public:
   void powerOnServos();
   void ensureServosPowered();
   void registerActuatorActivity();
+  // While true, the idle power-down is inhibited and the servos are kept powered
+  // (used by the auto-calibrator / range finder, which drive actuators and read
+  // audio outside the MIDI sequencer that managePower() watches).
+  void setActuatorSessionActive(bool active);
+  bool isActuatorSessionActive() const { return _actuatorSessionActive; }
 
   // Ecriture PWM multi-PCA9685 : route vers la bonne carte (canal 0-15 = carte 0, 16-31 = carte 1)
   void setPWM(uint8_t channel, uint16_t on, uint16_t off);
@@ -90,6 +95,7 @@ private:
 
   unsigned long _lastActivityTime;
   bool _servosPowered;
+  bool _actuatorSessionActive;   // calibration/range-finder holds power (see managePower)
 
   // Valeurs Control Change MIDI
   byte _ccVolume;

@@ -37,7 +37,7 @@ Status convention: `NOT TESTED — requires hardware` means the procedure is def
 | MIC-CAL-AIRFAIL | Air source never ready | Air mode 3/4/5 with pump/fan disconnected | Run calibration | All notes fail with ACAL_FAIL_AIR_SUPPLY; nothing written; source stopped | Not executed | NOT TESTED — requires hardware | Bounded by AUTOCAL_AIR_READY_TIMEOUT_MS. |
 | MIC-CAL-TIMEOUT | Global calibration timeout | Calibration running | Wait beyond AUTOCAL_GLOBAL_TIMEOUT_MS | Calibration aborts, valve closed, acal_error published | Not executed | NOT TESTED — requires hardware | Firmware-side timeout, not browser. |
 | MIC-CAL-DISCONNECT | Client disconnect during calibration | Web UI running calibration | Close the browser tab | Calibration stops, hardware returns to safe state | Not executed | NOT TESTED — requires hardware | Owner disconnect stops actuator test. |
-| MIC-RANGE | Servo range finder | Middle note sounding | Run range finder, apply | Usable servo min/max detected via exact-note pitch | Not executed | NOT TESTED — requires hardware | 0–180° sweep. |
+| MIC-RANGE | Servo range finder | Middle note sounding | Run range finder, apply | Usable servo min/max detected via exact-note pitch | Not executed | NOT TESTED — requires hardware | Bounded safe angle window (AUTOCAL_RF_MIN/MAX_SAFE_ANGLE, default 30–150°); apply is storage-checked. |
 | ANGLE | Transverse angle servo present/absent | `embouchure=trav`, angle channel configured | Test angle and CC74 | Angle servo moves only when enabled and returns rest | Not executed | NOT TESTED — requires hardware | Validate PCA conflicts. |
 
 ## Finalization validation status

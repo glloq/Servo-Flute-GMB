@@ -36,8 +36,15 @@ void CalibrationAirSupply::prepare() {
       _pressure.setTargetPercent(representativeDemand());
       break;
     case AIR_MODE_PUMP_RESERVOIR:
+      if (!_pressure.isSensorDetected()) {
+        // A pressurised reservoir with no usable level/pressure sensor cannot be
+        // regulated safely: refuse rather than run the pump blind. Best-effort
+        // must be an explicit, user-assumed configuration, never the default.
+        _error = CAL_AIR_SENSOR_FAULT;
+        _pressure.stop();
+        break;
+      }
       _pressure.setTargetPercent(representativeDemand());
-      if (!_pressure.isSensorDetected()) _error = CAL_AIR_SENSOR_FAULT;
       break;
     default:
       break; // passive: nothing to start
@@ -52,15 +59,14 @@ bool CalibrationAirSupply::isReady() {
       // Direct pump, no reservoir: usable as soon as the motor is turning.
       return _pressure.isPumpRunning();
     case AIR_MODE_PUMP_RESERVOIR:
-      if (_pressure.isSensorDetected()) {
+      // Strict by default: without a usable sensor the reservoir is never "ready"
+      // (getError() reports sensor_fault, and the calibrator aborts the run).
+      if (!_pressure.isSensorDetected()) return false;
+      {
         int target = (int)cfg.reservoirTargetPercent - AUTOCAL_RESERVOIR_READY_MARGIN;
         if (target < 0) target = 0;
         return (int)_pressure.getFillPercent() >= target;
       }
-      // No sensor: cannot verify pressure. Treat a running pump as best-effort ready
-      // after a short grace period; the sensor-fault flag is already raised.
-      return _pressure.isPumpRunning() &&
-             (millis() - _prepareTime) >= (unsigned long)AUTOCAL_SETTLE_MS;
     default:
       return true; // passive supplies are always "ready"
   }

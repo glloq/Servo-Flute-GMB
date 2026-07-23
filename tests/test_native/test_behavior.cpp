@@ -15,6 +15,7 @@
 #include "InstrumentManager.h"
 #include "IAudioSource.h"
 #include "ICalibrationAirSupply.h"
+#include "CalibrationAirSupply.h"
 #include "PitchMath.h"
 #include "AutoCalMath.h"
 #include "AutoCalibrator.h"
@@ -46,8 +47,14 @@ struct FakeAudio : public IAudioSource {
 struct FakeAirSupply : public ICalibrationAirSupply {
   bool prepared = false; uint32_t readyPolls = 0, readyAfter = 0;
   uint8_t lastDemand = 0; bool stopped = false; CalAirSupplyError err = CAL_AIR_OK;
+  // Mid-run drop-out: once forceNotReady is set the source reports not-ready and
+  // surfaces dropError (used to simulate a pump stall / fan fault during a note).
+  bool forceNotReady = false; CalAirSupplyError dropError = CAL_AIR_FAULT;
   void prepare() override { prepared = true; stopped = false; readyPolls = 0; }
-  bool isReady() override { return prepared && (readyPolls++ >= readyAfter); }
+  bool isReady() override {
+    if (forceNotReady) { err = dropError; return false; }
+    return prepared && (readyPolls++ >= readyAfter);
+  }
   void setDemandPercent(uint8_t p) override { lastDemand = p; }
   void stopSafe() override { stopped = true; }
   CalAirSupplyError getError() const override { return err; }
@@ -383,6 +390,119 @@ static void autocal_range_finder(){
   assert(mn>=AUTOCAL_RF_MIN_SAFE_ANGLE && mx<=AUTOCAL_RF_MAX_SAFE_ANGLE);  // within safe window
 }
 
+// D3. A frozen audio source during the range finder must terminate it in
+// ACAL_RF_COMPLETE with invalid angles and an audio-stale reason - never loop on
+// the centre note nor fall through to ACAL_COMPLETE (airflow result handling).
+static void autocal_range_finder_stale(){
+  resetCfg(); cfg.numNotes=3; cfg.notes[0].midiNote=60; cfg.notes[1].midiNote=62; cfg.notes[2].midiNote=64;
+  cfg.servoAirflowMin=60; cfg.servoAirflowMax=120;
+  __test_millis=0;
+  FakeAudio fa; fa.seq=5;  // frozen sequence
+  FingerController fc([](uint8_t,uint16_t,uint16_t){});
+  AirflowController ac([](uint8_t,uint16_t,uint16_t){}); ac.begin();
+  FakeAirSupply as; AutoCalibrator cal(fc,ac,fa,as);
+  cal.start(ACAL_MODE_RANGE_FIND);
+  driveAutoCal(cal, fa, [](int,int,FakeAudio& f){
+    f.rms=0.06f; f.valid=true; f.conf=0.9f; f.midi=62; f.hz=PitchMath::midiToHz(62); f.cents=0.0f; f.snd=true;
+  }, /*freshFrames=*/false);
+  assert(cal.isRangeFinderComplete());
+  assert(!cal.isComplete());
+  assert(cal.getRangeFinderMin() < 0 && cal.getRangeFinderMax() < 0);
+  assert(cal.getRangeFailureReason() == ACAL_FAIL_AUDIO_STALE);
+}
+
+// D5. Range-finder apply is storage-checked: a LittleFS failure restores the old
+// angles and reports applied=false; a successful save writes the discovered ones.
+static void autocal_range_apply_storage(){
+  extern bool __config_save_result;
+  resetCfg(); cfg.numNotes=3; cfg.notes[0].midiNote=60; cfg.notes[1].midiNote=62; cfg.notes[2].midiNote=64;
+  cfg.servoAirflowMin=60; cfg.servoAirflowMax=120;
+  __test_millis=0;
+  FakeAudio fa;
+  FingerController fc([](uint8_t,uint16_t,uint16_t){});
+  AirflowController ac([](uint8_t,uint16_t,uint16_t){}); ac.begin();
+  FakeAirSupply as; AutoCalibrator cal(fc,ac,fa,as);
+  cal.start(ACAL_MODE_RANGE_FIND);
+  int expMidi=62, it=0;
+  while(cal.isRunning() && it++<200000){
+    int ang=cal.getCurrentAngle();
+    if(ang>=60 && ang<=120){ fa.rms=0.06f;fa.valid=true;fa.conf=0.95f;fa.midi=expMidi;fa.hz=PitchMath::midiToHz(expMidi);fa.cents=-3.0f;fa.snd=true; }
+    else { fa.rms=0.003f;fa.valid=false;fa.conf=0;fa.midi=0;fa.hz=0;fa.cents=0;fa.snd=false; }
+    fa.seq++; fa.ts=__test_millis; __test_millis+=25; cal.update();
+  }
+  assert(cal.isRangeFinderComplete());
+  int mn=cal.getRangeFinderMin(), mx=cal.getRangeFinderMax();
+  assert(mn>=0 && mx>=0);
+  uint16_t oldMin=cfg.servoAirflowMin, oldMax=cfg.servoAirflowMax;
+  __config_save_result=false;                 // simulate LittleFS failure
+  RangeApplyResult r1=cal.applyRangeResults();
+  __config_save_result=true;
+  assert(!r1.applied && !r1.saved);
+  assert(cfg.servoAirflowMin==oldMin && cfg.servoAirflowMax==oldMax);  // rolled back
+  RangeApplyResult r2=cal.applyRangeResults();
+  assert(r2.applied && r2.saved);
+  assert((int)cfg.servoAirflowMin==mn && (int)cfg.servoAirflowMax==mx);
+}
+
+// D9. A mid-note air-source drop-out is reported as ACAL_FAIL_AIR_SUPPLY (with the
+// specific sub-error), not misclassified as no-sound / wrong-note.
+static void autocal_air_lost_midnote(){
+  resetCfg(); cfg.numNotes=1; cfg.notes[0].midiNote=60; cfg.servoAirflowMin=60; cfg.servoAirflowMax=120;
+  cfg.notes[0].airflowMinPercent=0; cfg.notes[0].airflowMaxPercent=100; cfg.notes[0].airflowNominalPercent=40;
+  __test_millis=0;
+  FakeAudio fa;
+  FingerController fc([](uint8_t,uint16_t,uint16_t){});
+  AirflowController ac([](uint8_t,uint16_t,uint16_t){}); ac.begin();
+  FakeAirSupply as; AutoCalibrator cal(fc,ac,fa,as);
+  cal.start(ACAL_MODE_AIRFLOW);
+  int it=0; bool dropped=false;
+  while(cal.isRunning() && it++<200000){
+    bandModel(cal.getCurrentAirPercent(),60,20,60,fa);
+    fa.seq++; fa.ts=__test_millis;
+    if(!dropped && strcmp(cal.getPhaseName(),"coarse")==0){
+      as.forceNotReady=true; as.dropError=CAL_AIR_FAULT; dropped=true;
+    }
+    __test_millis+=25; cal.update();
+  }
+  assert(dropped);
+  assert(cal.isComplete());
+  AutoCalNoteResult r=cal.getResult(0);
+  assert(!r.valid);
+  assert(r.failureReason==ACAL_FAIL_AIR_SUPPLY);
+  assert(cal.getAirSupplyError()==CAL_AIR_FAULT);
+}
+
+// D8. Reservoir mode with no usable sensor is refused (strict, not best-effort):
+// the pump is stopped, the supply is never ready, and it reports sensor_fault.
+static void calair_reservoir_requires_sensor(){
+  resetCfg(); cfg.airMode=AIR_MODE_PUMP_RESERVOIR; cfg.reservoirTargetPercent=60;
+  PressureController pc; pc._sensorDetected=false;   // no sensor
+  FanController fan;
+  CalibrationAirSupply sup(pc, fan);
+  sup.prepare();
+  assert(!sup.isReady());
+  assert(sup.getError()==CAL_AIR_SENSOR_FAULT);
+  assert(!pc.isPumpRunning());
+}
+
+// D2. During an actuator session the idle power-down is inhibited so the PCA9685
+// OE / servos are never cut mid-measurement; normal management resumes after.
+static void instrument_power_held_during_actuator_session(){
+  extern std::map<uint8_t,int> __digital_writes;
+  resetCfg(); extern WireClass Wire; Wire.clear(); Wire.setPresent(PCA_ADDR_BOARD0,true);
+  cfg.timeUnpower=200; __test_millis=0;
+  InstrumentManager im; assert(im.beginSafe());
+  im.setActuatorSessionActive(true);           // begins a calibration/range-finder session
+  assert(im.isActuatorSessionActive());
+  assert(__digital_writes[PIN_SERVOS_OFF]==LOW);   // powered immediately
+  for(int i=0;i<20;i++){ __test_millis+=100; im.update(); }
+  assert(__digital_writes[PIN_SERVOS_OFF]==LOW);   // still powered despite long idle
+  im.setActuatorSessionActive(false);          // session ends
+  for(int i=0;i<20;i++){ __test_millis+=100; im.update(); }
+  assert(__digital_writes[PIN_SERVOS_OFF]==HIGH);  // normal idle power-down resumes
+  im.allSoundOff();
+}
+
 // §11/§16. LittleFS save failure: results applied in RAM then restored, no false success.
 static void autocal_storage_failure_restores(){
   extern bool __config_save_result;
@@ -400,7 +520,9 @@ static void autocal_storage_failure_restores(){
   __config_save_result=false;             // simulate LittleFS failure
   AutoCalApplyResult ap=cal.applyResults();
   __config_save_result=true;              // restore for other tests
-  assert(ap.applied && !ap.saved && ap.validCount==1);
+  // On a storage failure the RAM config is rolled back, so NOTHING is in effect:
+  // applied must be false too (the client must never be told a partial success).
+  assert(!ap.applied && !ap.saved && ap.validCount==1);
   // RAM restored to the previous configuration (no partial write left behind).
   assert(cfg.notes[0].airflowMinPercent==1 && cfg.notes[0].airflowMaxPercent==99 && cfg.notes[0].airflowNominalPercent==50);
 }
@@ -524,4 +646,4 @@ static void audio_mic_classification(){
   assert(PitchDetector::classifyRaw(raw.data(), N) == MIC_SIG_OK);
 }
 
-int main(){ pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); airflow_nominal_drives_angle(); autocal_frozen_source_fails(); autocal_air_supply_gate(); autocal_14_notes_no_timeout(); autocal_plus70_cents_rejected(); autocal_storage_failure_restores(); autocal_range_finder(); audio_yin_pcm_core(); audio_mic_classification(); std::cout << "behavior tests passed\n"; }
+int main(){ pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); airflow_nominal_drives_angle(); autocal_frozen_source_fails(); autocal_air_supply_gate(); autocal_14_notes_no_timeout(); autocal_plus70_cents_rejected(); autocal_storage_failure_restores(); autocal_range_finder(); autocal_range_finder_stale(); autocal_range_apply_storage(); autocal_air_lost_midnote(); calair_reservoir_requires_sensor(); instrument_power_held_during_actuator_session(); audio_yin_pcm_core(); audio_mic_classification(); std::cout << "behavior tests passed\n"; }

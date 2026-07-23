@@ -48,6 +48,17 @@ Client control messages: `{"t":"auto_cal","mode":"air"}` starts per-note airflow
 calibration, `"mode":"range"` starts the servo range finder, `"mode":"stop"`
 stops, `"mode":"apply_range"` applies range-finder results.
 
+**Range-finder lifecycle.** When the range finder finishes, the server broadcasts
+`rf_done` **once** and keeps the result *pending* (the calibrator stays in its
+completed state). `apply_range` therefore remains valid until the owner applies,
+cancels (`stop`), starts a new calibration, or disconnects. `rf_done` reports
+`ok:false` with `reason`/`reasonName` (and `airError` for an air-supply failure)
+when no usable range was found. Applying replies with `{"t":"rf_applied","ok":true,
+"min":…,"max":…}` on success, or `{"t":"rf_applied","ok":false,"error":"…"}`
+(`storage_failed` / `no_valid_range`) when nothing was written — the servo range is
+storage-checked and rolled back on a LittleFS failure, exactly like the per-note
+results.
+
 Live progress (`acal_prog`), one per airflow position:
 
 ```json
@@ -68,20 +79,26 @@ note:
 
 ```json
 {
-  "t": "acal_done", "ok": true, "saved": true, "validCount": 12, "failedCount": 2,
+  "t": "acal_done", "ok": true, "applied": true, "saved": true,
+  "validCount": 12, "failedCount": 2,
   "results": [
     { "name": "C6", "ok": true, "min": 20, "nominal": 39, "max": 68,
-      "confidence": 91, "cents": -3.2, "stability": 0.94, "snr": 18.5, "reason": 0 }
+      "confidence": 91, "cents": -3.2, "stability": 0.94, "snr": 18.5,
+      "reason": 0, "reasonName": "none" }
   ]
 }
 ```
 
-- `ok` is `false` when no note is valid; `saved` is `false` on a LittleFS write
-  failure (the previous configuration is then restored in RAM).
-- A failed note has `ok:false`, keeps its previous calibration, and reports a
+- `ok` is `true` only when the results were both **applied and saved**
+  (`applied && saved`). On a LittleFS write failure the RAM configuration is
+  rolled back, so `applied` and `saved` are both `false`, `ok` is `false`, and an
+  `"error":"storage_failed"` field is added — a client is never told a partial
+  success while nothing was written.
+- A failed note has `ok:false`, keeps its previous calibration, and reports both a
   numeric `reason` (`AutoCalFailureReason`: 0 none, 1 no-sound, 2 wrong-note,
   3 low-confidence, 6 no-stable-nominal, 7 audio-stale, 8 note-timeout,
-  9 global-timeout, 10 air-supply-not-ready, …).
+  9 global-timeout, 10 air-supply-not-ready, …) and a textual `reasonName`
+  (e.g. `"audio_stale"`).
 - On a global-timeout abort the server sends `{"t":"acal_error","msg":"..."}`.
 - The audio monitor stream (`{"t":"audio",...}`) additionally carries `conf`
   (0–100) and `valid`.
@@ -90,9 +107,14 @@ note:
 started it. A second `auto_cal` start returns `{"t":"acal_error","msg":
 "calibration_busy"}`; a non-owner stop/apply returns `{"t":"error","msg":
 "not_calibration_owner"}`. Actuator commands (`test_*`, `non/nof/cc`, `play`,
-pump/fan targets, `mic_mon`, `mic_reset`) sent during a calibration are refused
-with `{"t":"error","msg":"calibration_active"}`, and `POST /api/config` returns
-HTTP `409 {"ok":false,"error":"calibration_active"}`.
+pump/fan targets **and `pump_stop`/`fan_stop`**, `mic_mon`, `mic_reset`) sent
+during a calibration are refused with `{"t":"error","msg":"calibration_active"}`.
+The player `stop` command, when a calibration is active, cancels the calibration
+cleanly (owner-gated) instead of fighting it with all-sound-off. Every
+config-mutating REST route — `POST /api/config`, `POST /api/config/reset` and
+`POST /api/config/factory` — returns HTTP `409 {"ok":false,
+"error":"calibration_active"}` while a calibration (including a pending
+range-finder result) is active.
 
 **Microphone.** `GET /api/config` exposes `mic_status` (`detected` / `all_zero`
 / `stuck` / `saturated` / `read_error` / `not_init`). `{"t":"mic_reset"}` re-probes

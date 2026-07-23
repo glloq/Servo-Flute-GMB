@@ -174,6 +174,41 @@ def test_autocal_air_supply_abstraction():
     assert 'getCalibrationAirSupply()' in wc
 
 
+def test_autocal_review_fixes():
+    # Wiring that lives in the non-host-compilable web/instrument layer; the
+    # behaviour of the underlying calibrator/air-supply/power logic is covered by
+    # the native behavioural tests.
+    wc = read('Servo_flute_ESP32/WebConfigurator.cpp')
+    # D1: rf_done is broadcast once and the range result is kept applicable (the
+    # calibrator is NOT stopped when the range finder completes).
+    assert '_rfDoneSent' in wc
+    rf_block = wc.split('Check range finder completion', 1)[1].split('Check airflow calibration', 1)[0]
+    assert '_autoCal->stop()' not in rf_block
+    # D4: overall ok reflects applied AND saved (never a false partial success).
+    assert 'ap.applied && ap.saved' in wc
+    assert 'storage_failed' in wc
+    # D6: pump_stop / fan_stop are blocked during a calibration.
+    assert '"pump_stop", "fan_stop"' in wc
+    # D7: reset and factory reset are guarded by the calibration lock.
+    for fn in ['handleApiConfigReset', 'handleApiFactoryReset']:
+        body = wc.split(f'void WebConfigurator::{fn}', 1)[1].split('\nvoid ', 1)[0]
+        assert 'rejectIfCalibrationActive' in body, fn
+    # D11: user strings serialized through ArduinoJson (jsonStr) in the config GET.
+    assert 'json += ",\\"device\\":" + jsonStr(cfg.deviceName)' in wc
+    # D2: calibration holds servo power via the actuator session.
+    assert 'setActuatorSessionActive' in wc
+    im = read('Servo_flute_ESP32/InstrumentManager.cpp')
+    assert '_actuatorSessionActive' in im and 'ensureServosPowered()' in im
+    # D3: dedicated range-finder failure path (never finalizeNote/advanceNote).
+    ac = read('Servo_flute_ESP32/AutoCalibrator.cpp')
+    assert 'finalizeRangeFinderFailure' in ac and 'failCurrentNote' in ac
+    # D8: reservoir mode is strict about the sensor.
+    cas = read('Servo_flute_ESP32/CalibrationAirSupply.cpp')
+    assert 'CAL_AIR_SENSOR_FAULT' in cas and 'isSensorDetected()' in cas
+    # D13: textual failure-reason names.
+    assert 'failureReasonName' in ac
+
+
 def test_watchdog_has_idf_compatibility_layer():
     ino = read('Servo_flute_ESP32/Servo_flute_ESP32.ino')
     assert '#include <esp_idf_version.h>' in ino

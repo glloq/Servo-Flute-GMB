@@ -6,6 +6,19 @@
 #include "WebValueParsers.h"
 #include <WiFi.h>
 
+// Serialize a single string value through ArduinoJson so quotes, backslashes and
+// control characters in user-provided fields (device name, SSID, colour, ...) are
+// correctly escaped. Returns the value WITH its surrounding double quotes, e.g.
+// jsonStr("Flute \"A\"") -> "\"Flute \\\"A\\\"\"". Used by the hand-assembled JSON
+// responses so those free-form fields cannot break the payload.
+static String jsonStr(const char* s) {
+  JsonDocument d;
+  d.set(s ? s : "");
+  String out;
+  serializeJson(d, out);
+  return out;
+}
+
 WebConfigurator::WebConfigurator(uint16_t port)
   : _server(port), _ws("/ws"),
     _instrument(nullptr), _player(nullptr), _wirelessManager(nullptr),
@@ -13,7 +26,7 @@ WebConfigurator::WebConfigurator(uint16_t port)
     _uploadSize(0), _uploadError(false)
 #if MIC_ENABLED
     , _audio(nullptr), _autoCal(nullptr), _micMonitorEnabled(false), _lastAudioBroadcast(0), _lastAcalBroadcast(0)
-    , _autoCalOwnerClientId(0), _micMonitorBeforeCalibration(false)
+    , _autoCalOwnerClientId(0), _micMonitorBeforeCalibration(false), _rfDoneSent(false)
 #endif
 {
 }
@@ -112,6 +125,9 @@ void WebConfigurator::update() {
 
     // Update auto-calibrator
     if (_autoCal && _autoCal->isRunning()) {
+      // Hold servo/PCA power for the whole measuring session so managePower() can
+      // never cut OE between settling and the last audio frame of a position.
+      if (_instrument) _instrument->setActuatorSessionActive(true);
       _autoCal->update();
 
       // Broadcast progress
@@ -161,20 +177,37 @@ void WebConfigurator::update() {
       _micMonitorEnabled = _micMonitorBeforeCalibration;
       _audio->setActive(_micMonitorEnabled);
       _autoCalOwnerClientId = 0;
+      _rfDoneSent = false;
+      if (_instrument) _instrument->setActuatorSessionActive(false);
     }
 
-    // Check range finder completion
-    if (_autoCal && _autoCal->isRangeFinderComplete()) {
+    // Check range finder completion. Broadcast rf_done ONCE and then KEEP the
+    // calibrator in ACAL_RF_COMPLETE so the result stays applicable: apply_range
+    // requires isRangeFinderComplete(), so we must not stop() here. The state is
+    // cleared on apply / cancel / new start / owner disconnect.
+    if (_autoCal && _autoCal->isRangeFinderComplete() && !_rfDoneSent) {
+      bool ok = _autoCal->getRangeFinderMin() >= 0 && _autoCal->getRangeFinderMax() >= 0;
       String dj = "{\"t\":\"rf_done\",\"ok\":";
-      dj += String(_autoCal->getRangeFinderMin() >= 0 ? "true" : "false");
-      if (_autoCal->getRangeFinderMin() >= 0) {
+      dj += String(ok ? "true" : "false");
+      if (ok) {
         dj += ",\"min\":" + String(_autoCal->getRangeFinderMin());
         dj += ",\"max\":" + String(_autoCal->getRangeFinderMax());
+      } else {
+        uint8_t reason = _autoCal->getRangeFailureReason();
+        dj += ",\"reason\":" + String(reason);
+        dj += ",\"reasonName\":\"" + String(AutoCalibrator::failureReasonName(reason)) + "\"";
+        if (reason == ACAL_FAIL_AIR_SUPPLY) {
+          dj += ",\"airError\":\"" +
+                String(AutoCalibrator::airSupplyErrorName(_autoCal->getAirSupplyError())) + "\"";
+        }
       }
       dj += "}";
       _ws.textAll(dj);
-      _autoCal->stop();
-      // Keep the mic active for a range-finder review; monitor stays as-is.
+      _rfDoneSent = true;
+      // Restore the user's pre-calibration monitor preference; keep ownership so
+      // only the owner can apply/cancel the pending result.
+      _micMonitorEnabled = _micMonitorBeforeCalibration;
+      if (_audio) _audio->setActive(_micMonitorEnabled);
     }
     // Check airflow calibration completion
     if (_autoCal && _autoCal->isComplete()) {
@@ -183,9 +216,15 @@ void WebConfigurator::update() {
       // storage failure, reporting exactly what happened.
       AutoCalApplyResult ap = _autoCal->applyResults();
       const char* names[] = {"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
+      // "ok" reflects the PERSISTED outcome: values must be both applied AND saved.
+      // A storage failure rolls the RAM config back (applied==false), so a client
+      // is never told success while nothing was actually written.
+      bool okOverall = ap.applied && ap.saved;
       String dj = "{\"t\":\"acal_done\"";
-      dj += ",\"ok\":" + String(ap.validCount > 0 ? "true" : "false");
+      dj += ",\"ok\":" + String(okOverall ? "true" : "false");
+      dj += ",\"applied\":" + String(ap.applied ? "true" : "false");
       dj += ",\"saved\":" + String(ap.saved ? "true" : "false");
+      if (ap.validCount > 0 && !ap.saved) dj += ",\"error\":\"storage_failed\"";
       dj += ",\"validCount\":" + String(ap.validCount);
       dj += ",\"failedCount\":" + String(ap.failedCount);
       dj += ",\"results\":[";
@@ -207,6 +246,7 @@ void WebConfigurator::update() {
         dj += ",\"stability\":" + String(r.pitchStability, 2);
         dj += ",\"snr\":" + String(r.signalToNoiseRatio, 1);
         dj += ",\"reason\":" + String(r.failureReason);
+        dj += ",\"reasonName\":\"" + String(AutoCalibrator::failureReasonName(r.failureReason)) + "\"";
         dj += ",\"minA\":" + String(minAngle);
         dj += ",\"nomA\":" + String(nomAngle);
         dj += ",\"maxA\":" + String(maxAngle) + "}";
@@ -214,10 +254,12 @@ void WebConfigurator::update() {
       dj += "]}";
       _ws.textAll(dj);
       _autoCal->stop();
-      // Restore the user's pre-calibration monitor preference.
+      // Restore the user's pre-calibration monitor preference and resume power mgmt.
       _micMonitorEnabled = _micMonitorBeforeCalibration;
       if (_audio) _audio->setActive(_micMonitorEnabled);
       _autoCalOwnerClientId = 0;
+      _rfDoneSent = false;
+      if (_instrument) _instrument->setActuatorSessionActive(false);
     }
   }
 #endif
@@ -229,25 +271,42 @@ void WebConfigurator::setWirelessManager(WirelessManager* wm) {
 
 #if MIC_ENABLED
 bool WebConfigurator::isCalibrationActive() const {
-  return _autoCal && _autoCal->isRunning();
+  // Active while measuring AND during the range-finder review window (the result
+  // is still pending apply/cancel), so config stays locked until it is resolved.
+  return _autoCal && (_autoCal->isRunning() || _autoCal->isRangeFinderComplete());
+}
+
+bool WebConfigurator::rejectIfCalibrationActive(AsyncWebServerRequest* request) {
+  if (!isCalibrationActive()) return false;
+  request->send(409, "application/json", "{\"ok\":false,\"error\":\"calibration_active\"}");
+  return true;
 }
 
 void WebConfigurator::cancelActiveActuatorSession() {
-  if (_autoCal && _autoCal->isRunning()) {
+  // Clean up a running calibration OR a pending completed/range-finder result.
+  if (_autoCal && (_autoCal->isRunning() || _autoCal->isComplete() ||
+                   _autoCal->isRangeFinderComplete())) {
     _autoCal->stop();
     // Restore the user's pre-calibration monitor choice (never leave the mic on).
     _micMonitorEnabled = _micMonitorBeforeCalibration;
     if (_audio) _audio->setActive(_micMonitorEnabled);
     _autoCalOwnerClientId = 0;
+    _rfDoneSent = false;
   }
+  // Allow normal power management to resume.
+  if (_instrument) _instrument->setActuatorSessionActive(false);
 }
 
 bool WebConfigurator::actuatorCommandBlockedDuringCalibration(AsyncWebSocketClient* client, const char* type) {
   if (!isCalibrationActive()) return false;
-  // Commands that would move actuators while the calibration owns them.
+  // Commands that would move actuators or cut the shared air source while the
+  // calibration owns them. pump_stop / fan_stop are refused here (use panic or
+  // auto_cal stop to abort a calibration); "stop" is handled specially so it
+  // cancels the calibration cleanly rather than fighting it with allSoundOff.
   static const char* kBlocked[] = {
     "non", "nof", "cc", "air_live", "test_finger", "test_air", "test_angle",
-    "angle_live", "test_sol", "test_note", "pump_target", "fan_target", "play", "mic_mon", "mic_reset"
+    "angle_live", "test_sol", "test_note", "pump_target", "fan_target",
+    "pump_stop", "fan_stop", "play", "mic_mon", "mic_reset"
   };
   for (const char* b : kBlocked) {
     if (strcmp(type, b) == 0) {
@@ -369,7 +428,7 @@ void WebConfigurator::setupRoutes() {
       json += "\"state\":" + String(wm.getState());
       json += ",\"ip\":\"" + wm.getIPAddress() + "\"";
       json += ",\"ap\":" + String(wm.isAPMode() ? "true" : "false");
-      json += ",\"ssid\":\"" + String(cfg.wifiSsid) + "\"";
+      json += ",\"ssid\":" + jsonStr(cfg.wifiSsid);
       if (wm.getState() == WIFI_STATE_STA_CONNECTED) {
         json += ",\"rssi\":" + String(WiFi.RSSI());
       }
@@ -507,7 +566,7 @@ void WebConfigurator::handleApiConfig(AsyncWebServerRequest* request) {
   json += ",\"air_pca\":" + String(cfg.airflowPcaChannel);
   json += ",\"angle_open\":" + String(cfg.fingerAngleOpen);
   json += ",\"half_hole_pct\":" + String(cfg.halfHolePercent);
-  json += ",\"embouchure\":\"" + String(cfg.embouchure) + "\"";
+  json += ",\"embouchure\":" + jsonStr(cfg.embouchure);
 
   // Scalaires
   json += ",\"midi_ch\":" + String(cfg.midiChannel);
@@ -536,14 +595,14 @@ void WebConfigurator::handleApiConfig(AsyncWebServerRequest* request) {
   json += ",\"sol_act\":" + String(cfg.solenoidPwmActivation);
   json += ",\"sol_hold\":" + String(cfg.solenoidPwmHolding);
   json += ",\"sol_time\":" + String(cfg.solenoidActivationTimeMs);
-  json += ",\"device\":\"" + String(cfg.deviceName) + "\"";
-  json += ",\"wifi_ssid\":\"" + String(cfg.wifiSsid) + "\"";
+  json += ",\"device\":" + jsonStr(cfg.deviceName);
+  json += ",\"wifi_ssid\":" + jsonStr(cfg.wifiSsid);
   json += ",\"time_unpower\":" + String(cfg.timeUnpower);
   json += ",\"hide_calib\":" + String(cfg.hideCalibration ? "true" : "false");
   json += ",\"hide_air\":" + String(cfg.hideAir ? "true" : "false");
   json += ",\"sol_pin\":" + String(cfg.solenoidPin);
   json += ",\"kbd_mode\":" + String(cfg.kbdMode);
-  json += ",\"color\":\"" + String(cfg.instrumentColor) + "\"";
+  json += ",\"color\":" + jsonStr(cfg.instrumentColor);
   json += ",\"air_atk_mode\":" + String(cfg.airAttackMode);
   json += ",\"air_atk_off\":" + String(cfg.airAttackOffset);
   json += ",\"air_atk_ms\":" + String(cfg.airAttackMs);
@@ -659,8 +718,7 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
 #if MIC_ENABLED
   // Configuration changes are locked while a calibration owns the actuators, so
   // notes/fingering/air-system/PCA channels cannot shift mid-calibration.
-  if (isCalibrationActive()) {
-    request->send(409, "application/json", "{\"ok\":false,\"error\":\"calibration_active\"}");
+  if (rejectIfCalibrationActive(request)) {
     _configBody = "";
     return;
   }
@@ -1013,6 +1071,11 @@ void WebConfigurator::handleApiDiagnostics(AsyncWebServerRequest* request) {
 }
 
 void WebConfigurator::handleApiConfigReset(AsyncWebServerRequest* request) {
+#if MIC_ENABLED
+  // Never rewrite notes/fingerings/servo ranges while a calibration is using the
+  // current organisation.
+  if (rejectIfCalibrationActive(request)) return;
+#endif
   ConfigStorage::resetToDefaults();
 
   if (DEBUG) {
@@ -1023,6 +1086,9 @@ void WebConfigurator::handleApiConfigReset(AsyncWebServerRequest* request) {
 }
 
 void WebConfigurator::handleApiFactoryReset(AsyncWebServerRequest* request) {
+#if MIC_ENABLED
+  if (rejectIfCalibrationActive(request)) return;
+#endif
   ConfigStorage::factoryReset();
 
   if (DEBUG) {
@@ -1403,6 +1469,18 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
   } else if (strcmp(type, "pause") == 0) {
     if (_player) _player->pause();
   } else if (strcmp(type, "stop") == 0) {
+#if MIC_ENABLED
+    // During a calibration, "stop" must cancel it cleanly (its own stop already
+    // safes the hardware) rather than fight the calibrator with allSoundOff.
+    if (isCalibrationActive()) {
+      if (_autoCalOwnerClientId != 0 && client->id() != _autoCalOwnerClientId) {
+        client->text("{\"t\":\"error\",\"msg\":\"not_calibration_owner\"}");
+      } else {
+        cancelActiveActuatorSession();
+      }
+      return;
+    }
+#endif
     if (_player) _player->stop();
     _instrument->allSoundOff();
   } else if (strcmp(type, "ch_filter") == 0) {
@@ -1464,10 +1542,15 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
         // A second start attempt is refused explicitly.
         client->text("{\"t\":\"acal_error\",\"msg\":\"calibration_busy\"}");
       } else {
+        // A new start discards any pending (unapplied) range-finder result.
+        cancelActiveActuatorSession();
         // Take ownership and snapshot the user's monitor preference.
         _autoCalOwnerClientId = client->id();
         _micMonitorBeforeCalibration = _micMonitorEnabled;
+        _rfDoneSent = false;
         _audio->setActive(true);
+        // Keep the servos powered for the whole session (see D2 / managePower()).
+        if (_instrument) _instrument->setActuatorSessionActive(true);
         _autoCal->start(strcmp(mode, "air") == 0 ? ACAL_MODE_AIRFLOW : ACAL_MODE_RANGE_FIND);
       }
     } else if (strcmp(mode, "stop") == 0) {
@@ -1482,10 +1565,22 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
         if (_autoCalOwnerClientId != 0 && client->id() != _autoCalOwnerClientId) {
           client->text("{\"t\":\"error\",\"msg\":\"not_calibration_owner\"}");
         } else {
-          _autoCal->applyRangeResults();
-          String rj = "{\"t\":\"rf_applied\",\"min\":" + String(cfg.servoAirflowMin) +
-                      ",\"max\":" + String(cfg.servoAirflowMax) + "}";
-          _ws.textAll(rj);
+          bool hadValid = _autoCal->getRangeFinderMin() >= 0 && _autoCal->getRangeFinderMax() >= 0;
+          RangeApplyResult ra = _autoCal->applyRangeResults();
+          if (ra.applied && ra.saved) {
+            String rj = "{\"t\":\"rf_applied\",\"ok\":true,\"min\":" + String(ra.minAngle) +
+                        ",\"max\":" + String(ra.maxAngle) + "}";
+            _ws.textAll(rj);
+          } else {
+            // Nothing was written (invalid result or storage failure): report the
+            // failure to the requester and do NOT broadcast rf_applied.
+            String rj = "{\"t\":\"rf_applied\",\"ok\":false,\"error\":\"";
+            rj += hadValid ? "storage_failed" : "no_valid_range";
+            rj += "\"}";
+            client->text(rj);
+          }
+          // The pending result is resolved: clear the review state and ownership.
+          cancelActiveActuatorSession();
         }
       }
     }

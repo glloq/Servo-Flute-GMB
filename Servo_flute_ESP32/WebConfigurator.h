@@ -135,8 +135,15 @@ private:
   // User's mic-monitor preference captured when a calibration starts, restored
   // when it ends so calibration never permanently changes the monitor choice.
   bool _micMonitorBeforeCalibration;
+  // The range-finder result is broadcast once; the calibrator then stays in
+  // ACAL_RF_COMPLETE (kept applicable) until apply / cancel / new start / owner
+  // disconnect, so this guards against re-broadcasting rf_done every loop.
+  bool _rfDoneSent;
 
   bool isCalibrationActive() const;
+  // Guard for every config-mutating REST route: if a calibration is active it
+  // sends HTTP 409 {"ok":false,"error":"calibration_active"} and returns true.
+  bool rejectIfCalibrationActive(AsyncWebServerRequest* request);
   // Stop any running calibration and return the microphone monitor to the user's
   // pre-calibration state. Safe to call when nothing is running.
   void cancelActiveActuatorSession();
