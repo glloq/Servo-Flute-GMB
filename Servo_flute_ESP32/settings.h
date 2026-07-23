@@ -152,6 +152,11 @@ Set MIC_ENABLED to false if no mic is connected.
 // Reservoir (mode 5) is considered ready once its fill level is within this many
 // percent of the requested target (a perfect match is not required).
 #define AUTOCAL_RESERVOIR_READY_MARGIN 5
+// After the range finder completes, its result is kept pending (owner registered,
+// config locked, servo power held) until the owner applies or dismisses it. If
+// neither happens within this window the server auto-cancels the pending result so
+// nothing stays stuck indefinitely.
+#define AUTOCAL_RF_REVIEW_TIMEOUT_MS  300000
 
 // --- Broadcast / legacy timing (still used by range finder + WS throttling) ---
 #define AUTOCAL_SETTLE_MS       300     // Range finder: wait after positioning servos

@@ -26,7 +26,7 @@ WebConfigurator::WebConfigurator(uint16_t port)
     _uploadSize(0), _uploadError(false)
 #if MIC_ENABLED
     , _audio(nullptr), _autoCal(nullptr), _micMonitorEnabled(false), _lastAudioBroadcast(0), _lastAcalBroadcast(0)
-    , _autoCalOwnerClientId(0), _micMonitorBeforeCalibration(false), _rfDoneSent(false)
+    , _autoCalOwnerClientId(0), _micMonitorBeforeCalibration(false), _rfDoneSent(false), _rfDoneTime(0)
 #endif
 {
 }
@@ -204,10 +204,18 @@ void WebConfigurator::update() {
       dj += "}";
       _ws.textAll(dj);
       _rfDoneSent = true;
+      _rfDoneTime = now;
       // Restore the user's pre-calibration monitor preference; keep ownership so
       // only the owner can apply/cancel the pending result.
       _micMonitorEnabled = _micMonitorBeforeCalibration;
       if (_audio) _audio->setActive(_micMonitorEnabled);
+    }
+    // Auto-cancel a pending range-finder result the owner never resolved, so the
+    // ownership / config lock / servo-power session cannot stay held indefinitely.
+    if (_autoCal && _autoCal->isRangeFinderComplete() && _rfDoneSent &&
+        (now - _rfDoneTime) >= AUTOCAL_RF_REVIEW_TIMEOUT_MS) {
+      _ws.textAll("{\"t\":\"rf_expired\"}");
+      cancelActiveActuatorSession();
     }
     // Check airflow calibration completion
     if (_autoCal && _autoCal->isComplete()) {

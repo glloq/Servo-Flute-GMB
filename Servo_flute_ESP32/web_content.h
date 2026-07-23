@@ -1347,10 +1347,10 @@ function refreshKbdPumpPanel(){
   if(hasRes){
     if(st>=3){lbl.textContent='Fill';hint.textContent='Endstop: pump ON/OFF based on sensor';
       mode.textContent='Endstop '+(st===3?'mecanique':'optique')}
-    else if(st===2){lbl.textContent='Target level';hint.textContent='Hall: regulation '+(mt===0?'bang-bang':'PID');
-      mode.textContent='Hall + '+(mt===0?'Bang-bang':'PID')}
-    else{lbl.textContent='Target height';hint.textContent='ToF: regulation '+(mt===0?'bang-bang':'PID');
-      mode.textContent='ToF + '+(mt===0?'Bang-bang':'PID')}
+    else if(st===2){lbl.textContent='Target level';hint.textContent='Hall: regulation '+(mt===0?'PID':'bang-bang');
+      mode.textContent='Hall + '+(mt===0?'PID':'Bang-bang')}
+    else{lbl.textContent='Target height';hint.textContent='ToF: regulation '+(mt===0?'PID':'bang-bang');
+      mode.textContent='ToF + '+(mt===0?'PID':'Bang-bang')}
     title.textContent='Pump + Reservoir';
   }else{
     lbl.textContent='Pump power';hint.textContent='PWM proportionnel direct';
@@ -2991,16 +2991,27 @@ function handleWs(d){
     $('acalFrames').textContent=(d.validFrames!=null?(d.validFrames+'/'+d.totalFrames):'-');
   }else if(d.t==='acal_done'){
     autoCalRunning=false;$('btnAcalStart').style.display='';$('btnAcalStop').style.display='none';$('btnRfStart').style.display='';
-    $('acalFill').style.width='100%';$('acalState').textContent='Termine !';$('acalAngle').textContent='';$('acalMetrics').style.display='none';addLog('Auto-cal OK');
+    $('acalFill').style.width='100%';$('acalAngle').textContent='';$('acalMetrics').style.display='none';
+    /* Honour the persisted outcome: only ok (applied AND saved) is a success. */
+    if(d.ok){
+      $('acalState').textContent='Termine ('+(d.validCount||0)+' ok'+(d.failedCount?', '+d.failedCount+' echec':'')+')';
+      addLog('Auto-cal OK: '+(d.validCount||0)+' note(s)');showToast('Calibration appliquee et sauvegardee','success');
+      setTimeout(loadConfig,1000);   /* reload only when something was actually written */
+    }else{
+      const err=d.error||((d.validCount||0)===0?'no_valid_note':'not_applied');
+      $('acalState').textContent='Echec';
+      $('acalMsg').textContent=acalErrText(err);$('acalMsg').style.display='block';
+      addLog('Auto-cal ECHEC: '+err+(d.saved===false?' (non sauvegarde)':''));
+      showToast(acalErrText(err),'error');
+    }
     if(d.results){let h='';d.results.forEach(r=>{
       let detail;
       if(r.ok){detail=esc(r.min+'/'+r.nominal+'/'+r.max+'%')+' <span style="color:#888">conf '+r.confidence+'% · '+(r.cents>=0?'+':'')+(r.cents||0).toFixed(0)+'ct · stab '+((r.stability||0)*100).toFixed(0)+'% · SNR '+(r.snr||0).toFixed(0)+'dB</span>';}
-      else{detail='Echec (aucune note stable detectee)';}
+      else{detail='Echec ('+esc(acalErrText(r.reasonName||'?'))+')';}
       h+='<div style="display:flex;justify-content:space-between;gap:8px;font-size:.78em;padding:2px 0">'+
       '<span>'+esc(r.name)+'</span><span style="color:'+(r.ok?'#4ecca3':'#e94560');
       h+=';text-align:right">'+detail+'</span></div>'});
       $('acalResults').innerHTML=h;$('acalResults').style.display='block'}
-    setTimeout(loadConfig,1000)
   }else if(d.t==='acal_error'){
     autoCalRunning=false;$('btnAcalStart').style.display='';$('btnAcalStop').style.display='none';$('btnRfStart').style.display='';
     $('acalMetrics').style.display='none';$('acalState').textContent='Erreur';
@@ -3015,18 +3026,40 @@ function handleWs(d){
     $('btnRfStart').style.display='';$('btnRfStop').style.display='none';$('btnAcalStart').style.display='';
     $('rfFill').style.width='100%';
     if(d.ok&&d.min!=null){$('rfMinVal').textContent=d.min;$('rfMaxVal').textContent=d.max;
-      $('rfResult').style.display='block';$('rfStep').textContent='Plage detectee !'}
-    else{$('rfStep').textContent='No sound detected'}
+      /* result is pending on the server (apply / dismiss); show the choice */
+      $('rfResult').style.display='block';$('rfStep').textContent='Plage detectee - appliquer ou ignorer'}
+    else{$('rfResult').style.display='none';
+      $('rfStep').textContent='Echec: '+acalErrText(d.reasonName||'no_valid_range')}
   }else if(d.t==='rf_applied'){
-    showToast('Plage servo mise a jour: '+d.min+'deg-'+d.max+'deg','success');
-    $('rfProgress').style.display='none';$('btnRfStart').style.display='';
-    if(CFG){CFG.air_min=d.min;CFG.air_max=d.max}
-    if($('cfgAirMin'))$('cfgAirMin').value=d.min;if($('cfgAirMax'))$('cfgAirMax').value=d.max;
-    buildAirflowRows();setTimeout(loadConfig,500)
+    /* Honour ok/error: the servo range is only written when ok is true. */
+    if(d.ok){
+      showToast('Plage servo mise a jour: '+d.min+'deg-'+d.max+'deg','success');
+      $('rfProgress').style.display='none';$('btnRfStart').style.display='';
+      if(CFG){CFG.air_min=d.min;CFG.air_max=d.max}
+      if($('cfgAirMin'))$('cfgAirMin').value=d.min;if($('cfgAirMax'))$('cfgAirMax').value=d.max;
+      buildAirflowRows();setTimeout(loadConfig,500);
+    }else{
+      showToast('Application echouee: '+acalErrText(d.error||'error'),'error');
+      addLog('rf_applied ECHEC: '+(d.error||''));
+    }
+  }else if(d.t==='rf_expired'){
+    /* the server auto-cancelled a pending range-finder result after the review timeout */
+    $('rfProgress').style.display='none';$('rfResult').style.display='none';$('btnRfStart').style.display='';
+    showToast('Resultat range finder expire (non applique)','error');addLog('rf_expired')
   }
 }
 function updateCC(n,v){if(v===undefined)return;const p=(v/MIDI_CC_MAX*100).toFixed(0);
   const b=$('ccBar'+n),t=$('ccV'+n);if(b)b.style.width=p+'%';if(t)t.textContent=v}
+/* Human text for auto-cal / range-finder failure codes and per-note reasonName. */
+function acalErrText(e){const M={
+  storage_failed:'Echec de sauvegarde (LittleFS)',no_valid_range:'Aucune plage valide detectee',
+  not_applied:'Non applique',no_valid_note:'Aucune note valide',
+  not_calibration_owner:'Reserve au client proprietaire',calibration_active:'Calibration en cours',
+  no_sound:'Aucun son detecte',wrong_note:'Mauvaise note',low_confidence:'Confiance trop faible',
+  no_stable_nominal:'Pas de nominal stable',audio_stale:'Flux audio fige',note_timeout:'Delai note depasse',
+  global_timeout:'Delai global depasse',air_supply:'Alimentation air non prete',
+  sensor_fault:'Capteur reservoir absent/defaillant',none:'OK'};
+  return M[e]||e}
 
 // --- Load config ---
 function loadConfig(){
@@ -3488,7 +3521,8 @@ function uploadSeqMidi(){
   const trk=[];
   // Tempo meta event
   const usPerBeat=Math.round(60000000/bpm);
-  trk.push({t:0,d:[0xFF,0x51,0x03,(usPerBeat>>16)&0xFF,(usPerBeat>>8)&0xFF,usPerBeat&0xFF]});
+  /* delta-time 0x00 must precede the meta event (the track bytes are just e.d concatenated) */
+  trk.push({t:0,d:[0x00,0xFF,0x51,0x03,(usPerBeat>>16)&0xFF,(usPerBeat>>8)&0xFF,usPerBeat&0xFF]});
   // Notes triees par temps
   const evts=[];
   seqNotes.forEach(n=>{
@@ -3773,7 +3807,7 @@ function stopRangeFinder(){$('btnRfStart').style.display='';$('btnRfStop').style
   $('btnAcalStart').style.display='';
   $('rfProgress').style.display='none';wsSend({t:'auto_cal',mode:'stop'})}
 function applyRangeResult(){wsSend({t:'auto_cal',mode:'apply_range'})}
-function dismissRangeResult(){$('rfProgress').style.display='none';$('btnRfStart').style.display='';$('btnRfStop').style.display='none'}
+function dismissRangeResult(){wsSend({t:'auto_cal',mode:'stop'});$('rfProgress').style.display='none';$('btnRfStart').style.display='';$('btnRfStop').style.display='none'}
 function startAutoCal(){autoCalRunning=true;$('btnAcalStart').style.display='none';$('btnAcalStop').style.display='';
   $('btnRfStart').style.display='none';
   $('acalProgress').style.display='block';$('acalResults').style.display='none';$('acalMsg').style.display='none';$('acalMetrics').style.display='none';wsSend({t:'auto_cal',mode:'air'})}

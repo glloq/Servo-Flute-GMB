@@ -209,6 +209,23 @@ def test_autocal_review_fixes():
     assert 'failureReasonName' in ac
 
 
+def test_review2_frontend_backend_contracts():
+    # #19: server auto-cancels a pending range-finder result after a review window.
+    wc = read('Servo_flute_ESP32/WebConfigurator.cpp')
+    assert 'AUTOCAL_RF_REVIEW_TIMEOUT_MS' in wc and 'rf_expired' in wc
+    web = read('Servo_flute_ESP32/web_content.h')
+    # #19: dismissing a range result actually cancels it on the server.
+    assert "function dismissRangeResult(){wsSend({t:'auto_cal',mode:'stop'})" in web
+    # #18: acal_done / rf_applied honour the persisted outcome instead of always
+    # reporting success.
+    assert 'if(d.ok){' in web and 'acalErrText' in web
+    # #14 / #2 backend markers already covered by the native tests; #20 angle:
+    ac_cpp = read('Servo_flute_ESP32/AirflowController.cpp')
+    assert '_lastSentAirflowAngle = angle' in ac_cpp
+    im = read('Servo_flute_ESP32/InstrumentManager.cpp')
+    assert 'if (_actuatorSessionActive) return' in im
+
+
 def test_watchdog_has_idf_compatibility_layer():
     ino = read('Servo_flute_ESP32/Servo_flute_ESP32.ino')
     assert '#include <esp_idf_version.h>' in ino

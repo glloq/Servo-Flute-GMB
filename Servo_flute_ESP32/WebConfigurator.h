@@ -139,6 +139,7 @@ private:
   // ACAL_RF_COMPLETE (kept applicable) until apply / cancel / new start / owner
   // disconnect, so this guards against re-broadcasting rf_done every loop.
   bool _rfDoneSent;
+  unsigned long _rfDoneTime;   // when rf_done was sent, for the review-window timeout
 
   bool isCalibrationActive() const;
   // Guard for every config-mutating REST route: if a calibration is active it
