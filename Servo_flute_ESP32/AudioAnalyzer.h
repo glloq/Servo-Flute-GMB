@@ -53,6 +53,8 @@ public:
   bool isPitchValid() const override { return _pitchValid; }
   bool isActive() const override { return _active; }
   void setActive(bool active) override { _active = active; }
+  uint32_t getFrameSequence() const override { return _frameSeq; }
+  unsigned long getFrameTimestamp() const override { return _frameTimestamp; }
 
 private:
   bool _active;
@@ -65,6 +67,8 @@ private:
   float _pitchCents;
   float _pitchConfidence;   // 0..1, higher = more periodic / trustworthy
   bool _pitchValid;         // confidence >= MIC_YIN_CONFIDENCE_MIN and pitch in range
+  uint32_t _frameSeq;       // increments once per newly analysed I2S frame
+  unsigned long _frameTimestamp;  // millis() of the last analysed frame
 
   i2s_chan_handle_t _rxHandle;
 

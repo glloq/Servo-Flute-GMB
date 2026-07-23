@@ -173,11 +173,17 @@ void WebConfigurator::update() {
     }
     // Check airflow calibration completion
     if (_autoCal && _autoCal->isComplete()) {
-      // applyResults() only overwrites notes whose new calibration is valid, so a
-      // failed note keeps its previous configuration.
-      _autoCal->applyResults();
+      // applyResults() only overwrites notes whose new calibration is valid (a
+      // failed note keeps its previous configuration) and restores RAM on a
+      // storage failure, reporting exactly what happened.
+      AutoCalApplyResult ap = _autoCal->applyResults();
       const char* names[] = {"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
-      String dj = "{\"t\":\"acal_done\",\"ok\":true,\"results\":[";
+      String dj = "{\"t\":\"acal_done\"";
+      dj += ",\"ok\":" + String(ap.validCount > 0 ? "true" : "false");
+      dj += ",\"saved\":" + String(ap.saved ? "true" : "false");
+      dj += ",\"validCount\":" + String(ap.validCount);
+      dj += ",\"failedCount\":" + String(ap.failedCount);
+      dj += ",\"results\":[";
       for (int i = 0; i < cfg.numNotes; i++) {
         if (i > 0) dj += ",";
         byte midi = cfg.notes[i].midiNote;
@@ -195,6 +201,7 @@ void WebConfigurator::update() {
         dj += ",\"cents\":" + String(r.medianCents, 1);
         dj += ",\"stability\":" + String(r.pitchStability, 2);
         dj += ",\"snr\":" + String(r.signalToNoiseRatio, 1);
+        dj += ",\"reason\":" + String(r.failureReason);
         dj += ",\"minA\":" + String(minAngle);
         dj += ",\"nomA\":" + String(nomAngle);
         dj += ",\"maxA\":" + String(maxAngle) + "}";
@@ -202,6 +209,7 @@ void WebConfigurator::update() {
       dj += "]}";
       _ws.textAll(dj);
       _autoCal->stop();
+      if (_audio) _audio->setActive(_micMonitorEnabled);
     }
   }
 #endif

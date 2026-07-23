@@ -9,6 +9,7 @@ AudioAnalyzer::AudioAnalyzer()
   : _active(false), _initialized(false), _micDetected(false),
     _soundDetected(false), _rms(0), _pitchHz(0), _pitchMidi(0),
     _pitchCents(0), _pitchConfidence(0), _pitchValid(false),
+    _frameSeq(0), _frameTimestamp(0),
     _rxHandle(NULL), _validSamples(0), _lastUpdate(0) {
   buildHannWindow();
 }
@@ -148,6 +149,17 @@ void AudioAnalyzer::update() {
   readI2S();
   if (_validSamples > 0) {
     analyzeBuffer();
+    // A fresh frame was analysed: advance the sequence and stamp the time so
+    // consumers can tell distinct frames apart and detect a frozen source.
+    _frameSeq++;
+    _frameTimestamp = now;
+  } else if (_frameTimestamp != 0 && (now - _frameTimestamp) > MIC_FRAME_STALE_MS) {
+    // No new I2S data for too long: never let stale pitch data look valid.
+    _pitchValid = false;
+    _pitchHz = 0;
+    _pitchMidi = 0;
+    _pitchConfidence = 0;
+    _soundDetected = false;
   }
 }
 

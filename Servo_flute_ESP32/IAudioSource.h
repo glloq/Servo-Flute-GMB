@@ -29,6 +29,12 @@ public:
   virtual float getPitchCents() const = 0;   // signed cents deviation
   virtual float getPitchConfidence() const = 0; // YIN confidence 0..1
   virtual bool  isPitchValid() const = 0;    // confidence high enough to trust the pitch
+
+  // Frame freshness: the sequence increments once per newly analysed I2S frame,
+  // and the timestamp records when that analysis happened (millis). Consumers use
+  // these to avoid counting the same frame twice and to detect a frozen source.
+  virtual uint32_t getFrameSequence() const = 0;
+  virtual unsigned long getFrameTimestamp() const = 0;
 };
 
 #endif  // IAUDIO_SOURCE_H

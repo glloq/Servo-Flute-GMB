@@ -18,10 +18,12 @@ static const float kStabilityRefCents = 2.0f * AUTOCAL_PITCH_TOLERANCE_STABLE_CE
 
 AutoCalibrator::AutoCalibrator(FingerController& fingers, AirflowController& airflow, IAudioSource& audio)
   : _fingers(fingers), _airflow(airflow), _audio(audio),
-    _state(ACAL_IDLE), _mode(ACAL_MODE_AIRFLOW), _startTime(0), _timeoutEvent(false),
+    _state(ACAL_IDLE), _mode(ACAL_MODE_AIRFLOW), _startTime(0), _globalTimeout(AUTOCAL_GLOBAL_TIMEOUT_MS), _timeoutEvent(false),
     _numNotes(0), _currentNote(0), _expectedMidi(0),
     _phase(PH_PREPARE), _step(ST_SET), _stateTimer(0), _lastFrameTime(0), _stepPercent(0),
-    _frameCount(0), _lastMeanRms(0), _lastValidFrames(0), _lastTotalFrames(0),
+    _frameCount(0), _lastCollectedSeq(0), _haveCollectedSeq(false), _collectStartTime(0), _audioStale(false),
+    _noteStartTime(0), _noteFailReason(ACAL_FAIL_NONE),
+    _lastMeanRms(0), _lastValidFrames(0), _lastTotalFrames(0),
     _lastStability(0), _lastSnr(0), _lastMeanConf(0), _lastValidRatio(0), _lastConfidencePct(0),
     _dispHz(0), _dispMidi(0), _dispCents(0),
     _noiseRms(0), _soundThreshold(MIC_RMS_ABSOLUTE_MIN), _noiseAccum(0), _noiseCount(0), _noiseSettled(false),
@@ -50,6 +52,12 @@ void AutoCalibrator::start(AutoCalMode mode) {
   _currentNote = 0;
   _numNotes = cfg.numNotes;
   _startTime = millis();
+  // Global timeout scales with the note count, capped by the absolute ceiling so
+  // it stays a true last-resort safety net rather than the primary limit.
+  {
+    unsigned long computed = (unsigned long)_numNotes * AUTOCAL_TIMEOUT_PER_NOTE_MS + AUTOCAL_GLOBAL_MARGIN_MS;
+    _globalTimeout = (computed < AUTOCAL_GLOBAL_TIMEOUT_MS) ? computed : (unsigned long)AUTOCAL_GLOBAL_TIMEOUT_MS;
+  }
   _timeoutEvent = false;
   memset(_results, 0, sizeof(_results));
   _audio.setActive(true);
@@ -95,7 +103,7 @@ void AutoCalibrator::update() {
   if (!isRunning()) return;
 
   unsigned long now = millis();
-  if (now - _startTime >= AUTOCAL_GLOBAL_TIMEOUT_MS) {
+  if (now - _startTime >= _globalTimeout) {
     abortTimeout();
     return;
   }
@@ -122,9 +130,10 @@ const char* AutoCalibrator::getPhaseName() const {
 }
 
 float AutoCalibrator::currentToleranceCents() const {
-  // Wide tolerance only to detect the note's first appearance; strict tolerance
-  // to define the stable plateau and the nominal value.
-  if (_phase == PH_COARSE || _phase == PH_FINE_MIN) return AUTOCAL_PITCH_TOLERANCE_ONSET_CENTS;
+  // Wide tolerance ONLY to detect the note's very first coarse appearance. The
+  // coarse plateau (after onset), fine min, fine max and nominal candidates all
+  // require the strict tolerance so a genuinely stable in-tune zone is proven.
+  if (_phase == PH_COARSE && !_coarseValidSeen) return AUTOCAL_PITCH_TOLERANCE_ONSET_CENTS;
   return AUTOCAL_PITCH_TOLERANCE_STABLE_CENTS;
 }
 
@@ -141,6 +150,14 @@ void AutoCalibrator::setAirflowPercent(int percent) {
 // ------------------------------------------------------------------ airflow ----
 
 void AutoCalibrator::updateAirflow(unsigned long now) {
+  // Per-note timeout: fail this note (its previous calibration is kept) and let
+  // the sweep continue with the next note. The global timeout stays last-resort.
+  if (_phase != PH_PREPARE && _phase != PH_FINALIZE &&
+      (now - _noteStartTime) >= AUTOCAL_TIMEOUT_PER_NOTE_MS) {
+    _noteFailReason = ACAL_FAIL_NOTE_TIMEOUT;
+    _phase = PH_FINALIZE;
+  }
+
   switch (_phase) {
     case PH_PREPARE:
       prepareNote(now);
@@ -162,6 +179,10 @@ void AutoCalibrator::updateAirflow(unsigned long now) {
 
 void AutoCalibrator::prepareNote(unsigned long now) {
   _expectedMidi = cfg.notes[_currentNote].midiNote;
+  _noteStartTime = now;
+  _noteFailReason = ACAL_FAIL_NONE;
+  _audioStale = false;
+  _anySoundSeen = false;
   _fingers.setFingerPatternForNote(_expectedMidi);
   // Noise floor is measured with the valve closed and the air at rest, fingers
   // already positioned, no mechanical action in progress.
@@ -268,18 +289,36 @@ bool AutoCalibrator::runPositionStep(unsigned long now) {
       // WAIT_AIRFLOW_SETTLE: ignore the transient frames during servo travel.
       if (now - _stateTimer >= AUTOCAL_AIR_SETTLE_MS) {
         _frameCount = 0;
+        _haveCollectedSeq = false;   // start fresh: accept the first frame of this position
         _lastFrameTime = now;
+        _collectStartTime = now;
         _step = ST_COLLECT;
       }
       return false;
 
     case ST_COLLECT:
-      // COLLECT_AUDIO: gather several spaced frames.
+      // COLLECT_AUDIO: gather several spaced, DISTINCT frames (never count the
+      // same analysed frame twice).
+      if (now - _collectStartTime >= AUTOCAL_AUDIO_FRAME_TIMEOUT_MS &&
+          _frameCount < AUTOCAL_AUDIO_FRAMES_PER_STEP) {
+        // The audio source stopped delivering fresh frames: treat as a frozen
+        // source and fail this note (its previous calibration is preserved).
+        _audioStale = true;
+        _noteFailReason = ACAL_FAIL_AUDIO_STALE;
+        _phase = PH_FINALIZE;
+        return false;
+      }
       if (now - _lastFrameTime >= AUTOCAL_FRAME_SAMPLE_MS) {
-        _lastFrameTime = now;
-        sampleFrame(_frames[_frameCount]);
-        _frameCount++;
-        if (_frameCount >= AUTOCAL_AUDIO_FRAMES_PER_STEP) _step = ST_EVAL;
+        uint32_t seq = _audio.getFrameSequence();
+        if (!_haveCollectedSeq || seq != _lastCollectedSeq) {
+          _lastFrameTime = now;
+          _lastCollectedSeq = seq;
+          _haveCollectedSeq = true;
+          sampleFrame(_frames[_frameCount]);
+          _frameCount++;
+          if (_frameCount >= AUTOCAL_AUDIO_FRAMES_PER_STEP) _step = ST_EVAL;
+        }
+        // If the sequence has not advanced, keep waiting (do not store a copy).
       }
       return false;
 
@@ -289,6 +328,7 @@ bool AutoCalibrator::runPositionStep(unsigned long now) {
       _lastStats = AutoCalMath::evaluatePosition(_frames, _frameCount, _expectedMidi,
                                                  _soundThreshold, tol, MIC_YIN_CONFIDENCE_MIN);
       _lastMeanRms = _lastStats.meanRms;
+      if (_lastStats.meanRms > _soundThreshold) _anySoundSeen = true;
       _lastValidFrames = _lastStats.validFrames;
       _lastTotalFrames = _lastStats.totalFrames;
       _lastValidRatio = (_lastStats.totalFrames > 0)
@@ -487,41 +527,57 @@ void AutoCalibrator::finalizeNote(unsigned long now) {
   AutoCalNoteResult& r = _results[_currentNote];
   memset(&r, 0, sizeof(r));
 
-  bool ok = _coarseValidSeen && _airMin >= 0 && _airMax >= 0 && _airMax >= _airMin;
-  if (ok) {
+  // Diagnostics captured for both success and failure.
+  r.lastDetectedMidi = (int16_t)_dispMidi;
+  r.lastRms = _lastMeanRms;
+  r.validFrames = (uint8_t)((_lastValidFrames < 0) ? 0 : (_lastValidFrames > 255 ? 255 : _lastValidFrames));
+  {
+    unsigned long dur = now - _noteStartTime;
+    r.durationMs = (dur > 60000UL) ? 60000 : (uint16_t)dur;
+  }
+
+  // A note is valid ONLY when the fine sweeps found a range, a nominal candidate
+  // was validated with the strict tolerance (_bestValidFound), and the final
+  // confidence clears the acceptance threshold.
+  bool rangeOk = _coarseValidSeen && _airMin >= 0 && _airMax >= 0 && _airMax >= _airMin;
+  bool nominalOk = _bestValidFound && _bestPercent >= 0;
+  uint8_t conf = _bestConfPct;
+  bool confOk = conf >= AUTOCAL_MIN_RESULT_CONFIDENCE;
+
+  if (rangeOk && nominalOk && confOk) {
     uint8_t mn = (uint8_t)((_airMin < 0) ? 0 : (_airMin > 100 ? 100 : _airMin));
     uint8_t mx = (uint8_t)((_airMax < 0) ? 0 : (_airMax > 100 ? 100 : _airMax));
     if (mx < mn) mx = mn;
-
-    // Default nominal = min + fraction*(max-min); override with the best-scoring point.
-    uint8_t nominal = AutoCalMath::computeNominalPercent(mn, mx, AUTOCAL_NOMINAL_FRACTION);
-    float cents = 0, stability = 1.0f, snr = 0; uint8_t conf = 0;
-    if (_bestValidFound && _bestPercent >= 0) {
-      nominal = (uint8_t)_bestPercent;
-      cents = _bestCents;
-      stability = _bestStability;
-      snr = _bestSnr;
-      conf = _bestConfPct;
-    }
-    nominal = AutoCalMath::clampNominal(mn, mx, nominal, AUTOCAL_NOMINAL_GUARD_PCT);
+    uint8_t nominal = AutoCalMath::clampNominal(mn, mx, (uint8_t)_bestPercent, AUTOCAL_NOMINAL_GUARD_PCT);
 
     r.valid = true;
     r.airMin = mn;
     r.airMax = mx;
     r.airNominal = nominal;
-    r.medianCents = cents;
-    r.pitchStability = stability;
-    r.signalToNoiseRatio = snr;
+    r.medianCents = _bestCents;
+    r.pitchStability = _bestStability;
+    r.signalToNoiseRatio = _bestSnr;
     r.confidence = conf;
+    r.failureReason = ACAL_FAIL_NONE;
   } else {
     r.valid = false;
+    r.confidence = conf;
+    // Most specific failure reason: a timeout/stale reason set during the sweep
+    // wins; otherwise classify by how far the note got.
+    uint8_t reason = _noteFailReason;
+    if (reason == ACAL_FAIL_NONE) {
+      if (!_coarseValidSeen) reason = _anySoundSeen ? ACAL_FAIL_WRONG_NOTE : ACAL_FAIL_NO_SOUND;
+      else if (!nominalOk) reason = ACAL_FAIL_NO_STABLE_NOMINAL;
+      else reason = ACAL_FAIL_LOW_CONFIDENCE;
+    }
+    r.failureReason = reason;
   }
 
   if (DEBUG) {
     Serial.print("DEBUG: AutoCal - Note ");
     Serial.print(_currentNote);
-    Serial.print(ok ? " OK min=" : " FAIL min=");
-    Serial.print(r.airMin);
+    Serial.print(r.valid ? " OK min=" : " FAIL(reason)=");
+    Serial.print(r.valid ? r.airMin : r.failureReason);
     Serial.print(" nom=");
     Serial.print(r.airNominal);
     Serial.print(" max=");
@@ -634,17 +690,52 @@ void AutoCalibrator::updateRangeFinder(unsigned long now) {
 
 // ----------------------------------------------------------------- persistence -
 
-void AutoCalibrator::applyResults() {
+AutoCalApplyResult AutoCalibrator::applyResults() {
+  AutoCalApplyResult out{false, false, 0, 0};
+
+  int n = (_numNotes < (int)cfg.numNotes) ? _numNotes : (int)cfg.numNotes;
+  for (int i = 0; i < n; i++) {
+    if (_results[i].valid) out.validCount++;
+    else out.failedCount++;
+  }
+
+  // Nothing valid: never claim an apply or a save.
+  if (out.validCount == 0) {
+    if (DEBUG) Serial.println("DEBUG: AutoCalibrator - Aucun resultat valide, rien a sauvegarder");
+    return out;
+  }
+
+  // Back up the three fields we may change so we can restore RAM on a save error.
+  uint8_t bMin[MAX_NOTES], bMax[MAX_NOTES], bNom[MAX_NOTES];
+  for (int i = 0; i < n; i++) {
+    bMin[i] = cfg.notes[i].airflowMinPercent;
+    bMax[i] = cfg.notes[i].airflowMaxPercent;
+    bNom[i] = cfg.notes[i].airflowNominalPercent;
+  }
+
   // Never overwrite a previously valid calibration with a failed new one.
-  for (int i = 0; i < cfg.numNotes && i < _numNotes; i++) {
+  for (int i = 0; i < n; i++) {
     if (_results[i].valid) {
       cfg.notes[i].airflowMinPercent = _results[i].airMin;
       cfg.notes[i].airflowMaxPercent = _results[i].airMax;
       cfg.notes[i].airflowNominalPercent = _results[i].airNominal;
     }
   }
-  ConfigStorage::save();
-  if (DEBUG) Serial.println("DEBUG: AutoCalibrator - Resultats appliques et sauvegardes");
+  out.applied = true;
+  out.saved = ConfigStorage::save();
+
+  if (!out.saved) {
+    // Storage failed: restore the previous configuration in RAM, report no save.
+    for (int i = 0; i < n; i++) {
+      cfg.notes[i].airflowMinPercent = bMin[i];
+      cfg.notes[i].airflowMaxPercent = bMax[i];
+      cfg.notes[i].airflowNominalPercent = bNom[i];
+    }
+    if (DEBUG) Serial.println("ERREUR: AutoCalibrator - Sauvegarde echouee, config restauree en RAM");
+  } else if (DEBUG) {
+    Serial.println("DEBUG: AutoCalibrator - Resultats appliques et sauvegardes");
+  }
+  return out;
 }
 
 void AutoCalibrator::applyRangeResults() {

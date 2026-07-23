@@ -91,6 +91,9 @@ Set MIC_ENABLED to false if no mic is connected.
 // At 32 kHz / 200 Hz that is 160; 200 leaves headroom while keeping the buffer
 // off the stack (stored as an AudioAnalyzer member, ~0.8 kB).
 #define MIC_YIN_TAU_MAX         200
+// If no fresh I2S frame has been analysed for this long, the analyzer marks its
+// pitch measurement stale (pitchValid=false) so consumers never trust old data.
+#define MIC_FRAME_STALE_MS      250
 
 /*----------------------------------------------------------------------------
  * Auto-calibration (microphone-driven per-note airflow calibration)
@@ -122,8 +125,21 @@ Set MIC_ENABLED to false if no mic is connected.
 #define AUTOCAL_NOMINAL_FRACTION    0.40f // Default nominal = min + fraction*(max-min)
 #define AUTOCAL_NOMINAL_GUARD_PCT   5     // Keep nominal at least this far from min/max when possible
 
-// --- Global safety timeout (firmware side, not browser side) ---
-#define AUTOCAL_GLOBAL_TIMEOUT_MS   180000 // Abort whole calibration after 3 min
+// --- Result acceptance ---
+// A note whose final confidence is below this is refused (not written to config).
+#define AUTOCAL_MIN_RESULT_CONFIDENCE 40
+
+// --- Timeouts (firmware side, not browser side) ---
+// Per-note budget: a note exceeding it fails (keeps its old calibration) and the
+// sweep moves on to the next note.
+#define AUTOCAL_TIMEOUT_PER_NOTE_MS   25000
+// Extra slack added on top of numNotes * per-note for the computed global timeout.
+#define AUTOCAL_GLOBAL_MARGIN_MS      20000
+// While collecting a position, abort the collection if no fresh audio frame
+// arrives within this window (frozen / disconnected source).
+#define AUTOCAL_AUDIO_FRAME_TIMEOUT_MS 1500
+// Absolute last-resort ceiling for the whole calibration, whatever the note count.
+#define AUTOCAL_GLOBAL_TIMEOUT_MS     600000
 
 // --- Broadcast / legacy timing (still used by range finder + WS throttling) ---
 #define AUTOCAL_SETTLE_MS       300     // Range finder: wait after positioning servos
