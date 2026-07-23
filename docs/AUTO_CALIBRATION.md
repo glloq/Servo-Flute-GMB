@@ -196,7 +196,7 @@ hardware**.
 
 ## Software-only validation status
 
-Host unit tests (`tests/cpp/test_behavior.cpp`, run via `platformio test -e
+Host unit tests (`tests/test_native/test_behavior.cpp`, run via `platformio test -e
 native` and pytest) cover Hz→MIDI/cents conversion, neighbour/octave rejection,
 exact-note acceptance, adaptive threshold, median filtering, minimum valid
 frames, min/max/nominal detection from simulated audio, nominal relationship

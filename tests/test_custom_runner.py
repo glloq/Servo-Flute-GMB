@@ -1,6 +1,6 @@
 """PlatformIO custom test runner for the native host tests.
 
-The native test program (`tests/cpp/test_behavior.cpp`) is a plain C++ binary
+The native test program (`tests/test_native/test_behavior.cpp`) is a plain C++ binary
 that runs a series of `assert`-based checks and prints `behavior tests passed`
 on success. A failing assert aborts the process with a non-zero / signal exit
 code, which PlatformIO's native reader turns into a test error.

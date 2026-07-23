@@ -20,7 +20,7 @@ SOURCES = [
     "Servo_flute_ESP32/NoteSequencer.cpp",
     "Servo_flute_ESP32/InstrumentManager.cpp",
     "Servo_flute_ESP32/AutoCalibrator.cpp",
-    "tests/cpp/test_behavior.cpp",
+    "tests/test_native/test_behavior.cpp",
 ]
 
 
