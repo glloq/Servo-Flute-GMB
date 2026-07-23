@@ -50,8 +50,12 @@ void NoteSequencer::handlePositioning() {
   unsigned long elapsed = millis() - _stateStartTime;
 
   if (elapsed >= cfg.servoToSolenoidDelayMs) {
-    _airflowCtrl.setAirflowForNote(_currentNote, _currentVelocity);
-    _airflowCtrl.openSolenoid();
+    // Open the valve only if the note should actually sound. When CC2 (breath)
+    // requests silence at the onset, setAirflowForNote() returns false and the
+    // valve must stay closed instead of being force-opened.
+    bool sound = _airflowCtrl.setAirflowForNote(_currentNote, _currentVelocity);
+    if (sound) _airflowCtrl.openSolenoid();
+    else _airflowCtrl.closeSolenoid();
     _noteSoundStartTime = millis();
     _pendingStopAfterMinDuration = false;
     transitionTo(STATE_PLAYING);

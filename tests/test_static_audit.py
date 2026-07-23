@@ -209,6 +209,23 @@ def test_autocal_review_fixes():
     assert 'failureReasonName' in ac
 
 
+def test_review2_frontend_backend_contracts():
+    # #19: server auto-cancels a pending range-finder result after a review window.
+    wc = read('Servo_flute_ESP32/WebConfigurator.cpp')
+    assert 'AUTOCAL_RF_REVIEW_TIMEOUT_MS' in wc and 'rf_expired' in wc
+    web = read('Servo_flute_ESP32/web_content.h')
+    # #19: dismissing a range result actually cancels it on the server.
+    assert "function dismissRangeResult(){wsSend({t:'auto_cal',mode:'stop'})" in web
+    # #18: acal_done / rf_applied honour the persisted outcome instead of always
+    # reporting success.
+    assert 'if(d.ok){' in web and 'acalErrText' in web
+    # #14 / #2 backend markers already covered by the native tests; #20 angle:
+    ac_cpp = read('Servo_flute_ESP32/AirflowController.cpp')
+    assert '_lastSentAirflowAngle = angle' in ac_cpp
+    im = read('Servo_flute_ESP32/InstrumentManager.cpp')
+    assert 'if (_actuatorSessionActive) return' in im
+
+
 def test_watchdog_has_idf_compatibility_layer():
     ino = read('Servo_flute_ESP32/Servo_flute_ESP32.ino')
     assert '#include <esp_idf_version.h>' in ino
@@ -283,12 +300,31 @@ def test_websocket_has_separate_midi_percent_and_servo_parsers():
 def test_post_body_limits_reset_and_avoid_malloc_fragments():
     src = read('Servo_flute_ESP32/WebConfigurator.cpp')
     hdr = read('Servo_flute_ESP32/WebConfigurator.h')
-    assert '_configBodyTooLarge' in hdr and '_configBodyTooLarge' in src
+    # #5: POST bodies are per-request (request->_tempObject), not a shared member,
+    # so concurrent requests can no longer clobber or mix each other's bodies.
+    assert '_configBody' not in src and '_configBody' not in hdr
+    assert 'request->_tempObject' in src
+    assert 'struct WebReqBody' in src
+    assert 'tooLarge' in src
     assert 'Body too large' in src
     assert 'CONFIG_MAX_POST_BYTES' in src
     assert 'concat((const char*)data, len)' in src
     assert 'malloc(len + 1)' not in src
-    assert '_configBodyTooLarge = false' in src
+    # wifi/connect sends its response from a single handler, not the body callback.
+    assert 'void WebConfigurator::handleApiWifiConnect' in src
+
+
+def test_manual_test_session_server_side():
+    # #4: manual actuator tests are bounded server-side (owner + timeout), and a
+    # disconnect only safes the hardware for the test owner (not any WS client).
+    wc = read('Servo_flute_ESP32/WebConfigurator.cpp')
+    st = read('Servo_flute_ESP32/settings.h')
+    assert 'TEST_SESSION_MAX_MS' in st and 'TEST_SESSION_MAX_MS' in wc
+    assert 'beginTestSession' in wc and 'endTestSession' in wc
+    assert 'isManualTestCommand' in wc
+    assert 'client->id() == _testOwnerClientId' in wc
+    # the old unconditional allSoundOff() on any disconnect is gone.
+    assert 'if (_testActive && client->id() == _testOwnerClientId)' in wc
 
 
 def test_diagnostics_status_vocabulary_and_passive_active_split():

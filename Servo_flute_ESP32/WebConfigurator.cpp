@@ -19,6 +19,55 @@ static String jsonStr(const char* s) {
   return out;
 }
 
+// Per-request POST body. Stored in AsyncWebServerRequest::_tempObject so concurrent
+// requests on different routes (or two close requests) never share one buffer - the
+// previous shared members could be overwritten, mixed, or read by the wrong route.
+struct WebReqBody {
+  String data;
+  bool tooLarge = false;
+};
+
+// Accumulate a chunked POST body into the request's own WebReqBody. Call from the
+// route's body callback. The matching request handler takes ownership via
+// takeRequestBody() below.
+static void webAccumulateBody(AsyncWebServerRequest* request, uint8_t* data, size_t len,
+                              size_t index, size_t total) {
+  WebReqBody* b = (WebReqBody*)request->_tempObject;
+  if (index == 0) {
+    delete b;   // safe on nullptr; guards against a reused request object
+    b = new WebReqBody();
+    b->data.reserve(min(total + 1, (size_t)CONFIG_MAX_POST_BYTES + 1));
+    request->_tempObject = b;
+  }
+  if (!b) return;
+  if (total > CONFIG_MAX_POST_BYTES || b->data.length() + len > CONFIG_MAX_POST_BYTES) {
+    b->tooLarge = true;
+    return;
+  }
+  b->data.concat((const char*)data, len);
+}
+
+// Move the accumulated body out of the request into local variables and free the
+// per-request buffer immediately, so no cleanup is needed on the handler's many
+// early-return paths. Returns "" / false when there was no body.
+static void takeRequestBody(AsyncWebServerRequest* request, String& outBody, bool& outTooLarge) {
+  WebReqBody* b = (WebReqBody*)request->_tempObject;
+  request->_tempObject = nullptr;
+  if (b) { outBody = b->data; outTooLarge = b->tooLarge; delete b; }
+  else { outBody = String(); outTooLarge = false; }
+}
+
+// WS commands that drive an actuator open-endedly (until the user stops them) and
+// therefore start/refresh a bounded manual-test session.
+static bool isManualTestCommand(const char* type) {
+  static const char* kTests[] = {
+    "test_finger", "test_air", "test_angle", "angle_live", "test_sol",
+    "test_note", "air_live", "pump_target", "fan_target"
+  };
+  for (const char* t : kTests) if (strcmp(type, t) == 0) return true;
+  return false;
+}
+
 WebConfigurator::WebConfigurator(uint16_t port)
   : _server(port), _ws("/ws"),
     _instrument(nullptr), _player(nullptr), _wirelessManager(nullptr),
@@ -26,7 +75,7 @@ WebConfigurator::WebConfigurator(uint16_t port)
     _uploadSize(0), _uploadError(false)
 #if MIC_ENABLED
     , _audio(nullptr), _autoCal(nullptr), _micMonitorEnabled(false), _lastAudioBroadcast(0), _lastAcalBroadcast(0)
-    , _autoCalOwnerClientId(0), _micMonitorBeforeCalibration(false), _rfDoneSent(false)
+    , _autoCalOwnerClientId(0), _micMonitorBeforeCalibration(false), _rfDoneSent(false), _rfDoneTime(0)
 #endif
 {
 }
@@ -84,6 +133,14 @@ void WebConfigurator::begin(InstrumentManager* instrument, MidiFilePlayer* playe
 
 void WebConfigurator::update() {
   unsigned long now = millis();
+
+  // Server-side safety net for manual actuator tests: if the owning client stops
+  // refreshing the session (tab suspended, browser crash, Wi-Fi lost, stop lost),
+  // return the actuators to a safe state regardless of any browser-side timeout.
+  if (_testActive && (now - _testStartTime) >= TEST_SESSION_MAX_MS) {
+    endTestSession(true);
+    _ws.textAll("{\"t\":\"test_expired\"}");
+  }
 
   // Nettoyage periodique des clients WS deconnectes
   if (now - _lastWsCleanup >= WS_CLEANUP_INTERVAL_MS) {
@@ -204,10 +261,18 @@ void WebConfigurator::update() {
       dj += "}";
       _ws.textAll(dj);
       _rfDoneSent = true;
+      _rfDoneTime = now;
       // Restore the user's pre-calibration monitor preference; keep ownership so
       // only the owner can apply/cancel the pending result.
       _micMonitorEnabled = _micMonitorBeforeCalibration;
       if (_audio) _audio->setActive(_micMonitorEnabled);
+    }
+    // Auto-cancel a pending range-finder result the owner never resolved, so the
+    // ownership / config lock / servo-power session cannot stay held indefinitely.
+    if (_autoCal && _autoCal->isRangeFinderComplete() && _rfDoneSent &&
+        (now - _rfDoneTime) >= AUTOCAL_RF_REVIEW_TIMEOUT_MS) {
+      _ws.textAll("{\"t\":\"rf_expired\"}");
+      cancelActiveActuatorSession();
     }
     // Check airflow calibration completion
     if (_autoCal && _autoCal->isComplete()) {
@@ -267,6 +332,18 @@ void WebConfigurator::update() {
 
 void WebConfigurator::setWirelessManager(WirelessManager* wm) {
   _wirelessManager = wm;
+}
+
+void WebConfigurator::beginTestSession(uint32_t clientId) {
+  _testOwnerClientId = clientId;
+  _testStartTime = millis();
+  _testActive = true;
+}
+
+void WebConfigurator::endTestSession(bool safeHardware) {
+  if (safeHardware && _instrument) _instrument->allSoundOff();
+  _testActive = false;
+  _testOwnerClientId = 0;
 }
 
 #if MIC_ENABLED
@@ -340,18 +417,8 @@ void WebConfigurator::setupRoutes() {
       handleApiConfigFinalize(request);
     },
     NULL,
-    [this](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
-      // Accumuler le body (data n'est pas null-termine)
-      if (index == 0) {
-        _configBody = "";
-        _configBodyTooLarge = false;
-        _configBody.reserve(min(total + 1, (size_t)CONFIG_MAX_POST_BYTES + 1));
-      }
-      if (total > CONFIG_MAX_POST_BYTES || _configBody.length() + len > CONFIG_MAX_POST_BYTES) {
-        _configBodyTooLarge = true;
-        return;
-      }
-      _configBody.concat((const char*)data, len);
+    [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+      webAccumulateBody(request, data, len, index, total);
     }
   );
 
@@ -390,33 +457,16 @@ void WebConfigurator::setupRoutes() {
     }
   });
 
-  // API WiFi Connect (POST JSON {"ssid":"...","pass":"..."})
+  // API WiFi Connect (POST JSON {"ssid":"...","pass":"..."}). The response is sent
+  // once, from the request handler, using the per-request body (the old body
+  // callback both sent the response AND left the request handler to send a second).
   _server.on("/api/wifi/connect", HTTP_POST,
     [this](AsyncWebServerRequest* request) {
-      if (_configBody.length() == 0) {
-        request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Empty body\"}");
-      }
+      handleApiWifiConnect(request);
     },
     NULL,
-    [this](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
-      if (index == 0) { _configBody = ""; _configBodyTooLarge = false; _configBody.reserve(min(total + 1, (size_t)CONFIG_MAX_POST_BYTES + 1)); }
-      if (total > CONFIG_MAX_POST_BYTES || _configBody.length() + len > CONFIG_MAX_POST_BYTES) { _configBodyTooLarge = true; return; }
-      _configBody.concat((const char*)data, len);
-      if (index + len == total) {
-        JsonDocument doc;
-        DeserializationError err = deserializeJson(doc, _configBody);
-        if (err || !doc.containsKey("ssid")) {
-          request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Invalid JSON\"}");
-        } else if (_wirelessManager) {
-          const char* ssid = doc["ssid"];
-          const char* pass = doc["pass"] | "";
-          request->send(200, "application/json", "{\"ok\":true,\"msg\":\"Connecting...\"}");
-          _wirelessManager->getWifiMidi().connectToNetwork(ssid, pass);
-        } else {
-          request->send(500, "application/json", "{\"ok\":false}");
-        }
-        _configBody = "";
-      }
+    [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+      webAccumulateBody(request, data, len, index, total);
     }
   );
 
@@ -448,10 +498,8 @@ void WebConfigurator::setupRoutes() {
       handleMidiDelete(request);
     },
     NULL,
-    [this](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
-      if (index == 0) { _configBody = ""; _configBodyTooLarge = false; _configBody.reserve(min(total + 1, (size_t)CONFIG_MAX_POST_BYTES + 1)); }
-      if (total > CONFIG_MAX_POST_BYTES || _configBody.length() + len > CONFIG_MAX_POST_BYTES) { _configBodyTooLarge = true; return; }
-      _configBody.concat((const char*)data, len);
+    [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+      webAccumulateBody(request, data, len, index, total);
     }
   );
 
@@ -461,10 +509,8 @@ void WebConfigurator::setupRoutes() {
       handleMidiLoad(request);
     },
     NULL,
-    [this](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
-      if (index == 0) { _configBody = ""; _configBodyTooLarge = false; _configBody.reserve(min(total + 1, (size_t)CONFIG_MAX_POST_BYTES + 1)); }
-      if (total > CONFIG_MAX_POST_BYTES || _configBody.length() + len > CONFIG_MAX_POST_BYTES) { _configBodyTooLarge = true; return; }
-      _configBody.concat((const char*)data, len);
+    [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+      webAccumulateBody(request, data, len, index, total);
     }
   );
 
@@ -715,32 +761,33 @@ void WebConfigurator::handleApiConfig(AsyncWebServerRequest* request) {
 }
 
 void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
+  // Take ownership of this request's own body (never a shared buffer).
+  String configBody; bool configBodyTooLarge;
+  takeRequestBody(request, configBody, configBodyTooLarge);
+
 #if MIC_ENABLED
   // Configuration changes are locked while a calibration owns the actuators, so
   // notes/fingering/air-system/PCA channels cannot shift mid-calibration.
   if (rejectIfCalibrationActive(request)) {
-    _configBody = "";
     return;
   }
 #endif
-  if (_configBody.length() == 0) {
+  if (configBodyTooLarge) {
+    request->send(413, "application/json", "{\"ok\":false,\"msg\":\"Config body too large\"}");
+    return;
+  }
+  if (configBody.length() == 0) {
     request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Empty body\"}");
     return;
   }
 
   {
-    if (_configBody.length() > CONFIG_MAX_POST_BYTES) {
-      request->send(413, "application/json", "{\"ok\":false,\"msg\":\"Config body too large\"}");
-      _configBody = "";
-      return;
-    }
     RuntimeConfig previousConfig = cfg;
     JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, _configBody);
+    DeserializationError err = deserializeJson(doc, configBody);
 
     if (err) {
       request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Invalid JSON\"}");
-      _configBody = "";
       return;
     }
 
@@ -985,7 +1032,6 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
       String errJson;
       serializeJson(errDoc, errJson);
       request->send(400, "application/json", errJson);
-      _configBody = "";
       return;
     }
 
@@ -996,8 +1042,23 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
       applyResult.applied = !validation.restartRequired;
     }
 
-    // Sauvegarder sur LittleFS
+    // Persist the NEW configuration to LittleFS (it loads on the next boot).
     bool saved = ConfigStorage::save();
+
+    // Restart-required changes (air mode, pump/fan/PCA/servo channels, pin
+    // assignments, sensor type, MIDI UART, counts) need a hardware re-init that
+    // only a reboot performs. The controllers read the global cfg live, so keeping
+    // the mutated cfg active would let a changed air mode / pin / channel start
+    // influencing behaviour before the matching hardware is reinitialised. Revert
+    // the ACTIVE config to the previous one: the device keeps running on the
+    // hardware-matching config until the user restarts, at which point the saved
+    // new config takes effect. applyRuntimeConfig() applied nothing for these
+    // changes (it returns early), so nothing dynamic is lost by reverting.
+    bool restartRequired = validation.restartRequired || applyResult.restartRequired;
+    if (restartRequired) {
+      cfg = previousConfig;
+      applyResult.applied = false;
+    }
 
     if (DEBUG) {
       Serial.println("DEBUG: WebConfigurator - Config mise a jour via web");
@@ -1007,7 +1068,7 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
     respDoc["ok"] = saved;
     respDoc["saved"] = saved;
     respDoc["applied"] = applyResult.applied;
-    respDoc["restart_required"] = validation.restartRequired || applyResult.restartRequired;
+    respDoc["restart_required"] = restartRequired;
     respDoc["corrected"] = validation.corrected;
     JsonArray reinitialized = respDoc["reinitialized"].to<JsonArray>();
     int start = 0;
@@ -1024,8 +1085,35 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
     serializeJson(respDoc, resp);
     request->send(saved ? 200 : 500, "application/json", resp);
   }
-  _configBody = "";
-  _configBodyTooLarge = false;
+}
+
+void WebConfigurator::handleApiWifiConnect(AsyncWebServerRequest* request) {
+  // Single response path (the old body callback sent a response AND left the
+  // request handler to send a second), reading this request's own body.
+  String body; bool tooLarge;
+  takeRequestBody(request, body, tooLarge);
+  if (tooLarge) {
+    request->send(413, "application/json", "{\"ok\":false,\"msg\":\"Body too large\"}");
+    return;
+  }
+  if (body.length() == 0) {
+    request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Empty body\"}");
+    return;
+  }
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, body);
+  if (err || !doc.containsKey("ssid")) {
+    request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Invalid JSON\"}");
+    return;
+  }
+  if (!_wirelessManager) {
+    request->send(500, "application/json", "{\"ok\":false}");
+    return;
+  }
+  const char* ssid = doc["ssid"];
+  const char* pass = doc["pass"] | "";
+  request->send(200, "application/json", "{\"ok\":true,\"msg\":\"Connecting...\"}");
+  _wirelessManager->getWifiMidi().connectToNetwork(ssid, pass);
 }
 
 void WebConfigurator::handleApiDiagnostics(AsyncWebServerRequest* request) {
@@ -1296,18 +1384,18 @@ void WebConfigurator::handleMidiList(AsyncWebServerRequest* request) {
 }
 
 void WebConfigurator::handleMidiDelete(AsyncWebServerRequest* request) {
-  if (_configBodyTooLarge) {
+  String body; bool tooLarge;
+  takeRequestBody(request, body, tooLarge);
+  if (tooLarge) {
     request->send(413, "application/json", "{\"ok\":false,\"msg\":\"Body too large\"}");
-    _configBody = ""; _configBodyTooLarge = false;
     return;
   }
-  if (_configBody.length() == 0) {
+  if (body.length() == 0) {
     request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Empty body\"}");
     return;
   }
   JsonDocument doc;
-  DeserializationError err = deserializeJson(doc, _configBody);
-  _configBody = ""; _configBodyTooLarge = false;
+  DeserializationError err = deserializeJson(doc, body);
   if (err || !doc.containsKey("file")) {
     request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Invalid JSON\"}");
     return;
@@ -1335,18 +1423,18 @@ void WebConfigurator::handleMidiDelete(AsyncWebServerRequest* request) {
 }
 
 void WebConfigurator::handleMidiLoad(AsyncWebServerRequest* request) {
-  if (_configBodyTooLarge) {
+  String body; bool tooLarge;
+  takeRequestBody(request, body, tooLarge);
+  if (tooLarge) {
     request->send(413, "application/json", "{\"ok\":false,\"msg\":\"Body too large\"}");
-    _configBody = ""; _configBodyTooLarge = false;
     return;
   }
-  if (_configBody.length() == 0) {
+  if (body.length() == 0) {
     request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Empty body\"}");
     return;
   }
   JsonDocument doc;
-  DeserializationError err = deserializeJson(doc, _configBody);
-  _configBody = ""; _configBodyTooLarge = false;
+  DeserializationError err = deserializeJson(doc, body);
   if (err || !doc.containsKey("file")) {
     request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Invalid JSON\"}");
     return;
@@ -1392,27 +1480,34 @@ void WebConfigurator::onWsEvent(AsyncWebSocket* server, AsyncWebSocketClient* cl
       }
       break;
 
-    case WS_EVT_DISCONNECT:
+    case WS_EVT_DISCONNECT: {
+      bool handled = false;
 #if MIC_ENABLED
       if (isCalibrationActive()) {
         // Only the owner's disconnect stops the calibration and safes the
         // hardware. A non-owner leaving must NOT disrupt the running session
         // (an allSoundOff would fight the calibrator), so we do nothing.
+        handled = true;
         if (client->id() == _autoCalOwnerClientId) {
           cancelActiveActuatorSession();
           if (_instrument) { _instrument->allSoundOff(); }
         }
-      } else {
-        if (_instrument) { _instrument->allSoundOff(); }
       }
-#else
-      if (_instrument) { _instrument->allSoundOff(); }
 #endif
+      if (!handled) {
+        // Outside calibration, only the OWNER of an active manual test triggers a
+        // safe state on disconnect. A status-only client (or the client that
+        // merely started MIDI playback) leaving must not stop the instrument.
+        if (_testActive && client->id() == _testOwnerClientId) {
+          endTestSession(true);
+        }
+      }
       if (DEBUG) {
         Serial.print("DEBUG: WS client disconnected #");
         Serial.println(client->id());
       }
       break;
+    }
 
     case WS_EVT_DATA: {
       AwsFrameInfo* info = (AwsFrameInfo*)arg;
@@ -1448,6 +1543,10 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
   // While a calibration owns the actuators, refuse concurrent actuator commands.
   if (actuatorCommandBlockedDuringCalibration(client, type)) return;
 #endif
+
+  // A manual actuator test starts/refreshes a bounded, owner-tracked session so the
+  // server (not just the browser) returns the hardware to safe on loss of contact.
+  if (isManualTestCommand(type)) beginTestSession(client->id());
 
   if (strcmp(type, "non") == 0) {
     if (!hasInt("n")) return;
@@ -1493,6 +1592,7 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
     // Panic must always abort a running calibration and safe the hardware first.
     cancelActiveActuatorSession();
 #endif
+    endTestSession(false);   // hardware is safed just below by allSoundOff()
     _instrument->allSoundOff();
   } else if (strcmp(type, "test_finger") == 0) {
     int fi = doc["i"] | -1;
@@ -1516,10 +1616,12 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
     _instrument->getPressureCtrl().setTargetPercent(getPercent(doc, "v", 0));
   } else if (strcmp(type, "pump_stop") == 0) {
     _instrument->getPressureCtrl().stop();
+    endTestSession(false);
   } else if (strcmp(type, "fan_target") == 0) {
     _instrument->getFanCtrl().setSpeed(getPercent(doc, "v", 0));
   } else if (strcmp(type, "fan_stop") == 0) {
     _instrument->getFanCtrl().stop();
+    endTestSession(false);
 #if MIC_ENABLED
   } else if (strcmp(type, "mic_mon") == 0) {
     // (Blocked above while a calibration is active.)

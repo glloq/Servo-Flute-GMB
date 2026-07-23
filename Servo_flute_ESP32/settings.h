@@ -138,8 +138,13 @@ Set MIC_ENABLED to false if no mic is connected.
 // While collecting a position, abort the collection if no fresh audio frame
 // arrives within this window (frozen / disconnected source).
 #define AUTOCAL_AUDIO_FRAME_TIMEOUT_MS 1500
-// Absolute last-resort ceiling for the whole calibration, whatever the note count.
-#define AUTOCAL_GLOBAL_TIMEOUT_MS     600000
+// Absolute last-resort ceiling for the whole calibration. It must never be smaller
+// than the sum of the per-note budgets for the largest possible note count, or a
+// large configuration would be aborted by the global timeout before it could ever
+// use the budget it was granted (this happened around 24 notes with the old fixed
+// 600 s ceiling). Sized from MAX_NOTES so any valid note count fits.
+#define AUTOCAL_GLOBAL_TIMEOUT_MS \
+  ((unsigned long)MAX_NOTES * AUTOCAL_TIMEOUT_PER_NOTE_MS + AUTOCAL_GLOBAL_MARGIN_MS)
 // Time allowed for the air supply (pump spin-up / reservoir fill / fan ramp) to
 // reach a usable state before the whole calibration aborts with ACAL_FAIL_AIR_SUPPLY.
 // Passive modes (solenoid / servo valve / servo only) report ready immediately.
@@ -147,6 +152,17 @@ Set MIC_ENABLED to false if no mic is connected.
 // Reservoir (mode 5) is considered ready once its fill level is within this many
 // percent of the requested target (a perfect match is not required).
 #define AUTOCAL_RESERVOIR_READY_MARGIN 5
+// After the range finder completes, its result is kept pending (owner registered,
+// config locked, servo power held) until the owner applies or dismisses it. If
+// neither happens within this window the server auto-cancels the pending result so
+// nothing stays stuck indefinitely.
+#define AUTOCAL_RF_REVIEW_TIMEOUT_MS  300000
+// A manual actuator test (valve / pump / fan / airflow / angle servo) started from
+// the web UI holds actuators until stopped. The browser's own setTimeout does not
+// protect the hardware if the tab is suspended, the browser crashes, Wi-Fi drops or
+// the stop command is lost. The server therefore bounds a manual-test session to
+// this window and returns the actuators to a safe state when it elapses.
+#define TEST_SESSION_MAX_MS 30000
 
 // --- Broadcast / legacy timing (still used by range finder + WS throttling) ---
 #define AUTOCAL_SETTLE_MS       300     // Range finder: wait after positioning servos
