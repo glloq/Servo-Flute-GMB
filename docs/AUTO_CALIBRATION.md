@@ -194,14 +194,99 @@ confidence, cents, stability and SNR. See `docs/API_WEB.md`.
 Until executed on real hardware these steps remain **NOT TESTED — requires
 hardware**.
 
-## Software-only validation status
+## 2026 reliability update (what changed)
 
-Host unit tests (`tests/test_native/test_behavior.cpp`, run via `platformio test -e
-native` and pytest) cover Hz→MIDI/cents conversion, neighbour/octave rejection,
-exact-note acceptance, adaptive threshold, median filtering, minimum valid
-frames, min/max/nominal detection from simulated audio, nominal relationship
-validation, keeping old values on failure, the global-timeout safe stop, and the
-mic-absent no-op. Physical behaviour remains **NOT TESTED — requires hardware**.
+- **The calibrated nominal is really used when playing.** `AirflowController::
+  setAirflowForNote()` maps the airflow source (velocity or CC2) through a
+  two-segment curve pivoting on `airflowNominalPercent`: median input
+  (`AIRFLOW_SOURCE_PIVOT` = 64) → nominal, below → min→nominal, above →
+  nominal→max. `airVelocityResponse` = 0 holds the nominal. CC2 timeout, CC7
+  volume, CC11 expression, attack and vibrato are preserved.
+- **Fresh, distinct audio frames.** `IAudioSource` exposes `getFrameSequence()` /
+  `getFrameTimestamp()`. The analyzer advances the sequence once per analysed
+  I2S frame and invalidates the pitch after `MIC_FRAME_STALE_MS` with no new
+  data. The calibrator stores only distinct-sequence frames and fails a note
+  with `ACAL_FAIL_AUDIO_STALE` if a position gets no fresh frames within
+  `AUTOCAL_AUDIO_FRAME_TIMEOUT_MS` (frozen/disconnected source).
+- **Note-count-scaled timeouts.** Global timeout = `numNotes ×
+  AUTOCAL_TIMEOUT_PER_NOTE_MS + AUTOCAL_GLOBAL_MARGIN_MS`, capped by the
+  absolute `AUTOCAL_GLOBAL_TIMEOUT_MS`. A per-note timeout fails only that note
+  (its old calibration is kept) and continues.
+- **A real stable zone is required.** Wide tolerance is used only for the first
+  coarse appearance; the plateau, fine min/max and nominal candidates use the
+  strict tolerance. A note is valid only if a nominal candidate was
+  strict-validated and the final confidence ≥ `AUTOCAL_MIN_RESULT_CONFIDENCE`.
+- **Detailed failure reasons** (`AutoCalFailureReason`) plus per-note
+  diagnostics (last note, RMS, valid frames, duration) shown in the UI.
+- **Robust apply.** `applyResults()` returns `{applied, saved, validCount,
+  failedCount}`; on a LittleFS failure it restores the previous config in RAM
+  and never reports success. `acal_done` carries `ok/saved/validCount/
+  failedCount`; `ok:false` when every note failed.
+- **Actuator ownership + safety.** A calibration is owned by the WS client that
+  started it; only the owner may stop/apply; a second start is refused; the
+  owner's disconnect stops it and safes the hardware while a non-owner's does
+  not disrupt it. `panic` always cancels calibration first. Concurrent
+  actuator commands are refused during calibration and `POST /api/config`
+  returns `409 calibration_active`. The mic-monitor preference is restored
+  afterwards.
+- **Range finder** reuses the same SET→SETTLE→COLLECT→EVALUATE engine (noise,
+  multi-frame, exact note, confirmed loss) over a configurable safe angle
+  window (`AUTOCAL_RF_MIN_SAFE_ANGLE`..`MAX` by `AUTOCAL_RF_STEP_DEG`) — never a
+  blind 0–180° sweep.
+- **Air-supply aware in every mode.** The calibrator drives the air source
+  through `ICalibrationAirSupply` (`prepare` / `isReady` / `setDemandPercent` /
+  `stopSafe` / `getError`). The concrete implementation delegates to the same
+  `PressureController` / `FanController` calls used during play, so there is no
+  duplicated air logic. Before anything is measured the pump / reservoir / fan is
+  brought to a representative running state; the run waits for readiness
+  (bounded by `AUTOCAL_AIR_READY_TIMEOUT_MS`) and, if the source never comes up,
+  every note fails with `ACAL_FAIL_AIR_SUPPLY` and nothing is written. The noise
+  floor is thus measured with the pump/fan actually running (valve closed), and a
+  mid-run source drop-out is reported per note instead of as a false "no sound".
+  Passive modes (solenoid, servo-valve, servo-only) report ready immediately.
+- **Portable I2S.** The microphone driver compiles on both Arduino-ESP32 2.0.x
+  (ESP-IDF 4.4, legacy `driver/i2s.h`) and 3.0.x (IDF 5.x `driver/i2s_std.h`),
+  selected by `ESP_IDF_VERSION`.
+- **Robust mic detection** (`detected` / `all_zero` / `stuck` / `saturated` /
+  `read_error`) via signal classification, plus a `mic_reset` that re-probes the
+  mic without rebooting.
+
+### High-pitch precision caveat
+
+The YIN core is unit-tested on synthetic PCM. At the fixed 32 kHz sample rate the
+lag (`tau`) resolution is coarse for the top of the range: above ~2.5 kHz the
+detected pitch can be off by up to ~1 semitone. Neighbour/octave errors do not
+occur, but the very highest notes may be harder to calibrate by microphone. This
+is a sample-rate limitation, not a bug.
+
+## Validation scope (software vs hardware)
+
+**Validated by software tests** (native `platformio test -e native` + pytest):
+YIN pitch core on synthetic PCM (sine, +DC, +noise, harmonics, clipped,
+broadband-noise rejection, silence, near-limit highs); Hz→MIDI/cents; neighbour
+and octave rejection; adaptive noise threshold; median; minimum valid frames;
+five distinct frames; frozen-source rejection; coarse/fine min-max-nominal from
+simulated audio; nominal relationship validation; strict-nominal requirement;
++70-cent rejection with no config write; per-note timeout; 14-note run without
+timeout; global-timeout safe stop; keep-old-values on failure; storage-failure
+RAM restore; mic-signal classification; range-finder min/max; nominal driving
+the produced airflow angle; ownership/lock tokens (static audit).
+
+**Requires an ESP32** (not host-testable): the firmware build itself
+(espressif32@6.10.0 and 6.11.0), the dual I2S driver install/read paths, the
+WebSocket/REST server behaviour, LittleFS persistence.
+
+**Requires an INMP441 microphone**: real pitch/RMS/SNR measurement, the
+noise-floor capture, mic presence/stuck/saturated classification on real data,
+`mic_reset` recovery.
+
+**Requires the real instrument** (mic + flute + air system): that notes actually
+sound, that min/nominal/max are musically correct, overblow limits, the two
+clients / owner-disconnect flows on hardware, and every air mode (solenoid,
+servo-valve, servo-only, fan, pump, reservoir) under calibration.
+
+All physical procedures remain **NOT TESTED — requires hardware** until executed
+on a real INMP441 and flute; see `Servo_flute_ESP32/docs/HARDWARE_TEST_MATRIX.md`.
 
 ## Prior runtime safety and validation notes
 

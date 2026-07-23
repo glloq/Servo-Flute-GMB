@@ -60,22 +60,44 @@ Live progress (`acal_prog`), one per airflow position:
 }
 ```
 
-`phase` is one of `prepare`, `noise`, `coarse`, `fine`, `nominal`, `done`.
+`phase` is one of `prepare`, `noise`, `coarse`, `fine`, `nominal`, `done`,
+`range`.
 
-Completion (`acal_done`) reports one result per note:
+Completion (`acal_done`) reports overall persistence status and one result per
+note:
 
 ```json
 {
-  "name": "C6", "ok": true,
-  "min": 20, "nominal": 39, "max": 68,
-  "confidence": 91, "cents": -3.2, "stability": 0.94, "snr": 18.5
+  "t": "acal_done", "ok": true, "saved": true, "validCount": 12, "failedCount": 2,
+  "results": [
+    { "name": "C6", "ok": true, "min": 20, "nominal": 39, "max": 68,
+      "confidence": 91, "cents": -3.2, "stability": 0.94, "snr": 18.5, "reason": 0 }
+  ]
 }
 ```
 
-A failed note has `ok:false` and its previous calibration is kept. On a global
-firmware-timeout abort the server sends `{"t":"acal_error","msg":"..."}`. The
-audio monitor stream (`{"t":"audio",...}`) additionally carries `conf` (0–100)
-and `valid` fields.
+- `ok` is `false` when no note is valid; `saved` is `false` on a LittleFS write
+  failure (the previous configuration is then restored in RAM).
+- A failed note has `ok:false`, keeps its previous calibration, and reports a
+  numeric `reason` (`AutoCalFailureReason`: 0 none, 1 no-sound, 2 wrong-note,
+  3 low-confidence, 6 no-stable-nominal, 7 audio-stale, 8 note-timeout,
+  9 global-timeout, 10 air-supply-not-ready, …).
+- On a global-timeout abort the server sends `{"t":"acal_error","msg":"..."}`.
+- The audio monitor stream (`{"t":"audio",...}`) additionally carries `conf`
+  (0–100) and `valid`.
+
+**Ownership / concurrency.** A calibration is owned by the WS client that
+started it. A second `auto_cal` start returns `{"t":"acal_error","msg":
+"calibration_busy"}`; a non-owner stop/apply returns `{"t":"error","msg":
+"not_calibration_owner"}`. Actuator commands (`test_*`, `non/nof/cc`, `play`,
+pump/fan targets, `mic_mon`, `mic_reset`) sent during a calibration are refused
+with `{"t":"error","msg":"calibration_active"}`, and `POST /api/config` returns
+HTTP `409 {"ok":false,"error":"calibration_active"}`.
+
+**Microphone.** `GET /api/config` exposes `mic_status` (`detected` / `all_zero`
+/ `stuck` / `saturated` / `read_error` / `not_init`). `{"t":"mic_reset"}` re-probes
+the microphone without rebooting and replies `{"t":"mic_reset","ok":...,
+"status":"..."}`.
 
 Each `notes[]` entry in `GET/POST /api/config` includes `anm` (nominal airflow
 percent) next to `amn`/`amx`; it is derived from min/max when absent
