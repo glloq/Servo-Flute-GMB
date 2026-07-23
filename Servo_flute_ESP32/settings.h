@@ -91,6 +91,9 @@ Set MIC_ENABLED to false if no mic is connected.
 // At 32 kHz / 200 Hz that is 160; 200 leaves headroom while keeping the buffer
 // off the stack (stored as an AudioAnalyzer member, ~0.8 kB).
 #define MIC_YIN_TAU_MAX         200
+// If no fresh I2S frame has been analysed for this long, the analyzer marks its
+// pitch measurement stale (pitchValid=false) so consumers never trust old data.
+#define MIC_FRAME_STALE_MS      250
 
 /*----------------------------------------------------------------------------
  * Auto-calibration (microphone-driven per-note airflow calibration)
@@ -122,8 +125,28 @@ Set MIC_ENABLED to false if no mic is connected.
 #define AUTOCAL_NOMINAL_FRACTION    0.40f // Default nominal = min + fraction*(max-min)
 #define AUTOCAL_NOMINAL_GUARD_PCT   5     // Keep nominal at least this far from min/max when possible
 
-// --- Global safety timeout (firmware side, not browser side) ---
-#define AUTOCAL_GLOBAL_TIMEOUT_MS   180000 // Abort whole calibration after 3 min
+// --- Result acceptance ---
+// A note whose final confidence is below this is refused (not written to config).
+#define AUTOCAL_MIN_RESULT_CONFIDENCE 40
+
+// --- Timeouts (firmware side, not browser side) ---
+// Per-note budget: a note exceeding it fails (keeps its old calibration) and the
+// sweep moves on to the next note.
+#define AUTOCAL_TIMEOUT_PER_NOTE_MS   25000
+// Extra slack added on top of numNotes * per-note for the computed global timeout.
+#define AUTOCAL_GLOBAL_MARGIN_MS      20000
+// While collecting a position, abort the collection if no fresh audio frame
+// arrives within this window (frozen / disconnected source).
+#define AUTOCAL_AUDIO_FRAME_TIMEOUT_MS 1500
+// Absolute last-resort ceiling for the whole calibration, whatever the note count.
+#define AUTOCAL_GLOBAL_TIMEOUT_MS     600000
+// Time allowed for the air supply (pump spin-up / reservoir fill / fan ramp) to
+// reach a usable state before the whole calibration aborts with ACAL_FAIL_AIR_SUPPLY.
+// Passive modes (solenoid / servo valve / servo only) report ready immediately.
+#define AUTOCAL_AIR_READY_TIMEOUT_MS  20000
+// Reservoir (mode 5) is considered ready once its fill level is within this many
+// percent of the requested target (a perfect match is not required).
+#define AUTOCAL_RESERVOIR_READY_MARGIN 5
 
 // --- Broadcast / legacy timing (still used by range finder + WS throttling) ---
 #define AUTOCAL_SETTLE_MS       300     // Range finder: wait after positioning servos
@@ -131,8 +154,12 @@ Set MIC_ENABLED to false if no mic is connected.
 #define AUTOCAL_AUDIO_INTERVAL_MS 100   // WebSocket audio/progress broadcast interval
 #define AUTOCAL_PITCH_TOLERANCE_SEMI 3  // Range finder: coarse pitch tolerance in semitones
 #define AUTOCAL_MIN_RANGE_PCT   5       // Minimum range pct between air_min and air_max
-#define AUTOCAL_RF_STEP_MS      100     // Time per step for range finder (0-180 sweep)
-#define AUTOCAL_RF_MARGIN_DEG   3       // Safety margin (degrees) for range finder results
+#define AUTOCAL_RF_MARGIN_DEG   3       // Safety margin (degrees) applied to range finder results
+// Range finder now reuses the SET->SETTLE->COLLECT->EVALUATE engine and sweeps
+// only a configurable safe angle window (never a blind 0-180 sweep).
+#define AUTOCAL_RF_MIN_SAFE_ANGLE 30    // Lowest airflow servo angle the sweep visits
+#define AUTOCAL_RF_MAX_SAFE_ANGLE 150   // Highest airflow servo angle the sweep visits
+#define AUTOCAL_RF_STEP_DEG       3     // Angle step between evaluated positions
 
 /*******************************************************************************
 ---------------------------   TIMING SETTINGS (ms)    ------------------------
@@ -169,6 +196,10 @@ Set MIC_ENABLED to false if no mic is connected.
 #define SERVO_AIRFLOW_OFF 20      // Angle repos (pas de note)
 #define SERVO_AIRFLOW_MIN 60      // Angle minimum absolu
 #define SERVO_AIRFLOW_MAX 100     // Angle maximum absolu
+
+// Pivot value (velocity / CC2, range 1-127) that maps to the calibrated nominal
+// airflow in the two-segment playing curve. 64 = musical mid-dynamic.
+#define AIRFLOW_SOURCE_PIVOT 64
 
 /*******************************************************************************
 ---------------------------   AIR ANGLE SERVO (trav)   ----------------------

@@ -2,6 +2,7 @@
 #define INSTRUMENT_MANAGER_H
 
 #include <Arduino.h>
+#include <Wire.h>   // must precede Adafruit_PWMServoDriver.h (declares TwoWire)
 #include <Adafruit_PWMServoDriver.h>
 #include "EventQueue.h"
 #include "FingerController.h"
@@ -9,6 +10,7 @@
 #include "PressureController.h"
 #include "FanController.h"
 #include "NoteSequencer.h"
+#include "CalibrationAirSupply.h"
 #include "settings.h"
 #include "ConfigStorage.h"
 
@@ -67,6 +69,8 @@ public:
   AirflowController& getAirflowCtrl() { return _airflowCtrl; }
   PressureController& getPressureCtrl() { return _pressureCtrl; }
   FanController& getFanCtrl() { return _fanCtrl; }
+  // Air-source bridge for the auto-calibrator (drives pump/fan/reservoir per air mode).
+  ICalibrationAirSupply& getCalibrationAirSupply() { return _calAirSupply; }
   HardwareInitStatus hardwareInitStatus() const { return _hardwareInitStatus; }
   bool isSecondBoardEnabled() const { return _secondBoardEnabled; }
   ConfigApplyResult applyRuntimeConfig(const RuntimeConfig& oldConfig, const RuntimeConfig& newConfig);
@@ -81,6 +85,7 @@ private:
   AirflowController _airflowCtrl;
   PressureController _pressureCtrl;
   FanController _fanCtrl;
+  CalibrationAirSupply _calAirSupply;
   NoteSequencer _sequencer;
 
   unsigned long _lastActivityTime;

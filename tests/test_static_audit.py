@@ -80,6 +80,61 @@ def test_autocal_websocket_serialization_fields():
         assert tok in ui, tok
 
 
+def test_autocal_actuator_ownership_and_locks():
+    # §8/§9/§10/§12: single-owner calibration, concurrent-command blocking,
+    # config lock and monitor restore.
+    web = read('Servo_flute_ESP32/WebConfigurator.cpp')
+    hdr = read('Servo_flute_ESP32/WebConfigurator.h')
+    assert '_autoCalOwnerClientId' in hdr and '_autoCalOwnerClientId' in web
+    assert '_micMonitorBeforeCalibration' in hdr and '_micMonitorBeforeCalibration' in web
+    assert 'cancelActiveActuatorSession' in web
+    assert 'actuatorCommandBlockedDuringCalibration' in web
+    assert 'calibration_busy' in web            # second start refused
+    assert 'not_calibration_owner' in web        # non-owner stop/apply refused
+    assert 'calibration_active' in web           # blocked commands + 409 config lock
+    assert '409' in web                          # config POST lock status
+    # Panic cancels the calibration before all-sound-off.
+    panic = web.split('strcmp(type, "panic")', 1)[1].split('else if', 1)[0]
+    assert 'cancelActiveActuatorSession' in panic
+    # Owner-only disconnect stops the session.
+    disc = web.split('WS_EVT_DISCONNECT', 1)[1].split('WS_EVT_DATA', 1)[0]
+    assert '_autoCalOwnerClientId' in disc
+
+
+def test_autocal_frame_freshness_contract():
+    # §3: IAudioSource exposes frame freshness; AudioAnalyzer advances it.
+    iface = read('Servo_flute_ESP32/IAudioSource.h')
+    assert 'getFrameSequence' in iface and 'getFrameTimestamp' in iface
+    aa = read('Servo_flute_ESP32/AudioAnalyzer.cpp')
+    assert '_frameSeq++' in aa
+    assert 'MIC_FRAME_STALE_MS' in aa
+    acc = read('Servo_flute_ESP32/AutoCalibrator.cpp')
+    assert 'getFrameSequence()' in acc
+    assert 'ACAL_FAIL_AUDIO_STALE' in acc
+
+
+def test_audio_dual_i2s_and_pitch_extraction():
+    # §1/§14/§15: dual I2S (IDF 4.x legacy + 5.x std), extracted YIN core, mic status.
+    aa = read('Servo_flute_ESP32/AudioAnalyzer.cpp')
+    assert 'ESP_IDF_VERSION_VAL(5, 0, 0)' in read('Servo_flute_ESP32/AudioAnalyzer.h')
+    assert 'i2s_driver_install' in aa       # legacy IDF 4.x path
+    assert 'i2s_channel_read' in aa         # std IDF 5.x path
+    assert 'resetMicrophone' in aa
+    assert 'classifyRaw' in aa
+    from pathlib import Path
+    assert Path(ROOT / 'Servo_flute_ESP32/PitchDetector.cpp').exists()
+    assert 'lib_ignore = native_stubs' in read('platformio.ini')
+    web = read('Servo_flute_ESP32/WebConfigurator.cpp')
+    assert 'mic_status' in web and 'mic_reset' in web
+
+
+def test_airflow_uses_nominal_two_segment():
+    # §2: playback pivots on the calibrated nominal.
+    air = read('Servo_flute_ESP32/AirflowController.cpp')
+    assert 'AIRFLOW_SOURCE_PIVOT' in air
+    assert 'nominalAngle' in air
+
+
 def test_autocal_global_timeout_and_injection_layer():
     # Firmware-side global timeout + a hardware-free audio injection interface.
     st = read('Servo_flute_ESP32/settings.h')
@@ -90,6 +145,33 @@ def test_autocal_global_timeout_and_injection_layer():
     assert Path(ROOT / 'Servo_flute_ESP32/IAudioSource.h').exists()
     ah = read('Servo_flute_ESP32/AudioAnalyzer.h')
     assert 'public IAudioSource' in ah
+
+
+def test_autocal_air_supply_abstraction():
+    # §7: the calibrator drives every air mode through ICalibrationAirSupply and
+    # gates on readiness before measuring, without duplicating controller logic.
+    assert Path(ROOT / 'Servo_flute_ESP32/ICalibrationAirSupply.h').exists()
+    iface = read('Servo_flute_ESP32/ICalibrationAirSupply.h')
+    for m in ('prepare()', 'isReady()', 'setDemandPercent(', 'stopSafe()', 'getError()'):
+        assert m in iface, m
+    # Concrete impl delegates to the same controllers used during play.
+    impl = read('Servo_flute_ESP32/CalibrationAirSupply.cpp')
+    assert '_fan.setSpeed' in impl and '_pressure.setTargetPercent' in impl
+    for mode in ('AIR_MODE_FAN_SERVO', 'AIR_MODE_PUMP_VALVE', 'AIR_MODE_PUMP_RESERVOIR'):
+        assert mode in impl, mode
+    # Calibrator prepares the supply, gates on readiness, and fails with a specific
+    # reason when it never comes up.
+    acc = read('Servo_flute_ESP32/AutoCalibrator.cpp')
+    assert '_airSupply.prepare()' in acc
+    assert '_airSupply.isReady()' in acc
+    assert '_airSupply.stopSafe()' in acc
+    assert 'ACAL_FAIL_AIR_SUPPLY' in acc
+    assert 'AUTOCAL_AIR_READY_TIMEOUT_MS' in acc
+    # Wired through InstrumentManager (owner of the real controllers).
+    im = read('Servo_flute_ESP32/InstrumentManager.h')
+    assert 'getCalibrationAirSupply()' in im
+    wc = read('Servo_flute_ESP32/WebConfigurator.cpp')
+    assert 'getCalibrationAirSupply()' in wc
 
 
 def test_watchdog_has_idf_compatibility_layer():

@@ -10,6 +10,7 @@ InstrumentManager::InstrumentManager()
     _eventQueue(EVENT_QUEUE_SIZE),
     _fingerCtrl([this](uint8_t ch, uint16_t on, uint16_t off) { setPWM(ch, on, off); }),
     _airflowCtrl([this](uint8_t ch, uint16_t on, uint16_t off) { setPWM(ch, on, off); }),
+    _calAirSupply(_pressureCtrl, _fanCtrl),
     _sequencer(_eventQueue, _fingerCtrl, _airflowCtrl),
     _lastActivityTime(0),
     _servosPowered(false),

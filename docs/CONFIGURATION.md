@@ -38,11 +38,30 @@ min/max window, produced by microphone auto-calibration or edited manually.
 
 `settings.h` exposes the microphone and auto-calibration parameters
 (`MIC_SAMPLE_RATE`, `MIC_RMS_ABSOLUTE_MIN`, `MIC_YIN_CONFIDENCE_MIN`,
-`AUTOCAL_NOISE_RATIO`, `AUTOCAL_NOISE_MEASURE_MS`,
+`MIC_FRAME_STALE_MS`, `AUTOCAL_NOISE_RATIO`, `AUTOCAL_NOISE_MEASURE_MS`,
 `AUTOCAL_PITCH_TOLERANCE_ONSET_CENTS`, `AUTOCAL_PITCH_TOLERANCE_STABLE_CENTS`,
 `AUTOCAL_AIR_SETTLE_MS`, `AUTOCAL_AUDIO_FRAMES_PER_STEP`,
 `AUTOCAL_REQUIRED_VALID_FRAMES`, `AUTOCAL_COARSE_STEP_PERCENT`,
 `AUTOCAL_FINE_STEP_PERCENT`, `AUTOCAL_GLOBAL_TIMEOUT_MS`, …). See
+`docs/AUTO_CALIBRATION.md`.
+
+The 2026 reliability update adds:
+
+| Constant | Role |
+|----------|------|
+| `AIRFLOW_SOURCE_PIVOT` | MIDI value (64) mapped to the calibrated nominal airflow during play (two-segment min→nominal→max interpolation). |
+| `AUTOCAL_MIN_RESULT_CONFIDENCE` | A note whose final confidence is below this is refused and its previous calibration kept. |
+| `AUTOCAL_TIMEOUT_PER_NOTE_MS` | Per-note budget; only the offending note fails, the sweep continues. |
+| `AUTOCAL_GLOBAL_MARGIN_MS` | Slack added on top of `numNotes × per-note` for the computed global timeout. |
+| `AUTOCAL_AUDIO_FRAME_TIMEOUT_MS` | A position aborts if no fresh microphone frame arrives in this window (frozen/disconnected source). |
+| `AUTOCAL_AIR_READY_TIMEOUT_MS` | Time allowed for the air source (pump spin-up / reservoir fill / fan ramp) to become usable before the run aborts with `ACAL_FAIL_AIR_SUPPLY`. |
+| `AUTOCAL_RESERVOIR_READY_MARGIN` | Reservoir (mode 5) counts as ready within this many percent of its target fill. |
+| `AUTOCAL_RF_MIN_SAFE_ANGLE` / `AUTOCAL_RF_MAX_SAFE_ANGLE` / `AUTOCAL_RF_STEP_DEG` | Bounded, safe angle window the range finder sweeps (never a blind 0–180° sweep). |
+
+The air source is abstracted behind `ICalibrationAirSupply`, so per-note calibration
+runs correctly in all six air modes: the pump/reservoir/fan is brought to a
+representative running state (and the noise floor measured with it running) before
+any airflow position is scored. See `docs/AIR_MANAGEMENT.md` and
 `docs/AUTO_CALIBRATION.md`.
 
 ## MIDI

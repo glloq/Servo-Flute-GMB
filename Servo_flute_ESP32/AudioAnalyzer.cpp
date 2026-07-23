@@ -7,50 +7,29 @@
 
 AudioAnalyzer::AudioAnalyzer()
   : _active(false), _initialized(false), _micDetected(false),
-    _soundDetected(false), _rms(0), _pitchHz(0), _pitchMidi(0),
-    _pitchCents(0), _pitchConfidence(0), _pitchValid(false),
-    _rxHandle(NULL), _validSamples(0), _lastUpdate(0) {
-  buildHannWindow();
+    _soundDetected(false), _micStatus(MIC_STATUS_NOT_INIT), _rms(0),
+    _pitchHz(0), _pitchMidi(0), _pitchCents(0), _pitchConfidence(0), _pitchValid(false),
+    _frameSeq(0), _frameTimestamp(0),
+#if MIC_I2S_STD_DRIVER
+    _rxHandle(NULL),
+#endif
+    _validSamples(0), _lastUpdate(0) {
 }
 
-void AudioAnalyzer::buildHannWindow() {
-  // Hann window: w[n] = 0.5 * (1 - cos(2*pi*n/(N-1))).
-  // Precomputed once so update() performs no per-frame trig or allocation.
-  const int N = MIC_BUFFER_SIZE;
-  for (int n = 0; n < N; n++) {
-    _hannWindow[n] = 0.5f * (1.0f - cosf(2.0f * (float)M_PI * (float)n / (float)(N - 1)));
-  }
-}
+// ------------------------------------------------------------- I2S lifecycle --
 
-bool AudioAnalyzer::begin() {
-  // --- New I2S standard driver (ESP-IDF 5.x) ---
-  // Replaces legacy <driver/i2s.h> to avoid ADC driver conflict with analogRead()
-
-  // 1. Create RX channel
+bool AudioAnalyzer::installI2S() {
+#if MIC_I2S_STD_DRIVER
+  // ESP-IDF 5.x "std" I2S driver (avoids the legacy ADC driver conflict).
   i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(MIC_I2S_PORT, I2S_ROLE_MASTER);
   chan_cfg.dma_desc_num = MIC_DMA_BUF_COUNT;
   chan_cfg.dma_frame_num = MIC_DMA_BUF_LEN;
+  if (i2s_new_channel(&chan_cfg, NULL, &_rxHandle) != ESP_OK) return false;
 
-  esp_err_t err = i2s_new_channel(&chan_cfg, NULL, &_rxHandle);
-  if (err != ESP_OK) {
-    if (DEBUG) {
-      Serial.print("ERREUR: AudioAnalyzer - i2s_new_channel: ");
-      Serial.println(err);
-    }
-    return false;
-  }
-
-  // 2. Configure standard mode (Philips I2S for INMP441)
   i2s_std_config_t std_cfg = {};
-
-  // Clock config
   std_cfg.clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(MIC_SAMPLE_RATE);
-
-  // Slot config: 32-bit, mono left
   std_cfg.slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_MONO);
   std_cfg.slot_cfg.slot_mask = I2S_STD_SLOT_LEFT;
-
-  // GPIO config
   std_cfg.gpio_cfg.mclk = I2S_GPIO_UNUSED;
   std_cfg.gpio_cfg.bclk = (gpio_num_t)MIC_PIN_BCLK;
   std_cfg.gpio_cfg.ws = (gpio_num_t)MIC_PIN_LRCLK;
@@ -60,81 +39,134 @@ bool AudioAnalyzer::begin() {
   std_cfg.gpio_cfg.invert_flags.bclk_inv = false;
   std_cfg.gpio_cfg.invert_flags.ws_inv = false;
 
-  err = i2s_channel_init_std_mode(_rxHandle, &std_cfg);
-  if (err != ESP_OK) {
-    if (DEBUG) {
-      Serial.print("ERREUR: AudioAnalyzer - i2s_channel_init_std_mode: ");
-      Serial.println(err);
-    }
+  if (i2s_channel_init_std_mode(_rxHandle, &std_cfg) != ESP_OK) {
+    i2s_del_channel(_rxHandle); _rxHandle = NULL; return false;
+  }
+  if (i2s_channel_enable(_rxHandle) != ESP_OK) {
+    i2s_del_channel(_rxHandle); _rxHandle = NULL; return false;
+  }
+  return true;
+#else
+  // Legacy ESP-IDF 4.x I2S driver (Arduino-ESP32 2.0.x). INMP441 is an external
+  // I2S mic (not internal-ADC mode), so this does not touch the ADC driver.
+  i2s_config_t i2s_config = {};
+  i2s_config.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX);
+  i2s_config.sample_rate = MIC_SAMPLE_RATE;
+  i2s_config.bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT;
+  i2s_config.channel_format = I2S_CHANNEL_FMT_ONLY_LEFT;
+  i2s_config.communication_format = I2S_COMM_FORMAT_STAND_I2S;
+  i2s_config.intr_alloc_flags = 0;
+  i2s_config.dma_buf_count = MIC_DMA_BUF_COUNT;
+  i2s_config.dma_buf_len = MIC_DMA_BUF_LEN;
+  i2s_config.use_apll = false;
+  i2s_config.tx_desc_auto_clear = false;
+  i2s_config.fixed_mclk = 0;
+
+  if (i2s_driver_install(MIC_I2S_PORT, &i2s_config, 0, NULL) != ESP_OK) return false;
+
+  i2s_pin_config_t pin_config = {};
+  pin_config.bck_io_num = MIC_PIN_BCLK;
+  pin_config.ws_io_num = MIC_PIN_LRCLK;
+  pin_config.data_out_num = I2S_PIN_NO_CHANGE;
+  pin_config.data_in_num = MIC_PIN_DIN;
+  if (i2s_set_pin(MIC_I2S_PORT, &pin_config) != ESP_OK) {
+    i2s_driver_uninstall(MIC_I2S_PORT); return false;
+  }
+  return true;
+#endif
+}
+
+void AudioAnalyzer::uninstallI2S() {
+#if MIC_I2S_STD_DRIVER
+  if (_rxHandle) {
+    i2s_channel_disable(_rxHandle);
     i2s_del_channel(_rxHandle);
     _rxHandle = NULL;
+  }
+#else
+  i2s_driver_uninstall(MIC_I2S_PORT);
+#endif
+}
+
+bool AudioAnalyzer::begin() {
+  if (!installI2S()) {
+    if (DEBUG) Serial.println("ERREUR: AudioAnalyzer - I2S install failed");
+    _initialized = false;
+    _micStatus = MIC_STATUS_READ_ERROR;
     return false;
   }
-
-  // 3. Enable the channel
-  err = i2s_channel_enable(_rxHandle);
-  if (err != ESP_OK) {
-    if (DEBUG) {
-      Serial.print("ERREUR: AudioAnalyzer - i2s_channel_enable: ");
-      Serial.println(err);
-    }
-    i2s_del_channel(_rxHandle);
-    _rxHandle = NULL;
-    return false;
-  }
-
-  delay(100);  // Let I2S stabilize
-
+  delay(100);  // let I2S stabilise (startup only, not in the state machine)
   _initialized = true;
   _micDetected = detectMicrophone();
 
   if (DEBUG) {
-    Serial.print("DEBUG: AudioAnalyzer - Mic detected: ");
-    Serial.println(_micDetected ? "OUI" : "NON");
+    Serial.print("DEBUG: AudioAnalyzer - Mic status: ");
+    Serial.println(getMicStatusString());
   }
 
   if (!_micDetected) {
-    // Free resources if no mic
-    i2s_channel_disable(_rxHandle);
-    i2s_del_channel(_rxHandle);
-    _rxHandle = NULL;
+    uninstallI2S();
     _initialized = false;
   }
-
   return _micDetected;
 }
 
 void AudioAnalyzer::end() {
-  if (_initialized && _rxHandle) {
-    i2s_channel_disable(_rxHandle);
-    i2s_del_channel(_rxHandle);
-    _rxHandle = NULL;
+  if (_initialized) {
+    uninstallI2S();
     _initialized = false;
   }
   _active = false;
 }
 
+bool AudioAnalyzer::resetMicrophone() {
+  // Re-probe without rebooting: tear the driver down and bring it back up.
+  if (_initialized) uninstallI2S();
+  _initialized = false;
+  _micDetected = false;
+  _frameSeq = 0;
+  _frameTimestamp = 0;
+  bool ok = begin();
+  return ok;
+}
+
 bool AudioAnalyzer::detectMicrophone() {
-  // Read a buffer and check if we get any non-zero data
   size_t bytesRead = 0;
   int32_t testBuf[256];
-
+#if MIC_I2S_STD_DRIVER
   esp_err_t err = i2s_channel_read(_rxHandle, testBuf, sizeof(testBuf), &bytesRead, 500);
-  if (err != ESP_OK || bytesRead == 0) return false;
-
-  size_t samples = bytesRead / sizeof(int32_t);
-  int nonZero = 0;
-  int64_t sum = 0;
-
-  for (size_t i = 0; i < samples; i++) {
-    if (testBuf[i] != 0) nonZero++;
-    sum += abs(testBuf[i] >> 8);  // Check upper 24 bits
+#else
+  esp_err_t err = i2s_read(MIC_I2S_PORT, testBuf, sizeof(testBuf), &bytesRead, 500 / portTICK_PERIOD_MS);
+#endif
+  if (err != ESP_OK || bytesRead == 0) {
+    _micStatus = MIC_STATUS_READ_ERROR;
+    return false;
   }
-
-  // If more than 10% of samples are non-zero, mic is present
-  // A disconnected I2S bus reads all zeros
-  return (nonZero > (int)(samples / 10));
+  size_t samples = bytesRead / sizeof(int32_t);
+  // Robust classification (non-zero + variance + not stuck + not saturated).
+  MicSignalClass cls = PitchDetector::classifyRaw(testBuf, samples);
+  switch (cls) {
+    case MIC_SIG_OK:        _micStatus = MIC_STATUS_DETECTED;  return true;
+    case MIC_SIG_ALL_ZERO:  _micStatus = MIC_STATUS_ALL_ZERO;  return false;
+    case MIC_SIG_STUCK:     _micStatus = MIC_STATUS_STUCK;     return false;
+    case MIC_SIG_SATURATED: _micStatus = MIC_STATUS_SATURATED; return false;
+  }
+  return false;
 }
+
+const char* AudioAnalyzer::getMicStatusString() const {
+  switch (_micStatus) {
+    case MIC_STATUS_DETECTED:  return "detected";
+    case MIC_STATUS_ALL_ZERO:  return "all_zero";
+    case MIC_STATUS_STUCK:     return "stuck";
+    case MIC_STATUS_SATURATED: return "saturated";
+    case MIC_STATUS_READ_ERROR:return "read_error";
+    case MIC_STATUS_NOT_INIT:  return "not_init";
+  }
+  return "?";
+}
+
+// --------------------------------------------------------------- processing --
 
 void AudioAnalyzer::update() {
   if (!_initialized || !_active) return;
@@ -146,166 +178,58 @@ void AudioAnalyzer::update() {
   readI2S();
   if (_validSamples > 0) {
     analyzeBuffer();
+    _frameSeq++;
+    _frameTimestamp = now;
+  } else if (_frameTimestamp != 0 && (now - _frameTimestamp) > MIC_FRAME_STALE_MS) {
+    // No fresh I2S data for too long: never let stale pitch data look valid.
+    _pitchValid = false;
+    _pitchHz = 0;
+    _pitchMidi = 0;
+    _pitchConfidence = 0;
+    _soundDetected = false;
   }
 }
 
 void AudioAnalyzer::readI2S() {
   size_t bytesRead = 0;
+#if MIC_I2S_STD_DRIVER
   esp_err_t err = i2s_channel_read(_rxHandle, _rawBuffer,
-                            MIC_BUFFER_SIZE * sizeof(int32_t),
-                            &bytesRead, 0);  // Non-blocking
-
+                                   MIC_BUFFER_SIZE * sizeof(int32_t), &bytesRead, 0);
+#else
+  esp_err_t err = i2s_read(MIC_I2S_PORT, _rawBuffer,
+                           MIC_BUFFER_SIZE * sizeof(int32_t), &bytesRead, 0);
+#endif
   if (err != ESP_OK || bytesRead == 0) {
     _validSamples = 0;
     return;
   }
-
   _validSamples = bytesRead / sizeof(int32_t);
 
-  // Convert to normalized float (-1.0 to 1.0)
-  // INMP441 outputs 24-bit data left-aligned in 32-bit word
+  // Normalize 24-bit-in-32-bit samples to -1..+1.
   const float scale = 1.0f / 2147483648.0f;
   for (size_t i = 0; i < _validSamples; i++) {
     _analysisBuffer[i] = (float)_rawBuffer[i] * scale;
   }
 }
 
-void AudioAnalyzer::removeDcOffset() {
-  // The INMP441 carries a small DC bias; it must be removed before RMS and pitch
-  // detection so the level and the difference function are not skewed.
-  if (_validSamples == 0) return;
-  float mean = 0.0f;
-  for (size_t i = 0; i < _validSamples; i++) mean += _analysisBuffer[i];
-  mean /= (float)_validSamples;
-  for (size_t i = 0; i < _validSamples; i++) _analysisBuffer[i] -= mean;
-}
-
-float AudioAnalyzer::computeRMS() {
-  float sum = 0;
-  for (size_t i = 0; i < _validSamples; i++) {
-    sum += _analysisBuffer[i] * _analysisBuffer[i];
-  }
-  return sqrtf(sum / (float)_validSamples);
-}
-
-void AudioAnalyzer::applyHannWindow() {
-  // Applied only for pitch detection (after RMS) to limit spectral/edge leakage.
-  for (size_t i = 0; i < _validSamples; i++) {
-    _analysisBuffer[i] *= _hannWindow[i];
-  }
-}
-
 void AudioAnalyzer::analyzeBuffer() {
-  // 1. Remove DC bias so both RMS and pitch see a zero-mean signal.
-  removeDcOffset();
-
-  // 2. RMS on the DC-removed (un-windowed) buffer.
-  _rms = computeRMS();
+  // RMS on the DC-removed samples (PitchDetector::rms does not modify the buffer).
+  _rms = PitchDetector::rms(_analysisBuffer, _validSamples);
   _soundDetected = (_rms > MIC_RMS_THRESHOLD);
 
-  // 3. Pitch detection: Hann-window the buffer, then run YIN.
-  _pitchHz = 0;
-  _pitchMidi = 0;
-  _pitchCents = 0;
-  _pitchConfidence = 0;
-  _pitchValid = false;
+  _pitchHz = 0; _pitchMidi = 0; _pitchCents = 0; _pitchConfidence = 0; _pitchValid = false;
 
   if (_rms > MIC_RMS_ABSOLUTE_MIN) {
-    applyHannWindow();
-    float hz = 0.0f, conf = 0.0f;
-    bool ok = computePitchYIN(hz, conf);
-    if (ok && hz > 0.0f) {
-      _pitchHz = hz;
-      _pitchConfidence = conf;
-      _pitchMidi = PitchMath::hzToMidi(hz);
-      _pitchCents = PitchMath::hzToCents(hz, _pitchMidi);
-      _pitchValid = (conf >= MIC_YIN_CONFIDENCE_MIN);
+    // detect() centres + windows _analysisBuffer in place (not reused afterwards).
+    PitchResult pr = _pitch.detect(_analysisBuffer, _validSamples);
+    if (pr.hz > 0.0f) {
+      _pitchHz = pr.hz;
+      _pitchConfidence = pr.confidence;
+      _pitchMidi = PitchMath::hzToMidi(pr.hz);
+      _pitchCents = PitchMath::hzToCents(pr.hz, _pitchMidi);
+      _pitchValid = pr.valid;
     }
   }
-}
-
-bool AudioAnalyzer::computePitchYIN(float& outHz, float& outConfidence) {
-  outHz = 0.0f;
-  outConfidence = 0.0f;
-
-  // Lag bounds from the configured pitch range, clamped to the buffer size.
-  int tauMin = (int)(MIC_SAMPLE_RATE / MIC_PITCH_MAX_HZ);
-  int tauMax = (int)(MIC_SAMPLE_RATE / MIC_PITCH_MIN_HZ);
-  if (tauMin < 1) tauMin = 1;
-  if (tauMax > MIC_YIN_TAU_MAX) tauMax = MIC_YIN_TAU_MAX;
-
-  const int W = (int)_validSamples / 2;  // Window (integration) size
-  if (W < tauMax + 1) return false;      // not enough samples for the largest lag
-  if (tauMin >= tauMax) return false;
-
-  // Steps 1-2: difference function + cumulative mean normalization.
-  _yinBuf[0] = 1.0f;
-  float runningSum = 0.0f;
-  for (int tau = 1; tau <= tauMax; tau++) {
-    float sum = 0.0f;
-    for (int i = 0; i < W; i++) {
-      float delta = _analysisBuffer[i] - _analysisBuffer[i + tau];
-      sum += delta * delta;
-    }
-    runningSum += sum;
-    _yinBuf[tau] = (runningSum > 0.0f) ? (sum * (float)tau / runningSum) : 1.0f;
-  }
-
-  // Step 3: absolute threshold - first dip below MIC_YIN_THRESHOLD.
-  int tauEst = -1;
-  for (int tau = tauMin; tau < tauMax; tau++) {
-    if (_yinBuf[tau] < MIC_YIN_THRESHOLD) {
-      // Walk down to the local minimum of this dip.
-      while (tau + 1 < tauMax && _yinBuf[tau + 1] < _yinBuf[tau]) tau++;
-      tauEst = tau;
-      break;
-    }
-  }
-  if (tauEst < 0) return false;
-
-  // Step 3b: conservative octave-error guard. The classic YIN failure is locking
-  // onto a half period (an octave too high) when a subharmonic dip crosses the
-  // threshold before the true period. We only correct to twice the lag (the octave
-  // below) when that dip is *dramatically* deeper - a genuine half-period artifact.
-  // A loose ratio here would instead force octave-DOWN errors on harmonic-rich
-  // tones (where d(2*tau) is naturally comparable to d(tau)), so the ratio is kept
-  // strict. Octave-up detections that slip through are still rejected at the
-  // calibration level by exact-MIDI matching (treated as overblow).
-  int tauDouble = tauEst * 2;
-  if (tauDouble <= tauMax) {
-    int lo = tauDouble - 1, hi = tauDouble + 1;
-    if (lo < tauMin) lo = tauMin;
-    if (hi > tauMax) hi = tauMax;
-    int bestD = lo;
-    for (int t = lo + 1; t <= hi; t++) if (_yinBuf[t] < _yinBuf[bestD]) bestD = t;
-    if (_yinBuf[bestD] < MIC_YIN_OCTAVE_RATIO * _yinBuf[tauEst]) {
-      tauEst = bestD;  // clearly more periodic an octave below -> genuine half-period error
-    }
-  }
-
-  // Step 4: parabolic interpolation for sub-sample accuracy.
-  float betterTau = (float)tauEst;
-  if (tauEst > tauMin && tauEst < tauMax) {
-    float s0 = _yinBuf[tauEst - 1];
-    float s1 = _yinBuf[tauEst];
-    float s2 = _yinBuf[tauEst + 1];
-    float denom = 2.0f * (2.0f * s1 - s2 - s0);
-    if (fabsf(denom) > 1e-6f) {
-      betterTau = (float)tauEst + (s0 - s2) / denom;
-    }
-  }
-  if (betterTau < 1.0f) return false;
-
-  // Confidence = periodicity = 1 - aperiodicity at the estimated lag.
-  float aperiodicity = _yinBuf[tauEst];
-  if (aperiodicity < 0.0f) aperiodicity = 0.0f;
-  if (aperiodicity > 1.0f) aperiodicity = 1.0f;
-  outConfidence = 1.0f - aperiodicity;
-
-  float hz = (float)MIC_SAMPLE_RATE / betterTau;
-  if (hz < MIC_PITCH_MIN_HZ || hz > MIC_PITCH_MAX_HZ) return false;
-  outHz = hz;
-  return true;
 }
 
 #endif // MIC_ENABLED

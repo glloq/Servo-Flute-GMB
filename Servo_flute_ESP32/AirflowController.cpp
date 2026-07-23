@@ -109,7 +109,7 @@ void AirflowController::setAirflowVelocity(byte velocity) {
 void AirflowController::setAirflowForNote(byte midiNote, byte velocity) {
   const NoteConfig* note = getNoteByMidi(midiNote);
 
-  uint16_t minAngle, maxAngle;
+  uint16_t minAngle, maxAngle, nominalAngle;
   uint16_t baseAngle;
 
   if (velocity == 0) {
@@ -117,15 +117,23 @@ void AirflowController::setAirflowForNote(byte midiNote, byte velocity) {
     return;
   }
 
+  const uint16_t servoSpan = (cfg.servoAirflowMax > cfg.servoAirflowMin)
+                               ? (cfg.servoAirflowMax - cfg.servoAirflowMin) : 0;
   if (note != nullptr) {
     uint8_t airMin = note->airflowMinPercent;
     uint8_t airMax = note->airflowMaxPercent;
-    minAngle = cfg.servoAirflowMin + ((cfg.servoAirflowMax - cfg.servoAirflowMin) * airMin / 100);
-    maxAngle = cfg.servoAirflowMin + ((cfg.servoAirflowMax - cfg.servoAirflowMin) * airMax / 100);
+    uint8_t airNom = note->airflowNominalPercent;
+    minAngle = cfg.servoAirflowMin + (servoSpan * airMin / 100);
+    maxAngle = cfg.servoAirflowMin + (servoSpan * airMax / 100);
+    nominalAngle = cfg.servoAirflowMin + (servoSpan * airNom / 100);
   } else {
     minAngle = cfg.servoAirflowMin;
     maxAngle = cfg.servoAirflowMax;
+    nominalAngle = (uint16_t)((minAngle + maxAngle) / 2);
   }
+  // Keep the calibrated nominal inside the note's [min, max] window.
+  if (nominalAngle < minAngle) nominalAngle = minAngle;
+  if (nominalAngle > maxAngle) nominalAngle = maxAngle;
 
   _currentMinAngle = minAngle;
   _currentMaxAngle = maxAngle;
@@ -179,14 +187,31 @@ void AirflowController::setAirflowForNote(byte midiNote, byte velocity) {
     return;
   }
 
-  // 3. Airflow source definit l'angle de base (module par velocityResponse)
+  // 3. Airflow source -> base angle via a two-segment curve pivoting on the
+  //    calibrated nominal airflow. The median input (AIRFLOW_SOURCE_PIVOT, e.g.
+  //    velocity/CC2 = 64) maps to the nominal; below it interpolates
+  //    min -> nominal, above it nominal -> effective max.
   {
     float vr = cfg.airVelocityResponse / 100.0f;
-    // vr=0 : angle fixe au milieu de la plage (velocite ignoree)
-    // vr=100 : plage complete selon velocite/CC2
-    float midAngle = minAngle + (effectiveMaxAngle - minAngle) * 0.5f;
-    float rawAngle = map(airflowSource, 1, MIDI_CC_MAX, minAngle, effectiveMaxAngle);
-    baseAngle = (uint16_t)(midAngle + (rawAngle - midAngle) * vr + 0.5f);
+    // Nominal capped by the CC7-reduced ceiling so the pivot stays reachable.
+    uint16_t nomAngle = nominalAngle;
+    if (nomAngle > effectiveMaxAngle) nomAngle = effectiveMaxAngle;
+    if (nomAngle < minAngle) nomAngle = minAngle;
+
+    float rawAngle;
+    if (airflowSource <= AIRFLOW_SOURCE_PIVOT) {
+      float t = (float)(airflowSource - 1) / (float)(AIRFLOW_SOURCE_PIVOT - 1);
+      if (t < 0.0f) t = 0.0f;
+      rawAngle = minAngle + (nomAngle - minAngle) * t;
+    } else {
+      float t = (float)(airflowSource - AIRFLOW_SOURCE_PIVOT) /
+                (float)(MIDI_CC_MAX - AIRFLOW_SOURCE_PIVOT);
+      if (t > 1.0f) t = 1.0f;
+      rawAngle = nomAngle + (effectiveMaxAngle - nomAngle) * t;
+    }
+    // vr=0 : velocity ignored, hold the calibrated nominal.
+    // vr=1 : full two-segment response to velocity/CC2.
+    baseAngle = (uint16_t)(nomAngle + (rawAngle - nomAngle) * vr + 0.5f);
   }
 
   // 4. CC11 (Expression) module dans la plage

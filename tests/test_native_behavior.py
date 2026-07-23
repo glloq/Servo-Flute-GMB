@@ -19,8 +19,10 @@ SOURCES = [
     "Servo_flute_ESP32/FanController.cpp",
     "Servo_flute_ESP32/NoteSequencer.cpp",
     "Servo_flute_ESP32/InstrumentManager.cpp",
+    "Servo_flute_ESP32/CalibrationAirSupply.cpp",
     "Servo_flute_ESP32/AutoCalibrator.cpp",
-    "tests/cpp/test_behavior.cpp",
+    "Servo_flute_ESP32/PitchDetector.cpp",
+    "tests/test_native/test_behavior.cpp",
 ]
 
 

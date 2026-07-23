@@ -39,6 +39,7 @@
 class FingerController;
 class AirflowController;
 class IAudioSource;
+class ICalibrationAirSupply;
 
 enum AutoCalMode {
   ACAL_MODE_AIRFLOW,        // Auto-calibrate airflow per note
@@ -54,6 +55,22 @@ enum AutoCalState {
   ACAL_RF_COMPLETE    // range finder finished
 };
 
+// Reason a note failed calibration (ACAL_FAIL_NONE when it succeeded).
+enum AutoCalFailureReason {
+  ACAL_FAIL_NONE = 0,
+  ACAL_FAIL_NO_SOUND,          // note never appeared above the noise floor
+  ACAL_FAIL_WRONG_NOTE,        // sound present but never the expected MIDI note
+  ACAL_FAIL_LOW_CONFIDENCE,    // final confidence below AUTOCAL_MIN_RESULT_CONFIDENCE
+  ACAL_FAIL_LOW_SNR,           // reserved: signal too close to noise
+  ACAL_FAIL_UNSTABLE_PITCH,    // reserved: pitch too unstable
+  ACAL_FAIL_NO_STABLE_NOMINAL, // no candidate validated with the strict tolerance
+  ACAL_FAIL_AUDIO_STALE,       // audio source stopped producing fresh frames
+  ACAL_FAIL_NOTE_TIMEOUT,      // per-note timeout elapsed
+  ACAL_FAIL_GLOBAL_TIMEOUT,    // global timeout elapsed
+  ACAL_FAIL_AIR_SUPPLY,        // air supply not ready / lost
+  ACAL_FAIL_STORAGE            // reserved: persistence failure
+};
+
 // Per-note calibration result (also broadcast to the web UI and persisted).
 struct AutoCalNoteResult {
   bool valid;
@@ -64,11 +81,26 @@ struct AutoCalNoteResult {
   float medianCents;         // cents error at the nominal point
   float pitchStability;      // 0..1 (1 = perfectly stable)
   float signalToNoiseRatio;  // dB
+  // Diagnostics (populated for both success and failure).
+  uint8_t failureReason;     // AutoCalFailureReason
+  int16_t lastDetectedMidi;  // last MIDI note the analyzer reported
+  float lastRms;             // last position mean RMS
+  uint8_t validFrames;       // valid frames of the best/last evaluated position
+  uint16_t durationMs;       // time spent calibrating this note (capped)
+};
+
+// Aggregate outcome of applying results (persistence-aware).
+struct AutoCalApplyResult {
+  bool applied;        // at least one valid note written into cfg
+  bool saved;          // persisted to LittleFS successfully
+  uint8_t validCount;
+  uint8_t failedCount;
 };
 
 class AutoCalibrator {
 public:
-  AutoCalibrator(FingerController& fingers, AirflowController& airflow, IAudioSource& audio);
+  AutoCalibrator(FingerController& fingers, AirflowController& airflow, IAudioSource& audio,
+                 ICalibrationAirSupply& airSupply);
 
   void start(AutoCalMode mode);
   void stop();
@@ -102,7 +134,9 @@ public:
   // Results after ACAL_COMPLETE
   const AutoCalNoteResult* getResults() const { return _results; }
   AutoCalNoteResult getResult(int idx) const { return _results[idx]; }
-  void applyResults();   // writes valid results into cfg and persists
+  // Writes only valid results into cfg and persists; reports what happened and,
+  // on a storage failure, restores the previous configuration in RAM.
+  AutoCalApplyResult applyResults();
 
   // Range finder results
   int getRangeFinderMin() const { return _rfMinAngle; }
@@ -110,18 +144,25 @@ public:
   void applyRangeResults();
 
 private:
-  // Detailed per-note phase and per-position sub-step.
-  enum Phase { PH_PREPARE, PH_NOISE, PH_COARSE, PH_FINE_MIN, PH_FINE_MAX, PH_NOMINAL, PH_FINALIZE };
+  // Detailed per-note phase and per-position sub-step. The range finder reuses
+  // the same per-position engine (PH_RF_SWEEP), so there is no duplicated logic.
+  enum Phase { PH_PREPARE, PH_NOISE, PH_COARSE, PH_FINE_MIN, PH_FINE_MAX, PH_NOMINAL, PH_FINALIZE, PH_RF_SWEEP };
   enum Step  { ST_SET, ST_SETTLE, ST_COLLECT, ST_EVAL };
-  enum RfStep { RF_PREPARE, RF_SETTLE, RF_SWEEP };
 
   FingerController& _fingers;
   AirflowController& _airflow;
   IAudioSource& _audio;
+  ICalibrationAirSupply& _airSupply;
+
+  // Air-source readiness gate (pump spin-up / reservoir fill / fan ramp). Passive
+  // modes report ready immediately. Failure aborts the whole run (shared source).
+  bool _airReady;
+  unsigned long _airPrepareTime;
 
   AutoCalState _state;
   AutoCalMode _mode;
   unsigned long _startTime;    // for the global timeout
+  unsigned long _globalTimeout;  // computed = numNotes*perNote + margin (capped)
   bool _timeoutEvent;
 
   int _numNotes;               // snapshot of cfg.numNotes at start
@@ -132,11 +173,22 @@ private:
   Step _step;
   unsigned long _stateTimer;
   unsigned long _lastFrameTime;
-  int _stepPercent;            // airflow percent currently being evaluated
+  int _stepPercent;            // airflow percent currently being evaluated (airflow mode)
+  bool _stepIsAngle;           // true: the position is a raw servo angle (range finder)
+  int _stepAngle;              // raw servo angle currently being evaluated (range finder)
 
-  // Per-position frame collection
+  // Per-position frame collection (only distinct, fresh frames are stored)
   AutoCalMath::AudioFrame _frames[AUTOCAL_AUDIO_FRAMES_PER_STEP];
   int _frameCount;
+  uint32_t _lastCollectedSeq;   // sequence of the last stored frame (0 = none yet)
+  bool _haveCollectedSeq;       // whether _lastCollectedSeq is meaningful
+  unsigned long _collectStartTime;  // for the per-position audio-stale timeout
+  bool _audioStale;             // last collection ended without enough fresh frames
+
+  // Per-note timing / failure tracking
+  unsigned long _noteStartTime;
+  uint8_t _noteFailReason;      // AutoCalFailureReason accumulated for this note
+  bool _anySoundSeen;           // any position had sound above the noise threshold
 
   // Latest evaluated position (used by phase logic + progress + scoring)
   AutoCalMath::PositionStats _lastStats;
@@ -186,24 +238,23 @@ private:
   float _bestSnr;
   uint8_t _bestConfPct;
 
-  // Range finder
-  RfStep _rfStep;
+  // Range finder (shares the per-position engine via PH_RF_SWEEP)
   int _currentAngle;
   int _rfMinAngle;
   int _rfMaxAngle;
   bool _rfFoundMin;
-  int _rfSilenceCount;
+  int _rfLossCount;
 
   AutoCalNoteResult _results[MAX_NOTES];
 
   // --- helpers ---
-  void updateAirflow(unsigned long now);
-  void updateRangeFinder(unsigned long now);
+  void updateStateMachine(unsigned long now);
   void prepareNote(unsigned long now);
   void runNoise(unsigned long now);
   bool runPositionStep(unsigned long now);   // true when a fresh evaluation is ready
   void onPositionEvaluated(unsigned long now);
   void beginPosition(int percent, unsigned long now);
+  void beginAnglePosition(int angle, unsigned long now);
   void sampleFrame(AutoCalMath::AudioFrame& f);
   void finalizeNote(unsigned long now);
   void advanceNote(unsigned long now);
@@ -211,6 +262,7 @@ private:
   void setAirflowPercent(int percent);
   void safeHardware();
   void abortTimeout();
+  void abortAirSupply();  // air source never reached a usable state: fail all notes
 };
 
 #endif // MIC_ENABLED

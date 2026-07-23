@@ -129,6 +129,20 @@ private:
   bool _micMonitorEnabled;
   unsigned long _lastAudioBroadcast;
   unsigned long _lastAcalBroadcast;
+  // Actuator-session ownership: the WS client that started the running
+  // calibration owns it (only it may stop/apply; its disconnect stops it).
+  uint32_t _autoCalOwnerClientId;
+  // User's mic-monitor preference captured when a calibration starts, restored
+  // when it ends so calibration never permanently changes the monitor choice.
+  bool _micMonitorBeforeCalibration;
+
+  bool isCalibrationActive() const;
+  // Stop any running calibration and return the microphone monitor to the user's
+  // pre-calibration state. Safe to call when nothing is running.
+  void cancelActiveActuatorSession();
+  // True (and sends a calibration_active error) if `type` is an actuator command
+  // that must be blocked while a calibration owns the actuators.
+  bool actuatorCommandBlockedDuringCalibration(AsyncWebSocketClient* client, const char* type);
 #endif
 };
 

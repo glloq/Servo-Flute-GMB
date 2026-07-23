@@ -1,0 +1,19 @@
+{
+  "name": "Arduino-BLE-MIDI",
+  "version": "2.2.0",
+  "description": "Vendored copy of lathoub/Arduino-BLE-MIDI v2.2.0 (BLE-MIDI over NimBLE). Vendored so its unversioned 'depends=NimBLE-Arduino' does not drag in NimBLE 2.x (whose API this v2.2.0 wrapper predates and which needs Arduino-ESP32 3.x). NimBLE 1.4.3 is pinned once at the project level in platformio.ini and is the single copy the wrapper links against. ArduinoBLE is intentionally omitted: only the ESP32/NimBLE hardware path is compiled here.",
+  "keywords": "midi, ble, bluetooth, esp32",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lathoub/Arduino-BLE-MIDI.git"
+  },
+  "authors": [
+    { "name": "lathoub", "url": "https://github.com/lathoub" }
+  ],
+  "license": "MIT",
+  "frameworks": "arduino",
+  "platforms": "espressif32",
+  "dependencies": [
+    { "name": "MIDI Library" }
+  ]
+}
