@@ -19,6 +19,44 @@ static String jsonStr(const char* s) {
   return out;
 }
 
+// Per-request POST body. Stored in AsyncWebServerRequest::_tempObject so concurrent
+// requests on different routes (or two close requests) never share one buffer - the
+// previous shared members could be overwritten, mixed, or read by the wrong route.
+struct WebReqBody {
+  String data;
+  bool tooLarge = false;
+};
+
+// Accumulate a chunked POST body into the request's own WebReqBody. Call from the
+// route's body callback. The matching request handler takes ownership via
+// takeRequestBody() below.
+static void webAccumulateBody(AsyncWebServerRequest* request, uint8_t* data, size_t len,
+                              size_t index, size_t total) {
+  WebReqBody* b = (WebReqBody*)request->_tempObject;
+  if (index == 0) {
+    delete b;   // safe on nullptr; guards against a reused request object
+    b = new WebReqBody();
+    b->data.reserve(min(total + 1, (size_t)CONFIG_MAX_POST_BYTES + 1));
+    request->_tempObject = b;
+  }
+  if (!b) return;
+  if (total > CONFIG_MAX_POST_BYTES || b->data.length() + len > CONFIG_MAX_POST_BYTES) {
+    b->tooLarge = true;
+    return;
+  }
+  b->data.concat((const char*)data, len);
+}
+
+// Move the accumulated body out of the request into local variables and free the
+// per-request buffer immediately, so no cleanup is needed on the handler's many
+// early-return paths. Returns "" / false when there was no body.
+static void takeRequestBody(AsyncWebServerRequest* request, String& outBody, bool& outTooLarge) {
+  WebReqBody* b = (WebReqBody*)request->_tempObject;
+  request->_tempObject = nullptr;
+  if (b) { outBody = b->data; outTooLarge = b->tooLarge; delete b; }
+  else { outBody = String(); outTooLarge = false; }
+}
+
 WebConfigurator::WebConfigurator(uint16_t port)
   : _server(port), _ws("/ws"),
     _instrument(nullptr), _player(nullptr), _wirelessManager(nullptr),
@@ -348,18 +386,8 @@ void WebConfigurator::setupRoutes() {
       handleApiConfigFinalize(request);
     },
     NULL,
-    [this](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
-      // Accumuler le body (data n'est pas null-termine)
-      if (index == 0) {
-        _configBody = "";
-        _configBodyTooLarge = false;
-        _configBody.reserve(min(total + 1, (size_t)CONFIG_MAX_POST_BYTES + 1));
-      }
-      if (total > CONFIG_MAX_POST_BYTES || _configBody.length() + len > CONFIG_MAX_POST_BYTES) {
-        _configBodyTooLarge = true;
-        return;
-      }
-      _configBody.concat((const char*)data, len);
+    [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+      webAccumulateBody(request, data, len, index, total);
     }
   );
 
@@ -398,33 +426,16 @@ void WebConfigurator::setupRoutes() {
     }
   });
 
-  // API WiFi Connect (POST JSON {"ssid":"...","pass":"..."})
+  // API WiFi Connect (POST JSON {"ssid":"...","pass":"..."}). The response is sent
+  // once, from the request handler, using the per-request body (the old body
+  // callback both sent the response AND left the request handler to send a second).
   _server.on("/api/wifi/connect", HTTP_POST,
     [this](AsyncWebServerRequest* request) {
-      if (_configBody.length() == 0) {
-        request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Empty body\"}");
-      }
+      handleApiWifiConnect(request);
     },
     NULL,
-    [this](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
-      if (index == 0) { _configBody = ""; _configBodyTooLarge = false; _configBody.reserve(min(total + 1, (size_t)CONFIG_MAX_POST_BYTES + 1)); }
-      if (total > CONFIG_MAX_POST_BYTES || _configBody.length() + len > CONFIG_MAX_POST_BYTES) { _configBodyTooLarge = true; return; }
-      _configBody.concat((const char*)data, len);
-      if (index + len == total) {
-        JsonDocument doc;
-        DeserializationError err = deserializeJson(doc, _configBody);
-        if (err || !doc.containsKey("ssid")) {
-          request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Invalid JSON\"}");
-        } else if (_wirelessManager) {
-          const char* ssid = doc["ssid"];
-          const char* pass = doc["pass"] | "";
-          request->send(200, "application/json", "{\"ok\":true,\"msg\":\"Connecting...\"}");
-          _wirelessManager->getWifiMidi().connectToNetwork(ssid, pass);
-        } else {
-          request->send(500, "application/json", "{\"ok\":false}");
-        }
-        _configBody = "";
-      }
+    [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+      webAccumulateBody(request, data, len, index, total);
     }
   );
 
@@ -456,10 +467,8 @@ void WebConfigurator::setupRoutes() {
       handleMidiDelete(request);
     },
     NULL,
-    [this](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
-      if (index == 0) { _configBody = ""; _configBodyTooLarge = false; _configBody.reserve(min(total + 1, (size_t)CONFIG_MAX_POST_BYTES + 1)); }
-      if (total > CONFIG_MAX_POST_BYTES || _configBody.length() + len > CONFIG_MAX_POST_BYTES) { _configBodyTooLarge = true; return; }
-      _configBody.concat((const char*)data, len);
+    [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+      webAccumulateBody(request, data, len, index, total);
     }
   );
 
@@ -469,10 +478,8 @@ void WebConfigurator::setupRoutes() {
       handleMidiLoad(request);
     },
     NULL,
-    [this](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
-      if (index == 0) { _configBody = ""; _configBodyTooLarge = false; _configBody.reserve(min(total + 1, (size_t)CONFIG_MAX_POST_BYTES + 1)); }
-      if (total > CONFIG_MAX_POST_BYTES || _configBody.length() + len > CONFIG_MAX_POST_BYTES) { _configBodyTooLarge = true; return; }
-      _configBody.concat((const char*)data, len);
+    [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+      webAccumulateBody(request, data, len, index, total);
     }
   );
 
@@ -723,32 +730,33 @@ void WebConfigurator::handleApiConfig(AsyncWebServerRequest* request) {
 }
 
 void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
+  // Take ownership of this request's own body (never a shared buffer).
+  String configBody; bool configBodyTooLarge;
+  takeRequestBody(request, configBody, configBodyTooLarge);
+
 #if MIC_ENABLED
   // Configuration changes are locked while a calibration owns the actuators, so
   // notes/fingering/air-system/PCA channels cannot shift mid-calibration.
   if (rejectIfCalibrationActive(request)) {
-    _configBody = "";
     return;
   }
 #endif
-  if (_configBody.length() == 0) {
+  if (configBodyTooLarge) {
+    request->send(413, "application/json", "{\"ok\":false,\"msg\":\"Config body too large\"}");
+    return;
+  }
+  if (configBody.length() == 0) {
     request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Empty body\"}");
     return;
   }
 
   {
-    if (_configBody.length() > CONFIG_MAX_POST_BYTES) {
-      request->send(413, "application/json", "{\"ok\":false,\"msg\":\"Config body too large\"}");
-      _configBody = "";
-      return;
-    }
     RuntimeConfig previousConfig = cfg;
     JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, _configBody);
+    DeserializationError err = deserializeJson(doc, configBody);
 
     if (err) {
       request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Invalid JSON\"}");
-      _configBody = "";
       return;
     }
 
@@ -993,7 +1001,6 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
       String errJson;
       serializeJson(errDoc, errJson);
       request->send(400, "application/json", errJson);
-      _configBody = "";
       return;
     }
 
@@ -1047,8 +1054,35 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
     serializeJson(respDoc, resp);
     request->send(saved ? 200 : 500, "application/json", resp);
   }
-  _configBody = "";
-  _configBodyTooLarge = false;
+}
+
+void WebConfigurator::handleApiWifiConnect(AsyncWebServerRequest* request) {
+  // Single response path (the old body callback sent a response AND left the
+  // request handler to send a second), reading this request's own body.
+  String body; bool tooLarge;
+  takeRequestBody(request, body, tooLarge);
+  if (tooLarge) {
+    request->send(413, "application/json", "{\"ok\":false,\"msg\":\"Body too large\"}");
+    return;
+  }
+  if (body.length() == 0) {
+    request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Empty body\"}");
+    return;
+  }
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, body);
+  if (err || !doc.containsKey("ssid")) {
+    request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Invalid JSON\"}");
+    return;
+  }
+  if (!_wirelessManager) {
+    request->send(500, "application/json", "{\"ok\":false}");
+    return;
+  }
+  const char* ssid = doc["ssid"];
+  const char* pass = doc["pass"] | "";
+  request->send(200, "application/json", "{\"ok\":true,\"msg\":\"Connecting...\"}");
+  _wirelessManager->getWifiMidi().connectToNetwork(ssid, pass);
 }
 
 void WebConfigurator::handleApiDiagnostics(AsyncWebServerRequest* request) {
@@ -1319,18 +1353,18 @@ void WebConfigurator::handleMidiList(AsyncWebServerRequest* request) {
 }
 
 void WebConfigurator::handleMidiDelete(AsyncWebServerRequest* request) {
-  if (_configBodyTooLarge) {
+  String body; bool tooLarge;
+  takeRequestBody(request, body, tooLarge);
+  if (tooLarge) {
     request->send(413, "application/json", "{\"ok\":false,\"msg\":\"Body too large\"}");
-    _configBody = ""; _configBodyTooLarge = false;
     return;
   }
-  if (_configBody.length() == 0) {
+  if (body.length() == 0) {
     request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Empty body\"}");
     return;
   }
   JsonDocument doc;
-  DeserializationError err = deserializeJson(doc, _configBody);
-  _configBody = ""; _configBodyTooLarge = false;
+  DeserializationError err = deserializeJson(doc, body);
   if (err || !doc.containsKey("file")) {
     request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Invalid JSON\"}");
     return;
@@ -1358,18 +1392,18 @@ void WebConfigurator::handleMidiDelete(AsyncWebServerRequest* request) {
 }
 
 void WebConfigurator::handleMidiLoad(AsyncWebServerRequest* request) {
-  if (_configBodyTooLarge) {
+  String body; bool tooLarge;
+  takeRequestBody(request, body, tooLarge);
+  if (tooLarge) {
     request->send(413, "application/json", "{\"ok\":false,\"msg\":\"Body too large\"}");
-    _configBody = ""; _configBodyTooLarge = false;
     return;
   }
-  if (_configBody.length() == 0) {
+  if (body.length() == 0) {
     request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Empty body\"}");
     return;
   }
   JsonDocument doc;
-  DeserializationError err = deserializeJson(doc, _configBody);
-  _configBody = ""; _configBodyTooLarge = false;
+  DeserializationError err = deserializeJson(doc, body);
   if (err || !doc.containsKey("file")) {
     request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Invalid JSON\"}");
     return;

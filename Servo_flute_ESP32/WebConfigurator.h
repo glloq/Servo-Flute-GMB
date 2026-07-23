@@ -100,6 +100,7 @@ private:
   void handleMidiList(AsyncWebServerRequest* request);
   void handleMidiDelete(AsyncWebServerRequest* request);
   void handleMidiLoad(AsyncWebServerRequest* request);
+  void handleApiWifiConnect(AsyncWebServerRequest* request);
 
   // Calcule la taille totale des fichiers dans MIDI_DIR (octets)
   size_t getMidiStorageUsed();
@@ -112,9 +113,9 @@ private:
   // Broadcast status a tous les clients WS
   void broadcastStatus();
 
-  // Bounded body buffer shared by small JSON POST routes; reset after success, error, oversize, or interruption.
-  String _configBody;
-  bool _configBodyTooLarge = false;
+  // Small JSON POST bodies are accumulated per-request in AsyncWebServerRequest::
+  // _tempObject (see WebReqBody in the .cpp) so concurrent requests never share a
+  // buffer; there is no shared body member.
 
   // Fichier temporaire pour upload MIDI
   File _uploadFile;

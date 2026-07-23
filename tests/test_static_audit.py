@@ -300,12 +300,18 @@ def test_websocket_has_separate_midi_percent_and_servo_parsers():
 def test_post_body_limits_reset_and_avoid_malloc_fragments():
     src = read('Servo_flute_ESP32/WebConfigurator.cpp')
     hdr = read('Servo_flute_ESP32/WebConfigurator.h')
-    assert '_configBodyTooLarge' in hdr and '_configBodyTooLarge' in src
+    # #5: POST bodies are per-request (request->_tempObject), not a shared member,
+    # so concurrent requests can no longer clobber or mix each other's bodies.
+    assert '_configBody' not in src and '_configBody' not in hdr
+    assert 'request->_tempObject' in src
+    assert 'struct WebReqBody' in src
+    assert 'tooLarge' in src
     assert 'Body too large' in src
     assert 'CONFIG_MAX_POST_BYTES' in src
     assert 'concat((const char*)data, len)' in src
     assert 'malloc(len + 1)' not in src
-    assert '_configBodyTooLarge = false' in src
+    # wifi/connect sends its response from a single handler, not the body callback.
+    assert 'void WebConfigurator::handleApiWifiConnect' in src
 
 
 def test_diagnostics_status_vocabulary_and_passive_active_split():
