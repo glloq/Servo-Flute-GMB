@@ -1004,8 +1004,23 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
       applyResult.applied = !validation.restartRequired;
     }
 
-    // Sauvegarder sur LittleFS
+    // Persist the NEW configuration to LittleFS (it loads on the next boot).
     bool saved = ConfigStorage::save();
+
+    // Restart-required changes (air mode, pump/fan/PCA/servo channels, pin
+    // assignments, sensor type, MIDI UART, counts) need a hardware re-init that
+    // only a reboot performs. The controllers read the global cfg live, so keeping
+    // the mutated cfg active would let a changed air mode / pin / channel start
+    // influencing behaviour before the matching hardware is reinitialised. Revert
+    // the ACTIVE config to the previous one: the device keeps running on the
+    // hardware-matching config until the user restarts, at which point the saved
+    // new config takes effect. applyRuntimeConfig() applied nothing for these
+    // changes (it returns early), so nothing dynamic is lost by reverting.
+    bool restartRequired = validation.restartRequired || applyResult.restartRequired;
+    if (restartRequired) {
+      cfg = previousConfig;
+      applyResult.applied = false;
+    }
 
     if (DEBUG) {
       Serial.println("DEBUG: WebConfigurator - Config mise a jour via web");
@@ -1015,7 +1030,7 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
     respDoc["ok"] = saved;
     respDoc["saved"] = saved;
     respDoc["applied"] = applyResult.applied;
-    respDoc["restart_required"] = validation.restartRequired || applyResult.restartRequired;
+    respDoc["restart_required"] = restartRequired;
     respDoc["corrected"] = validation.corrected;
     JsonArray reinitialized = respDoc["reinitialized"].to<JsonArray>();
     int start = 0;
