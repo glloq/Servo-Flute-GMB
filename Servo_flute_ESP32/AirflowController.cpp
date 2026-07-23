@@ -42,7 +42,7 @@ AirflowController::AirflowController(PwmWriteFn writePwm)
     _ccVolume(cfg.ccVolumeDefault), _ccExpression(cfg.ccExpressionDefault),
     _ccModulation(cfg.ccModulationDefault),
     _ccBreath(cfg.ccBreathDefault),
-    _cc2BufferIndex(0), _cc2BufferCount(0), _lastCC2Time(0), _lastVelocity(64),
+    _cc2BufferIndex(0), _cc2BufferCount(0), _lastCC2Time(0), _lastVelocity(64), _cc2TimedOut(false),
     _baseAngleWithoutVibrato(cfg.servoAirflowOff), _lastSentAirflowAngle(cfg.servoAirflowOff),
     _activeNote(0), _activeVelocity(0), _noteActive(false), _vibratoActive(false),
     _currentMinAngle(cfg.servoAirflowMin), _currentMaxAngle(cfg.servoAirflowMax),
@@ -380,7 +380,15 @@ void AirflowController::setValveServoAngle(bool open) {
 void AirflowController::setAirflowToRest() {
   setAirflowServoAngle(cfg.servoAirflowOff);
   setAngleToRest();
+  // Fully cancel any in-progress attack/vibrato so update() cannot keep driving a
+  // play angle after the return to rest (critical in valveless modes where that
+  // would restore airflow after a Note Off / CC2 silence).
+  _attackActive = false;
+  _vibratoActive = false;
+  _baseAngleWithoutVibrato = cfg.servoAirflowOff;
+  _attackTargetAngle = cfg.servoAirflowOff;
   _noteActive = false;   // note ended: live CC recomputation must not resurrect it
+  _cc2TimedOut = false;
 }
 
 void AirflowController::update() {
@@ -407,8 +415,11 @@ void AirflowController::update() {
     }
   }
 
-  // Appliquer vibrato si actif
-  if ((_vibratoActive && _ccModulation > 0 && _solenoidOpen) || _attackActive) {
+  // Apply attack/vibrato ONLY while the note is really sounding (valve/flow open).
+  // Gating on _solenoidOpen prevents an interrupted attack from re-writing a play
+  // angle after a return to rest - which in valveless modes (servo-only / fan)
+  // would restore airflow after a Note Off or a CC2 silence.
+  if (_solenoidOpen && (_attackActive || (_vibratoActive && _ccModulation > 0))) {
     float vibratoAmplitude = (_vibratoActive && _ccModulation > 0) ?
       (_ccModulation / (float)MIDI_CC_MAX) * cfg.vibratoMaxAmplitudeDeg : 0;
     float vibratoOffset = vibratoAmplitude > 0 ?
@@ -420,6 +431,15 @@ void AirflowController::update() {
     if (finalAngle > (int16_t)_currentMaxAngle) finalAngle = _currentMaxAngle;
 
     setAirflowServoAngle((uint16_t)finalAngle);
+  }
+
+  // CC2 (breath) timeout on a HELD note: if the breath stream stops, no CC event
+  // arrives to trigger a recomputation, so the last CC2 value would hold forever.
+  // Detect the timeout here and fall back to velocity exactly once.
+  if (_noteActive && cfg.cc2Enabled && cfg.cc2TimeoutMs > 0 && _cc2BufferCount > 0 &&
+      !_cc2TimedOut && (millis() - _lastCC2Time) > cfg.cc2TimeoutMs) {
+    _cc2TimedOut = true;
+    recomputeActiveNote();
   }
 }
 
@@ -601,6 +621,7 @@ void AirflowController::updateCC2Breath(byte ccBreath) {
   }
   _lastCC2Time = millis();
   _ccBreath = ccBreath;
+  _cc2TimedOut = false;   // fresh breath data: re-arm the held-note timeout fallback
 
   if (DEBUG) {
     Serial.print("DEBUG: CC2 (Breath) recu: ");

@@ -327,6 +327,23 @@ def test_manual_test_session_server_side():
     assert 'if (_testActive && client->id() == _testOwnerClientId)' in wc
 
 
+def test_audit_p0_boot_and_rest_safety():
+    im = read('Servo_flute_ESP32/InstrumentManager.cpp')
+    imh = read('Servo_flute_ESP32/InstrumentManager.h')
+    # P0.1: OE is not enabled until every channel is programmed (init window).
+    assert '_initializingHardware' in im and '_initializingHardware' in imh
+    assert '_initializingHardware = true' in im and '_initializingHardware = false' in im
+    # P0.2: actuator paths are inert unless the hardware initialised successfully.
+    assert 'isHardwareReady' in imh
+    assert im.count('_hardwareInitStatus != HW_INIT_OK') >= 4   # setPWM/update/noteOn/noteOff/CC/power
+    af = read('Servo_flute_ESP32/AirflowController.cpp')
+    # P0.4: return-to-rest cancels attack/vibrato and the attack write is sound-gated.
+    assert '_attackActive = false' in af and '_vibratoActive = false' in af
+    assert '_solenoidOpen && (_attackActive' in af
+    # P0.5: CC2 timeout falls back to velocity on a held note from update().
+    assert '_cc2TimedOut' in af and 'recomputeActiveNote()' in af
+
+
 def test_diagnostics_status_vocabulary_and_passive_active_split():
     src = read('Servo_flute_ESP32/WebConfigurator.cpp')
     api = read('docs/API_WEB.md')

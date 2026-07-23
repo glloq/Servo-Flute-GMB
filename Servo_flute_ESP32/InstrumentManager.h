@@ -77,6 +77,10 @@ public:
   // Air-source bridge for the auto-calibrator (drives pump/fan/reservoir per air mode).
   ICalibrationAirSupply& getCalibrationAirSupply() { return _calAirSupply; }
   HardwareInitStatus hardwareInitStatus() const { return _hardwareInitStatus; }
+  // True only after a fully successful safe init. When false (PCA missing / config
+  // invalid), all actuator paths (noteOn/noteOff/CC/setPWM/power/update) are no-ops
+  // so a failed board can never be driven.
+  bool isHardwareReady() const { return _hardwareInitStatus == HW_INIT_OK; }
   bool isSecondBoardEnabled() const { return _secondBoardEnabled; }
   ConfigApplyResult applyRuntimeConfig(const RuntimeConfig& oldConfig, const RuntimeConfig& newConfig);
 
@@ -96,6 +100,7 @@ private:
   unsigned long _lastActivityTime;
   bool _servosPowered;
   bool _actuatorSessionActive;   // calibration/range-finder holds power (see managePower)
+  bool _initializingHardware;    // during beginSafe(): write safe PWM but never enable OE
 
   // Valeurs Control Change MIDI
   byte _ccVolume;

@@ -93,6 +93,7 @@ private:
   uint8_t _cc2BufferCount;
   unsigned long _lastCC2Time;
   byte _lastVelocity;
+  bool _cc2TimedOut;   // true once a held note has fallen back to velocity on CC2 timeout
 
   // Gestion vibrato
   uint16_t _baseAngleWithoutVibrato;

@@ -15,6 +15,7 @@ InstrumentManager::InstrumentManager()
     _lastActivityTime(0),
     _servosPowered(false),
     _actuatorSessionActive(false),
+    _initializingHardware(false),
     _ccVolume(cfg.ccVolumeDefault),
     _ccExpression(cfg.ccExpressionDefault),
     _ccModulation(cfg.ccModulationDefault),
@@ -52,15 +53,18 @@ bool InstrumentManager::beginSafe() {
   pinMode(PIN_SERVOS_OFF, OUTPUT);
   digitalWrite(PIN_SERVOS_OFF, HIGH);
   _servosPowered = false;
+  _initializingHardware = true;   // program safe PWM values without enabling OE
   _secondBoardEnabled = requiresSecondPca();
   _hardwareInitStatus = HW_CONFIG_INVALID;
 
   if (!detectPca(PCA_ADDR_BOARD0)) {
     _hardwareInitStatus = HW_PCA0_MISSING;
+    _initializingHardware = false;   // failed: setPWM must now refuse all writes
     return false;
   }
   if (_secondBoardEnabled && !detectPca(PCA_ADDR_BOARD1)) {
     _hardwareInitStatus = HW_PCA1_MISSING;
+    _initializingHardware = false;
     return false;
   }
 
@@ -94,6 +98,9 @@ bool InstrumentManager::beginSafe() {
   _sequencer.begin();
   _lastActivityTime = millis();
   _hardwareInitStatus = HW_INIT_OK;
+  // All channels now hold safe values: end the init window and enable OE exactly
+  // once, so the servos move cleanly to their programmed safe positions.
+  _initializingHardware = false;
   powerOnServos();
   return true;
 }
@@ -106,6 +113,7 @@ void InstrumentManager::initializeSafeOutputs() {
 }
 
 void InstrumentManager::update() {
+  if (_hardwareInitStatus != HW_INIT_OK) return;   // failed init: keep everything inert
   // While an actuator session (auto-calibration / range finder) owns the hardware,
   // the MIDI sequencer must not drive the finger/airflow servos or the valve - the
   // calibrator moves them directly. Skipping the sequencer here (plus rejecting
@@ -134,6 +142,7 @@ void InstrumentManager::update() {
 }
 
 void InstrumentManager::noteOn(byte midiNote, byte velocity) {
+  if (_hardwareInitStatus != HW_INIT_OK) return;   // no usable hardware
   // Calibration owns the actuators: ignore external MIDI (BLE / rtpMIDI / DIN /
   // file player) so it cannot move fingers, the airflow servo, the valve, the
   // pumps or the fan while a measurement is running.
@@ -177,6 +186,7 @@ void InstrumentManager::noteOn(byte midiNote, byte velocity) {
 }
 
 void InstrumentManager::noteOff(byte midiNote) {
+  if (_hardwareInitStatus != HW_INIT_OK) return;   // no usable hardware
   if (_actuatorSessionActive) return;   // calibration owns the actuators
   if (cfg.airMode == AIR_MODE_PUMP_VALVE) {
     _pressureCtrl.setTargetPercent(cfg.pumpDirectIdlePercent);
@@ -256,6 +266,9 @@ void InstrumentManager::setActuatorSessionActive(bool active) {
 }
 
 void InstrumentManager::powerOnServos() {
+  // Never energise the servos before a successful safe init (nor during the init
+  // window itself); OE stays HIGH until beginSafe() has programmed every channel.
+  if (_initializingHardware || _hardwareInitStatus != HW_INIT_OK) return;
   digitalWrite(PIN_SERVOS_OFF, LOW);  // OE a LOW = servos actives
   _servosPowered = true;
 
@@ -274,6 +287,7 @@ void InstrumentManager::powerOffServos() {
 }
 
 void InstrumentManager::handleControlChange(byte ccNumber, byte ccValue) {
+  if (_hardwareInitStatus != HW_INIT_OK) return;   // no usable hardware
   if (_actuatorSessionActive) return;   // calibration owns the actuators
   if (ccValue > MIDI_CC_MAX) {
     if (DEBUG) {
@@ -474,7 +488,14 @@ void InstrumentManager::resetAllControllers() {
 }
 
 void InstrumentManager::setPWM(uint8_t channel, uint16_t on, uint16_t off) {
-  registerActuatorActivity();
+  // Refuse writes when the hardware is not usable (failed init), but allow the
+  // safe-init sequence itself to program the PCA registers.
+  if (!_initializingHardware && _hardwareInitStatus != HW_INIT_OK) return;
+  // During the safe-init sequence, program the PWM registers but do NOT register
+  // activity / enable OE: OE must stay HIGH until every channel holds a safe value,
+  // otherwise the servos could be energised (with stale registers after a soft
+  // reset) while the channels are still being initialised one by one.
+  if (!_initializingHardware) registerActuatorActivity();
   if (channel < 16) {
     _pwm0.setPWM(channel, on, off);
   } else if (_secondBoardEnabled) {
