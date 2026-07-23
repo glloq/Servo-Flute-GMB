@@ -138,8 +138,13 @@ Set MIC_ENABLED to false if no mic is connected.
 // While collecting a position, abort the collection if no fresh audio frame
 // arrives within this window (frozen / disconnected source).
 #define AUTOCAL_AUDIO_FRAME_TIMEOUT_MS 1500
-// Absolute last-resort ceiling for the whole calibration, whatever the note count.
-#define AUTOCAL_GLOBAL_TIMEOUT_MS     600000
+// Absolute last-resort ceiling for the whole calibration. It must never be smaller
+// than the sum of the per-note budgets for the largest possible note count, or a
+// large configuration would be aborted by the global timeout before it could ever
+// use the budget it was granted (this happened around 24 notes with the old fixed
+// 600 s ceiling). Sized from MAX_NOTES so any valid note count fits.
+#define AUTOCAL_GLOBAL_TIMEOUT_MS \
+  ((unsigned long)MAX_NOTES * AUTOCAL_TIMEOUT_PER_NOTE_MS + AUTOCAL_GLOBAL_MARGIN_MS)
 // Time allowed for the air supply (pump spin-up / reservoir fill / fan ramp) to
 // reach a usable state before the whole calibration aborts with ACAL_FAIL_AIR_SUPPLY.
 // Passive modes (solenoid / servo valve / servo only) report ready immediately.

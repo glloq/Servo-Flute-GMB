@@ -43,7 +43,7 @@ AirflowController::AirflowController(PwmWriteFn writePwm)
     _ccModulation(cfg.ccModulationDefault),
     _ccBreath(cfg.ccBreathDefault),
     _cc2BufferIndex(0), _cc2BufferCount(0), _lastCC2Time(0), _lastVelocity(64),
-    _baseAngleWithoutVibrato(cfg.servoAirflowOff), _vibratoActive(false),
+    _baseAngleWithoutVibrato(cfg.servoAirflowOff), _lastSentAirflowAngle(cfg.servoAirflowOff), _vibratoActive(false),
     _currentMinAngle(cfg.servoAirflowMin), _currentMaxAngle(cfg.servoAirflowMax),
     _attackActive(false), _attackStartTime(0), _attackStartAngle(0), _attackTargetAngle(0),
     _runtimeAttackMode(cfg.airAttackMode), _runtimeAttackOffset(cfg.airAttackOffset),
@@ -422,6 +422,10 @@ void AirflowController::testSolenoid(bool open) {
 }
 
 void AirflowController::setAirflowServoAngle(uint16_t angle) {
+  // Single point that drives the airflow servo: record what was actually sent so
+  // status/animation reflect the real command (vibrato, attack, manual test all
+  // pass through here), not just the pre-vibrato base angle.
+  _lastSentAirflowAngle = angle;
   uint16_t pwmValue = angleToPWM(angle);
   _writePwm(cfg.airflowPcaChannel, 0, pwmValue);
 }

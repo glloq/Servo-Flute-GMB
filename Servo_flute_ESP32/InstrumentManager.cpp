@@ -106,7 +106,11 @@ void InstrumentManager::initializeSafeOutputs() {
 }
 
 void InstrumentManager::update() {
-  _sequencer.update();
+  // While an actuator session (auto-calibration / range finder) owns the hardware,
+  // the MIDI sequencer must not drive the finger/airflow servos or the valve - the
+  // calibrator moves them directly. Skipping the sequencer here (plus rejecting
+  // noteOn/noteOff/CC below) keeps external MIDI from corrupting the measurement.
+  if (!_actuatorSessionActive) _sequencer.update();
   _airflowCtrl.update();
   if (cfg.airMode >= AIR_MODE_PUMP_VALVE) {
     _pressureCtrl.update();
@@ -130,6 +134,10 @@ void InstrumentManager::update() {
 }
 
 void InstrumentManager::noteOn(byte midiNote, byte velocity) {
+  // Calibration owns the actuators: ignore external MIDI (BLE / rtpMIDI / DIN /
+  // file player) so it cannot move fingers, the airflow servo, the valve, the
+  // pumps or the fan while a measurement is running.
+  if (_actuatorSessionActive) return;
   if (!isNotePlayable(midiNote)) {
     if (DEBUG) {
       Serial.print("DEBUG: InstrumentManager - Note hors plage: ");
@@ -169,6 +177,7 @@ void InstrumentManager::noteOn(byte midiNote, byte velocity) {
 }
 
 void InstrumentManager::noteOff(byte midiNote) {
+  if (_actuatorSessionActive) return;   // calibration owns the actuators
   if (cfg.airMode == AIR_MODE_PUMP_VALVE) {
     _pressureCtrl.setTargetPercent(cfg.pumpDirectIdlePercent);
   }
@@ -237,7 +246,13 @@ void InstrumentManager::registerActuatorActivity() {
 
 void InstrumentManager::setActuatorSessionActive(bool active) {
   _actuatorSessionActive = active;
-  if (active) ensureServosPowered();
+  if (active) {
+    // Release any note the sequencer was playing and drop queued MIDI so nothing
+    // fires while the calibrator owns the actuators, then hold servo power.
+    _sequencer.stop();
+    _eventQueue.clear();
+    ensureServosPowered();
+  }
 }
 
 void InstrumentManager::powerOnServos() {
@@ -259,6 +274,7 @@ void InstrumentManager::powerOffServos() {
 }
 
 void InstrumentManager::handleControlChange(byte ccNumber, byte ccValue) {
+  if (_actuatorSessionActive) return;   // calibration owns the actuators
   if (ccValue > MIDI_CC_MAX) {
     if (DEBUG) {
       Serial.print("ERREUR: CC invalide - valeur: ");

@@ -120,6 +120,9 @@ public:
   bool isRangeFinderComplete() const { return _state == ACAL_RF_COMPLETE; }
   bool isRangeMode() const { return _mode == ACAL_MODE_RANGE_FIND; }
   AutoCalState getState() const { return _state; }
+  // Computed global timeout for the current run (numNotes-scaled). Exposed so the
+  // note-count-vs-ceiling relationship can be asserted in tests.
+  unsigned long getGlobalTimeoutMs() const { return _globalTimeout; }
 
   // One-shot timeout event: returns true once after a global-timeout abort so the
   // caller can publish an error. Cleared by reading.

@@ -23,7 +23,10 @@ public:
   void openValve();
   void closeValve();
   bool isValveOpen() const;
-  uint16_t getAirflowAngle() const { return _baseAngleWithoutVibrato; }
+  // Base airflow angle before vibrato/attack (for CC recomputation baselines).
+  uint16_t getBaseAirflowAngle() const { return _baseAngleWithoutVibrato; }
+  // Angle actually last written to the airflow servo (vibrato/attack/test included).
+  uint16_t getAirflowAngle() const { return _lastSentAirflowAngle; }
   uint16_t getAngleServoAngle() const { return _currentAngleServo; }
 
   // Deprecated aliases (retro-compat)
@@ -82,6 +85,7 @@ private:
 
   // Gestion vibrato
   uint16_t _baseAngleWithoutVibrato;
+  uint16_t _lastSentAirflowAngle;   // last angle actually written to the servo
   bool _vibratoActive;
   uint16_t _currentMinAngle;
   uint16_t _currentMaxAngle;

@@ -503,6 +503,40 @@ static void instrument_power_held_during_actuator_session(){
   im.allSoundOff();
 }
 
+// Review #2. Central calibration exclusivity: while an actuator session is active,
+// external MIDI (BLE/rtp/DIN/file player) must not drive the sequencer/actuators.
+static void instrument_ignores_midi_during_calibration(){
+  resetCfg(); extern WireClass Wire; Wire.clear(); Wire.setPresent(PCA_ADDR_BOARD0,true);
+  cfg.numNotes=1; cfg.notes[0].midiNote=60; __test_millis=0;
+  InstrumentManager im; assert(im.beginSafe());
+  im.setActuatorSessionActive(true);
+  im.noteOn(60,100); im.handleControlChange(7,100);
+  for(int i=0;i<4;i++){ __test_millis+=20; im.update(); }
+  assert(im.getSequencer().getState()==STATE_IDLE);       // MIDI ignored during session
+  im.setActuatorSessionActive(false);                     // session ends
+  im.noteOn(60,100);
+  im.update();
+  assert(im.getSequencer().getState()==STATE_POSITIONING); // MIDI drives again
+  im.allSoundOff();
+}
+
+// Review #14. The global timeout scales to the largest note count instead of being
+// clamped below the sum of the per-note budgets (which happened ~24 notes before).
+static void autocal_global_timeout_scales_to_max_notes(){
+  resetCfg(); cfg.numNotes=MAX_NOTES;
+  for(int i=0;i<MAX_NOTES;i++) cfg.notes[i].midiNote=(uint8_t)(i & 0x7F);
+  __test_millis=0;
+  FakeAudio fa;
+  FingerController fc([](uint8_t,uint16_t,uint16_t){});
+  AirflowController ac([](uint8_t,uint16_t,uint16_t){}); ac.begin();
+  FakeAirSupply as; AutoCalibrator cal(fc,ac,fa,as);
+  cal.start(ACAL_MODE_AIRFLOW);
+  unsigned long expected=(unsigned long)MAX_NOTES*AUTOCAL_TIMEOUT_PER_NOTE_MS + AUTOCAL_GLOBAL_MARGIN_MS;
+  assert(cal.getGlobalTimeoutMs()==expected);
+  assert(cal.getGlobalTimeoutMs() >= (unsigned long)cfg.numNotes*AUTOCAL_TIMEOUT_PER_NOTE_MS);
+  cal.stop();
+}
+
 // §11/§16. LittleFS save failure: results applied in RAM then restored, no false success.
 static void autocal_storage_failure_restores(){
   extern bool __config_save_result;
@@ -646,4 +680,4 @@ static void audio_mic_classification(){
   assert(PitchDetector::classifyRaw(raw.data(), N) == MIC_SIG_OK);
 }
 
-int main(){ pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); airflow_nominal_drives_angle(); autocal_frozen_source_fails(); autocal_air_supply_gate(); autocal_14_notes_no_timeout(); autocal_plus70_cents_rejected(); autocal_storage_failure_restores(); autocal_range_finder(); autocal_range_finder_stale(); autocal_range_apply_storage(); autocal_air_lost_midnote(); calair_reservoir_requires_sensor(); instrument_power_held_during_actuator_session(); audio_yin_pcm_core(); audio_mic_classification(); std::cout << "behavior tests passed\n"; }
+int main(){ pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); airflow_nominal_drives_angle(); autocal_frozen_source_fails(); autocal_air_supply_gate(); autocal_14_notes_no_timeout(); autocal_plus70_cents_rejected(); autocal_storage_failure_restores(); autocal_range_finder(); autocal_range_finder_stale(); autocal_range_apply_storage(); autocal_air_lost_midnote(); calair_reservoir_requires_sensor(); instrument_power_held_during_actuator_session(); instrument_ignores_midi_during_calibration(); autocal_global_timeout_scales_to_max_notes(); audio_yin_pcm_core(); audio_mic_classification(); std::cout << "behavior tests passed\n"; }
