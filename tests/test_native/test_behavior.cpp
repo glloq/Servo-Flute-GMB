@@ -298,6 +298,34 @@ static void autocal_plus70_cents_rejected(){
   assert(cfg.notes[0].airflowMinPercent==7 && cfg.notes[0].airflowMaxPercent==88 && cfg.notes[0].airflowNominalPercent==44);
 }
 
+// §6. Range finder: multi-frame sweep over a safe angle window finds min/max.
+static void autocal_range_finder(){
+  resetCfg(); cfg.numNotes=3; cfg.notes[0].midiNote=60; cfg.notes[1].midiNote=62; cfg.notes[2].midiNote=64;
+  cfg.servoAirflowMin=60; cfg.servoAirflowMax=120;
+  __test_millis=0;
+  FakeAudio fa;
+  FingerController fc([](uint8_t,uint16_t,uint16_t){});
+  AirflowController ac([](uint8_t,uint16_t,uint16_t){}); ac.begin();
+  AutoCalibrator cal(fc,ac,fa);
+  cal.start(ACAL_MODE_RANGE_FIND);
+  assert(cal.isRunning());
+  assert(cal.isRangeMode());
+  int expMidi = cfg.notes[cfg.numNotes/2].midiNote;  // middle note = 62
+  int it=0;
+  while(cal.isRunning() && it++<200000){
+    int ang = cal.getCurrentAngle();
+    if(ang>=60 && ang<=120){ fa.rms=0.06f; fa.valid=true; fa.conf=0.95f; fa.midi=expMidi; fa.hz=PitchMath::midiToHz(expMidi); fa.cents=-3.0f; fa.snd=true; }
+    else { fa.rms=0.003f; fa.valid=false; fa.conf=0.0f; fa.midi=0; fa.hz=0; fa.cents=0; fa.snd=false; }
+    fa.seq++; fa.ts=__test_millis;
+    __test_millis+=25; cal.update();
+  }
+  assert(cal.isRangeFinderComplete());
+  int mn=cal.getRangeFinderMin(), mx=cal.getRangeFinderMax();
+  assert(mn>=54 && mn<=63);    // ~60 deg minus safety margin
+  assert(mx>=117 && mx<=129);  // ~120 deg plus safety margin
+  assert(mn>=AUTOCAL_RF_MIN_SAFE_ANGLE && mx<=AUTOCAL_RF_MAX_SAFE_ANGLE);  // within safe window
+}
+
 // §11/§16. LittleFS save failure: results applied in RAM then restored, no false success.
 static void autocal_storage_failure_restores(){
   extern bool __config_save_result;
@@ -439,4 +467,4 @@ static void audio_mic_classification(){
   assert(PitchDetector::classifyRaw(raw.data(), N) == MIC_SIG_OK);
 }
 
-int main(){ pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); airflow_nominal_drives_angle(); autocal_frozen_source_fails(); autocal_14_notes_no_timeout(); autocal_plus70_cents_rejected(); autocal_storage_failure_restores(); audio_yin_pcm_core(); audio_mic_classification(); std::cout << "behavior tests passed\n"; }
+int main(){ pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); airflow_nominal_drives_angle(); autocal_frozen_source_fails(); autocal_14_notes_no_timeout(); autocal_plus70_cents_rejected(); autocal_storage_failure_restores(); autocal_range_finder(); audio_yin_pcm_core(); audio_mic_classification(); std::cout << "behavior tests passed\n"; }

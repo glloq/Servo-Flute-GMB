@@ -142,10 +142,10 @@ public:
   void applyRangeResults();
 
 private:
-  // Detailed per-note phase and per-position sub-step.
-  enum Phase { PH_PREPARE, PH_NOISE, PH_COARSE, PH_FINE_MIN, PH_FINE_MAX, PH_NOMINAL, PH_FINALIZE };
+  // Detailed per-note phase and per-position sub-step. The range finder reuses
+  // the same per-position engine (PH_RF_SWEEP), so there is no duplicated logic.
+  enum Phase { PH_PREPARE, PH_NOISE, PH_COARSE, PH_FINE_MIN, PH_FINE_MAX, PH_NOMINAL, PH_FINALIZE, PH_RF_SWEEP };
   enum Step  { ST_SET, ST_SETTLE, ST_COLLECT, ST_EVAL };
-  enum RfStep { RF_PREPARE, RF_SETTLE, RF_SWEEP };
 
   FingerController& _fingers;
   AirflowController& _airflow;
@@ -165,7 +165,9 @@ private:
   Step _step;
   unsigned long _stateTimer;
   unsigned long _lastFrameTime;
-  int _stepPercent;            // airflow percent currently being evaluated
+  int _stepPercent;            // airflow percent currently being evaluated (airflow mode)
+  bool _stepIsAngle;           // true: the position is a raw servo angle (range finder)
+  int _stepAngle;              // raw servo angle currently being evaluated (range finder)
 
   // Per-position frame collection (only distinct, fresh frames are stored)
   AutoCalMath::AudioFrame _frames[AUTOCAL_AUDIO_FRAMES_PER_STEP];
@@ -228,24 +230,23 @@ private:
   float _bestSnr;
   uint8_t _bestConfPct;
 
-  // Range finder
-  RfStep _rfStep;
+  // Range finder (shares the per-position engine via PH_RF_SWEEP)
   int _currentAngle;
   int _rfMinAngle;
   int _rfMaxAngle;
   bool _rfFoundMin;
-  int _rfSilenceCount;
+  int _rfLossCount;
 
   AutoCalNoteResult _results[MAX_NOTES];
 
   // --- helpers ---
-  void updateAirflow(unsigned long now);
-  void updateRangeFinder(unsigned long now);
+  void updateStateMachine(unsigned long now);
   void prepareNote(unsigned long now);
   void runNoise(unsigned long now);
   bool runPositionStep(unsigned long now);   // true when a fresh evaluation is ready
   void onPositionEvaluated(unsigned long now);
   void beginPosition(int percent, unsigned long now);
+  void beginAnglePosition(int angle, unsigned long now);
   void sampleFrame(AutoCalMath::AudioFrame& f);
   void finalizeNote(unsigned long now);
   void advanceNote(unsigned long now);

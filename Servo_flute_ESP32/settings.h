@@ -147,8 +147,12 @@ Set MIC_ENABLED to false if no mic is connected.
 #define AUTOCAL_AUDIO_INTERVAL_MS 100   // WebSocket audio/progress broadcast interval
 #define AUTOCAL_PITCH_TOLERANCE_SEMI 3  // Range finder: coarse pitch tolerance in semitones
 #define AUTOCAL_MIN_RANGE_PCT   5       // Minimum range pct between air_min and air_max
-#define AUTOCAL_RF_STEP_MS      100     // Time per step for range finder (0-180 sweep)
-#define AUTOCAL_RF_MARGIN_DEG   3       // Safety margin (degrees) for range finder results
+#define AUTOCAL_RF_MARGIN_DEG   3       // Safety margin (degrees) applied to range finder results
+// Range finder now reuses the SET->SETTLE->COLLECT->EVALUATE engine and sweeps
+// only a configurable safe angle window (never a blind 0-180 sweep).
+#define AUTOCAL_RF_MIN_SAFE_ANGLE 30    // Lowest airflow servo angle the sweep visits
+#define AUTOCAL_RF_MAX_SAFE_ANGLE 150   // Highest airflow servo angle the sweep visits
+#define AUTOCAL_RF_STEP_DEG       3     // Angle step between evaluated positions
 
 /*******************************************************************************
 ---------------------------   TIMING SETTINGS (ms)    ------------------------

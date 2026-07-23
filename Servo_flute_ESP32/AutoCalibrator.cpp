@@ -21,6 +21,7 @@ AutoCalibrator::AutoCalibrator(FingerController& fingers, AirflowController& air
     _state(ACAL_IDLE), _mode(ACAL_MODE_AIRFLOW), _startTime(0), _globalTimeout(AUTOCAL_GLOBAL_TIMEOUT_MS), _timeoutEvent(false),
     _numNotes(0), _currentNote(0), _expectedMidi(0),
     _phase(PH_PREPARE), _step(ST_SET), _stateTimer(0), _lastFrameTime(0), _stepPercent(0),
+    _stepIsAngle(false), _stepAngle(0),
     _frameCount(0), _lastCollectedSeq(0), _haveCollectedSeq(false), _collectStartTime(0), _audioStale(false),
     _noteStartTime(0), _noteFailReason(ACAL_FAIL_NONE),
     _lastMeanRms(0), _lastValidFrames(0), _lastTotalFrames(0),
@@ -31,7 +32,7 @@ AutoCalibrator::AutoCalibrator(FingerController& fingers, AirflowController& air
     _airMin(-1), _airMax(-1), _fineLastValid(-1), _fineLossCount(0),
     _nominalCount(0), _nominalIndex(0),
     _bestValidFound(false), _bestPercent(-1), _bestScore(-1), _bestCents(0), _bestStability(0), _bestSnr(0), _bestConfPct(0),
-    _rfStep(RF_PREPARE), _currentAngle(0), _rfMinAngle(-1), _rfMaxAngle(-1), _rfFoundMin(false), _rfSilenceCount(0) {
+    _currentAngle(0), _rfMinAngle(-1), _rfMaxAngle(-1), _rfFoundMin(false), _rfLossCount(0) {
   memset(_results, 0, sizeof(_results));
   memset(_nominalCandidates, 0, sizeof(_nominalCandidates));
   memset(_frames, 0, sizeof(_frames));
@@ -62,20 +63,19 @@ void AutoCalibrator::start(AutoCalMode mode) {
   memset(_results, 0, sizeof(_results));
   _audio.setActive(true);
 
+  _rfMinAngle = -1;
+  _rfMaxAngle = -1;
+  _rfFoundMin = false;
+  _rfLossCount = 0;
+  _currentAngle = cfg.servoAirflowOff;
+  _phase = PH_PREPARE;
+  _stateTimer = _startTime;
+
   if (mode == ACAL_MODE_RANGE_FIND) {
     _state = ACAL_RANGE;
-    _rfStep = RF_PREPARE;
-    _rfMinAngle = -1;
-    _rfMaxAngle = -1;
-    _rfFoundMin = false;
-    _rfSilenceCount = 0;
-    _currentAngle = 0;
-    _stateTimer = _startTime;
     if (DEBUG) Serial.println("DEBUG: AutoCalibrator - Demarrage range finder");
   } else {
     _state = ACAL_AIRFLOW;
-    _phase = PH_PREPARE;
-    _stateTimer = _startTime;
     if (DEBUG) Serial.println("DEBUG: AutoCalibrator - Demarrage calibration airflow");
   }
 }
@@ -108,11 +108,7 @@ void AutoCalibrator::update() {
     return;
   }
 
-  if (_mode == ACAL_MODE_RANGE_FIND) {
-    updateRangeFinder(now);
-  } else {
-    updateAirflow(now);
-  }
+  updateStateMachine(now);
 }
 
 const char* AutoCalibrator::getPhaseName() const {
@@ -125,6 +121,7 @@ const char* AutoCalibrator::getPhaseName() const {
     case PH_FINE_MAX: return "fine";
     case PH_NOMINAL:  return "nominal";
     case PH_FINALIZE: return "done";
+    case PH_RF_SWEEP: return "range";
   }
   return "?";
 }
@@ -149,10 +146,11 @@ void AutoCalibrator::setAirflowPercent(int percent) {
 
 // ------------------------------------------------------------------ airflow ----
 
-void AutoCalibrator::updateAirflow(unsigned long now) {
+void AutoCalibrator::updateStateMachine(unsigned long now) {
   // Per-note timeout: fail this note (its previous calibration is kept) and let
   // the sweep continue with the next note. The global timeout stays last-resort.
-  if (_phase != PH_PREPARE && _phase != PH_FINALIZE &&
+  // (Range finder has a single note, so this bounds it too.)
+  if (_phase != PH_PREPARE && _phase != PH_FINALIZE && _mode == ACAL_MODE_AIRFLOW &&
       (now - _noteStartTime) >= AUTOCAL_TIMEOUT_PER_NOTE_MS) {
     _noteFailReason = ACAL_FAIL_NOTE_TIMEOUT;
     _phase = PH_FINALIZE;
@@ -169,6 +167,7 @@ void AutoCalibrator::updateAirflow(unsigned long now) {
     case PH_FINE_MIN:
     case PH_FINE_MAX:
     case PH_NOMINAL:
+    case PH_RF_SWEEP:
       if (runPositionStep(now)) onPositionEvaluated(now);
       break;
     case PH_FINALIZE:
@@ -178,6 +177,9 @@ void AutoCalibrator::updateAirflow(unsigned long now) {
 }
 
 void AutoCalibrator::prepareNote(unsigned long now) {
+  // Range finder calibrates a single middle note across the servo angle range.
+  if (_mode == ACAL_MODE_RANGE_FIND) _currentNote = cfg.numNotes / 2;
+  _stepIsAngle = false;
   _expectedMidi = cfg.notes[_currentNote].midiNote;
   _noteStartTime = now;
   _noteFailReason = ACAL_FAIL_NONE;
@@ -244,10 +246,15 @@ void AutoCalibrator::runNoise(unsigned long now) {
   if (now - _stateTimer >= AUTOCAL_NOISE_MEASURE_MS) {
     _noiseRms = (_noiseCount > 0) ? (_noiseAccum / (float)_noiseCount) : 0.0f;
     _soundThreshold = AutoCalMath::computeSoundThreshold(_noiseRms);
-    // Open the air path and start the coarse sweep at 0 %.
+    // Open the air path, then start the appropriate sweep.
     _airflow.testSolenoid(true);
-    _phase = PH_COARSE;
-    beginPosition(0, now);
+    if (_mode == ACAL_MODE_RANGE_FIND) {
+      _phase = PH_RF_SWEEP;
+      beginAnglePosition(AUTOCAL_RF_MIN_SAFE_ANGLE, now);
+    } else {
+      _phase = PH_COARSE;
+      beginPosition(0, now);
+    }
 
     if (DEBUG) {
       Serial.print("DEBUG: AutoCal - noiseRms ");
@@ -261,7 +268,18 @@ void AutoCalibrator::runNoise(unsigned long now) {
 void AutoCalibrator::beginPosition(int percent, unsigned long now) {
   if (percent < 0) percent = 0;
   if (percent > 100) percent = 100;
+  _stepIsAngle = false;
   _stepPercent = percent;
+  _step = ST_SET;
+  _frameCount = 0;
+  _stateTimer = now;
+}
+
+void AutoCalibrator::beginAnglePosition(int angle, unsigned long now) {
+  if (angle < 0) angle = 0;
+  if (angle > 180) angle = 180;
+  _stepIsAngle = true;
+  _stepAngle = angle;
   _step = ST_SET;
   _frameCount = 0;
   _stateTimer = now;
@@ -279,8 +297,14 @@ void AutoCalibrator::sampleFrame(AudioFrame& f) {
 bool AutoCalibrator::runPositionStep(unsigned long now) {
   switch (_step) {
     case ST_SET:
-      // SET_AIRFLOW: move the servo, then wait for it to settle.
-      setAirflowPercent(_stepPercent);
+      // SET_AIRFLOW: move the servo (percent for airflow, raw angle for range
+      // finder), then wait for it to settle.
+      if (_stepIsAngle) {
+        _currentAngle = _stepAngle;
+        _airflow.testAirflowAngle((uint16_t)_stepAngle);
+      } else {
+        setAirflowPercent(_stepPercent);
+      }
       _stateTimer = now;
       _step = ST_SETTLE;
       return false;
@@ -518,6 +542,42 @@ void AutoCalibrator::onPositionEvaluated(unsigned long now) {
       break;
     }
 
+    case PH_RF_SWEEP: {
+      // Range finder: multi-frame, noise-thresholded, exact-note validation at
+      // each angle; first valid = min, confirmed loss over several positions = max.
+      if (!_rfFoundMin) {
+        if (valid && !over) {
+          _rfFoundMin = true;
+          _rfMinAngle = _stepAngle - AUTOCAL_RF_MARGIN_DEG;
+          if (_rfMinAngle < AUTOCAL_RF_MIN_SAFE_ANGLE) _rfMinAngle = AUTOCAL_RF_MIN_SAFE_ANGLE;
+          _rfLossCount = 0;
+        }
+      } else {
+        if (valid && !over) {
+          _rfLossCount = 0;
+        } else {
+          _rfLossCount++;
+          if (over || _rfLossCount >= AUTOCAL_LOSS_CONFIRM_STEPS) {
+            int lastValid = _stepAngle - _rfLossCount * AUTOCAL_RF_STEP_DEG;
+            _rfMaxAngle = lastValid + AUTOCAL_RF_MARGIN_DEG;
+            if (_rfMaxAngle > AUTOCAL_RF_MAX_SAFE_ANGLE) _rfMaxAngle = AUTOCAL_RF_MAX_SAFE_ANGLE;
+            safeHardware();
+            _state = ACAL_RF_COMPLETE;
+            return;
+          }
+        }
+      }
+      int next = _stepAngle + AUTOCAL_RF_STEP_DEG;
+      if (next > AUTOCAL_RF_MAX_SAFE_ANGLE) {
+        if (_rfFoundMin && _rfMaxAngle < 0) _rfMaxAngle = AUTOCAL_RF_MAX_SAFE_ANGLE;
+        safeHardware();
+        _state = ACAL_RF_COMPLETE;
+        return;
+      }
+      beginAnglePosition(next, now);
+      break;
+    }
+
     default:
       break;
   }
@@ -603,88 +663,6 @@ void AutoCalibrator::advanceNote(unsigned long now) {
   } else {
     _phase = PH_PREPARE;
     _stateTimer = now;
-  }
-}
-
-// --------------------------------------------------------------- range finder --
-
-void AutoCalibrator::updateRangeFinder(unsigned long now) {
-  switch (_rfStep) {
-    case RF_PREPARE: {
-      int midIdx = cfg.numNotes / 2;
-      _currentNote = midIdx;
-      _expectedMidi = cfg.notes[midIdx].midiNote;
-      _fingers.setFingerPatternForNote(_expectedMidi);
-      _currentAngle = 0;
-      _airflow.testAirflowAngle(0);
-      _airflow.testSolenoid(true);
-      _rfFoundMin = false;
-      _rfMinAngle = -1;
-      _rfMaxAngle = -1;
-      _rfSilenceCount = 0;
-      _rfStep = RF_SETTLE;
-      _stateTimer = now;
-      break;
-    }
-
-    case RF_SETTLE:
-      if (now - _stateTimer >= AUTOCAL_SETTLE_MS) {
-        _rfStep = RF_SWEEP;
-        _stateTimer = now;
-      }
-      break;
-
-    case RF_SWEEP: {
-      if (now - _stateTimer < AUTOCAL_RF_STEP_MS) return;
-      _stateTimer = now;
-      _currentAngle++;
-
-      if (_currentAngle > 180) {
-        if (_rfFoundMin && _rfMaxAngle < 0) _rfMaxAngle = 180;
-        safeHardware();
-        _state = ACAL_RF_COMPLETE;
-        if (DEBUG) {
-          Serial.print("DEBUG: RangeFinder - Complete min=");
-          Serial.print(_rfMinAngle);
-          Serial.print(" max=");
-          Serial.println(_rfMaxAngle);
-        }
-        return;
-      }
-
-      _airflow.testAirflowAngle((uint16_t)_currentAngle);
-
-      // Accept only the exact expected note with a trustworthy pitch.
-      bool ok = _audio.isPitchValid() &&
-                _audio.getPitchMidi() == (int)_expectedMidi &&
-                _audio.getRMS() > MIC_RMS_ABSOLUTE_MIN;
-
-      if (!_rfFoundMin) {
-        if (ok) {
-          _rfFoundMin = true;
-          _rfMinAngle = _currentAngle - AUTOCAL_RF_MARGIN_DEG;
-          if (_rfMinAngle < 0) _rfMinAngle = 0;
-          _rfSilenceCount = 0;
-        }
-      } else {
-        if (!ok) {
-          _rfSilenceCount++;
-          if (_rfSilenceCount >= AUTOCAL_SILENCE_COUNT) {
-            _rfMaxAngle = _currentAngle - AUTOCAL_SILENCE_COUNT + AUTOCAL_RF_MARGIN_DEG;
-            if (_rfMaxAngle > 180) _rfMaxAngle = 180;
-            safeHardware();
-            _state = ACAL_RF_COMPLETE;
-            if (DEBUG) {
-              Serial.print("DEBUG: RangeFinder - max at ");
-              Serial.println(_rfMaxAngle);
-            }
-          }
-        } else {
-          _rfSilenceCount = 0;
-        }
-      }
-      break;
-    }
   }
 }
 
