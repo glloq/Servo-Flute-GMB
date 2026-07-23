@@ -314,6 +314,19 @@ def test_post_body_limits_reset_and_avoid_malloc_fragments():
     assert 'void WebConfigurator::handleApiWifiConnect' in src
 
 
+def test_manual_test_session_server_side():
+    # #4: manual actuator tests are bounded server-side (owner + timeout), and a
+    # disconnect only safes the hardware for the test owner (not any WS client).
+    wc = read('Servo_flute_ESP32/WebConfigurator.cpp')
+    st = read('Servo_flute_ESP32/settings.h')
+    assert 'TEST_SESSION_MAX_MS' in st and 'TEST_SESSION_MAX_MS' in wc
+    assert 'beginTestSession' in wc and 'endTestSession' in wc
+    assert 'isManualTestCommand' in wc
+    assert 'client->id() == _testOwnerClientId' in wc
+    # the old unconditional allSoundOff() on any disconnect is gone.
+    assert 'if (_testActive && client->id() == _testOwnerClientId)' in wc
+
+
 def test_diagnostics_status_vocabulary_and_passive_active_split():
     src = read('Servo_flute_ESP32/WebConfigurator.cpp')
     api = read('docs/API_WEB.md')

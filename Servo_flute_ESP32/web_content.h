@@ -3046,6 +3046,9 @@ function handleWs(d){
     /* the server auto-cancelled a pending range-finder result after the review timeout */
     $('rfProgress').style.display='none';$('rfResult').style.display='none';$('btnRfStart').style.display='';
     showToast('Resultat range finder expire (non applique)','error');addLog('rf_expired')
+  }else if(d.t==='test_expired'){
+    /* server-side manual-test timeout returned the actuators to a safe state */
+    showToast('Test manuel expire: actionneurs remis en securite','error');addLog('test_expired')
   }
 }
 function updateCC(n,v){if(v===undefined)return;const p=(v/MIDI_CC_MAX*100).toFixed(0);

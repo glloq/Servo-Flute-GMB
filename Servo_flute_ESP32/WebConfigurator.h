@@ -117,6 +117,15 @@ private:
   // _tempObject (see WebReqBody in the .cpp) so concurrent requests never share a
   // buffer; there is no shared body member.
 
+  // Manual actuator test session (owner + server-side timeout). A manual test
+  // (valve/pump/fan/servo) is owned by the WS client that issued it and is bounded
+  // by TEST_SESSION_MAX_MS; only the owner's disconnect returns hardware to safe.
+  uint32_t _testOwnerClientId = 0;
+  unsigned long _testStartTime = 0;
+  bool _testActive = false;
+  void beginTestSession(uint32_t clientId);   // start/refresh the manual-test window
+  void endTestSession(bool safeHardware);     // stop it (optionally safing hardware)
+
   // Fichier temporaire pour upload MIDI
   File _uploadFile;
   size_t _uploadSize;

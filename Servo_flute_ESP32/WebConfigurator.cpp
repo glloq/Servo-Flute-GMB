@@ -57,6 +57,17 @@ static void takeRequestBody(AsyncWebServerRequest* request, String& outBody, boo
   else { outBody = String(); outTooLarge = false; }
 }
 
+// WS commands that drive an actuator open-endedly (until the user stops them) and
+// therefore start/refresh a bounded manual-test session.
+static bool isManualTestCommand(const char* type) {
+  static const char* kTests[] = {
+    "test_finger", "test_air", "test_angle", "angle_live", "test_sol",
+    "test_note", "air_live", "pump_target", "fan_target"
+  };
+  for (const char* t : kTests) if (strcmp(type, t) == 0) return true;
+  return false;
+}
+
 WebConfigurator::WebConfigurator(uint16_t port)
   : _server(port), _ws("/ws"),
     _instrument(nullptr), _player(nullptr), _wirelessManager(nullptr),
@@ -122,6 +133,14 @@ void WebConfigurator::begin(InstrumentManager* instrument, MidiFilePlayer* playe
 
 void WebConfigurator::update() {
   unsigned long now = millis();
+
+  // Server-side safety net for manual actuator tests: if the owning client stops
+  // refreshing the session (tab suspended, browser crash, Wi-Fi lost, stop lost),
+  // return the actuators to a safe state regardless of any browser-side timeout.
+  if (_testActive && (now - _testStartTime) >= TEST_SESSION_MAX_MS) {
+    endTestSession(true);
+    _ws.textAll("{\"t\":\"test_expired\"}");
+  }
 
   // Nettoyage periodique des clients WS deconnectes
   if (now - _lastWsCleanup >= WS_CLEANUP_INTERVAL_MS) {
@@ -313,6 +332,18 @@ void WebConfigurator::update() {
 
 void WebConfigurator::setWirelessManager(WirelessManager* wm) {
   _wirelessManager = wm;
+}
+
+void WebConfigurator::beginTestSession(uint32_t clientId) {
+  _testOwnerClientId = clientId;
+  _testStartTime = millis();
+  _testActive = true;
+}
+
+void WebConfigurator::endTestSession(bool safeHardware) {
+  if (safeHardware && _instrument) _instrument->allSoundOff();
+  _testActive = false;
+  _testOwnerClientId = 0;
 }
 
 #if MIC_ENABLED
@@ -1449,27 +1480,34 @@ void WebConfigurator::onWsEvent(AsyncWebSocket* server, AsyncWebSocketClient* cl
       }
       break;
 
-    case WS_EVT_DISCONNECT:
+    case WS_EVT_DISCONNECT: {
+      bool handled = false;
 #if MIC_ENABLED
       if (isCalibrationActive()) {
         // Only the owner's disconnect stops the calibration and safes the
         // hardware. A non-owner leaving must NOT disrupt the running session
         // (an allSoundOff would fight the calibrator), so we do nothing.
+        handled = true;
         if (client->id() == _autoCalOwnerClientId) {
           cancelActiveActuatorSession();
           if (_instrument) { _instrument->allSoundOff(); }
         }
-      } else {
-        if (_instrument) { _instrument->allSoundOff(); }
       }
-#else
-      if (_instrument) { _instrument->allSoundOff(); }
 #endif
+      if (!handled) {
+        // Outside calibration, only the OWNER of an active manual test triggers a
+        // safe state on disconnect. A status-only client (or the client that
+        // merely started MIDI playback) leaving must not stop the instrument.
+        if (_testActive && client->id() == _testOwnerClientId) {
+          endTestSession(true);
+        }
+      }
       if (DEBUG) {
         Serial.print("DEBUG: WS client disconnected #");
         Serial.println(client->id());
       }
       break;
+    }
 
     case WS_EVT_DATA: {
       AwsFrameInfo* info = (AwsFrameInfo*)arg;
@@ -1505,6 +1543,10 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
   // While a calibration owns the actuators, refuse concurrent actuator commands.
   if (actuatorCommandBlockedDuringCalibration(client, type)) return;
 #endif
+
+  // A manual actuator test starts/refreshes a bounded, owner-tracked session so the
+  // server (not just the browser) returns the hardware to safe on loss of contact.
+  if (isManualTestCommand(type)) beginTestSession(client->id());
 
   if (strcmp(type, "non") == 0) {
     if (!hasInt("n")) return;
@@ -1550,6 +1592,7 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
     // Panic must always abort a running calibration and safe the hardware first.
     cancelActiveActuatorSession();
 #endif
+    endTestSession(false);   // hardware is safed just below by allSoundOff()
     _instrument->allSoundOff();
   } else if (strcmp(type, "test_finger") == 0) {
     int fi = doc["i"] | -1;
@@ -1573,10 +1616,12 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
     _instrument->getPressureCtrl().setTargetPercent(getPercent(doc, "v", 0));
   } else if (strcmp(type, "pump_stop") == 0) {
     _instrument->getPressureCtrl().stop();
+    endTestSession(false);
   } else if (strcmp(type, "fan_target") == 0) {
     _instrument->getFanCtrl().setSpeed(getPercent(doc, "v", 0));
   } else if (strcmp(type, "fan_stop") == 0) {
     _instrument->getFanCtrl().stop();
+    endTestSession(false);
 #if MIC_ENABLED
   } else if (strcmp(type, "mic_mon") == 0) {
     // (Blocked above while a calibration is active.)

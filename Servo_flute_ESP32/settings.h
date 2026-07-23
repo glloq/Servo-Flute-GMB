@@ -157,6 +157,12 @@ Set MIC_ENABLED to false if no mic is connected.
 // neither happens within this window the server auto-cancels the pending result so
 // nothing stays stuck indefinitely.
 #define AUTOCAL_RF_REVIEW_TIMEOUT_MS  300000
+// A manual actuator test (valve / pump / fan / airflow / angle servo) started from
+// the web UI holds actuators until stopped. The browser's own setTimeout does not
+// protect the hardware if the tab is suspended, the browser crashes, Wi-Fi drops or
+// the stop command is lost. The server therefore bounds a manual-test session to
+// this window and returns the actuators to a safe state when it elapses.
+#define TEST_SESSION_MAX_MS 30000
 
 // --- Broadcast / legacy timing (still used by range finder + WS throttling) ---
 #define AUTOCAL_SETTLE_MS       300     // Range finder: wait after positioning servos
