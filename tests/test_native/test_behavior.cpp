@@ -17,7 +17,9 @@
 #include "PitchMath.h"
 #include "AutoCalMath.h"
 #include "AutoCalibrator.h"
+#include "PitchDetector.h"
 #include <cmath>
+#include <vector>
 extern std::map<uint8_t,int> __analog_writes, __digital_writes, __analog_reads, __digital_reads;
 
 // --- Simulated audio source for AutoCalibrator tests (no real I2S hardware) ---
@@ -360,4 +362,81 @@ static void airflow_nominal_drives_angle(){
   assert(n1==n2);   // same nominal-held angle for any velocity when vr=0
 }
 
-int main(){ pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); airflow_nominal_drives_angle(); autocal_frozen_source_fails(); autocal_14_notes_no_timeout(); autocal_plus70_cents_rejected(); autocal_storage_failure_restores(); std::cout << "behavior tests passed\n"; }
+// --- §14: YIN pitch core on synthetic PCM -----------------------------------
+static void fillTone(float* buf, int n, float f0, float amp, float dc,
+                     float noise, bool twoHarmonics, bool clip){
+  unsigned int seed = 12345u;
+  for (int i = 0; i < n; i++){
+    float t = (float)i / (float)MIC_SAMPLE_RATE;
+    float v = amp * sinf(2.0f*(float)M_PI*f0*t);
+    if (twoHarmonics) v += 0.35f*amp*sinf(2.0f*(float)M_PI*2.0f*f0*t);
+    v += dc;
+    if (noise > 0.0f){ seed = seed*1103515245u + 12345u; float r = ((seed>>16)&0x7fff)/32767.0f - 0.5f; v += noise*2.0f*r; }
+    if (clip){ if (v > 0.5f) v = 0.5f; if (v < -0.5f) v = -0.5f; }
+    buf[i] = v;
+  }
+}
+static void audio_yin_pcm_core(){
+  PitchDetector det;
+  std::vector<float> buf(MIC_BUFFER_SIZE);
+  // Pure sine, musical range: exact MIDI note, no octave error.
+  float pure[] = {220.0f, 262.0f, 440.0f, 587.33f, 1046.5f};
+  for (float f0 : pure){
+    fillTone(buf.data(), MIC_BUFFER_SIZE, f0, 0.4f, 0.0f, 0.0f, false, false);
+    PitchResult r = det.detect(buf.data(), MIC_BUFFER_SIZE);
+    assert(r.valid);
+    assert(PitchMath::hzToMidi(r.hz) == PitchMath::hzToMidi(f0));
+    assert(r.confidence > 0.7f);
+  }
+  // Near the upper limit (200-4000 Hz range) the fixed 32 kHz tau resolution
+  // limits precision: require detection within one semitone, no octave error.
+  for (float f0 : {2500.0f, 3000.0f, 3800.0f}){
+    fillTone(buf.data(), MIC_BUFFER_SIZE, f0, 0.4f, 0.0f, 0.0f, false, false);
+    PitchResult r = det.detect(buf.data(), MIC_BUFFER_SIZE);
+    assert(r.valid);
+    int d = PitchMath::hzToMidi(r.hz) - PitchMath::hzToMidi(f0);
+    assert(d >= -1 && d <= 1);
+  }
+  // Sine + DC offset: DC removal must keep detection correct.
+  fillTone(buf.data(), MIC_BUFFER_SIZE, 440.0f, 0.4f, 0.3f, 0.0f, false, false);
+  { PitchResult r = det.detect(buf.data(), MIC_BUFFER_SIZE); assert(r.valid && PitchMath::hzToMidi(r.hz)==69); }
+  // Sine + moderate noise: still detects the fundamental.
+  fillTone(buf.data(), MIC_BUFFER_SIZE, 440.0f, 0.4f, 0.0f, 0.05f, false, false);
+  { PitchResult r = det.detect(buf.data(), MIC_BUFFER_SIZE); assert(r.valid && PitchMath::hzToMidi(r.hz)==69); }
+  // Fundamental + strong harmonic: must return the fundamental (no octave-down).
+  fillTone(buf.data(), MIC_BUFFER_SIZE, 523.25f, 0.4f, 0.0f, 0.0f, true, false);
+  { PitchResult r = det.detect(buf.data(), MIC_BUFFER_SIZE); assert(r.valid && PitchMath::hzToMidi(r.hz)==72); }
+  // Clipped/saturated sine: harmonics rich but fundamental still dominant.
+  fillTone(buf.data(), MIC_BUFFER_SIZE, 440.0f, 0.9f, 0.0f, 0.0f, false, true);
+  { PitchResult r = det.detect(buf.data(), MIC_BUFFER_SIZE); assert(PitchMath::hzToMidi(r.hz)==69); }
+  // Broadband noise: no reliable pitch (rejected).
+  fillTone(buf.data(), MIC_BUFFER_SIZE, 0.0f, 0.0f, 0.0f, 0.4f, false, false);
+  { PitchResult r = det.detect(buf.data(), MIC_BUFFER_SIZE); assert(!r.valid); }
+  // Silence: no pitch.
+  for (int i=0;i<MIC_BUFFER_SIZE;i++) buf[i]=0.0f;
+  { PitchResult r = det.detect(buf.data(), MIC_BUFFER_SIZE); assert(!r.valid && r.hz==0.0f); }
+  // RMS: silence ~0, tone > 0.
+  for (int i=0;i<MIC_BUFFER_SIZE;i++) buf[i]=0.0f;
+  assert(PitchDetector::rms(buf.data(), MIC_BUFFER_SIZE) < 1e-4f);
+  fillTone(buf.data(), MIC_BUFFER_SIZE, 440.0f, 0.4f, 0.2f, 0.0f, false, false);
+  assert(PitchDetector::rms(buf.data(), MIC_BUFFER_SIZE) > 0.2f);   // DC-removed, ~amp/sqrt2
+}
+// --- §15: raw microphone-signal classification ------------------------------
+static void audio_mic_classification(){
+  const int N = 256;
+  std::vector<int32_t> raw(N);
+  // all-zero -> not connected
+  for (int i=0;i<N;i++) raw[i]=0;
+  assert(PitchDetector::classifyRaw(raw.data(), N) == MIC_SIG_ALL_ZERO);
+  // stuck constant non-zero -> stuck line
+  for (int i=0;i<N;i++) raw[i] = (int32_t)1000 << 8;
+  assert(PitchDetector::classifyRaw(raw.data(), N) == MIC_SIG_STUCK);
+  // permanently saturated
+  for (int i=0;i<N;i++) raw[i] = (int32_t)0x7FFFFF << 8;
+  assert(PitchDetector::classifyRaw(raw.data(), N) == MIC_SIG_SATURATED);
+  // varied signal -> ok
+  for (int i=0;i<N;i++){ int32_t v = (int32_t)(4000000.0 * sin(2.0*M_PI*i/32.0)); raw[i] = v << 8; }
+  assert(PitchDetector::classifyRaw(raw.data(), N) == MIC_SIG_OK);
+}
+
+int main(){ pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); airflow_nominal_drives_angle(); autocal_frozen_source_fails(); autocal_14_notes_no_timeout(); autocal_plus70_cents_rejected(); autocal_storage_failure_restores(); audio_yin_pcm_core(); audio_mic_classification(); std::cout << "behavior tests passed\n"; }

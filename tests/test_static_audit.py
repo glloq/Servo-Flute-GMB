@@ -113,6 +113,21 @@ def test_autocal_frame_freshness_contract():
     assert 'ACAL_FAIL_AUDIO_STALE' in acc
 
 
+def test_audio_dual_i2s_and_pitch_extraction():
+    # §1/§14/§15: dual I2S (IDF 4.x legacy + 5.x std), extracted YIN core, mic status.
+    aa = read('Servo_flute_ESP32/AudioAnalyzer.cpp')
+    assert 'ESP_IDF_VERSION_VAL(5, 0, 0)' in read('Servo_flute_ESP32/AudioAnalyzer.h')
+    assert 'i2s_driver_install' in aa       # legacy IDF 4.x path
+    assert 'i2s_channel_read' in aa         # std IDF 5.x path
+    assert 'resetMicrophone' in aa
+    assert 'classifyRaw' in aa
+    from pathlib import Path
+    assert Path(ROOT / 'Servo_flute_ESP32/PitchDetector.cpp').exists()
+    assert 'lib_ignore = native_stubs' in read('platformio.ini')
+    web = read('Servo_flute_ESP32/WebConfigurator.cpp')
+    assert 'mic_status' in web and 'mic_reset' in web
+
+
 def test_airflow_uses_nominal_two_segment():
     # §2: playback pivots on the calibrated nominal.
     air = read('Servo_flute_ESP32/AirflowController.cpp')

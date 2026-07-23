@@ -246,7 +246,7 @@ bool WebConfigurator::actuatorCommandBlockedDuringCalibration(AsyncWebSocketClie
   // Commands that would move actuators while the calibration owns them.
   static const char* kBlocked[] = {
     "non", "nof", "cc", "air_live", "test_finger", "test_air", "test_angle",
-    "angle_live", "test_sol", "test_note", "pump_target", "fan_target", "play", "mic_mon"
+    "angle_live", "test_sol", "test_note", "pump_target", "fan_target", "play", "mic_mon", "mic_reset"
   };
   for (const char* b : kBlocked) {
     if (strcmp(type, b) == 0) {
@@ -608,8 +608,10 @@ void WebConfigurator::handleApiConfig(AsyncWebServerRequest* request) {
 
 #if MIC_ENABLED
   json += ",\"mic\":" + String((_audio && _audio->isMicDetected()) ? "true" : "false");
+  json += ",\"mic_status\":\"" + String(_audio ? _audio->getMicStatusString() : "not_init") + "\"";
 #else
   json += ",\"mic\":false";
+  json += ",\"mic_status\":\"disabled\"";
 #endif
 
   // First boot flag
@@ -1444,6 +1446,13 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
     // (Blocked above while a calibration is active.)
     _micMonitorEnabled = ((doc["on"] | 0) != 0);
     if (_audio) _audio->setActive(_micMonitorEnabled || (_autoCal && _autoCal->isRunning()));
+  } else if (strcmp(type, "mic_reset") == 0) {
+    // Re-probe the microphone without rebooting (blocked during calibration).
+    if (_audio) {
+      bool ok = _audio->resetMicrophone();
+      client->text(String("{\"t\":\"mic_reset\",\"ok\":") + (ok ? "true" : "false") +
+                   ",\"status\":\"" + _audio->getMicStatusString() + "\"}");
+    }
   } else if (strcmp(type, "auto_cal") == 0) {
     const char* mode = doc["mode"] | "";
     bool isStart = (strcmp(mode, "air") == 0 || strcmp(mode, "range") == 0);
