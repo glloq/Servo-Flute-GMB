@@ -233,4 +233,33 @@ static void autocal_mic_absent(){
   assert(!ac.isValveOpen());
 }
 
-int main(){ pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); std::cout << "behavior tests passed\n"; }
+// §2. The calibrated nominal airflow really drives the produced angle.
+static void airflow_nominal_drives_angle(){
+  resetCfg();
+  cfg.numNotes=1; cfg.notes[0].midiNote=60;
+  cfg.notes[0].airflowMinPercent=0; cfg.notes[0].airflowMaxPercent=100;
+  cfg.servoAirflowMin=60; cfg.servoAirflowMax=120; cfg.servoAirflowOff=20;
+  cfg.airVelocityResponse=100; cfg.ccVolumeDefault=127; cfg.ccExpressionDefault=127;
+  cfg.cc2Enabled=false; cfg.ccModulationDefault=0; cfg.airAttackMode=0;
+  uint16_t lastOff=0; bool got=false;
+  AirflowController ac([&](uint8_t ch,uint16_t,uint16_t off){ if(ch==cfg.airflowPcaChannel){lastOff=off;got=true;} });
+  ac.begin();
+  // Same note, same (pivot) velocity 64 -> should land on the nominal angle.
+  cfg.notes[0].airflowNominalPercent=20; got=false; ac.setAirflowForNote(60,64);
+  assert(got); uint16_t lowNom=lastOff;
+  cfg.notes[0].airflowNominalPercent=80; got=false; ac.setAirflowForNote(60,64);
+  assert(got); uint16_t highNom=lastOff;
+  assert(highNom>lowNom);   // higher nominal -> larger airflow angle -> larger PWM
+  // Endpoints: velocity 127 reaches max; velocity 1 reaches ~min.
+  cfg.notes[0].airflowNominalPercent=40;
+  ac.setAirflowForNote(60,127); uint16_t hi=lastOff;
+  ac.setAirflowForNote(60,1);   uint16_t lo=lastOff;
+  assert(hi>lo);
+  // velocity response 0 -> velocity ignored, hold the nominal regardless of velocity.
+  cfg.airVelocityResponse=0;
+  cfg.notes[0].airflowNominalPercent=30; ac.setAirflowForNote(60,10); uint16_t n1=lastOff;
+  ac.setAirflowForNote(60,120); uint16_t n2=lastOff;
+  assert(n1==n2);   // same nominal-held angle for any velocity when vr=0
+}
+
+int main(){ pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); airflow_nominal_drives_angle(); std::cout << "behavior tests passed\n"; }

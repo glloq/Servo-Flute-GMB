@@ -170,6 +170,10 @@ Set MIC_ENABLED to false if no mic is connected.
 #define SERVO_AIRFLOW_MIN 60      // Angle minimum absolu
 #define SERVO_AIRFLOW_MAX 100     // Angle maximum absolu
 
+// Pivot value (velocity / CC2, range 1-127) that maps to the calibrated nominal
+// airflow in the two-segment playing curve. 64 = musical mid-dynamic.
+#define AIRFLOW_SOURCE_PIVOT 64
+
 /*******************************************************************************
 ---------------------------   AIR ANGLE SERVO (trav)   ----------------------
 Servo d'angle du jet d'air — uniquement pour flute traversiere (embouchure "trav").
