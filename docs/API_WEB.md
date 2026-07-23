@@ -145,3 +145,33 @@ REST and WebSocket payloads that include user-provided strings are serialized wi
 `GET /api/diagnostics` is passive and must not move hardware. Active diagnostics must be requested explicitly, bounded by firmware timeouts, cancellable, and associated with the owning client. Variable strings in JSON responses must be emitted through a JSON serializer to preserve escaping for SSIDs, filenames, device names and error text.
 
 Configuration reset and factory reset responses must report `applied:false` and `restart_required:true` after stopping active notes and manual tests; they must not claim the defaults are already active until reboot.
+
+## Access model and known security limitation
+
+**The web API and WebSocket are unauthenticated.** There is no session token, HTTP
+authentication, or `Origin`/host check on the mutable routes or on `/ws`. In
+addition, the SoftAP is open when `AP_PASSWORD` is empty. Consequently, **anyone who
+can reach the device on the network** can, without credentials:
+
+- move the finger / airflow / angle servos and open the valve;
+- start the pump(s) and the fan, and run manual actuator tests;
+- change the configuration and Wi-Fi settings, and trigger reset / factory reset;
+- restart the ESP32;
+- upload, load and delete MIDI files.
+
+This is a deliberate, documented limitation of the current firmware, which assumes a
+**trusted, isolated network** (a private SoftAP or a home LAN you control). Until an
+authentication pass is done, operate the instrument accordingly:
+
+- set a non-empty `AP_PASSWORD` (WPA2) so the SoftAP is not open;
+- do **not** expose the device to an untrusted LAN, a guest network, or the Internet
+  (no port-forwarding / reverse proxy without adding auth in front);
+- treat physical safety as network-gated: on an open network, an attacker could drive
+  the actuators. The firmware-side safeguards (calibration ownership, manual-test
+  timeout, config lock, safe-state on disconnect) bound *misuse and faults*, they do
+  **not** provide *authentication*.
+
+Planned hardening for a future security pass (not yet implemented): a settable admin
+token required by the mutable REST routes and the WebSocket, an `Origin` check, and a
+clear split between the always-public read-only status and the authenticated hardware
+commands.
