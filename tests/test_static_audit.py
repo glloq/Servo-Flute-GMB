@@ -80,6 +80,46 @@ def test_autocal_websocket_serialization_fields():
         assert tok in ui, tok
 
 
+def test_autocal_actuator_ownership_and_locks():
+    # §8/§9/§10/§12: single-owner calibration, concurrent-command blocking,
+    # config lock and monitor restore.
+    web = read('Servo_flute_ESP32/WebConfigurator.cpp')
+    hdr = read('Servo_flute_ESP32/WebConfigurator.h')
+    assert '_autoCalOwnerClientId' in hdr and '_autoCalOwnerClientId' in web
+    assert '_micMonitorBeforeCalibration' in hdr and '_micMonitorBeforeCalibration' in web
+    assert 'cancelActiveActuatorSession' in web
+    assert 'actuatorCommandBlockedDuringCalibration' in web
+    assert 'calibration_busy' in web            # second start refused
+    assert 'not_calibration_owner' in web        # non-owner stop/apply refused
+    assert 'calibration_active' in web           # blocked commands + 409 config lock
+    assert '409' in web                          # config POST lock status
+    # Panic cancels the calibration before all-sound-off.
+    panic = web.split('strcmp(type, "panic")', 1)[1].split('else if', 1)[0]
+    assert 'cancelActiveActuatorSession' in panic
+    # Owner-only disconnect stops the session.
+    disc = web.split('WS_EVT_DISCONNECT', 1)[1].split('WS_EVT_DATA', 1)[0]
+    assert '_autoCalOwnerClientId' in disc
+
+
+def test_autocal_frame_freshness_contract():
+    # §3: IAudioSource exposes frame freshness; AudioAnalyzer advances it.
+    iface = read('Servo_flute_ESP32/IAudioSource.h')
+    assert 'getFrameSequence' in iface and 'getFrameTimestamp' in iface
+    aa = read('Servo_flute_ESP32/AudioAnalyzer.cpp')
+    assert '_frameSeq++' in aa
+    assert 'MIC_FRAME_STALE_MS' in aa
+    acc = read('Servo_flute_ESP32/AutoCalibrator.cpp')
+    assert 'getFrameSequence()' in acc
+    assert 'ACAL_FAIL_AUDIO_STALE' in acc
+
+
+def test_airflow_uses_nominal_two_segment():
+    # §2: playback pivots on the calibrated nominal.
+    air = read('Servo_flute_ESP32/AirflowController.cpp')
+    assert 'AIRFLOW_SOURCE_PIVOT' in air
+    assert 'nominalAngle' in air
+
+
 def test_autocal_global_timeout_and_injection_layer():
     # Firmware-side global timeout + a hardware-free audio injection interface.
     st = read('Servo_flute_ESP32/settings.h')

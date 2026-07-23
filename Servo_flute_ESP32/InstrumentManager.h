@@ -2,6 +2,7 @@
 #define INSTRUMENT_MANAGER_H
 
 #include <Arduino.h>
+#include <Wire.h>   // must precede Adafruit_PWMServoDriver.h (declares TwoWire)
 #include <Adafruit_PWMServoDriver.h>
 #include "EventQueue.h"
 #include "FingerController.h"

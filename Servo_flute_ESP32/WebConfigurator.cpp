@@ -13,6 +13,7 @@ WebConfigurator::WebConfigurator(uint16_t port)
     _uploadSize(0), _uploadError(false)
 #if MIC_ENABLED
     , _audio(nullptr), _autoCal(nullptr), _micMonitorEnabled(false), _lastAudioBroadcast(0), _lastAcalBroadcast(0)
+    , _autoCalOwnerClientId(0), _micMonitorBeforeCalibration(false)
 #endif
 {
 }
@@ -153,10 +154,12 @@ void WebConfigurator::update() {
       }
     }
 
-    // Global-timeout safety abort: notify the UI and clear the audio monitor.
+    // Global-timeout safety abort: notify the UI and restore the monitor state.
     if (_autoCal && _autoCal->takeTimeoutEvent()) {
       _ws.textAll("{\"t\":\"acal_error\",\"msg\":\"Timeout global de calibration\"}");
+      _micMonitorEnabled = _micMonitorBeforeCalibration;
       _audio->setActive(_micMonitorEnabled);
+      _autoCalOwnerClientId = 0;
     }
 
     // Check range finder completion
@@ -170,6 +173,7 @@ void WebConfigurator::update() {
       dj += "}";
       _ws.textAll(dj);
       _autoCal->stop();
+      // Keep the mic active for a range-finder review; monitor stays as-is.
     }
     // Check airflow calibration completion
     if (_autoCal && _autoCal->isComplete()) {
@@ -209,7 +213,10 @@ void WebConfigurator::update() {
       dj += "]}";
       _ws.textAll(dj);
       _autoCal->stop();
+      // Restore the user's pre-calibration monitor preference.
+      _micMonitorEnabled = _micMonitorBeforeCalibration;
       if (_audio) _audio->setActive(_micMonitorEnabled);
+      _autoCalOwnerClientId = 0;
     }
   }
 #endif
@@ -218,6 +225,38 @@ void WebConfigurator::update() {
 void WebConfigurator::setWirelessManager(WirelessManager* wm) {
   _wirelessManager = wm;
 }
+
+#if MIC_ENABLED
+bool WebConfigurator::isCalibrationActive() const {
+  return _autoCal && _autoCal->isRunning();
+}
+
+void WebConfigurator::cancelActiveActuatorSession() {
+  if (_autoCal && _autoCal->isRunning()) {
+    _autoCal->stop();
+    // Restore the user's pre-calibration monitor choice (never leave the mic on).
+    _micMonitorEnabled = _micMonitorBeforeCalibration;
+    if (_audio) _audio->setActive(_micMonitorEnabled);
+    _autoCalOwnerClientId = 0;
+  }
+}
+
+bool WebConfigurator::actuatorCommandBlockedDuringCalibration(AsyncWebSocketClient* client, const char* type) {
+  if (!isCalibrationActive()) return false;
+  // Commands that would move actuators while the calibration owns them.
+  static const char* kBlocked[] = {
+    "non", "nof", "cc", "air_live", "test_finger", "test_air", "test_angle",
+    "angle_live", "test_sol", "test_note", "pump_target", "fan_target", "play", "mic_mon"
+  };
+  for (const char* b : kBlocked) {
+    if (strcmp(type, b) == 0) {
+      client->text("{\"t\":\"error\",\"msg\":\"calibration_active\"}");
+      return true;
+    }
+  }
+  return false;
+}
+#endif
 
 void WebConfigurator::setupRoutes() {
   // Page principale
@@ -614,6 +653,15 @@ void WebConfigurator::handleApiConfig(AsyncWebServerRequest* request) {
 }
 
 void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
+#if MIC_ENABLED
+  // Configuration changes are locked while a calibration owns the actuators, so
+  // notes/fingering/air-system/PCA channels cannot shift mid-calibration.
+  if (isCalibrationActive()) {
+    request->send(409, "application/json", "{\"ok\":false,\"error\":\"calibration_active\"}");
+    _configBody = "";
+    return;
+  }
+#endif
   if (_configBody.length() == 0) {
     request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Empty body\"}");
     return;
@@ -1277,14 +1325,20 @@ void WebConfigurator::onWsEvent(AsyncWebSocket* server, AsyncWebSocketClient* cl
 
     case WS_EVT_DISCONNECT:
 #if MIC_ENABLED
-      // A running microphone calibration is an active actuator test: stop it and
-      // return the hardware to a safe state when the controlling client leaves.
-      if (_autoCal && _autoCal->isRunning()) {
-        _autoCal->stop();
-        if (_audio) _audio->setActive(_micMonitorEnabled);
+      if (isCalibrationActive()) {
+        // Only the owner's disconnect stops the calibration and safes the
+        // hardware. A non-owner leaving must NOT disrupt the running session
+        // (an allSoundOff would fight the calibrator), so we do nothing.
+        if (client->id() == _autoCalOwnerClientId) {
+          cancelActiveActuatorSession();
+          if (_instrument) { _instrument->allSoundOff(); }
+        }
+      } else {
+        if (_instrument) { _instrument->allSoundOff(); }
       }
-#endif
+#else
       if (_instrument) { _instrument->allSoundOff(); }
+#endif
       if (DEBUG) {
         Serial.print("DEBUG: WS client disconnected #");
         Serial.println(client->id());
@@ -1321,6 +1375,11 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
   const char* type = doc["t"] | "";
   auto hasInt = [&doc](const char* key) { return isJsonInteger(doc[key]); };
 
+#if MIC_ENABLED
+  // While a calibration owns the actuators, refuse concurrent actuator commands.
+  if (actuatorCommandBlockedDuringCalibration(client, type)) return;
+#endif
+
   if (strcmp(type, "non") == 0) {
     if (!hasInt("n")) return;
     uint8_t note = getMidi7Bit(doc, "n", 0);
@@ -1349,6 +1408,10 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
       _player->setChannelFilter(ch > 15 ? 255 : (uint8_t)ch);
     }
   } else if (strcmp(type, "panic") == 0) {
+#if MIC_ENABLED
+    // Panic must always abort a running calibration and safe the hardware first.
+    cancelActiveActuatorSession();
+#endif
     _instrument->allSoundOff();
   } else if (strcmp(type, "test_finger") == 0) {
     int fi = doc["i"] | -1;
@@ -1378,28 +1441,50 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
     _instrument->getFanCtrl().stop();
 #if MIC_ENABLED
   } else if (strcmp(type, "mic_mon") == 0) {
+    // (Blocked above while a calibration is active.)
     _micMonitorEnabled = ((doc["on"] | 0) != 0);
     if (_audio) _audio->setActive(_micMonitorEnabled || (_autoCal && _autoCal->isRunning()));
   } else if (strcmp(type, "auto_cal") == 0) {
     const char* mode = doc["mode"] | "";
-    if (strcmp(mode, "air") == 0 && _autoCal && _audio && _audio->isMicDetected()) {
-      _audio->setActive(true); _micMonitorEnabled = true; _autoCal->start(ACAL_MODE_AIRFLOW);
-    } else if (strcmp(mode, "range") == 0 && _autoCal && _audio && _audio->isMicDetected()) {
-      _audio->setActive(true); _micMonitorEnabled = true; _autoCal->start(ACAL_MODE_RANGE_FIND);
+    bool isStart = (strcmp(mode, "air") == 0 || strcmp(mode, "range") == 0);
+    if (isStart) {
+      if (!_autoCal || !_audio || !_audio->isMicDetected()) {
+        client->text("{\"t\":\"acal_error\",\"msg\":\"no_microphone\"}");
+      } else if (_autoCal->isRunning()) {
+        // A second start attempt is refused explicitly.
+        client->text("{\"t\":\"acal_error\",\"msg\":\"calibration_busy\"}");
+      } else {
+        // Take ownership and snapshot the user's monitor preference.
+        _autoCalOwnerClientId = client->id();
+        _micMonitorBeforeCalibration = _micMonitorEnabled;
+        _audio->setActive(true);
+        _autoCal->start(strcmp(mode, "air") == 0 ? ACAL_MODE_AIRFLOW : ACAL_MODE_RANGE_FIND);
+      }
     } else if (strcmp(mode, "stop") == 0) {
-      if (_autoCal) _autoCal->stop();
-      if (_audio) _audio->setActive(_micMonitorEnabled);
+      // Only the owner may stop.
+      if (_autoCal && _autoCal->isRunning() && client->id() != _autoCalOwnerClientId) {
+        client->text("{\"t\":\"error\",\"msg\":\"not_calibration_owner\"}");
+      } else {
+        cancelActiveActuatorSession();
+      }
     } else if (strcmp(mode, "apply_range") == 0) {
       if (_autoCal && _autoCal->isRangeFinderComplete()) {
-        _autoCal->applyRangeResults();
-        String rj = "{\"t\":\"rf_applied\",\"min\":" + String(cfg.servoAirflowMin) +
-                    ",\"max\":" + String(cfg.servoAirflowMax) + "}";
-        _ws.textAll(rj);
+        if (_autoCalOwnerClientId != 0 && client->id() != _autoCalOwnerClientId) {
+          client->text("{\"t\":\"error\",\"msg\":\"not_calibration_owner\"}");
+        } else {
+          _autoCal->applyRangeResults();
+          String rj = "{\"t\":\"rf_applied\",\"min\":" + String(cfg.servoAirflowMin) +
+                      ",\"max\":" + String(cfg.servoAirflowMax) + "}";
+          _ws.textAll(rj);
+        }
       }
     }
   } else if (strcmp(type, "auto_stop") == 0) {
-    if (_autoCal) _autoCal->stop();
-    if (_audio) _audio->setActive(_micMonitorEnabled);
+    if (_autoCal && _autoCal->isRunning() && client->id() != _autoCalOwnerClientId) {
+      client->text("{\"t\":\"error\",\"msg\":\"not_calibration_owner\"}");
+    } else {
+      cancelActiveActuatorSession();
+    }
 #endif
   } else {
     client->text("{\"t\":\"error\",\"msg\":\"Unknown message type\"}");
