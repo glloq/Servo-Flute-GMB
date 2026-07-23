@@ -537,6 +537,37 @@ static void autocal_global_timeout_scales_to_max_notes(){
   cal.stop();
 }
 
+// Review #3. CC2 (breath) silence must not be force-reopened, and live CC must
+// recompute the held note: setAirflowForNote returns whether the note should sound,
+// and recomputeActiveNote() opens/closes the valve as breath crosses the threshold.
+static void airflow_cc2_silence_and_live_cc(){
+  resetCfg();
+  cfg.airMode=AIR_MODE_SOLENOID_SERVO;   // physical valve
+  cfg.cc2Enabled=true; cfg.cc2SilenceThreshold=10; cfg.cc2ResponseCurve=1.0f; cfg.cc2TimeoutMs=0;
+  cfg.numNotes=1; cfg.notes[0].midiNote=60;
+  cfg.notes[0].airflowMinPercent=10; cfg.notes[0].airflowMaxPercent=90; cfg.notes[0].airflowNominalPercent=50;
+  cfg.servoAirflowMin=30; cfg.servoAirflowMax=150; cfg.servoAirflowOff=20;
+  __test_millis=1;
+  AirflowController ac([](uint8_t,uint16_t,uint16_t){}); ac.begin();
+  // Breath below threshold at the onset: the note is held but must NOT sound, and
+  // the caller (sequencer) must not open the valve over this silence.
+  for(int i=0;i<CC2_SMOOTHING_BUFFER_SIZE;i++) ac.updateCC2Breath(2);
+  assert(!ac.setAirflowForNote(60,100));
+  assert(ac.isNoteActive() && !ac.isValveOpen());
+  // Breath rises: recompute resumes the note and opens the valve.
+  for(int i=0;i<CC2_SMOOTHING_BUFFER_SIZE;i++) ac.updateCC2Breath(110);
+  assert(ac.recomputeActiveNote());
+  assert(ac.isValveOpen());
+  // Breath drops again: recompute silences the note and closes the valve.
+  for(int i=0;i<CC2_SMOOTHING_BUFFER_SIZE;i++) ac.updateCC2Breath(1);
+  assert(!ac.recomputeActiveNote());
+  assert(!ac.isValveOpen());
+  // Note end clears the active state (live CC can no longer resurrect it).
+  ac.setAirflowToRest();
+  assert(!ac.isNoteActive());
+  assert(!ac.recomputeActiveNote());
+}
+
 // §11/§16. LittleFS save failure: results applied in RAM then restored, no false success.
 static void autocal_storage_failure_restores(){
   extern bool __config_save_result;
@@ -680,4 +711,4 @@ static void audio_mic_classification(){
   assert(PitchDetector::classifyRaw(raw.data(), N) == MIC_SIG_OK);
 }
 
-int main(){ pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); airflow_nominal_drives_angle(); autocal_frozen_source_fails(); autocal_air_supply_gate(); autocal_14_notes_no_timeout(); autocal_plus70_cents_rejected(); autocal_storage_failure_restores(); autocal_range_finder(); autocal_range_finder_stale(); autocal_range_apply_storage(); autocal_air_lost_midnote(); calair_reservoir_requires_sensor(); instrument_power_held_during_actuator_session(); instrument_ignores_midi_during_calibration(); autocal_global_timeout_scales_to_max_notes(); audio_yin_pcm_core(); audio_mic_classification(); std::cout << "behavior tests passed\n"; }
+int main(){ pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); airflow_nominal_drives_angle(); autocal_frozen_source_fails(); autocal_air_supply_gate(); autocal_14_notes_no_timeout(); autocal_plus70_cents_rejected(); autocal_storage_failure_restores(); autocal_range_finder(); autocal_range_finder_stale(); autocal_range_apply_storage(); autocal_air_lost_midnote(); calair_reservoir_requires_sensor(); instrument_power_held_during_actuator_session(); instrument_ignores_midi_during_calibration(); autocal_global_timeout_scales_to_max_notes(); airflow_cc2_silence_and_live_cc(); audio_yin_pcm_core(); audio_mic_classification(); std::cout << "behavior tests passed\n"; }

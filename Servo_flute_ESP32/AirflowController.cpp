@@ -43,7 +43,8 @@ AirflowController::AirflowController(PwmWriteFn writePwm)
     _ccModulation(cfg.ccModulationDefault),
     _ccBreath(cfg.ccBreathDefault),
     _cc2BufferIndex(0), _cc2BufferCount(0), _lastCC2Time(0), _lastVelocity(64),
-    _baseAngleWithoutVibrato(cfg.servoAirflowOff), _lastSentAirflowAngle(cfg.servoAirflowOff), _vibratoActive(false),
+    _baseAngleWithoutVibrato(cfg.servoAirflowOff), _lastSentAirflowAngle(cfg.servoAirflowOff),
+    _activeNote(0), _activeVelocity(0), _noteActive(false), _vibratoActive(false),
     _currentMinAngle(cfg.servoAirflowMin), _currentMaxAngle(cfg.servoAirflowMax),
     _attackActive(false), _attackStartTime(0), _attackStartAngle(0), _attackTargetAngle(0),
     _runtimeAttackMode(cfg.airAttackMode), _runtimeAttackOffset(cfg.airAttackOffset),
@@ -106,7 +107,21 @@ void AirflowController::setAirflowVelocity(byte velocity) {
   }
 }
 
-void AirflowController::setAirflowForNote(byte midiNote, byte velocity) {
+bool AirflowController::setAirflowForNote(byte midiNote, byte velocity) {
+  return computeAirflow(midiNote, velocity, /*isOnset=*/true);
+}
+
+bool AirflowController::recomputeActiveNote() {
+  if (!_noteActive) return false;
+  // Recompute from the live CC values without re-arming the attack, then adjust
+  // the valve only on a transition so a held note is not re-pulsed on every CC.
+  bool sound = computeAirflow(_activeNote, _activeVelocity, /*isOnset=*/false);
+  if (sound && !_solenoidOpen) openValve();
+  else if (!sound && _solenoidOpen) closeValve();
+  return sound;
+}
+
+bool AirflowController::computeAirflow(byte midiNote, byte velocity, bool isOnset) {
   const NoteConfig* note = getNoteByMidi(midiNote);
 
   uint16_t minAngle, maxAngle, nominalAngle;
@@ -114,8 +129,14 @@ void AirflowController::setAirflowForNote(byte midiNote, byte velocity) {
 
   if (velocity == 0) {
     setAirflowServoAngle(cfg.servoAirflowOff);
-    return;
+    _noteActive = false;
+    return false;
   }
+
+  // Remember the held note so live CC changes can recompute it later.
+  _activeNote = midiNote;
+  _activeVelocity = velocity;
+  _noteActive = true;
 
   const uint16_t servoSpan = (cfg.servoAirflowMax > cfg.servoAirflowMin)
                                ? (cfg.servoAirflowMax - cfg.servoAirflowMin) : 0;
@@ -182,9 +203,11 @@ void AirflowController::setAirflowForNote(byte midiNote, byte velocity) {
   }
 
   if (airflowSource == 0) {
+    // CC2 (breath) requested silence: rest the servo but leave the valve to the
+    // caller (the note stays held/active so a later CC2 rise can resume it). The
+    // caller must NOT force the valve open over this silence.
     setAirflowServoAngle(cfg.servoAirflowOff);
-    closeSolenoid();
-    return;
+    return false;
   }
 
   // 3. Airflow source -> base angle via a two-segment curve pivoting on the
@@ -226,9 +249,10 @@ void AirflowController::setAirflowForNote(byte midiNote, byte velocity) {
   _attackTargetAngle = _baseAngleWithoutVibrato;
   _vibratoActive = (_ccModulation > 0);
 
-  // 6. Mode d'attaque (accent / crescendo)
-  _attackActive = false;
-  if (_runtimeAttackMode != 0 && cfg.airAttackMs > 0 && _runtimeAttackOffset > 0) {
+  // 6. Mode d'attaque (accent / crescendo) - only (re)armed at the note onset, not
+  //    on a live CC recomputation of a held note.
+  if (isOnset) _attackActive = false;
+  if (isOnset && _runtimeAttackMode != 0 && cfg.airAttackMs > 0 && _runtimeAttackOffset > 0) {
     int16_t offsetDeg = (int16_t)((_attackTargetAngle - minAngle) * _runtimeAttackOffset / 100);
     if (offsetDeg < 1) offsetDeg = 1;
     if (_runtimeAttackMode == 1) {
@@ -264,7 +288,7 @@ void AirflowController::setAirflowForNote(byte midiNote, byte velocity) {
     Serial.println("deg");
   }
 
-  if (_attackActive) {
+  if (isOnset && _attackActive) {
     // Positionner a l'angle de depart, update() fera la transition
     setAirflowServoAngle(_attackStartAngle);
   } else if (_vibratoActive) {
@@ -273,8 +297,10 @@ void AirflowController::setAirflowForNote(byte midiNote, byte velocity) {
     setAirflowServoAngle(_baseAngleWithoutVibrato);
   }
 
-  // Angle servo (trav uniquement) — positionner simultanement
-  setAngleForNote(midiNote);
+  // Angle servo (trav uniquement) — positionner simultanement (onset only, so a
+  // live CC recomputation does not re-drive the embouchure angle).
+  if (isOnset) setAngleForNote(midiNote);
+  return true;
 }
 
 void AirflowController::openValve() {
@@ -354,6 +380,7 @@ void AirflowController::setValveServoAngle(bool open) {
 void AirflowController::setAirflowToRest() {
   setAirflowServoAngle(cfg.servoAirflowOff);
   setAngleToRest();
+  _noteActive = false;   // note ended: live CC recomputation must not resurrect it
 }
 
 void AirflowController::update() {

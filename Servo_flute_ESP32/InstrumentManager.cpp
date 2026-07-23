@@ -317,6 +317,7 @@ void InstrumentManager::handleControlChange(byte ccNumber, byte ccValue) {
     case MIDI_CC_MODULATION:  // Vibrato
       _ccModulation = ccValue;
       _airflowCtrl.setCCValues(_ccVolume, _ccExpression, _ccModulation);
+      _airflowCtrl.recomputeActiveNote();   // apply to the held note immediately
       if (DEBUG) {
         Serial.print("DEBUG: CC 1 (Modulation) = ");
         Serial.println(ccValue);
@@ -326,11 +327,13 @@ void InstrumentManager::handleControlChange(byte ccNumber, byte ccValue) {
     case MIDI_CC_BREATH:  // Breath Controller
       _ccBreath = ccValue;
       _airflowCtrl.updateCC2Breath(ccValue);
+      _airflowCtrl.recomputeActiveNote();   // breath silences/resumes the held note
       break;
 
     case MIDI_CC_VOLUME:  // Volume
       _ccVolume = ccValue;
       _airflowCtrl.setCCValues(_ccVolume, _ccExpression, _ccModulation);
+      _airflowCtrl.recomputeActiveNote();   // apply to the held note immediately
       if (DEBUG) {
         Serial.print("DEBUG: CC 7 (Volume) = ");
         Serial.println(ccValue);
@@ -340,6 +343,7 @@ void InstrumentManager::handleControlChange(byte ccNumber, byte ccValue) {
     case MIDI_CC_EXPRESSION:  // Expression
       _ccExpression = ccValue;
       _airflowCtrl.setCCValues(_ccVolume, _ccExpression, _ccModulation);
+      _airflowCtrl.recomputeActiveNote();   // apply to the held note immediately
       if (DEBUG) {
         Serial.print("DEBUG: CC 11 (Expression) = ");
         Serial.println(ccValue);

@@ -17,8 +17,19 @@ public:
   // Definit le debit d'air selon la velocite MIDI (1-127)
   void setAirflowVelocity(byte velocity);
 
-  // Definit le debit d'air pour une note specifique avec velocite
-  void setAirflowForNote(byte midiNote, byte velocity);
+  // Sets the airflow for a note and returns whether the note should SOUND, i.e.
+  // whether the valve should be opened. Returns false when velocity is 0 or CC2
+  // (breath) is below the silence threshold, so the caller (sequencer / manual
+  // test) must not force the valve open over a requested silence.
+  bool setAirflowForNote(byte midiNote, byte velocity);
+
+  // Recompute the airflow of the currently held note from the live CC values
+  // (CC1/CC2/CC7/CC11) and open/close the valve accordingly, without re-triggering
+  // the attack transition. Returns the sound state; a no-op (false) if no note is
+  // active. Called on each relevant Control Change so held-note breath/expression
+  // actually take effect.
+  bool recomputeActiveNote();
+  bool isNoteActive() const { return _noteActive; }
 
   void openValve();
   void closeValve();
@@ -86,6 +97,15 @@ private:
   // Gestion vibrato
   uint16_t _baseAngleWithoutVibrato;
   uint16_t _lastSentAirflowAngle;   // last angle actually written to the servo
+
+  // Currently held note (for live CC recomputation). _noteActive stays true from
+  // note-on to note-off even while CC2 momentarily silences the note.
+  byte _activeNote;
+  byte _activeVelocity;
+  bool _noteActive;
+  // Shared implementation of setAirflowForNote()/recomputeActiveNote(): the attack
+  // transition is only (re)armed at the note onset.
+  bool computeAirflow(byte midiNote, byte velocity, bool isOnset);
   bool _vibratoActive;
   uint16_t _currentMinAngle;
   uint16_t _currentMaxAngle;
