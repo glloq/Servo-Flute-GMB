@@ -1,0 +1,16 @@
+# ESP32 (4 MB flash) partition table for Servo-Flute-GMB.
+#
+# The firmware links to ~1.6 MB (BLE-MIDI + WiFi/AppleMIDI + AsyncWebServer +
+# INMP441 audio auto-calibration), which does not fit the default 1.25 MB app
+# partition -> "program size is greater than maximum allowed". This table gives a
+# single 2 MB app partition (no OTA: firmware is flashed over USB/serial; MIDI
+# files are uploaded through the web UI into LittleFS, not via firmware OTA) and a
+# ~1.9 MB LittleFS data partition. The data partition is labelled "spiffs" because
+# LittleFS.begin() mounts that label by default.
+#
+# Name,     Type, SubType,  Offset,    Size
+nvs,        data, nvs,      0x9000,    0x5000
+otadata,    data, ota,      0xe000,    0x2000
+app0,       app,  ota_0,    0x10000,   0x200000
+spiffs,     data, spiffs,   0x210000,  0x1E0000
+coredump,   data, coredump, 0x3F0000,  0x10000
