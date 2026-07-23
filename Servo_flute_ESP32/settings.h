@@ -140,6 +140,13 @@ Set MIC_ENABLED to false if no mic is connected.
 #define AUTOCAL_AUDIO_FRAME_TIMEOUT_MS 1500
 // Absolute last-resort ceiling for the whole calibration, whatever the note count.
 #define AUTOCAL_GLOBAL_TIMEOUT_MS     600000
+// Time allowed for the air supply (pump spin-up / reservoir fill / fan ramp) to
+// reach a usable state before the whole calibration aborts with ACAL_FAIL_AIR_SUPPLY.
+// Passive modes (solenoid / servo valve / servo only) report ready immediately.
+#define AUTOCAL_AIR_READY_TIMEOUT_MS  20000
+// Reservoir (mode 5) is considered ready once its fill level is within this many
+// percent of the requested target (a perfect match is not required).
+#define AUTOCAL_RESERVOIR_READY_MARGIN 5
 
 // --- Broadcast / legacy timing (still used by range finder + WS throttling) ---
 #define AUTOCAL_SETTLE_MS       300     // Range finder: wait after positioning servos

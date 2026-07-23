@@ -14,6 +14,7 @@
 #include "NoteSequencer.h"
 #include "InstrumentManager.h"
 #include "IAudioSource.h"
+#include "ICalibrationAirSupply.h"
 #include "PitchMath.h"
 #include "AutoCalMath.h"
 #include "AutoCalibrator.h"
@@ -39,6 +40,17 @@ struct FakeAudio : public IAudioSource {
   bool isPitchValid() const override { return valid; }
   uint32_t getFrameSequence() const override { return seq; }
   unsigned long getFrameTimestamp() const override { return ts; }
+};
+// --- Simulated air supply (pump/fan/reservoir) for AutoCalibrator tests ---
+// `readyAfter` frames of prepare() before isReady() flips true; UINT32_MAX = never.
+struct FakeAirSupply : public ICalibrationAirSupply {
+  bool prepared = false; uint32_t readyPolls = 0, readyAfter = 0;
+  uint8_t lastDemand = 0; bool stopped = false; CalAirSupplyError err = CAL_AIR_OK;
+  void prepare() override { prepared = true; stopped = false; readyPolls = 0; }
+  bool isReady() override { return prepared && (readyPolls++ >= readyAfter); }
+  void setDemandPercent(uint8_t p) override { lastDemand = p; }
+  void stopSafe() override { stopped = true; }
+  CalAirSupplyError getError() const override { return err; }
 };
 static AutoCalMath::AudioFrame mkFrame(bool valid, float rms, int midi, float cents, float conf) {
   AutoCalMath::AudioFrame f;
@@ -173,7 +185,7 @@ static void autocal_integration_minmax_nominal(){
   FakeAudio fa;
   FingerController fc([](uint8_t,uint16_t,uint16_t){});
   AirflowController ac([](uint8_t,uint16_t,uint16_t){}); ac.begin();
-  AutoCalibrator cal(fc,ac,fa);
+  FakeAirSupply as; AutoCalibrator cal(fc,ac,fa,as);
   cal.start(ACAL_MODE_AIRFLOW);
   assert(cal.isRunning());
   driveAutoCal(cal, fa, [](int pct,int note,FakeAudio& f){ bandModel(pct,60,20,60,f); });
@@ -197,7 +209,7 @@ static void autocal_keep_old_on_fail(){
   FakeAudio fa;
   FingerController fc([](uint8_t,uint16_t,uint16_t){});
   AirflowController ac([](uint8_t,uint16_t,uint16_t){}); ac.begin();
-  AutoCalibrator cal(fc,ac,fa);
+  FakeAirSupply as; AutoCalibrator cal(fc,ac,fa,as);
   cal.start(ACAL_MODE_AIRFLOW);
   // Only note 0 (index 0) ever sounds; note 1 stays silent -> fails.
   driveAutoCal(cal, fa, [](int pct,int note,FakeAudio& f){ if(note==0) bandModel(pct,60,20,60,f); else bandModel(pct,62,200,201,f); });
@@ -217,7 +229,7 @@ static void autocal_timeout_safe_stop(){
   FakeAudio fa;
   FingerController fc([](uint8_t,uint16_t,uint16_t){});
   AirflowController ac([](uint8_t,uint16_t,uint16_t){}); ac.begin();
-  AutoCalibrator cal(fc,ac,fa);
+  FakeAirSupply as; AutoCalibrator cal(fc,ac,fa,as);
   cal.start(ACAL_MODE_AIRFLOW);
   // Run past noise so the valve is open, keeping the note silent with fresh frames.
   for(int i=0;i<40 && cal.isRunning();i++){ fa.rms=0.003f; fa.valid=false; fa.midi=0; fa.hz=0; fa.seq++; fa.ts=__test_millis; __test_millis+=25; cal.update(); }
@@ -239,7 +251,7 @@ static void autocal_frozen_source_fails(){
   FakeAudio fa; fa.seq=7;  // constant sequence for the whole run
   FingerController fc([](uint8_t,uint16_t,uint16_t){});
   AirflowController ac([](uint8_t,uint16_t,uint16_t){}); ac.begin();
-  AutoCalibrator cal(fc,ac,fa);
+  FakeAirSupply as; AutoCalibrator cal(fc,ac,fa,as);
   cal.start(ACAL_MODE_AIRFLOW);
   // Source always "sounds" the right note but never produces a fresh frame.
   driveAutoCal(cal, fa, [](int,int,FakeAudio& f){ f.rms=0.06f; f.valid=true; f.conf=0.95f; f.midi=60; f.hz=PitchMath::midiToHz(60); f.cents=0.0f; f.snd=true; }, /*freshFrames=*/false);
@@ -252,6 +264,51 @@ static void autocal_frozen_source_fails(){
   assert(cfg.notes[0].airflowNominalPercent==40);
 }
 
+// §7. The air source (pump/fan/reservoir) must be ready before anything is measured.
+// (a) A source that never becomes ready aborts the run: every note fails with
+//     ACAL_FAIL_AIR_SUPPLY, nothing is written, and the source is stopped safely.
+// (b) A source that becomes ready only after a delay simply makes the calibrator
+//     wait, then the run proceeds and succeeds normally.
+static void autocal_air_supply_gate(){
+  // (a) never ready
+  resetCfg(); cfg.numNotes=2; cfg.notes[0].midiNote=60; cfg.notes[1].midiNote=61;
+  cfg.servoAirflowMin=60; cfg.servoAirflowMax=120;
+  for(int i=0;i<2;i++){ cfg.notes[i].airflowMinPercent=5; cfg.notes[i].airflowMaxPercent=95;
+    cfg.notes[i].airflowNominalPercent=40; }
+  __test_millis=0;
+  { FakeAudio fa;
+    FingerController fc([](uint8_t,uint16_t,uint16_t){});
+    AirflowController ac([](uint8_t,uint16_t,uint16_t){}); ac.begin();
+    FakeAirSupply as; as.readyAfter=0xFFFFFFFFu;  // never becomes ready
+    AutoCalibrator cal(fc,ac,fa,as);
+    cal.start(ACAL_MODE_AIRFLOW);
+    driveAutoCal(cal, fa, [](int pct,int note,FakeAudio& f){ bandModel(pct,60+note,20,60,f); });
+    assert(cal.isComplete());
+    assert(as.stopped);                        // source returned to a safe state
+    for(int i=0;i<2;i++){ AutoCalNoteResult r=cal.getResult(i);
+      assert(!r.valid); assert(r.failureReason==ACAL_FAIL_AIR_SUPPLY); }
+    AutoCalApplyResult ap=cal.applyResults();
+    assert(!ap.applied && ap.validCount==0);
+    assert(cfg.notes[0].airflowNominalPercent==40); // nothing written
+  }
+  // (b) ready only after a delay: the calibrator waits, then a normal run succeeds
+  resetCfg(); cfg.numNotes=1; cfg.notes[0].midiNote=60;
+  cfg.servoAirflowMin=60; cfg.servoAirflowMax=120;
+  cfg.notes[0].airflowMinPercent=0; cfg.notes[0].airflowMaxPercent=100; cfg.notes[0].airflowNominalPercent=40;
+  __test_millis=0;
+  { FakeAudio fa;
+    FingerController fc([](uint8_t,uint16_t,uint16_t){});
+    AirflowController ac([](uint8_t,uint16_t,uint16_t){}); ac.begin();
+    FakeAirSupply as; as.readyAfter=10;         // ready after 10 poll cycles
+    AutoCalibrator cal(fc,ac,fa,as);
+    cal.start(ACAL_MODE_AIRFLOW);
+    driveAutoCal(cal, fa, [](int pct,int,FakeAudio& f){ bandModel(pct,60,20,60,f); });
+    assert(cal.isComplete());
+    assert(cal.getResult(0).valid);             // gate waited, then proceeded
+    assert(as.lastDemand==100);                 // representative demand was asserted
+  }
+}
+
 // §4. Fourteen well-behaved notes complete without hitting a timeout.
 static void autocal_14_notes_no_timeout(){
   resetCfg();
@@ -262,7 +319,7 @@ static void autocal_14_notes_no_timeout(){
   FakeAudio fa;
   FingerController fc([](uint8_t,uint16_t,uint16_t){});
   AirflowController ac([](uint8_t,uint16_t,uint16_t){}); ac.begin();
-  AutoCalibrator cal(fc,ac,fa);
+  FakeAirSupply as; AutoCalibrator cal(fc,ac,fa,as);
   cal.start(ACAL_MODE_AIRFLOW);
   // Each note sounds its own expected pitch in the 20..60% band.
   driveAutoCal(cal, fa, [](int pct,int note,FakeAudio& f){ bandModel(pct, 60+note, 20, 60, f); });
@@ -281,7 +338,7 @@ static void autocal_plus70_cents_rejected(){
   FakeAudio fa;
   FingerController fc([](uint8_t,uint16_t,uint16_t){});
   AirflowController ac([](uint8_t,uint16_t,uint16_t){}); ac.begin();
-  AutoCalibrator cal(fc,ac,fa);
+  FakeAirSupply as; AutoCalibrator cal(fc,ac,fa,as);
   cal.start(ACAL_MODE_AIRFLOW);
   // Correct MIDI note but always +70 cents (inside onset tol 80, outside stable 50).
   driveAutoCal(cal, fa, [](int pct,int,FakeAudio& f){
@@ -306,7 +363,7 @@ static void autocal_range_finder(){
   FakeAudio fa;
   FingerController fc([](uint8_t,uint16_t,uint16_t){});
   AirflowController ac([](uint8_t,uint16_t,uint16_t){}); ac.begin();
-  AutoCalibrator cal(fc,ac,fa);
+  FakeAirSupply as; AutoCalibrator cal(fc,ac,fa,as);
   cal.start(ACAL_MODE_RANGE_FIND);
   assert(cal.isRunning());
   assert(cal.isRangeMode());
@@ -335,7 +392,7 @@ static void autocal_storage_failure_restores(){
   FakeAudio fa;
   FingerController fc([](uint8_t,uint16_t,uint16_t){});
   AirflowController ac([](uint8_t,uint16_t,uint16_t){}); ac.begin();
-  AutoCalibrator cal(fc,ac,fa);
+  FakeAirSupply as; AutoCalibrator cal(fc,ac,fa,as);
   cal.start(ACAL_MODE_AIRFLOW);
   driveAutoCal(cal, fa, [](int pct,int,FakeAudio& f){ bandModel(pct,60,20,60,f); });
   assert(cal.isComplete());
@@ -354,7 +411,7 @@ static void autocal_mic_absent(){
   FakeAudio fa; fa.micDetected=false;
   FingerController fc([](uint8_t,uint16_t,uint16_t){});
   AirflowController ac([](uint8_t,uint16_t,uint16_t){}); ac.begin();
-  AutoCalibrator cal(fc,ac,fa);
+  FakeAirSupply as; AutoCalibrator cal(fc,ac,fa,as);
   cal.start(ACAL_MODE_AIRFLOW);
   assert(!cal.isRunning());
   assert(!cal.isComplete());
@@ -467,4 +524,4 @@ static void audio_mic_classification(){
   assert(PitchDetector::classifyRaw(raw.data(), N) == MIC_SIG_OK);
 }
 
-int main(){ pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); airflow_nominal_drives_angle(); autocal_frozen_source_fails(); autocal_14_notes_no_timeout(); autocal_plus70_cents_rejected(); autocal_storage_failure_restores(); autocal_range_finder(); audio_yin_pcm_core(); audio_mic_classification(); std::cout << "behavior tests passed\n"; }
+int main(){ pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); airflow_nominal_drives_angle(); autocal_frozen_source_fails(); autocal_air_supply_gate(); autocal_14_notes_no_timeout(); autocal_plus70_cents_rejected(); autocal_storage_failure_restores(); autocal_range_finder(); audio_yin_pcm_core(); audio_mic_classification(); std::cout << "behavior tests passed\n"; }

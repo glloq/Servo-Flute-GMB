@@ -6,6 +6,7 @@
 #include "FingerController.h"
 #include "AirflowController.h"
 #include "IAudioSource.h"
+#include "ICalibrationAirSupply.h"
 #include "ConfigStorage.h"
 #include "PitchMath.h"
 
@@ -16,8 +17,10 @@ using AutoCalMath::PositionStats;
 // treated as "no stability left".
 static const float kStabilityRefCents = 2.0f * AUTOCAL_PITCH_TOLERANCE_STABLE_CENTS;
 
-AutoCalibrator::AutoCalibrator(FingerController& fingers, AirflowController& airflow, IAudioSource& audio)
-  : _fingers(fingers), _airflow(airflow), _audio(audio),
+AutoCalibrator::AutoCalibrator(FingerController& fingers, AirflowController& airflow, IAudioSource& audio,
+                               ICalibrationAirSupply& airSupply)
+  : _fingers(fingers), _airflow(airflow), _audio(audio), _airSupply(airSupply),
+    _airReady(false), _airPrepareTime(0),
     _state(ACAL_IDLE), _mode(ACAL_MODE_AIRFLOW), _startTime(0), _globalTimeout(AUTOCAL_GLOBAL_TIMEOUT_MS), _timeoutEvent(false),
     _numNotes(0), _currentNote(0), _expectedMidi(0),
     _phase(PH_PREPARE), _step(ST_SET), _stateTimer(0), _lastFrameTime(0), _stepPercent(0),
@@ -63,6 +66,13 @@ void AutoCalibrator::start(AutoCalMode mode) {
   memset(_results, 0, sizeof(_results));
   _audio.setActive(true);
 
+  // Bring the air source (pump / reservoir / fan) up to a representative running
+  // state before anything is measured. Passive modes report ready at once; active
+  // ones converge as InstrumentManager::update() keeps ticking their controllers.
+  _airSupply.prepare();
+  _airReady = _airSupply.isReady();
+  _airPrepareTime = _startTime;
+
   _rfMinAngle = -1;
   _rfMaxAngle = -1;
   _rfFoundMin = false;
@@ -84,6 +94,7 @@ void AutoCalibrator::safeHardware() {
   _airflow.testSolenoid(false);
   _airflow.setAirflowToRest();
   _fingers.closeAllFingers();
+  _airSupply.stopSafe();
 }
 
 void AutoCalibrator::stop() {
@@ -108,7 +119,33 @@ void AutoCalibrator::update() {
     return;
   }
 
+  // Hold the whole run until the shared air source is ready. Nothing is measured
+  // (and no note is scored) while the pump/reservoir/fan is still coming up.
+  if (!_airReady) {
+    if (_airSupply.isReady()) {
+      _airReady = true;
+    } else if (now - _airPrepareTime >= AUTOCAL_AIR_READY_TIMEOUT_MS) {
+      abortAirSupply();
+      return;
+    } else {
+      return; // keep waiting; controllers are ticked by InstrumentManager::update()
+    }
+  }
+
   updateStateMachine(now);
+}
+
+void AutoCalibrator::abortAirSupply() {
+  // The air source never became usable: every note fails for the same reason and
+  // nothing is written to the configuration. Mirrors the global-timeout path so the
+  // UI reports a completed-but-failed calibration rather than a silent stall.
+  for (int i = 0; i < _numNotes && i < MAX_NOTES; i++) {
+    _results[i].valid = false;
+    _results[i].failureReason = ACAL_FAIL_AIR_SUPPLY;
+  }
+  safeHardware();
+  _state = (_mode == ACAL_MODE_RANGE_FIND) ? ACAL_RF_COMPLETE : ACAL_COMPLETE;
+  if (DEBUG) Serial.println("ERREUR: AutoCalibrator - Air non pret, calibration echouee");
 }
 
 const char* AutoCalibrator::getPhaseName() const {
@@ -212,7 +249,17 @@ void AutoCalibrator::prepareNote(unsigned long now) {
   _noiseSettled = false;
   _noiseRms = 0;
 
-  _phase = PH_NOISE;
+  // Re-assert the shared air source at its representative demand and catch a
+  // drop-out (pump stall / fan fault) as a specific per-note reason rather than a
+  // misleading "no sound". The noise floor that follows is therefore measured with
+  // the pump/fan running (valve closed), i.e. in the representative acoustic state.
+  _airSupply.setDemandPercent(100);
+  if (!_airSupply.isReady()) {
+    _noteFailReason = ACAL_FAIL_AIR_SUPPLY;
+    _phase = PH_FINALIZE;
+  } else {
+    _phase = PH_NOISE;
+  }
   _stateTimer = now;
   _lastFrameTime = now;
 

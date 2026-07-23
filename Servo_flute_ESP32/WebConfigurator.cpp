@@ -55,7 +55,8 @@ void WebConfigurator::begin(InstrumentManager* instrument, MidiFilePlayer* playe
     _autoCal = new AutoCalibrator(
       _instrument->getFingerCtrl(),
       _instrument->getAirflowCtrl(),
-      *_audio);
+      *_audio,
+      _instrument->getCalibrationAirSupply());
   }
   if (DEBUG) {
     Serial.print("DEBUG: WebConfigurator - Microphone INMP441: ");

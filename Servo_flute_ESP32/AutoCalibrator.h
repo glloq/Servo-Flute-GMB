@@ -39,6 +39,7 @@
 class FingerController;
 class AirflowController;
 class IAudioSource;
+class ICalibrationAirSupply;
 
 enum AutoCalMode {
   ACAL_MODE_AIRFLOW,        // Auto-calibrate airflow per note
@@ -98,7 +99,8 @@ struct AutoCalApplyResult {
 
 class AutoCalibrator {
 public:
-  AutoCalibrator(FingerController& fingers, AirflowController& airflow, IAudioSource& audio);
+  AutoCalibrator(FingerController& fingers, AirflowController& airflow, IAudioSource& audio,
+                 ICalibrationAirSupply& airSupply);
 
   void start(AutoCalMode mode);
   void stop();
@@ -150,6 +152,12 @@ private:
   FingerController& _fingers;
   AirflowController& _airflow;
   IAudioSource& _audio;
+  ICalibrationAirSupply& _airSupply;
+
+  // Air-source readiness gate (pump spin-up / reservoir fill / fan ramp). Passive
+  // modes report ready immediately. Failure aborts the whole run (shared source).
+  bool _airReady;
+  unsigned long _airPrepareTime;
 
   AutoCalState _state;
   AutoCalMode _mode;
@@ -254,6 +262,7 @@ private:
   void setAirflowPercent(int percent);
   void safeHardware();
   void abortTimeout();
+  void abortAirSupply();  // air source never reached a usable state: fail all notes
 };
 
 #endif // MIC_ENABLED

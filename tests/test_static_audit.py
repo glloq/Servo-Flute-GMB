@@ -147,6 +147,33 @@ def test_autocal_global_timeout_and_injection_layer():
     assert 'public IAudioSource' in ah
 
 
+def test_autocal_air_supply_abstraction():
+    # §7: the calibrator drives every air mode through ICalibrationAirSupply and
+    # gates on readiness before measuring, without duplicating controller logic.
+    assert Path(ROOT / 'Servo_flute_ESP32/ICalibrationAirSupply.h').exists()
+    iface = read('Servo_flute_ESP32/ICalibrationAirSupply.h')
+    for m in ('prepare()', 'isReady()', 'setDemandPercent(', 'stopSafe()', 'getError()'):
+        assert m in iface, m
+    # Concrete impl delegates to the same controllers used during play.
+    impl = read('Servo_flute_ESP32/CalibrationAirSupply.cpp')
+    assert '_fan.setSpeed' in impl and '_pressure.setTargetPercent' in impl
+    for mode in ('AIR_MODE_FAN_SERVO', 'AIR_MODE_PUMP_VALVE', 'AIR_MODE_PUMP_RESERVOIR'):
+        assert mode in impl, mode
+    # Calibrator prepares the supply, gates on readiness, and fails with a specific
+    # reason when it never comes up.
+    acc = read('Servo_flute_ESP32/AutoCalibrator.cpp')
+    assert '_airSupply.prepare()' in acc
+    assert '_airSupply.isReady()' in acc
+    assert '_airSupply.stopSafe()' in acc
+    assert 'ACAL_FAIL_AIR_SUPPLY' in acc
+    assert 'AUTOCAL_AIR_READY_TIMEOUT_MS' in acc
+    # Wired through InstrumentManager (owner of the real controllers).
+    im = read('Servo_flute_ESP32/InstrumentManager.h')
+    assert 'getCalibrationAirSupply()' in im
+    wc = read('Servo_flute_ESP32/WebConfigurator.cpp')
+    assert 'getCalibrationAirSupply()' in wc
+
+
 def test_watchdog_has_idf_compatibility_layer():
     ino = read('Servo_flute_ESP32/Servo_flute_ESP32.ino')
     assert '#include <esp_idf_version.h>' in ino
