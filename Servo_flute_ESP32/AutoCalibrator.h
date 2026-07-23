@@ -20,8 +20,9 @@
  * firmware timeout. On stop / timeout / error the hardware is returned to a safe
  * state.
  *
- * Range-finder mode sweeps the airflow servo 0-180 deg on a middle note to discover
- * the usable servo travel.
+ * Range-finder mode sweeps the airflow servo across a bounded safe angle window
+ * (AUTOCAL_RF_MIN_SAFE_ANGLE..AUTOCAL_RF_MAX_SAFE_ANGLE, never a blind 0-180 deg
+ * sweep) on a middle note to discover the usable servo travel.
  *
  * The calibrator depends on IAudioSource (not the concrete I2S driver) so it can be
  * unit-tested with simulated audio.
@@ -35,11 +36,11 @@
 #if MIC_ENABLED
 
 #include "AutoCalMath.h"
+#include "ICalibrationAirSupply.h"   // CalAirSupplyError
 
 class FingerController;
 class AirflowController;
 class IAudioSource;
-class ICalibrationAirSupply;
 
 enum AutoCalMode {
   ACAL_MODE_AIRFLOW,        // Auto-calibrate airflow per note
@@ -91,10 +92,18 @@ struct AutoCalNoteResult {
 
 // Aggregate outcome of applying results (persistence-aware).
 struct AutoCalApplyResult {
-  bool applied;        // at least one valid note written into cfg
+  bool applied;        // at least one valid note is persisted in cfg (false if rolled back)
   bool saved;          // persisted to LittleFS successfully
   uint8_t validCount;
   uint8_t failedCount;
+};
+
+// Outcome of applying the range-finder result (persistence-aware).
+struct RangeApplyResult {
+  bool applied;        // new angles are persisted in cfg (false if rolled back / invalid)
+  bool saved;          // persisted to LittleFS successfully
+  int minAngle;        // -1 when no valid result
+  int maxAngle;
 };
 
 class AutoCalibrator {
@@ -141,7 +150,19 @@ public:
   // Range finder results
   int getRangeFinderMin() const { return _rfMinAngle; }
   int getRangeFinderMax() const { return _rfMaxAngle; }
-  void applyRangeResults();
+  // Writes the discovered angles into cfg and persists; on a storage failure the
+  // previous angles are restored in RAM and applied/saved report false.
+  RangeApplyResult applyRangeResults();
+  // Failure reason for a range-finder run (ACAL_FAIL_NONE when it succeeded).
+  uint8_t getRangeFailureReason() const { return _rfFailReason; }
+
+  // Last air-supply error observed (CAL_AIR_OK when healthy). Used to attach a
+  // specific sub-reason to an ACAL_FAIL_AIR_SUPPLY outcome.
+  CalAirSupplyError getAirSupplyError() const { return _lastAirError; }
+
+  // Stable textual names for the UI / API (never allocate).
+  static const char* failureReasonName(uint8_t reason);
+  static const char* airSupplyErrorName(CalAirSupplyError err);
 
 private:
   // Detailed per-note phase and per-position sub-step. The range finder reuses
@@ -158,6 +179,7 @@ private:
   // modes report ready immediately. Failure aborts the whole run (shared source).
   bool _airReady;
   unsigned long _airPrepareTime;
+  CalAirSupplyError _lastAirError;   // sub-reason for an ACAL_FAIL_AIR_SUPPLY
 
   AutoCalState _state;
   AutoCalMode _mode;
@@ -205,12 +227,16 @@ private:
   int _dispMidi;
   float _dispCents;
 
-  // Noise floor
+  // Noise floor (measured with the same distinct-frame freshness contract as a
+  // position: only new audio sequences are averaged, a stalled source fails).
   float _noiseRms;
   float _soundThreshold;
   float _noiseAccum;
   int _noiseCount;
   bool _noiseSettled;
+  uint32_t _noiseLastSeq;
+  bool _noiseHaveSeq;
+  unsigned long _noiseCollectStart;
 
   // Coarse pass tracking
   int _coarseMin;              // percent, -1 if not found
@@ -244,6 +270,7 @@ private:
   int _rfMaxAngle;
   bool _rfFoundMin;
   int _rfLossCount;
+  uint8_t _rfFailReason;   // AutoCalFailureReason for a failed range-finder run
 
   AutoCalNoteResult _results[MAX_NOTES];
 
@@ -258,6 +285,14 @@ private:
   void sampleFrame(AutoCalMath::AudioFrame& f);
   void finalizeNote(unsigned long now);
   void advanceNote(unsigned long now);
+  // Fail the position currently being calibrated, routing range-finder mode to its
+  // own terminal state instead of the per-note finalize/advance path.
+  void failCurrentNote(uint8_t reason);
+  // Terminal state for a failed range-finder run: safe hardware, invalid angles,
+  // ACAL_RF_COMPLETE, never touches finalizeNote()/advanceNote().
+  void finalizeRangeFinderFailure(uint8_t reason);
+  // True (and records _lastAirError) when the shared air source has dropped out.
+  bool airSupplyLost();
   float currentToleranceCents() const;
   void setAirflowPercent(int percent);
   void safeHardware();

@@ -507,13 +507,13 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
         <span class="pitch-hz" id="pitchHz">- Hz</span>
         <span class="pitch-cents ok" id="pitchCents">-</span>
       </div>
-      <p style="font-size:.78em;color:#888;margin:4px 0">Automatic servo range detection (min/max) by sweeping 0-180 degrees.</p>
+      <p style="font-size:.78em;color:#888;margin:4px 0">Automatic servo range detection (min/max) by sweeping a bounded safe angle window.</p>
       <div class="btn-row" style="margin-bottom:8px">
         <button class="btn btn-s" id="btnRfStart" onclick="startRangeFinder()">Detect servo range</button>
         <button class="btn btn-p" id="btnRfStop" onclick="stopRangeFinder()" style="display:none">Stop</button>
       </div>
       <div class="acal-progress" id="rfProgress" style="display:none">
-        <div class="acal-info"><span id="rfStep">Sweep 0-180 deg...</span><span id="rfAngle">0 deg</span></div>
+        <div class="acal-info"><span id="rfStep">Sweeping safe angle window...</span><span id="rfAngle">0 deg</span></div>
         <div class="acal-bar"><div class="acal-fill" id="rfFill"></div></div>
         <div id="rfResult" style="margin-top:8px;display:none">
           <div style="font-size:.85em;padding:8px;background:rgba(78,204,163,.08);border-radius:6px">
@@ -3008,7 +3008,8 @@ function handleWs(d){
     addLog('Auto-cal ERREUR: '+(d.msg||''));showToast(d.msg||'Calibration interrompue','error')
   }else if(d.t==='rf_prog'){
     $('rfProgress').style.display='block';$('rfAngle').textContent=(d.angle||0)+' deg';
-    $('rfFill').style.width=((d.angle||0)/180*100)+'%';
+    /* progress across the bounded safe angle window (see AUTOCAL_RF_MIN/MAX_SAFE_ANGLE) */
+    $('rfFill').style.width=Math.max(0,Math.min(100,(((d.angle||0)-30)/(150-30))*100))+'%';
     if(d.min!=null)$('rfStep').textContent='Min: '+d.min+' deg - Sweep...';
   }else if(d.t==='rf_done'){
     $('btnRfStart').style.display='';$('btnRfStop').style.display='none';$('btnAcalStart').style.display='';

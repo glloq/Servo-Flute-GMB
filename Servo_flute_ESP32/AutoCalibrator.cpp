@@ -20,7 +20,7 @@ static const float kStabilityRefCents = 2.0f * AUTOCAL_PITCH_TOLERANCE_STABLE_CE
 AutoCalibrator::AutoCalibrator(FingerController& fingers, AirflowController& airflow, IAudioSource& audio,
                                ICalibrationAirSupply& airSupply)
   : _fingers(fingers), _airflow(airflow), _audio(audio), _airSupply(airSupply),
-    _airReady(false), _airPrepareTime(0),
+    _airReady(false), _airPrepareTime(0), _lastAirError(CAL_AIR_OK),
     _state(ACAL_IDLE), _mode(ACAL_MODE_AIRFLOW), _startTime(0), _globalTimeout(AUTOCAL_GLOBAL_TIMEOUT_MS), _timeoutEvent(false),
     _numNotes(0), _currentNote(0), _expectedMidi(0),
     _phase(PH_PREPARE), _step(ST_SET), _stateTimer(0), _lastFrameTime(0), _stepPercent(0),
@@ -31,11 +31,13 @@ AutoCalibrator::AutoCalibrator(FingerController& fingers, AirflowController& air
     _lastStability(0), _lastSnr(0), _lastMeanConf(0), _lastValidRatio(0), _lastConfidencePct(0),
     _dispHz(0), _dispMidi(0), _dispCents(0),
     _noiseRms(0), _soundThreshold(MIC_RMS_ABSOLUTE_MIN), _noiseAccum(0), _noiseCount(0), _noiseSettled(false),
+    _noiseLastSeq(0), _noiseHaveSeq(false), _noiseCollectStart(0),
     _coarseMin(-1), _coarseMax(-1), _coarseValidSeen(false), _coarseLossCount(0),
     _airMin(-1), _airMax(-1), _fineLastValid(-1), _fineLossCount(0),
     _nominalCount(0), _nominalIndex(0),
     _bestValidFound(false), _bestPercent(-1), _bestScore(-1), _bestCents(0), _bestStability(0), _bestSnr(0), _bestConfPct(0),
-    _currentAngle(0), _rfMinAngle(-1), _rfMaxAngle(-1), _rfFoundMin(false), _rfLossCount(0) {
+    _currentAngle(0), _rfMinAngle(-1), _rfMaxAngle(-1), _rfFoundMin(false), _rfLossCount(0),
+    _rfFailReason(ACAL_FAIL_NONE) {
   memset(_results, 0, sizeof(_results));
   memset(_nominalCandidates, 0, sizeof(_nominalCandidates));
   memset(_frames, 0, sizeof(_frames));
@@ -77,6 +79,8 @@ void AutoCalibrator::start(AutoCalMode mode) {
   _rfMaxAngle = -1;
   _rfFoundMin = false;
   _rfLossCount = 0;
+  _rfFailReason = ACAL_FAIL_NONE;
+  _lastAirError = CAL_AIR_OK;
   _currentAngle = cfg.servoAirflowOff;
   _phase = PH_PREPARE;
   _stateTimer = _startTime;
@@ -122,6 +126,13 @@ void AutoCalibrator::update() {
   // Hold the whole run until the shared air source is ready. Nothing is measured
   // (and no note is scored) while the pump/reservoir/fan is still coming up.
   if (!_airReady) {
+    CalAirSupplyError e = _airSupply.getError();
+    if (e == CAL_AIR_SENSOR_FAULT || e == CAL_AIR_FAULT) {
+      // Hard fault (e.g. reservoir mode with no usable sensor): do not pressurise
+      // blind and do not wait out the readiness timeout - abort now.
+      abortAirSupply();
+      return;
+    }
     if (_airSupply.isReady()) {
       _airReady = true;
     } else if (now - _airPrepareTime >= AUTOCAL_AIR_READY_TIMEOUT_MS) {
@@ -139,12 +150,20 @@ void AutoCalibrator::abortAirSupply() {
   // The air source never became usable: every note fails for the same reason and
   // nothing is written to the configuration. Mirrors the global-timeout path so the
   // UI reports a completed-but-failed calibration rather than a silent stall.
+  _lastAirError = _airSupply.getError();
   for (int i = 0; i < _numNotes && i < MAX_NOTES; i++) {
     _results[i].valid = false;
     _results[i].failureReason = ACAL_FAIL_AIR_SUPPLY;
   }
   safeHardware();
-  _state = (_mode == ACAL_MODE_RANGE_FIND) ? ACAL_RF_COMPLETE : ACAL_COMPLETE;
+  if (_mode == ACAL_MODE_RANGE_FIND) {
+    _rfMinAngle = -1;
+    _rfMaxAngle = -1;
+    _rfFailReason = ACAL_FAIL_AIR_SUPPLY;
+    _state = ACAL_RF_COMPLETE;
+  } else {
+    _state = ACAL_COMPLETE;
+  }
   if (DEBUG) Serial.println("ERREUR: AutoCalibrator - Air non pret, calibration echouee");
 }
 
@@ -186,11 +205,12 @@ void AutoCalibrator::setAirflowPercent(int percent) {
 void AutoCalibrator::updateStateMachine(unsigned long now) {
   // Per-note timeout: fail this note (its previous calibration is kept) and let
   // the sweep continue with the next note. The global timeout stays last-resort.
-  // (Range finder has a single note, so this bounds it too.)
-  if (_phase != PH_PREPARE && _phase != PH_FINALIZE && _mode == ACAL_MODE_AIRFLOW &&
+  // The range finder is a single "note" (one angle sweep), so the same budget
+  // bounds it too — routed to its own terminal state.
+  if (_phase != PH_PREPARE && _phase != PH_FINALIZE &&
       (now - _noteStartTime) >= AUTOCAL_TIMEOUT_PER_NOTE_MS) {
-    _noteFailReason = ACAL_FAIL_NOTE_TIMEOUT;
-    _phase = PH_FINALIZE;
+    failCurrentNote(ACAL_FAIL_NOTE_TIMEOUT);
+    return;
   }
 
   switch (_phase) {
@@ -254,9 +274,8 @@ void AutoCalibrator::prepareNote(unsigned long now) {
   // misleading "no sound". The noise floor that follows is therefore measured with
   // the pump/fan running (valve closed), i.e. in the representative acoustic state.
   _airSupply.setDemandPercent(100);
-  if (!_airSupply.isReady()) {
-    _noteFailReason = ACAL_FAIL_AIR_SUPPLY;
-    _phase = PH_FINALIZE;
+  if (airSupplyLost()) {
+    failCurrentNote(ACAL_FAIL_AIR_SUPPLY);
   } else {
     _phase = PH_NOISE;
   }
@@ -278,20 +297,37 @@ void AutoCalibrator::runNoise(unsigned long now) {
       _noiseSettled = true;
       _stateTimer = now;
       _lastFrameTime = now;
+      _noiseCollectStart = now;
       _noiseAccum = 0;
       _noiseCount = 0;
+      _noiseHaveSeq = false;
     }
     return;
   }
 
+  // Same freshness contract as a position: only average DISTINCT audio sequences
+  // (never fold a frozen/repeated frame in twice), and fail with a stale-audio
+  // reason if the source stops delivering new frames before enough are gathered.
+  if (now - _noiseCollectStart >= AUTOCAL_AUDIO_FRAME_TIMEOUT_MS &&
+      _noiseCount < AUTOCAL_REQUIRED_VALID_FRAMES) {
+    failCurrentNote(ACAL_FAIL_AUDIO_STALE);
+    return;
+  }
   if (now - _lastFrameTime >= AUTOCAL_FRAME_SAMPLE_MS) {
-    _lastFrameTime = now;
-    _noiseAccum += _audio.getRMS();
-    _noiseCount++;
+    uint32_t seq = _audio.getFrameSequence();
+    if (!_noiseHaveSeq || seq != _noiseLastSeq) {
+      _lastFrameTime = now;
+      _noiseLastSeq = seq;
+      _noiseHaveSeq = true;
+      _noiseAccum += _audio.getRMS();
+      _noiseCount++;
+    }
   }
 
-  if (now - _stateTimer >= AUTOCAL_NOISE_MEASURE_MS) {
-    _noiseRms = (_noiseCount > 0) ? (_noiseAccum / (float)_noiseCount) : 0.0f;
+  // Finish once the measurement window elapsed AND enough distinct frames landed.
+  if (now - _stateTimer >= AUTOCAL_NOISE_MEASURE_MS &&
+      _noiseCount >= AUTOCAL_REQUIRED_VALID_FRAMES) {
+    _noiseRms = _noiseAccum / (float)_noiseCount;
     _soundThreshold = AutoCalMath::computeSoundThreshold(_noiseRms);
     // Open the air path, then start the appropriate sweep.
     _airflow.testSolenoid(true);
@@ -357,6 +393,9 @@ bool AutoCalibrator::runPositionStep(unsigned long now) {
       return false;
 
     case ST_SETTLE:
+      // A mid-position air-source drop-out (pump stall / fan fault) is its own
+      // failure, not a misleading "no sound" / "wrong note".
+      if (airSupplyLost()) { failCurrentNote(ACAL_FAIL_AIR_SUPPLY); return false; }
       // WAIT_AIRFLOW_SETTLE: ignore the transient frames during servo travel.
       if (now - _stateTimer >= AUTOCAL_AIR_SETTLE_MS) {
         _frameCount = 0;
@@ -368,15 +407,16 @@ bool AutoCalibrator::runPositionStep(unsigned long now) {
       return false;
 
     case ST_COLLECT:
+      // Air source must stay up while we are collecting for this position.
+      if (airSupplyLost()) { failCurrentNote(ACAL_FAIL_AIR_SUPPLY); return false; }
       // COLLECT_AUDIO: gather several spaced, DISTINCT frames (never count the
       // same analysed frame twice).
       if (now - _collectStartTime >= AUTOCAL_AUDIO_FRAME_TIMEOUT_MS &&
           _frameCount < AUTOCAL_AUDIO_FRAMES_PER_STEP) {
         // The audio source stopped delivering fresh frames: treat as a frozen
-        // source and fail this note (its previous calibration is preserved).
+        // source and fail this position (range finder routed to its own end).
         _audioStale = true;
-        _noteFailReason = ACAL_FAIL_AUDIO_STALE;
-        _phase = PH_FINALIZE;
+        failCurrentNote(ACAL_FAIL_AUDIO_STALE);
         return false;
       }
       if (now - _lastFrameTime >= AUTOCAL_FRAME_SAMPLE_MS) {
@@ -713,6 +753,66 @@ void AutoCalibrator::advanceNote(unsigned long now) {
   }
 }
 
+bool AutoCalibrator::airSupplyLost() {
+  if (_airSupply.isReady() && _airSupply.getError() == CAL_AIR_OK) return false;
+  _lastAirError = _airSupply.getError();
+  return true;
+}
+
+void AutoCalibrator::failCurrentNote(uint8_t reason) {
+  if (reason == ACAL_FAIL_AIR_SUPPLY) _lastAirError = _airSupply.getError();
+  // The range finder is not a per-note calibration: it must never run
+  // finalizeNote()/advanceNote() (which would re-centre and loop). Route it to a
+  // dedicated terminal state instead.
+  if (_mode == ACAL_MODE_RANGE_FIND) {
+    finalizeRangeFinderFailure(reason);
+  } else {
+    _noteFailReason = reason;
+    _phase = PH_FINALIZE;
+  }
+}
+
+void AutoCalibrator::finalizeRangeFinderFailure(uint8_t reason) {
+  safeHardware();
+  _rfMinAngle = -1;   // invalid: apply must refuse it
+  _rfMaxAngle = -1;
+  _rfFailReason = reason;
+  _state = ACAL_RF_COMPLETE;
+  if (DEBUG) {
+    Serial.print("ERREUR: RangeFinder - echec, reason=");
+    Serial.println(failureReasonName(reason));
+  }
+}
+
+const char* AutoCalibrator::failureReasonName(uint8_t reason) {
+  switch (reason) {
+    case ACAL_FAIL_NONE:              return "none";
+    case ACAL_FAIL_NO_SOUND:          return "no_sound";
+    case ACAL_FAIL_WRONG_NOTE:        return "wrong_note";
+    case ACAL_FAIL_LOW_CONFIDENCE:    return "low_confidence";
+    case ACAL_FAIL_LOW_SNR:           return "low_snr";
+    case ACAL_FAIL_UNSTABLE_PITCH:    return "unstable_pitch";
+    case ACAL_FAIL_NO_STABLE_NOMINAL: return "no_stable_nominal";
+    case ACAL_FAIL_AUDIO_STALE:       return "audio_stale";
+    case ACAL_FAIL_NOTE_TIMEOUT:      return "note_timeout";
+    case ACAL_FAIL_GLOBAL_TIMEOUT:    return "global_timeout";
+    case ACAL_FAIL_AIR_SUPPLY:        return "air_supply";
+    case ACAL_FAIL_STORAGE:           return "storage";
+  }
+  return "unknown";
+}
+
+const char* AutoCalibrator::airSupplyErrorName(CalAirSupplyError err) {
+  switch (err) {
+    case CAL_AIR_OK:           return "ok";
+    case CAL_AIR_NOT_READY:    return "not_ready";
+    case CAL_AIR_TIMEOUT:      return "timeout";
+    case CAL_AIR_SENSOR_FAULT: return "sensor_fault";
+    case CAL_AIR_FAULT:        return "fault";
+  }
+  return "unknown";
+}
+
 // ----------------------------------------------------------------- persistence -
 
 AutoCalApplyResult AutoCalibrator::applyResults() {
@@ -746,33 +846,58 @@ AutoCalApplyResult AutoCalibrator::applyResults() {
       cfg.notes[i].airflowNominalPercent = _results[i].airNominal;
     }
   }
-  out.applied = true;
   out.saved = ConfigStorage::save();
 
   if (!out.saved) {
-    // Storage failed: restore the previous configuration in RAM, report no save.
+    // Storage failed: roll the configuration back in RAM. The values are NOT in
+    // effect, so applied must be false too - the caller must not report success.
     for (int i = 0; i < n; i++) {
       cfg.notes[i].airflowMinPercent = bMin[i];
       cfg.notes[i].airflowMaxPercent = bMax[i];
       cfg.notes[i].airflowNominalPercent = bNom[i];
     }
+    out.applied = false;
     if (DEBUG) Serial.println("ERREUR: AutoCalibrator - Sauvegarde echouee, config restauree en RAM");
-  } else if (DEBUG) {
-    Serial.println("DEBUG: AutoCalibrator - Resultats appliques et sauvegardes");
+  } else {
+    out.applied = true;
+    if (DEBUG) Serial.println("DEBUG: AutoCalibrator - Resultats appliques et sauvegardes");
   }
   return out;
 }
 
-void AutoCalibrator::applyRangeResults() {
-  if (_rfMinAngle >= 0) cfg.servoAirflowMin = _rfMinAngle;
-  if (_rfMaxAngle >= 0) cfg.servoAirflowMax = _rfMaxAngle;
-  ConfigStorage::save();
+RangeApplyResult AutoCalibrator::applyRangeResults() {
+  RangeApplyResult out{false, false, -1, -1};
+
+  // Refuse an invalid / failed range-finder result: change nothing.
+  if (_rfMinAngle < 0 || _rfMaxAngle < 0 || _rfMaxAngle < _rfMinAngle) {
+    if (DEBUG) Serial.println("DEBUG: RangeFinder - resultat invalide, rien a appliquer");
+    return out;
+  }
+
+  const uint16_t bMin = cfg.servoAirflowMin;
+  const uint16_t bMax = cfg.servoAirflowMax;
+  cfg.servoAirflowMin = _rfMinAngle;
+  cfg.servoAirflowMax = _rfMaxAngle;
+
+  out.saved = ConfigStorage::save();
+  if (!out.saved) {
+    // Storage failed: restore the previous angles; nothing is in effect.
+    cfg.servoAirflowMin = bMin;
+    cfg.servoAirflowMax = bMax;
+    if (DEBUG) Serial.println("ERREUR: RangeFinder - Sauvegarde echouee, angles restaures en RAM");
+    return out;
+  }
+
+  out.applied = true;
+  out.minAngle = cfg.servoAirflowMin;
+  out.maxAngle = cfg.servoAirflowMax;
   if (DEBUG) {
     Serial.print("DEBUG: RangeFinder - Applique min=");
     Serial.print(cfg.servoAirflowMin);
     Serial.print(" max=");
     Serial.println(cfg.servoAirflowMax);
   }
+  return out;
 }
 
 #endif // MIC_ENABLED

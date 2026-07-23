@@ -14,6 +14,7 @@ InstrumentManager::InstrumentManager()
     _sequencer(_eventQueue, _fingerCtrl, _airflowCtrl),
     _lastActivityTime(0),
     _servosPowered(false),
+    _actuatorSessionActive(false),
     _ccVolume(cfg.ccVolumeDefault),
     _ccExpression(cfg.ccExpressionDefault),
     _ccModulation(cfg.ccModulationDefault),
@@ -197,6 +198,15 @@ NoteSequencer& InstrumentManager::getSequencer() {
 }
 
 void InstrumentManager::managePower() {
+  // An external actuator session (auto-calibration / range finder) drives the
+  // servos and reads audio without going through the MIDI sequencer. The idle
+  // power-down does not see that activity, so it must be inhibited: otherwise the
+  // PCA9685 OE (and the finger/airflow servos) could be cut mid-measurement.
+  if (_actuatorSessionActive) {
+    ensureServosPowered();
+    _lastActivityTime = millis();
+    return;
+  }
   if (cfg.timeUnpower == 0) {
     ensureServosPowered();
     return;
@@ -223,6 +233,11 @@ void InstrumentManager::ensureServosPowered() {
 void InstrumentManager::registerActuatorActivity() {
   ensureServosPowered();
   _lastActivityTime = millis();
+}
+
+void InstrumentManager::setActuatorSessionActive(bool active) {
+  _actuatorSessionActive = active;
+  if (active) ensureServosPowered();
 }
 
 void InstrumentManager::powerOnServos() {

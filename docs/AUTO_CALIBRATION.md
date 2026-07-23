@@ -251,6 +251,32 @@ hardware**.
   `read_error`) via signal classification, plus a `mic_reset` that re-probes the
   mic without rebooting.
 
+### Post-review hardening
+
+- **The range-finder result stays applicable.** `rf_done` is broadcast once and the
+  calibrator is kept in its completed state (not stopped), so `apply_range` works
+  until the owner applies / cancels / restarts / disconnects.
+- **Servo power is held for the whole session.** The auto-calibrator drives
+  actuators outside the MIDI sequencer, so `InstrumentManager` exposes an actuator
+  session that inhibits the idle power-down — the PCA9685 OE and servos can no
+  longer be cut between a position's settle and its last audio frame.
+- **Both applies are storage-checked.** A LittleFS failure rolls the RAM config
+  back and reports `applied:false` (per-note) or refuses the servo range (range
+  finder) — never a false partial success.
+- **Air loss is caught per position.** Readiness/error is re-checked during each
+  position's settle and collect, so a mid-note pump/fan drop-out fails with
+  `air_supply` (and a specific sub-error) instead of a misleading `no_sound`.
+- **The range finder has its own failure path.** A stale source / timeout ends it
+  in the range-finder terminal state with invalid angles and a reason, never
+  looping on the centre note nor falling into per-note result handling.
+- **Reservoir mode is strict about its sensor.** Without a usable level/pressure
+  sensor the reservoir is never "ready": the pump is stopped and the run fails with
+  `air_supply` / `sensor_fault` rather than pressurising blind.
+- **The noise floor uses the same freshness contract** as a position (distinct
+  audio sequences, minimum frame count, stale-audio timeout).
+- Failure reasons are also reported as **textual names** (`reasonName`, e.g.
+  `audio_stale`) alongside the numeric code.
+
 ### High-pitch precision caveat
 
 The YIN core is unit-tested on synthetic PCM. At the fixed 32 kHz sample rate the
