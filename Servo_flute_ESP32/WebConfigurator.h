@@ -123,7 +123,10 @@ private:
   uint32_t _testOwnerClientId = 0;
   unsigned long _testStartTime = 0;
   bool _testActive = false;
-  void beginTestSession(uint32_t clientId);   // start/refresh the manual-test window
+  // Start/refresh the manual-test window. Returns false (and changes nothing) if a
+  // test is already active and owned by a different client, so ownership can't be
+  // stolen mid-test.
+  bool beginTestSession(uint32_t clientId);
   void endTestSession(bool safeHardware);     // stop it (optionally safing hardware)
 
   // Controlled restart: after a restart-required config change / reset, safe the

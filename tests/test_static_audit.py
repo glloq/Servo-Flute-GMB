@@ -370,6 +370,28 @@ def test_audit_p0_controlled_restart_on_reboot_required_config():
     assert web.count('if (ok) scheduleControlledRestart();') >= 2
 
 
+def test_audit_p1_actuator_ownership_and_playback_isolation():
+    web = read('Servo_flute_ESP32/WebConfigurator.cpp')
+    webh = read('Servo_flute_ESP32/WebConfigurator.h')
+    wm = read('Servo_flute_ESP32/WirelessManager.cpp')
+    # P1 #8: the physical double-press does not fight an owned actuator session.
+    assert 'isActuatorSessionActive()' in wm
+    assert 'openAllFingers' in wm
+    # The guard precedes the direct actuator drive.
+    assert wm.index('isActuatorSessionActive()') < wm.index('getFingerCtrl().openAllFingers()')
+    # P1 #9: a running MIDI playback is paused before a calibration takes the actuators.
+    # Anchor on the calibration-start comment so this is not satisfied by the unrelated
+    # WS "pause" command handler.
+    marker = 'drive notes into the actuators the calibration is'
+    assert marker in web
+    assert web.index(marker) < web.index('_autoCal->start(')
+    # P1 #10: manual-test ownership cannot be hijacked by a competing client.
+    assert 'bool beginTestSession(uint32_t clientId)' in webh
+    assert 'bool WebConfigurator::beginTestSession' in web
+    assert 'test_busy' in web
+    assert '_testOwnerClientId != 0 && clientId != _testOwnerClientId' in web
+
+
 def test_diagnostics_status_vocabulary_and_passive_active_split():
     src = read('Servo_flute_ESP32/WebConfigurator.cpp')
     api = read('docs/API_WEB.md')

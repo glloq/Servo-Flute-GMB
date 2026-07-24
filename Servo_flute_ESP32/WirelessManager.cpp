@@ -121,9 +121,18 @@ String WirelessManager::getStatusText() const {
 }
 
 void WirelessManager::handleButtonEvent(ButtonEvent event) {
-  // Double appui : ouvre tous les doigts (quel que soit le mode)
+  // Double appui : ouvre tous les doigts (quel que soit le mode).
+  // Ignore pendant une session d'actionneurs (calibration / test manuel) : celle-ci
+  // possede les doigts et un appui direct corromprait la mesure en cours en luttant
+  // contre le proprietaire de la session.
   if (event == BUTTON_DOUBLE_PRESS) {
     if (_instrument) {
+      if (_instrument->isActuatorSessionActive()) {
+        if (DEBUG) {
+          Serial.println("DEBUG: WirelessManager - Double appui ignore (session actionneurs active)");
+        }
+        return;
+      }
       _instrument->powerOnServos();
       _instrument->getFingerCtrl().openAllFingers();
 

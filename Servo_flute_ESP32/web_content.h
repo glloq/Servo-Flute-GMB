@@ -3051,6 +3051,9 @@ function handleWs(d){
   }else if(d.t==='test_expired'){
     /* server-side manual-test timeout returned the actuators to a safe state */
     showToast('Test manuel expire: actionneurs remis en securite','error');addLog('test_expired')
+  }else if(d.t==='test_busy'){
+    /* another client already owns the manual-test session; this command was refused */
+    showToast('Test manuel en cours sur un autre client','error');addLog('test_busy')
   }
 }
 function updateCC(n,v){if(v===undefined)return;const p=(v/MIDI_CC_MAX*100).toFixed(0);

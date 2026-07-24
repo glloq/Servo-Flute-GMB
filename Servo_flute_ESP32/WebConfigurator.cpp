@@ -340,10 +340,17 @@ void WebConfigurator::setWirelessManager(WirelessManager* wm) {
   _wirelessManager = wm;
 }
 
-void WebConfigurator::beginTestSession(uint32_t clientId) {
+bool WebConfigurator::beginTestSession(uint32_t clientId) {
+  // Ownership cannot be stolen: while a manual test is active and owned by another
+  // client, refuse a competing client's test command so two browsers can never
+  // fight over the actuators. The owner may keep refreshing its own session.
+  if (_testActive && _testOwnerClientId != 0 && clientId != _testOwnerClientId) {
+    return false;
+  }
   _testOwnerClientId = clientId;
   _testStartTime = millis();
   _testActive = true;
+  return true;
 }
 
 void WebConfigurator::endTestSession(bool safeHardware) {
@@ -1588,7 +1595,11 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
 
   // A manual actuator test starts/refreshes a bounded, owner-tracked session so the
   // server (not just the browser) returns the hardware to safe on loss of contact.
-  if (isManualTestCommand(type)) beginTestSession(client->id());
+  // If another client already owns an active test, refuse rather than hijack it.
+  if (isManualTestCommand(type) && !beginTestSession(client->id())) {
+    client->text("{\"t\":\"test_busy\"}");
+    return;
+  }
 
   if (strcmp(type, "non") == 0) {
     if (!hasInt("n")) return;
@@ -1686,6 +1697,11 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
         // A second start attempt is refused explicitly.
         client->text("{\"t\":\"acal_error\",\"msg\":\"calibration_busy\"}");
       } else {
+        // Pause any running MIDI playback first: otherwise the player keeps
+        // advancing and would drive notes into the actuators the calibration is
+        // about to own. pause() also releases any held note. Position is kept so
+        // the user can resume after calibrating.
+        if (_player) _player->pause();
         // A new start discards any pending (unapplied) range-finder result.
         cancelActiveActuatorSession();
         // Take ownership and snapshot the user's monitor preference.
