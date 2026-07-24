@@ -126,6 +126,13 @@ private:
   void beginTestSession(uint32_t clientId);   // start/refresh the manual-test window
   void endTestSession(bool safeHardware);     // stop it (optionally safing hardware)
 
+  // Controlled restart: after a restart-required config change / reset, safe the
+  // hardware and schedule a reboot so the change takes effect cleanly. While set,
+  // config-mutating routes are refused so they cannot overwrite the pending config.
+  unsigned long _pendingRestartTime = 0;
+  void scheduleControlledRestart();
+  bool restartPending() const { return _pendingRestartTime != 0; }
+
   // Fichier temporaire pour upload MIDI
   File _uploadFile;
   size_t _uploadSize;

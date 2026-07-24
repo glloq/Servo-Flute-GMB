@@ -1087,7 +1087,7 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
   </div>
 
   <div class="btn-row" style="justify-content:center;margin-top:16px">
-    <div id="restartRequiredBanner" style="display:none;margin:8px 0;padding:8px;border:1px solid #f7b731;color:#f7b731;border-radius:6px">Restart required for hardware changes. <button class="btn btn-w" onclick="restartNow()">Restart now</button></div>
+    <div id="restartRequiredBanner" style="display:none;margin:8px 0;padding:8px;border:1px solid #f7b731;color:#f7b731;border-radius:6px">Restart required for hardware changes. <button id="btnRestartNow" class="btn btn-w" onclick="restartNow()">Restart now</button></div>
     <button class="btn btn-g" id="btnSaveSettings" onclick="saveSettings()"><svg viewBox="0 0 16 16" width="14" height="14"><path d="M12.7 1H3a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2V3.3L12.7 1zM8 13a2.5 2.5 0 110-5 2.5 2.5 0 010 5zM11 5H5V2h6v3z" fill="currentColor"/></svg>Save</button>
     <button class="btn btn-s" onclick="resetConfig()">Reset defaults</button>
   </div>
@@ -1231,7 +1231,9 @@ function showToast(msg,type){type=type||'info';const c=$('toastContainer');
 var _suppressDirty=false;
 function markDirty(){if(_suppressDirty)return;dirty=true;$('unsavedBadge').classList.add('show');updStepDots();const sb=$('btnAirSave');if(sb)sb.style.boxShadow='0 0 8px #4ecca3';updateConfigSummary()}
 function markClean(){dirty=false;$('unsavedBadge').classList.remove('show');updStepDots();const sb=$('btnAirSave');if(sb)sb.style.boxShadow='';const cs=$('airConfigSummary');if(cs)cs.style.display='none'}
-function handleSaveResponse(j){if(j&&j.restart_required){const b=$('restartRequiredBanner');if(b)b.style.display='block';showToast('Restart required for hardware changes','info')}}
+function handleSaveResponse(j){if(j&&j.restart_required){const b=$('restartRequiredBanner');if(b)b.style.display='block';
+  if(j.restarting){const rb=$('btnRestartNow');if(rb){rb.disabled=true;rb.textContent='Redémarrage automatique...'}showToast('Changement matériel enregistré - redémarrage automatique','info')}
+  else{showToast('Restart required for hardware changes','info')}}}
 function restartNow(){if(confirm('Put actuators in safe state and restart now?'))fetch('/api/restart',{method:'POST'}).then(()=>showToast('Restarting...','info'))}
 function btnLoad(id,on){const b=$(id);if(!b)return;if(on){b.classList.add('loading');b.disabled=true}else{b.classList.remove('loading');b.disabled=false}}
 function testPulse(el){el.classList.add('test-pulse');setTimeout(()=>el.classList.remove('test-pulse'),600)}

@@ -163,6 +163,13 @@ Set MIC_ENABLED to false if no mic is connected.
 // the stop command is lost. The server therefore bounds a manual-test session to
 // this window and returns the actuators to a safe state when it elapses.
 #define TEST_SESSION_MAX_MS 30000
+// After a configuration change that requires a hardware re-init (or a reset /
+// factory reset), the device performs a controlled restart so the new/default
+// configuration takes effect with the matching hardware setup, instead of running
+// on a half-applied config. This is the delay between sending the HTTP response and
+// the actual reboot. While a restart is pending, further config changes are refused
+// so they cannot overwrite the persisted pending configuration.
+#define CONFIG_RESTART_DELAY_MS 1500
 
 // --- Broadcast / legacy timing (still used by range finder + WS throttling) ---
 #define AUTOCAL_SETTLE_MS       300     // Range finder: wait after positioning servos

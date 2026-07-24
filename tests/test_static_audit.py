@@ -344,6 +344,32 @@ def test_audit_p0_boot_and_rest_safety():
     assert '_cc2TimedOut' in af and 'recomputeActiveNote()' in af
 
 
+def test_audit_p0_controlled_restart_on_reboot_required_config():
+    web = read('Servo_flute_ESP32/WebConfigurator.cpp')
+    webh = read('Servo_flute_ESP32/WebConfigurator.h')
+    cfg = read('Servo_flute_ESP32/ConfigStorage.cpp')
+    cfgh = read('Servo_flute_ESP32/ConfigStorage.h')
+    st = read('Servo_flute_ESP32/settings.h')
+    # P0.3/P0.6: a controlled reboot is scheduled and executed from update().
+    assert '_pendingRestartTime' in web and '_pendingRestartTime' in webh
+    assert 'void scheduleControlledRestart()' in webh
+    assert 'scheduleControlledRestart()' in web
+    assert 'restartPending()' in web
+    assert 'ESP.restart()' in web
+    assert 'CONFIG_RESTART_DELAY_MS' in st and 'CONFIG_RESTART_DELAY_MS' in web
+    # Config-mutating routes refuse while a reboot is pending so they cannot
+    # overwrite the persisted pending config before it applies.
+    assert web.count('restart_pending') >= 3   # finalize + reset + factory
+    # P0.3: reboot is scheduled for the reboot-required finalize path only when saved.
+    assert 'if (saved) scheduleControlledRestart();' in web
+    # P0.6: reset / factory-reset report success from the storage layer and reboot.
+    assert 'bool ConfigStorage::resetToDefaults()' in cfg
+    assert 'bool ConfigStorage::factoryReset()' in cfg
+    assert 'static bool resetToDefaults();' in cfgh
+    assert 'static bool factoryReset();' in cfgh
+    assert web.count('if (ok) scheduleControlledRestart();') >= 2
+
+
 def test_diagnostics_status_vocabulary_and_passive_active_split():
     src = read('Servo_flute_ESP32/WebConfigurator.cpp')
     api = read('docs/API_WEB.md')

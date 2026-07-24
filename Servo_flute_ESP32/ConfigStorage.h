@@ -259,10 +259,10 @@ public:
   static bool save();
 
   // Remet cfg aux valeurs par defaut et sauvegarde
-  static void resetToDefaults();
+  static bool resetToDefaults();
 
   // Reset usine: remet cfg aux defauts et supprime le fichier config
-  static void factoryReset();
+  static bool factoryReset();
 
   // Verifie si c'est le premier demarrage (pas de config sauvegardee)
   static bool isFirstBoot();

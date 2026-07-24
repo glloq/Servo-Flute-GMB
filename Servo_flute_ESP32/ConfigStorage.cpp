@@ -588,22 +588,24 @@ bool ConfigStorage::save() {
   return written > 0;
 }
 
-void ConfigStorage::resetToDefaults() {
+bool ConfigStorage::resetToDefaults() {
   initDefaults();
-  save();
+  bool ok = save();
   if (DEBUG) {
     Serial.println("DEBUG: ConfigStorage - Reset aux valeurs par defaut");
   }
+  return ok;
 }
 
-void ConfigStorage::factoryReset() {
+bool ConfigStorage::factoryReset() {
   initDefaults();
   // Supprimer le fichier config pour que isFirstBoot() retourne true
   // Le wizard le recreera via save() apres configuration
-  LittleFS.remove(CONFIG_FILE_PATH);
+  bool ok = LittleFS.remove(CONFIG_FILE_PATH) || !LittleFS.exists(CONFIG_FILE_PATH);
   if (DEBUG) {
     Serial.println("DEBUG: ConfigStorage - Reset usine (fichier supprime)");
   }
+  return ok;
 }
 
 bool ConfigStorage::isFirstBoot() {

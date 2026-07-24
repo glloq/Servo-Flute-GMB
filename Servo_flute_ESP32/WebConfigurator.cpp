@@ -134,6 +134,12 @@ void WebConfigurator::begin(InstrumentManager* instrument, MidiFilePlayer* playe
 void WebConfigurator::update() {
   unsigned long now = millis();
 
+  // Controlled restart after a restart-required config change / reset: the response
+  // has been sent; reboot so the persisted config takes effect with a clean init.
+  if (_pendingRestartTime != 0 && (long)(now - _pendingRestartTime) >= 0) {
+    ESP.restart();
+  }
+
   // Server-side safety net for manual actuator tests: if the owning client stops
   // refreshing the session (tab suspended, browser crash, Wi-Fi lost, stop lost),
   // return the actuators to a safe state regardless of any browser-side timeout.
@@ -344,6 +350,13 @@ void WebConfigurator::endTestSession(bool safeHardware) {
   if (safeHardware && _instrument) _instrument->allSoundOff();
   _testActive = false;
   _testOwnerClientId = 0;
+}
+
+void WebConfigurator::scheduleControlledRestart() {
+  // Return the hardware to a safe state now; the reboot (in update()) then reloads
+  // the persisted config with the matching hardware initialisation.
+  if (_instrument) _instrument->allSoundOff();
+  if (_pendingRestartTime == 0) _pendingRestartTime = millis() + CONFIG_RESTART_DELAY_MS;
 }
 
 #if MIC_ENABLED
@@ -765,6 +778,12 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
   String configBody; bool configBodyTooLarge;
   takeRequestBody(request, configBody, configBodyTooLarge);
 
+  // A restart is already scheduled: refuse further changes so they cannot overwrite
+  // the persisted pending configuration before the reboot applies it.
+  if (restartPending()) {
+    request->send(409, "application/json", "{\"ok\":false,\"error\":\"restart_pending\"}");
+    return;
+  }
 #if MIC_ENABLED
   // Configuration changes are locked while a calibration owns the actuators, so
   // notes/fingering/air-system/PCA channels cannot shift mid-calibration.
@@ -1058,6 +1077,11 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
     if (restartRequired) {
       cfg = previousConfig;
       applyResult.applied = false;
+      // A hardware re-init is needed and only a reboot performs it. Perform a
+      // controlled restart so the persisted new config takes effect cleanly, and so
+      // a subsequent save cannot re-serialise the reverted (old) active cfg over the
+      // pending new config on disk. Only when the save actually succeeded.
+      if (saved) scheduleControlledRestart();
     }
 
     if (DEBUG) {
@@ -1069,6 +1093,7 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
     respDoc["saved"] = saved;
     respDoc["applied"] = applyResult.applied;
     respDoc["restart_required"] = restartRequired;
+    respDoc["restarting"] = restartPending();   // device will reboot automatically
     respDoc["corrected"] = validation.corrected;
     JsonArray reinitialized = respDoc["reinitialized"].to<JsonArray>();
     int start = 0;
@@ -1164,26 +1189,43 @@ void WebConfigurator::handleApiConfigReset(AsyncWebServerRequest* request) {
   // current organisation.
   if (rejectIfCalibrationActive(request)) return;
 #endif
-  ConfigStorage::resetToDefaults();
+  // A reset rewrites the whole configuration; a reboot is required for the new
+  // config to take effect cleanly. Refuse while a reboot is already pending so a
+  // second reset cannot race the one in flight.
+  if (restartPending()) {
+    request->send(409, "application/json", "{\"ok\":false,\"error\":\"restart_pending\"}");
+    return;
+  }
+  bool ok = ConfigStorage::resetToDefaults();
 
   if (DEBUG) {
     Serial.println("DEBUG: WebConfigurator - Config reset aux defauts");
   }
 
-  request->send(200, "application/json", "{\"ok\":true}");
+  request->send(ok ? 200 : 500, "application/json",
+                String("{\"ok\":") + (ok ? "true" : "false") +
+                    ",\"restart_required\":true,\"restarting\":true}");
+  if (ok) scheduleControlledRestart();
 }
 
 void WebConfigurator::handleApiFactoryReset(AsyncWebServerRequest* request) {
 #if MIC_ENABLED
   if (rejectIfCalibrationActive(request)) return;
 #endif
-  ConfigStorage::factoryReset();
+  if (restartPending()) {
+    request->send(409, "application/json", "{\"ok\":false,\"error\":\"restart_pending\"}");
+    return;
+  }
+  bool ok = ConfigStorage::factoryReset();
 
   if (DEBUG) {
     Serial.println("DEBUG: WebConfigurator - Reset usine");
   }
 
-  request->send(200, "application/json", "{\"ok\":true}");
+  request->send(ok ? 200 : 500, "application/json",
+                String("{\"ok\":") + (ok ? "true" : "false") +
+                    ",\"restart_required\":true,\"restarting\":true}");
+  if (ok) scheduleControlledRestart();
 }
 
 void WebConfigurator::handleMidiUpload(AsyncWebServerRequest* request, const String& filename,
