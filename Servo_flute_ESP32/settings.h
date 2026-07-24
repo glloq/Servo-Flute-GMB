@@ -171,6 +171,10 @@ Set MIC_ENABLED to false if no mic is connected.
 // so they cannot overwrite the persisted pending configuration.
 #define CONFIG_RESTART_DELAY_MS 1500
 
+// Duration of a "test note" preview from the web UI: the note is played as a real
+// timed sequence (through the sequencer) and this is when it auto-stops.
+#define TEST_NOTE_DURATION_MS 800
+
 // --- Broadcast / legacy timing (still used by range finder + WS throttling) ---
 #define AUTOCAL_SETTLE_MS       300     // Range finder: wait after positioning servos
 #define AUTOCAL_SILENCE_COUNT   3       // Range finder: consecutive silent steps = sound gone

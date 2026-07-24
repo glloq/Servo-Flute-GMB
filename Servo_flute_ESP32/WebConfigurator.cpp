@@ -148,6 +148,12 @@ void WebConfigurator::update() {
     _ws.textAll("{\"t\":\"test_expired\"}");
   }
 
+  // Auto-stop a "test note" preview once its bounded duration has elapsed.
+  if (_testNoteOffTime != 0 && (long)(now - _testNoteOffTime) >= 0) {
+    if (_instrument) _instrument->noteOff(_testNoteMidi);
+    _testNoteOffTime = 0;
+  }
+
   // Nettoyage periodique des clients WS deconnectes
   if (now - _lastWsCleanup >= WS_CLEANUP_INTERVAL_MS) {
     _ws.cleanupClients(WS_MAX_CLIENTS);
@@ -357,6 +363,7 @@ void WebConfigurator::endTestSession(bool safeHardware) {
   if (safeHardware && _instrument) _instrument->allSoundOff();
   _testActive = false;
   _testOwnerClientId = 0;
+  _testNoteOffTime = 0;   // cancel any pending test-note auto-stop
 }
 
 void WebConfigurator::scheduleControlledRestart() {
@@ -402,7 +409,7 @@ bool WebConfigurator::actuatorCommandBlockedDuringCalibration(AsyncWebSocketClie
   // cancels the calibration cleanly rather than fighting it with allSoundOff.
   static const char* kBlocked[] = {
     "non", "nof", "cc", "air_live", "test_finger", "test_air", "test_angle",
-    "angle_live", "test_sol", "test_note", "pump_target", "fan_target",
+    "angle_live", "test_sol", "test_note", "pump_target", "pump_enable", "fan_target",
     "pump_stop", "fan_stop", "play", "mic_mon", "mic_reset"
   };
   for (const char* b : kBlocked) {
@@ -1668,13 +1675,29 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
   } else if (strcmp(type, "test_note") == 0) {
     uint8_t note = getMidi7Bit(doc, "n", 0);
     if (_instrument->isNotePlayable(note)) {
-      _instrument->getFingerCtrl().setFingerPatternForNote(note);
-      _instrument->getAirflowCtrl().setAirflowForNote(note, _webVelocity);
+      // Play a REAL, timed note through the sequencer: it positions the fingers,
+      // opens the valve only if setAirflowForNote decides the note actually sounds,
+      // and honours the minimum note duration. Schedule an automatic note-off so
+      // the preview stops on its own (previously it left the valve/airflow hanging).
+      _instrument->noteOn(note, _webVelocity);
+      _testNoteMidi = note;
+      _testNoteOffTime = millis() + TEST_NOTE_DURATION_MS;
     }
+  } else if (strcmp(type, "pump_enable") == 0) {
+    // Keyboard pump mute toggle (v:0 mute, v:1 enable).
+    _instrument->getPressureCtrl().setEnabled((doc["v"] | 1) != 0);
   } else if (strcmp(type, "pump_target") == 0) {
-    _instrument->getPressureCtrl().setTargetPercent(getPercent(doc, "v", 0));
+    int pumpIdx = doc["pump"] | -1;
+    if (pumpIdx >= 0) {
+      // Per-pump test: drive only the requested pump, not all of them.
+      _instrument->getPressureCtrl().testSinglePump((uint8_t)pumpIdx, getPercent(doc, "v", 0));
+    } else {
+      _instrument->getPressureCtrl().setTargetPercent(getPercent(doc, "v", 0));
+    }
   } else if (strcmp(type, "pump_stop") == 0) {
-    _instrument->getPressureCtrl().stop();
+    int pumpIdx = doc["pump"] | -1;
+    if (pumpIdx >= 0) _instrument->getPressureCtrl().stopSinglePumpTest();
+    else _instrument->getPressureCtrl().stop();
     endTestSession(false);
   } else if (strcmp(type, "fan_target") == 0) {
     _instrument->getFanCtrl().setSpeed(getPercent(doc, "v", 0));

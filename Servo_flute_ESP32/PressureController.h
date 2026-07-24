@@ -32,6 +32,17 @@ public:
   // Arreter la pompe immediatement
   void stop();
 
+  // Global pump mute (keyboard toggle). While disabled the pump is forced off in
+  // update() regardless of demand; enabling resumes normal control.
+  void setEnabled(bool enabled);
+  bool isEnabled() const { return _enabled; }
+
+  // Manual single-pump test: drive ONLY pump `index` at `percent` (bypassing the
+  // global cascade/PID controller) until stopped. Lets the per-pump test button
+  // exercise one pump instead of commanding them all.
+  void testSinglePump(uint8_t index, uint8_t percent);
+  void stopSinglePumpTest();
+
   // Accesseurs pour l'UI
   uint16_t getDistanceMm() const { return _distanceMm; }
   uint8_t  getFillPercent() const { return _fillPercent; }
@@ -57,6 +68,9 @@ private:
   // Etat pompe
   uint8_t _targetPercent;      // Cible demandee (0-100)
   uint8_t _currentPumpPwm;    // PWM global (sortie PID, 0-255)
+  bool _enabled;               // Mute global: false => pompe forcee a l'arret
+  int8_t _testPumpIndex;       // >=0: test manuel d'une seule pompe (cet index)
+  uint8_t _testPumpPercent;    // Consigne du test mono-pompe (0-100)
 
   // Cascade multi-pompes
   bool _pumpActive[MAX_PUMPS];           // Etat actif par pompe

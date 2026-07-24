@@ -598,6 +598,27 @@ static void air_fan_speed_follows_replacement(){
   im.allSoundOff();
 }
 
+// Audit P1 §12. pump_enable mutes/unmutes the whole pump, and a single-pump test
+// drives ONLY the requested pump instead of commanding them all.
+static void pump_enable_and_single_pump_test(){
+  resetCfg(); cfg.airMode=AIR_MODE_PUMP_VALVE; cfg.numPumps=3; cfg.motorType=MOTOR_TYPE_PWM; cfg.pumpCascadeThreshold=0;
+  __test_millis=0;
+  PressureController pc; pc.begin();
+  pc.setTargetPercent(50); pc.update();                       // parallel: all pumps run
+  assert(__analog_writes[25]>0 && __analog_writes[26]>0 && __analog_writes[27]>0);
+  pc.setEnabled(false); pc.update();                          // muted: all off
+  assert(__analog_writes[25]==0 && __analog_writes[26]==0 && __analog_writes[27]==0);
+  assert(!pc.isEnabled());
+  pc.setEnabled(true); pc.update();                           // unmute: previous demand resumes
+  assert(__analog_writes[25]>0 && __analog_writes[26]>0 && __analog_writes[27]>0);
+  pc.testSinglePump(1,40); pc.update();                       // ONLY pump 1 runs
+  assert(__analog_writes[25]==0 && __analog_writes[26]==physical(90,220,102) && __analog_writes[27]==0);
+  pc.stopSinglePumpTest(); pc.update();                       // normal control resumes
+  assert(__analog_writes[25]>0 && __analog_writes[26]>0 && __analog_writes[27]>0);
+  pc.stop();
+  assert(__analog_writes[25]==0 && __analog_writes[26]==0 && __analog_writes[27]==0);
+}
+
 // Review #14. The global timeout scales to the largest note count instead of being
 // clamped below the sum of the per-note budgets (which happened ~24 notes before).
 static void autocal_global_timeout_scales_to_max_notes(){
@@ -837,4 +858,4 @@ static void audio_mic_classification(){
   assert(PitchDetector::classifyRaw(raw.data(), N) == MIC_SIG_OK);
 }
 
-int main(){ pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); airflow_nominal_drives_angle(); autocal_frozen_source_fails(); autocal_air_supply_gate(); autocal_14_notes_no_timeout(); autocal_plus70_cents_rejected(); autocal_storage_failure_restores(); autocal_range_finder(); autocal_range_finder_stale(); autocal_range_apply_storage(); autocal_air_lost_midnote(); calair_reservoir_requires_sensor(); instrument_power_held_during_actuator_session(); instrument_ignores_midi_during_calibration(); instrument_inert_after_pca_failure(); air_pump_demand_follows_real_note(); air_fan_speed_follows_replacement(); autocal_global_timeout_scales_to_max_notes(); airflow_cc2_silence_and_live_cc(); airflow_attack_cancelled_on_rest(); airflow_cc2_timeout_on_held_note(); audio_yin_pcm_core(); audio_mic_classification(); std::cout << "behavior tests passed\n"; }
+int main(){ pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); airflow_nominal_drives_angle(); autocal_frozen_source_fails(); autocal_air_supply_gate(); autocal_14_notes_no_timeout(); autocal_plus70_cents_rejected(); autocal_storage_failure_restores(); autocal_range_finder(); autocal_range_finder_stale(); autocal_range_apply_storage(); autocal_air_lost_midnote(); calair_reservoir_requires_sensor(); instrument_power_held_during_actuator_session(); instrument_ignores_midi_during_calibration(); instrument_inert_after_pca_failure(); air_pump_demand_follows_real_note(); air_fan_speed_follows_replacement(); pump_enable_and_single_pump_test(); autocal_global_timeout_scales_to_max_notes(); airflow_cc2_silence_and_live_cc(); airflow_attack_cancelled_on_rest(); airflow_cc2_timeout_on_held_note(); audio_yin_pcm_core(); audio_mic_classification(); std::cout << "behavior tests passed\n"; }

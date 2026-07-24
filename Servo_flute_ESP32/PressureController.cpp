@@ -60,6 +60,7 @@ PressureController::PressureController()
   : _sensorDetected(false), _sensorType(0),
     _distanceMm(0), _hallValue(0), _endstopActive(false), _fillPercent(0),
     _targetPercent(0), _currentPumpPwm(0),
+    _enabled(true), _testPumpIndex(-1), _testPumpPercent(0),
     _activePumpCount(0), _bangbangPumpOn(false),
     _pidIntegral(0), _pidLastError(0),
     _lastPidTime(0), _lastReadTime(0) {
@@ -228,6 +229,28 @@ uint16_t PressureController::readSensor() {
 
 void PressureController::update() {
   if (cfg.airMode < AIR_MODE_PUMP_VALVE) return;
+
+  // Manual single-pump test overrides normal control: drive ONLY the tested pump
+  // so a per-pump test never commands the others.
+  if (_testPumpIndex >= 0) {
+    uint8_t raw = (uint16_t)_testPumpPercent * 255 / 100;
+    _activePumpCount = 0;
+    for (uint8_t i = 0; i < cfg.numPumps && i < MAX_PUMPS; i++) {
+      bool on = (i == _testPumpIndex);
+      writePumpHw(i, on ? raw : 0);
+      _pumpActive[i] = (on && raw > 0);
+      if (_pumpActive[i]) _activePumpCount++;
+    }
+    _currentPumpPwm = raw;
+    return;
+  }
+
+  // Global mute: keep the pump off regardless of the requested target.
+  if (!_enabled) {
+    setPumpPwm(0);
+    _bangbangPumpOn = false;
+    return;
+  }
 
   unsigned long now = millis();
 
@@ -401,6 +424,7 @@ void PressureController::setTargetPercent(uint8_t percent) {
 
 void PressureController::stop() {
   _targetPercent = 0;
+  _testPumpIndex = -1;   // a full stop also ends any single-pump test
   setPumpPwm(0);
   _pidIntegral = 0;
   _pidLastError = 0;
@@ -410,6 +434,25 @@ void PressureController::stop() {
     _pumpActivateTime[i] = 0;
   }
   _activePumpCount = 0;
+}
+
+void PressureController::setEnabled(bool enabled) {
+  _enabled = enabled;
+  // Cut the output now (don't wait for the next update). Keep _targetPercent so
+  // unmuting resumes the previous demand rather than requiring a fresh note.
+  if (!enabled) { setPumpPwm(0); _bangbangPumpOn = false; }
+}
+
+void PressureController::testSinglePump(uint8_t index, uint8_t percent) {
+  if (index >= cfg.numPumps || index >= MAX_PUMPS) return;
+  if (percent > 100) percent = 100;
+  _testPumpIndex = (int8_t)index;
+  _testPumpPercent = percent;
+}
+
+void PressureController::stopSinglePumpTest() {
+  _testPumpIndex = -1;
+  setPumpPwm(0);
 }
 
 void PressureController::writePumpHw(uint8_t index, uint8_t pwm) {

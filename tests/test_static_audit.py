@@ -409,6 +409,29 @@ def test_audit_p1_air_source_tied_to_sequencer_transitions():
     assert '_pressureCtrl.setTargetPercent' not in note_off
 
 
+def test_audit_p1_test_note_and_pump_commands():
+    web = read('Servo_flute_ESP32/WebConfigurator.cpp')
+    pc = read('Servo_flute_ESP32/PressureController.cpp')
+    pch = read('Servo_flute_ESP32/PressureController.h')
+    # §11: test_note plays a real timed note (via the sequencer) and schedules a stop.
+    test_note = web.split('strcmp(type, "test_note") == 0')[1].split('else if')[0]
+    assert '_instrument->noteOn(' in test_note
+    assert '_testNoteOffTime' in web and 'TEST_NOTE_DURATION_MS' in web
+    assert '_instrument->noteOff(_testNoteMidi)' in web
+    # §12: pump_enable is handled (no longer Unknown message type).
+    assert '"pump_enable"' in web and 'setEnabled(' in web
+    # §12: pump_target / pump_stop honour a per-pump index.
+    assert 'testSinglePump(' in web and 'stopSinglePumpTest(' in web
+    assert 'doc["pump"]' in web
+    # PressureController exposes the mute + single-pump primitives.
+    assert 'void setEnabled(bool enabled)' in pch
+    assert 'void testSinglePump(uint8_t index, uint8_t percent)' in pch
+    assert 'void PressureController::setEnabled' in pc
+    assert 'void PressureController::testSinglePump' in pc
+    # A single-pump test must override normal control in update().
+    assert '_testPumpIndex >= 0' in pc
+
+
 def test_diagnostics_status_vocabulary_and_passive_active_split():
     src = read('Servo_flute_ESP32/WebConfigurator.cpp')
     api = read('docs/API_WEB.md')

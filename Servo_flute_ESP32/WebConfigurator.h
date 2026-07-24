@@ -129,6 +129,11 @@ private:
   bool beginTestSession(uint32_t clientId);
   void endTestSession(bool safeHardware);     // stop it (optionally safing hardware)
 
+  // A "test note" preview plays a real timed note through the sequencer and is
+  // stopped automatically after TEST_NOTE_DURATION_MS by update().
+  uint8_t _testNoteMidi = 0;
+  unsigned long _testNoteOffTime = 0;
+
   // Controlled restart: after a restart-required config change / reset, safe the
   // hardware and schedule a reboot so the change takes effect cleanly. While set,
   // config-mutating routes are refused so they cannot overwrite the pending config.
