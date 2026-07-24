@@ -120,22 +120,12 @@ void InstrumentManager::update() {
   // noteOn/noteOff/CC below) keeps external MIDI from corrupting the measurement.
   if (!_actuatorSessionActive) _sequencer.update();
   _airflowCtrl.update();
+  // Drive the direct pump / fan from the sequencer's real note transitions (§6/§7).
+  updateAirSourceFromSequencer();
   if (cfg.airMode >= AIR_MODE_PUMP_VALVE) {
     _pressureCtrl.update();
   }
   if (cfg.airMode == AIR_MODE_FAN_SERVO) {
-    // Detect sequencer state transitions for fan idle management
-    NoteState curState = _sequencer.getState();
-    if (curState != _prevSequencerState) {
-      if (curState == STATE_PLAYING && _prevSequencerState != STATE_PLAYING) {
-        // Transition vers jeu actif => signaler noteOn au ventilateur
-        _fanCtrl.onNoteOn();
-      } else if (_prevSequencerState == STATE_PLAYING && curState != STATE_PLAYING) {
-        // Transition depuis jeu actif => signaler noteOff au ventilateur
-        _fanCtrl.onNoteOff();
-      }
-      _prevSequencerState = curState;
-    }
     _fanCtrl.update();
   }
   managePower();
@@ -155,17 +145,10 @@ void InstrumentManager::noteOn(byte midiNote, byte velocity) {
     return;
   }
 
-  if (cfg.airMode == AIR_MODE_FAN_SERVO) {
-    uint8_t fanDemand = cfg.fanFollowAirflow ? (uint8_t)((uint16_t)cfg.fanMaxNotePercent * velocity / 127) : cfg.fanMaxNotePercent;
-    if (fanDemand < cfg.fanDefaultPercent) fanDemand = cfg.fanDefaultPercent;
-    _fanCtrl.setSpeed(fanDemand);
-  }
-  if (cfg.airMode == AIR_MODE_PUMP_VALVE) {
-    uint8_t pumpDemand = cfg.pumpFollowAirflow ? (uint8_t)((uint16_t)cfg.pumpDirectMaxPercent * velocity / 127) : cfg.pumpDirectMaxPercent;
-    if (pumpDemand < cfg.pumpDirectIdlePercent) pumpDemand = cfg.pumpDirectIdlePercent;
-    _pressureCtrl.setTargetPercent(pumpDemand);
-  }
-
+  // NB: the pump / fan demand is NOT set here. Driving it from the raw incoming
+  // MIDI event would let a full event queue start the pump for a note that never
+  // plays. It is instead applied when the sequencer actually starts the note
+  // (updateAirSourceFromSequencer), so demand always tracks a real note.
   bool success = _eventQueue.enqueueLiveEvent(EVENT_NOTE_ON, midiNote, velocity);
 
   if (!success) {
@@ -188,10 +171,9 @@ void InstrumentManager::noteOn(byte midiNote, byte velocity) {
 void InstrumentManager::noteOff(byte midiNote) {
   if (_hardwareInitStatus != HW_INIT_OK) return;   // no usable hardware
   if (_actuatorSessionActive) return;   // calibration owns the actuators
-  if (cfg.airMode == AIR_MODE_PUMP_VALVE) {
-    _pressureCtrl.setTargetPercent(cfg.pumpDirectIdlePercent);
-  }
-
+  // The pump is NOT returned to idle here: a stale NOTE_OFF for an already-replaced
+  // note would otherwise cut the air under the new note. Idle is applied only when
+  // the sequencer truly returns to STATE_IDLE (updateAirSourceFromSequencer).
   bool success = _eventQueue.enqueueLiveEvent(EVENT_NOTE_OFF, midiNote, 0);
 
   if (!success) {
@@ -214,6 +196,59 @@ bool InstrumentManager::isNotePlayable(byte midiNote) const {
 
 NoteSequencer& InstrumentManager::getSequencer() {
   return _sequencer;
+}
+
+uint8_t InstrumentManager::computePumpDemand(byte velocity) const {
+  uint8_t demand = cfg.pumpFollowAirflow
+                       ? (uint8_t)((uint16_t)cfg.pumpDirectMaxPercent * velocity / 127)
+                       : cfg.pumpDirectMaxPercent;
+  if (demand < cfg.pumpDirectIdlePercent) demand = cfg.pumpDirectIdlePercent;
+  return demand;
+}
+
+uint8_t InstrumentManager::computeFanDemand(byte velocity) const {
+  uint8_t demand = cfg.fanFollowAirflow
+                       ? (uint8_t)((uint16_t)cfg.fanMaxNotePercent * velocity / 127)
+                       : cfg.fanMaxNotePercent;
+  if (demand < cfg.fanDefaultPercent) demand = cfg.fanDefaultPercent;
+  return demand;
+}
+
+void InstrumentManager::updateAirSourceFromSequencer() {
+  // Only the velocity-driven air modes are handled here. AIR_MODE_PUMP_RESERVOIR
+  // (5) regulates to a fixed reservoir target and must not be pulled per note.
+  bool directPump = (cfg.airMode == AIR_MODE_PUMP_VALVE);
+  bool fan = (cfg.airMode == AIR_MODE_FAN_SERVO);
+  if (!directPump && !fan) return;
+
+  NoteState curState = _sequencer.getState();
+  if (curState == _prevSequencerState) return;
+
+  // A note the sequencer accepts always enters STATE_POSITIONING (including a fast
+  // replacement PLAYING->POSITIONING->PLAYING, which never reaches IDLE), so this
+  // is where we (re)apply the play demand from the note's real velocity. Every
+  // note has ended only when the sequencer returns to STATE_IDLE, so that is where
+  // we drop back to idle.
+  bool noteStarting = (curState == STATE_POSITIONING && _prevSequencerState != STATE_POSITIONING);
+  bool allNotesEnded = (curState == STATE_IDLE && _prevSequencerState != STATE_IDLE);
+
+  if (noteStarting) {
+    byte vel = _sequencer.getCurrentVelocity();
+    if (directPump) {
+      _pressureCtrl.setTargetPercent(computePumpDemand(vel));
+    } else {
+      _fanCtrl.onNoteOn();
+      _fanCtrl.setSpeed(computeFanDemand(vel));
+    }
+  } else if (allNotesEnded) {
+    if (directPump) {
+      _pressureCtrl.setTargetPercent(cfg.pumpDirectIdlePercent);
+    } else {
+      _fanCtrl.onNoteOff();
+    }
+  }
+
+  _prevSequencerState = curState;
 }
 
 void InstrumentManager::managePower() {

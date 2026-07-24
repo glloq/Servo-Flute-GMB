@@ -121,7 +121,15 @@ private:
   bool detectPca(uint8_t address) const;
   bool requiresSecondPca() const;
 
-  // Fan idle: track sequencer state transitions
+  // Air-source demand (0-100%) for the note velocity currently owned by the
+  // sequencer, per air mode. Kept as helpers so update() can (re)apply the demand
+  // on the sequencer's real note transitions.
+  uint8_t computePumpDemand(byte velocity) const;
+  uint8_t computeFanDemand(byte velocity) const;
+  // Drive the direct pump / fan from the sequencer's real note transitions.
+  void updateAirSourceFromSequencer();
+
+  // Air source (pump/fan): track sequencer state transitions
   NoteState _prevSequencerState;
 };
 

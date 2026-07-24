@@ -392,6 +392,23 @@ def test_audit_p1_actuator_ownership_and_playback_isolation():
     assert '_testOwnerClientId != 0 && clientId != _testOwnerClientId' in web
 
 
+def test_audit_p1_air_source_tied_to_sequencer_transitions():
+    im = read('Servo_flute_ESP32/InstrumentManager.cpp')
+    nsh = read('Servo_flute_ESP32/NoteSequencer.h')
+    # P1 §6/§7: the direct pump / fan demand is driven from the sequencer's real note
+    # transitions, not from raw incoming MIDI events.
+    assert 'updateAirSourceFromSequencer' in im
+    assert 'getCurrentVelocity' in nsh
+    assert 'STATE_POSITIONING && _prevSequencerState != STATE_POSITIONING' in im
+    assert 'STATE_IDLE && _prevSequencerState != STATE_IDLE' in im
+    # noteOn / noteOff must no longer set the pump/fan demand themselves.
+    note_on = im.split('InstrumentManager::noteOn')[1].split('InstrumentManager::noteOff')[0]
+    note_off = im.split('InstrumentManager::noteOff')[1].split('InstrumentManager::isNotePlayable')[0]
+    assert '_pressureCtrl.setTargetPercent' not in note_on
+    assert '_fanCtrl.setSpeed' not in note_on
+    assert '_pressureCtrl.setTargetPercent' not in note_off
+
+
 def test_diagnostics_status_vocabulary_and_passive_active_split():
     src = read('Servo_flute_ESP32/WebConfigurator.cpp')
     api = read('docs/API_WEB.md')

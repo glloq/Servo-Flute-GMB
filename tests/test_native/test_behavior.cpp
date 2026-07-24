@@ -543,6 +543,61 @@ static void instrument_inert_after_pca_failure(){
   assert(im.getSequencer().getState()==STATE_IDLE);
 }
 
+// Audit P1 §6. Direct-pump demand tracks the note the SEQUENCER actually plays, not
+// raw MIDI events: a fast replacement pulls the pump to the new note's level, and a
+// stale NOTE_OFF for an already-replaced note must not cut the air under it. Idle is
+// applied only when the sequencer truly returns to STATE_IDLE.
+static void air_pump_demand_follows_real_note(){
+  resetCfg(); extern WireClass Wire; Wire.clear(); Wire.setPresent(PCA_ADDR_BOARD0,true);
+  cfg.airMode=AIR_MODE_PUMP_VALVE; cfg.pumpFollowAirflow=true;
+  cfg.pumpDirectMaxPercent=100; cfg.pumpDirectIdlePercent=10;
+  cfg.numNotes=3; cfg.notes[0].midiNote=60; cfg.notes[1].midiNote=61; cfg.notes[2].midiNote=62;
+  cfg.minNoteDurationMs=0; cfg.minNoteIntervalForValveCloseMs=0; cfg.servoToSolenoidDelayMs=10;
+  __test_millis=0;
+  InstrumentManager im; assert(im.beginSafe());
+  uint8_t d60=(uint8_t)((uint16_t)100*40/127); if(d60<10) d60=10;
+  uint8_t d62=(uint8_t)((uint16_t)100*120/127); if(d62<10) d62=10;
+  im.noteOn(60,40);
+  for(int i=0;i<3;i++){ im.update(); __test_millis+=15; }
+  assert(im.getPressureCtrl().getTargetPercent()==d60);       // demand from note 60's velocity
+  im.noteOn(62,120); im.update();                              // replacement -> POSITIONING for 62
+  assert(im.getPressureCtrl().getTargetPercent()==d62);       // pulled to the new note's level
+  __test_millis+=15; im.update();                             // 62 now PLAYING
+  im.noteOff(60); im.update();                                 // STALE off for replaced note 60
+  assert(im.getPressureCtrl().getTargetPercent()==d62);       // NOT cut under the new note
+  im.noteOff(62);
+  for(int i=0;i<6;i++){ __test_millis+=30; im.update(); }      // 62 ends -> sequencer IDLE
+  assert(im.getPressureCtrl().getTargetPercent()==cfg.pumpDirectIdlePercent);
+  im.allSoundOff();
+}
+
+// Audit P1 §7. Fan speed follows the replacement note instead of being left at idle:
+// on a fast PLAYING->POSITIONING->PLAYING replacement (which never reaches IDLE) the
+// fan is set to the new note's speed, and only returns to idle when all notes end.
+static void air_fan_speed_follows_replacement(){
+  resetCfg(); extern WireClass Wire; Wire.clear(); Wire.setPresent(PCA_ADDR_BOARD0,true);
+  cfg.airMode=AIR_MODE_FAN_SERVO; cfg.fanPin=26; cfg.fanMinPwm=60; cfg.fanMaxPwm=200;
+  cfg.fanFollowAirflow=true; cfg.fanMaxNotePercent=100; cfg.fanDefaultPercent=5;
+  cfg.fanIdlePercent=15; cfg.fanIdleTimeoutMs=60000;
+  cfg.numNotes=3; cfg.notes[0].midiNote=60; cfg.notes[1].midiNote=61; cfg.notes[2].midiNote=62;
+  cfg.minNoteDurationMs=0; cfg.minNoteIntervalForValveCloseMs=0; cfg.servoToSolenoidDelayMs=10;
+  __test_millis=0;
+  InstrumentManager im; assert(im.beginSafe());
+  uint8_t s60=(uint8_t)((uint16_t)100*40/127); if(s60<5) s60=5;
+  uint8_t s62=(uint8_t)((uint16_t)100*120/127); if(s62<5) s62=5;
+  im.noteOn(60,40);
+  for(int i=0;i<3;i++){ im.update(); __test_millis+=15; }
+  assert(im.getFanCtrl().getSpeed()==s60);
+  im.noteOn(62,120); im.update();                              // replacement
+  assert(im.getFanCtrl().getSpeed()==s62);                     // new note's speed, not idle, not s60
+  __test_millis+=15; im.update();
+  assert(im.getFanCtrl().getSpeed()==s62);
+  im.noteOff(62);
+  for(int i=0;i<6;i++){ __test_millis+=30; im.update(); }      // all notes ended -> idle
+  assert(im.getFanCtrl().getSpeed()==cfg.fanIdlePercent);
+  im.allSoundOff();
+}
+
 // Review #14. The global timeout scales to the largest note count instead of being
 // clamped below the sum of the per-note budgets (which happened ~24 notes before).
 static void autocal_global_timeout_scales_to_max_notes(){
@@ -782,4 +837,4 @@ static void audio_mic_classification(){
   assert(PitchDetector::classifyRaw(raw.data(), N) == MIC_SIG_OK);
 }
 
-int main(){ pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); airflow_nominal_drives_angle(); autocal_frozen_source_fails(); autocal_air_supply_gate(); autocal_14_notes_no_timeout(); autocal_plus70_cents_rejected(); autocal_storage_failure_restores(); autocal_range_finder(); autocal_range_finder_stale(); autocal_range_apply_storage(); autocal_air_lost_midnote(); calair_reservoir_requires_sensor(); instrument_power_held_during_actuator_session(); instrument_ignores_midi_during_calibration(); instrument_inert_after_pca_failure(); autocal_global_timeout_scales_to_max_notes(); airflow_cc2_silence_and_live_cc(); airflow_attack_cancelled_on_rest(); airflow_cc2_timeout_on_held_note(); audio_yin_pcm_core(); audio_mic_classification(); std::cout << "behavior tests passed\n"; }
+int main(){ pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); airflow_nominal_drives_angle(); autocal_frozen_source_fails(); autocal_air_supply_gate(); autocal_14_notes_no_timeout(); autocal_plus70_cents_rejected(); autocal_storage_failure_restores(); autocal_range_finder(); autocal_range_finder_stale(); autocal_range_apply_storage(); autocal_air_lost_midnote(); calair_reservoir_requires_sensor(); instrument_power_held_during_actuator_session(); instrument_ignores_midi_during_calibration(); instrument_inert_after_pca_failure(); air_pump_demand_follows_real_note(); air_fan_speed_follows_replacement(); autocal_global_timeout_scales_to_max_notes(); airflow_cc2_silence_and_live_cc(); airflow_attack_cancelled_on_rest(); airflow_cc2_timeout_on_held_note(); audio_yin_pcm_core(); audio_mic_classification(); std::cout << "behavior tests passed\n"; }
