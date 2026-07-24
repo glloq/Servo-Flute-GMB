@@ -520,6 +520,157 @@ static void instrument_ignores_midi_during_calibration(){
   im.allSoundOff();
 }
 
+// Audit P0.2. After a failed safe init (PCA missing), every actuator path is inert:
+// no PWM writes, OE stays disabled, the sequencer never runs.
+static void instrument_inert_after_pca_failure(){
+  extern std::map<uint8_t,int> __digital_writes; extern int __pwm_write_count;
+  resetCfg(); extern WireClass Wire; Wire.clear();   // PCA0 absent
+  cfg.numNotes=1; cfg.notes[0].midiNote=60; __test_millis=0;
+  __pwm_write_count=0; __digital_writes.clear();
+  InstrumentManager im;
+  assert(!im.beginSafe());
+  assert(im.hardwareInitStatus()==HW_PCA0_MISSING);
+  assert(!im.isHardwareReady());
+  assert(__digital_writes[PIN_SERVOS_OFF]==HIGH);   // OE never enabled
+  assert(__pwm_write_count==0);                     // no channel programmed
+  // Every actuator path must be a no-op.
+  im.noteOn(60,100); im.noteOff(60); im.handleControlChange(7,100);
+  for(int i=0;i<5;i++){ __test_millis+=50; im.update(); }
+  im.setPWM(0,0,300);
+  im.powerOnServos();
+  assert(__pwm_write_count==0);
+  assert(__digital_writes[PIN_SERVOS_OFF]==HIGH);   // still disabled
+  assert(im.getSequencer().getState()==STATE_IDLE);
+}
+
+// Audit P1 §6. Direct-pump demand tracks the note the SEQUENCER actually plays, not
+// raw MIDI events: a fast replacement pulls the pump to the new note's level, and a
+// stale NOTE_OFF for an already-replaced note must not cut the air under it. Idle is
+// applied only when the sequencer truly returns to STATE_IDLE.
+static void air_pump_demand_follows_real_note(){
+  resetCfg(); extern WireClass Wire; Wire.clear(); Wire.setPresent(PCA_ADDR_BOARD0,true);
+  cfg.airMode=AIR_MODE_PUMP_VALVE; cfg.pumpFollowAirflow=true;
+  cfg.pumpDirectMaxPercent=100; cfg.pumpDirectIdlePercent=10;
+  cfg.numNotes=3; cfg.notes[0].midiNote=60; cfg.notes[1].midiNote=61; cfg.notes[2].midiNote=62;
+  cfg.minNoteDurationMs=0; cfg.minNoteIntervalForValveCloseMs=0; cfg.servoToSolenoidDelayMs=10;
+  __test_millis=0;
+  InstrumentManager im; assert(im.beginSafe());
+  uint8_t d60=(uint8_t)((uint16_t)100*40/127); if(d60<10) d60=10;
+  uint8_t d62=(uint8_t)((uint16_t)100*120/127); if(d62<10) d62=10;
+  im.noteOn(60,40);
+  for(int i=0;i<3;i++){ im.update(); __test_millis+=15; }
+  assert(im.getPressureCtrl().getTargetPercent()==d60);       // demand from note 60's velocity
+  im.noteOn(62,120); im.update();                              // replacement -> POSITIONING for 62
+  assert(im.getPressureCtrl().getTargetPercent()==d62);       // pulled to the new note's level
+  __test_millis+=15; im.update();                             // 62 now PLAYING
+  im.noteOff(60); im.update();                                 // STALE off for replaced note 60
+  assert(im.getPressureCtrl().getTargetPercent()==d62);       // NOT cut under the new note
+  im.noteOff(62);
+  for(int i=0;i<6;i++){ __test_millis+=30; im.update(); }      // 62 ends -> sequencer IDLE
+  assert(im.getPressureCtrl().getTargetPercent()==cfg.pumpDirectIdlePercent);
+  im.allSoundOff();
+}
+
+// Audit P1 §7. Fan speed follows the replacement note instead of being left at idle:
+// on a fast PLAYING->POSITIONING->PLAYING replacement (which never reaches IDLE) the
+// fan is set to the new note's speed, and only returns to idle when all notes end.
+static void air_fan_speed_follows_replacement(){
+  resetCfg(); extern WireClass Wire; Wire.clear(); Wire.setPresent(PCA_ADDR_BOARD0,true);
+  cfg.airMode=AIR_MODE_FAN_SERVO; cfg.fanPin=26; cfg.fanMinPwm=60; cfg.fanMaxPwm=200;
+  cfg.fanFollowAirflow=true; cfg.fanMaxNotePercent=100; cfg.fanDefaultPercent=5;
+  cfg.fanIdlePercent=15; cfg.fanIdleTimeoutMs=60000;
+  cfg.numNotes=3; cfg.notes[0].midiNote=60; cfg.notes[1].midiNote=61; cfg.notes[2].midiNote=62;
+  cfg.minNoteDurationMs=0; cfg.minNoteIntervalForValveCloseMs=0; cfg.servoToSolenoidDelayMs=10;
+  __test_millis=0;
+  InstrumentManager im; assert(im.beginSafe());
+  uint8_t s60=(uint8_t)((uint16_t)100*40/127); if(s60<5) s60=5;
+  uint8_t s62=(uint8_t)((uint16_t)100*120/127); if(s62<5) s62=5;
+  im.noteOn(60,40);
+  for(int i=0;i<3;i++){ im.update(); __test_millis+=15; }
+  assert(im.getFanCtrl().getSpeed()==s60);
+  im.noteOn(62,120); im.update();                              // replacement
+  assert(im.getFanCtrl().getSpeed()==s62);                     // new note's speed, not idle, not s60
+  __test_millis+=15; im.update();
+  assert(im.getFanCtrl().getSpeed()==s62);
+  im.noteOff(62);
+  for(int i=0;i<6;i++){ __test_millis+=30; im.update(); }      // all notes ended -> idle
+  assert(im.getFanCtrl().getSpeed()==cfg.fanIdlePercent);
+  im.allSoundOff();
+}
+
+// Audit P1 §12. pump_enable mutes/unmutes the whole pump, and a single-pump test
+// drives ONLY the requested pump instead of commanding them all.
+static void pump_enable_and_single_pump_test(){
+  resetCfg(); cfg.airMode=AIR_MODE_PUMP_VALVE; cfg.numPumps=3; cfg.motorType=MOTOR_TYPE_PWM; cfg.pumpCascadeThreshold=0;
+  __test_millis=0;
+  PressureController pc; pc.begin();
+  pc.setTargetPercent(50); pc.update();                       // parallel: all pumps run
+  assert(__analog_writes[25]>0 && __analog_writes[26]>0 && __analog_writes[27]>0);
+  pc.setEnabled(false); pc.update();                          // muted: all off
+  assert(__analog_writes[25]==0 && __analog_writes[26]==0 && __analog_writes[27]==0);
+  assert(!pc.isEnabled());
+  pc.setEnabled(true); pc.update();                           // unmute: previous demand resumes
+  assert(__analog_writes[25]>0 && __analog_writes[26]>0 && __analog_writes[27]>0);
+  pc.testSinglePump(1,40); pc.update();                       // ONLY pump 1 runs
+  assert(__analog_writes[25]==0 && __analog_writes[26]==physical(90,220,102) && __analog_writes[27]==0);
+  pc.stopSinglePumpTest(); pc.update();                       // normal control resumes
+  assert(__analog_writes[25]>0 && __analog_writes[26]>0 && __analog_writes[27]>0);
+  pc.stop();
+  assert(__analog_writes[25]==0 && __analog_writes[26]==0 && __analog_writes[27]==0);
+}
+
+// Audit P1 §18. GPIO validation covers flash pins, I2S mic pins, the serial-MIDI
+// UART pin, and the input-only 34-39 range (no internal pull-up) for endstops.
+static void gpio_validation_reserved_and_conflicts(){
+  // Base direct-pump config (valve + 1 pump + hall) is valid.
+  resetCfg(); cfg.airMode=AIR_MODE_PUMP_VALVE; cfg.numPumps=1; cfg.pumpPins[0]=25;
+  cfg.sensorType=SENSOR_TYPE_HALL_KY024; cfg.hallPin=36;
+  assert(validateAndNormalizeConfig(cfg, nullptr).valid);
+  // Pump on an I2S microphone pin is rejected.
+  cfg.pumpPins[0]=MIC_PIN_DIN;
+  assert(!validateAndNormalizeConfig(cfg, nullptr).valid);
+  // Pump on a SPI-flash pin is rejected.
+  cfg.pumpPins[0]=7;
+  assert(!validateAndNormalizeConfig(cfg, nullptr).valid);
+  // Pump on an input-only pin (used as output) is rejected.
+  cfg.pumpPins[0]=34;
+  assert(!validateAndNormalizeConfig(cfg, nullptr).valid);
+  // Serial-MIDI RX pin colliding with the pump is now detected...
+  cfg.pumpPins[0]=25; cfg.serialMidiEnabled=true; cfg.serialMidiRxPin=25;
+  assert(!validateAndNormalizeConfig(cfg, nullptr).valid);
+  // ...and a distinct valid RX pin passes.
+  cfg.serialMidiRxPin=17;
+  assert(validateAndNormalizeConfig(cfg, nullptr).valid);
+  // Endstop reservoir sensor: a pull-up-capable pin (27) is valid, an input-only
+  // pin (34, no internal pull-up) is rejected because it uses INPUT_PULLUP.
+  // (Pin 27 avoids the solenoid valve on 13 and the pump on 25 in this mode.)
+  resetCfg(); cfg.airMode=AIR_MODE_PUMP_RESERVOIR; cfg.numPumps=1; cfg.pumpPins[0]=25;
+  cfg.sensorType=SENSOR_TYPE_ENDSTOP_MECH; cfg.endstopPin=27;
+  assert(validateAndNormalizeConfig(cfg, nullptr).valid);
+  cfg.endstopPin=34;
+  assert(!validateAndNormalizeConfig(cfg, nullptr).valid);
+}
+
+// Audit P1 §19/§20. The ToF read is non-blocking: a stuck sensor (status never
+// ready) no longer busy-waits and, once measurements go stale, the pump is cut for
+// safety and repeated timeouts invalidate the sensor.
+static void tof_nonblocking_stale_safety(){
+  resetCfg(); extern WireClass Wire; Wire.clear();
+  Wire.setPresent(0x29, true);   // VL53L0X responds at 0x29 (detected), but never "ready"
+  cfg.airMode=AIR_MODE_PUMP_RESERVOIR; cfg.sensorType=SENSOR_TYPE_TOF_VL53L0X;
+  cfg.numPumps=1; cfg.pumpPins[0]=25; cfg.motorType=MOTOR_TYPE_PWM;
+  cfg.sensorMinMm=30; cfg.sensorTargetMm=60; cfg.sensorMaxMm=120; cfg.pidKp=50; cfg.pidKi=0;
+  __test_millis=0;
+  PressureController pc;
+  assert(pc.begin());
+  assert(pc.isSensorDetected());
+  pc.setTargetPercent(80);
+  // Drive many non-blocking updates; every single-shot times out (no "ready").
+  for(int i=0;i<80;i++){ __test_millis+=20; pc.update(); }
+  assert(__analog_writes[25]==0);        // stale measurement -> pump cut (safety)
+  assert(!pc.isSensorDetected());        // repeated timeouts invalidated the sensor
+}
+
 // Review #14. The global timeout scales to the largest note count instead of being
 // clamped below the sum of the per-note budgets (which happened ~24 notes before).
 static void autocal_global_timeout_scales_to_max_notes(){
@@ -566,6 +717,54 @@ static void airflow_cc2_silence_and_live_cc(){
   ac.setAirflowToRest();
   assert(!ac.isNoteActive());
   assert(!ac.recomputeActiveNote());
+}
+
+// Audit P0.4. An interrupted attack must not keep driving a play angle after the
+// return to rest - in valveless modes that would restore airflow after a Note Off.
+static void airflow_attack_cancelled_on_rest(){
+  resetCfg();
+  cfg.airMode=AIR_MODE_SERVO_ONLY;   // valveless: the airflow servo IS the flow
+  cfg.airAttackMs=200; cfg.cc2Enabled=false;
+  cfg.numNotes=1; cfg.notes[0].midiNote=60;
+  cfg.notes[0].airflowMinPercent=10; cfg.notes[0].airflowMaxPercent=90; cfg.notes[0].airflowNominalPercent=50;
+  cfg.servoAirflowMin=30; cfg.servoAirflowMax=150; cfg.servoAirflowOff=20;
+  __test_millis=0;
+  AirflowController ac([](uint8_t,uint16_t,uint16_t){}); ac.begin();
+  ac.setCC73Attack(120);              // crescendo (offset > 0) -> attack arms
+  ac.openValve();                     // servo-only: marks sounding (_solenoidOpen)
+  ac.setAirflowForNote(60,100);
+  assert(ac.isNoteActive());
+  __test_millis=60; ac.update();      // mid-attack, sounding above rest
+  assert(ac.getAirflowAngle() > cfg.servoAirflowOff);
+  // Note off BEFORE the attack completes.
+  ac.closeValve();
+  ac.setAirflowToRest();
+  assert(ac.getAirflowAngle()==cfg.servoAirflowOff);
+  // Further updates must NOT re-drive a play angle (attack fully cancelled).
+  for(int i=0;i<12;i++){ __test_millis+=30; ac.update(); }
+  assert(ac.getAirflowAngle()==cfg.servoAirflowOff);
+}
+
+// Audit P0.5. When the CC2 (breath) stream stops during a held note, update() must
+// fall back to velocity once (no CC event arrives to trigger it otherwise).
+static void airflow_cc2_timeout_on_held_note(){
+  resetCfg();
+  cfg.airMode=AIR_MODE_SOLENOID_SERVO;
+  cfg.cc2Enabled=true; cfg.cc2SilenceThreshold=10; cfg.cc2ResponseCurve=1.0f; cfg.cc2TimeoutMs=500;
+  cfg.numNotes=1; cfg.notes[0].midiNote=60;
+  cfg.notes[0].airflowMinPercent=10; cfg.notes[0].airflowMaxPercent=90; cfg.notes[0].airflowNominalPercent=50;
+  cfg.servoAirflowMin=30; cfg.servoAirflowMax=150; cfg.servoAirflowOff=20;
+  __test_millis=1;
+  AirflowController ac([](uint8_t,uint16_t,uint16_t){}); ac.begin();
+  for(int i=0;i<CC2_SMOOTHING_BUFFER_SIZE;i++) ac.updateCC2Breath(4);   // breath below threshold => silent
+  assert(!ac.setAirflowForNote(60,100));
+  ac.closeValve();                    // silent onset: valve stays closed
+  assert(!ac.isValveOpen());
+  // Breath stream stops (no more CC2). Time crosses cc2TimeoutMs: fall back to velocity.
+  bool opened=false;
+  for(int i=0;i<40 && !opened;i++){ __test_millis+=50; ac.update(); if(ac.isValveOpen()) opened=true; }
+  assert(opened);
+  assert(ac.getAirflowAngle() > cfg.servoAirflowOff);   // now sounding at the velocity level
 }
 
 // §11/§16. LittleFS save failure: results applied in RAM then restored, no false success.
@@ -711,4 +910,4 @@ static void audio_mic_classification(){
   assert(PitchDetector::classifyRaw(raw.data(), N) == MIC_SIG_OK);
 }
 
-int main(){ pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); airflow_nominal_drives_angle(); autocal_frozen_source_fails(); autocal_air_supply_gate(); autocal_14_notes_no_timeout(); autocal_plus70_cents_rejected(); autocal_storage_failure_restores(); autocal_range_finder(); autocal_range_finder_stale(); autocal_range_apply_storage(); autocal_air_lost_midnote(); calair_reservoir_requires_sensor(); instrument_power_held_during_actuator_session(); instrument_ignores_midi_during_calibration(); autocal_global_timeout_scales_to_max_notes(); airflow_cc2_silence_and_live_cc(); audio_yin_pcm_core(); audio_mic_classification(); std::cout << "behavior tests passed\n"; }
+int main(){ pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); airflow_nominal_drives_angle(); autocal_frozen_source_fails(); autocal_air_supply_gate(); autocal_14_notes_no_timeout(); autocal_plus70_cents_rejected(); autocal_storage_failure_restores(); autocal_range_finder(); autocal_range_finder_stale(); autocal_range_apply_storage(); autocal_air_lost_midnote(); calair_reservoir_requires_sensor(); instrument_power_held_during_actuator_session(); instrument_ignores_midi_during_calibration(); instrument_inert_after_pca_failure(); air_pump_demand_follows_real_note(); air_fan_speed_follows_replacement(); pump_enable_and_single_pump_test(); gpio_validation_reserved_and_conflicts(); tof_nonblocking_stale_safety(); autocal_global_timeout_scales_to_max_notes(); airflow_cc2_silence_and_live_cc(); airflow_attack_cancelled_on_rest(); airflow_cc2_timeout_on_held_note(); audio_yin_pcm_core(); audio_mic_classification(); std::cout << "behavior tests passed\n"; }

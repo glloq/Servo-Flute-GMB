@@ -134,12 +134,24 @@ void WebConfigurator::begin(InstrumentManager* instrument, MidiFilePlayer* playe
 void WebConfigurator::update() {
   unsigned long now = millis();
 
+  // Controlled restart after a restart-required config change / reset: the response
+  // has been sent; reboot so the persisted config takes effect with a clean init.
+  if (_pendingRestartTime != 0 && (long)(now - _pendingRestartTime) >= 0) {
+    ESP.restart();
+  }
+
   // Server-side safety net for manual actuator tests: if the owning client stops
   // refreshing the session (tab suspended, browser crash, Wi-Fi lost, stop lost),
   // return the actuators to a safe state regardless of any browser-side timeout.
   if (_testActive && (now - _testStartTime) >= TEST_SESSION_MAX_MS) {
     endTestSession(true);
     _ws.textAll("{\"t\":\"test_expired\"}");
+  }
+
+  // Auto-stop a "test note" preview once its bounded duration has elapsed.
+  if (_testNoteOffTime != 0 && (long)(now - _testNoteOffTime) >= 0) {
+    if (_instrument) _instrument->noteOff(_testNoteMidi);
+    _testNoteOffTime = 0;
   }
 
   // Nettoyage periodique des clients WS deconnectes
@@ -334,16 +346,31 @@ void WebConfigurator::setWirelessManager(WirelessManager* wm) {
   _wirelessManager = wm;
 }
 
-void WebConfigurator::beginTestSession(uint32_t clientId) {
+bool WebConfigurator::beginTestSession(uint32_t clientId) {
+  // Ownership cannot be stolen: while a manual test is active and owned by another
+  // client, refuse a competing client's test command so two browsers can never
+  // fight over the actuators. The owner may keep refreshing its own session.
+  if (_testActive && _testOwnerClientId != 0 && clientId != _testOwnerClientId) {
+    return false;
+  }
   _testOwnerClientId = clientId;
   _testStartTime = millis();
   _testActive = true;
+  return true;
 }
 
 void WebConfigurator::endTestSession(bool safeHardware) {
   if (safeHardware && _instrument) _instrument->allSoundOff();
   _testActive = false;
   _testOwnerClientId = 0;
+  _testNoteOffTime = 0;   // cancel any pending test-note auto-stop
+}
+
+void WebConfigurator::scheduleControlledRestart() {
+  // Return the hardware to a safe state now; the reboot (in update()) then reloads
+  // the persisted config with the matching hardware initialisation.
+  if (_instrument) _instrument->allSoundOff();
+  if (_pendingRestartTime == 0) _pendingRestartTime = millis() + CONFIG_RESTART_DELAY_MS;
 }
 
 #if MIC_ENABLED
@@ -382,7 +409,7 @@ bool WebConfigurator::actuatorCommandBlockedDuringCalibration(AsyncWebSocketClie
   // cancels the calibration cleanly rather than fighting it with allSoundOff.
   static const char* kBlocked[] = {
     "non", "nof", "cc", "air_live", "test_finger", "test_air", "test_angle",
-    "angle_live", "test_sol", "test_note", "pump_target", "fan_target",
+    "angle_live", "test_sol", "test_note", "pump_target", "pump_enable", "fan_target",
     "pump_stop", "fan_stop", "play", "mic_mon", "mic_reset"
   };
   for (const char* b : kBlocked) {
@@ -765,6 +792,12 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
   String configBody; bool configBodyTooLarge;
   takeRequestBody(request, configBody, configBodyTooLarge);
 
+  // A restart is already scheduled: refuse further changes so they cannot overwrite
+  // the persisted pending configuration before the reboot applies it.
+  if (restartPending()) {
+    request->send(409, "application/json", "{\"ok\":false,\"error\":\"restart_pending\"}");
+    return;
+  }
 #if MIC_ENABLED
   // Configuration changes are locked while a calibration owns the actuators, so
   // notes/fingering/air-system/PCA channels cannot shift mid-calibration.
@@ -1058,6 +1091,20 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
     if (restartRequired) {
       cfg = previousConfig;
       applyResult.applied = false;
+      // A hardware re-init is needed and only a reboot performs it. Perform a
+      // controlled restart so the persisted new config takes effect cleanly, and so
+      // a subsequent save cannot re-serialise the reverted (old) active cfg over the
+      // pending new config on disk. Only when the save actually succeeded.
+      if (saved) scheduleControlledRestart();
+    } else if (!saved) {
+      // §14: persisting a non-restart change failed (e.g. LittleFS error). Roll back
+      // the live config AND the controllers (applyRuntimeConfig re-applies the values
+      // it is given) so the device keeps running exactly on the previously persisted
+      // configuration instead of an applied-but-unsaved one.
+      RuntimeConfig failedConfig = cfg;
+      cfg = previousConfig;
+      if (_instrument) _instrument->applyRuntimeConfig(failedConfig, previousConfig);
+      applyResult.applied = false;
     }
 
     if (DEBUG) {
@@ -1069,6 +1116,7 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
     respDoc["saved"] = saved;
     respDoc["applied"] = applyResult.applied;
     respDoc["restart_required"] = restartRequired;
+    respDoc["restarting"] = restartPending();   // device will reboot automatically
     respDoc["corrected"] = validation.corrected;
     JsonArray reinitialized = respDoc["reinitialized"].to<JsonArray>();
     int start = 0;
@@ -1164,26 +1212,49 @@ void WebConfigurator::handleApiConfigReset(AsyncWebServerRequest* request) {
   // current organisation.
   if (rejectIfCalibrationActive(request)) return;
 #endif
-  ConfigStorage::resetToDefaults();
+  // A reset rewrites the whole configuration; a reboot is required for the new
+  // config to take effect cleanly. Refuse while a reboot is already pending so a
+  // second reset cannot race the one in flight.
+  if (restartPending()) {
+    request->send(409, "application/json", "{\"ok\":false,\"error\":\"restart_pending\"}");
+    return;
+  }
+  // Safe the hardware while cfg still matches it: resetToDefaults() rewrites cfg to
+  // the defaults, and allSoundOff() reads cfg.airMode to pick which air subsystem to
+  // stop, so it must run before the config is replaced.
+  if (_instrument) _instrument->allSoundOff();
+  bool ok = ConfigStorage::resetToDefaults();
 
   if (DEBUG) {
     Serial.println("DEBUG: WebConfigurator - Config reset aux defauts");
   }
 
-  request->send(200, "application/json", "{\"ok\":true}");
+  request->send(ok ? 200 : 500, "application/json",
+                String("{\"ok\":") + (ok ? "true" : "false") +
+                    ",\"restart_required\":true,\"restarting\":true}");
+  if (ok) scheduleControlledRestart();
 }
 
 void WebConfigurator::handleApiFactoryReset(AsyncWebServerRequest* request) {
 #if MIC_ENABLED
   if (rejectIfCalibrationActive(request)) return;
 #endif
-  ConfigStorage::factoryReset();
+  if (restartPending()) {
+    request->send(409, "application/json", "{\"ok\":false,\"error\":\"restart_pending\"}");
+    return;
+  }
+  // Safe the hardware before the config is wiped (see handleApiConfigReset).
+  if (_instrument) _instrument->allSoundOff();
+  bool ok = ConfigStorage::factoryReset();
 
   if (DEBUG) {
     Serial.println("DEBUG: WebConfigurator - Reset usine");
   }
 
-  request->send(200, "application/json", "{\"ok\":true}");
+  request->send(ok ? 200 : 500, "application/json",
+                String("{\"ok\":") + (ok ? "true" : "false") +
+                    ",\"restart_required\":true,\"restarting\":true}");
+  if (ok) scheduleControlledRestart();
 }
 
 void WebConfigurator::handleMidiUpload(AsyncWebServerRequest* request, const String& filename,
@@ -1546,7 +1617,11 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
 
   // A manual actuator test starts/refreshes a bounded, owner-tracked session so the
   // server (not just the browser) returns the hardware to safe on loss of contact.
-  if (isManualTestCommand(type)) beginTestSession(client->id());
+  // If another client already owns an active test, refuse rather than hijack it.
+  if (isManualTestCommand(type) && !beginTestSession(client->id())) {
+    client->text("{\"t\":\"test_busy\"}");
+    return;
+  }
 
   if (strcmp(type, "non") == 0) {
     if (!hasInt("n")) return;
@@ -1609,13 +1684,29 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
   } else if (strcmp(type, "test_note") == 0) {
     uint8_t note = getMidi7Bit(doc, "n", 0);
     if (_instrument->isNotePlayable(note)) {
-      _instrument->getFingerCtrl().setFingerPatternForNote(note);
-      _instrument->getAirflowCtrl().setAirflowForNote(note, _webVelocity);
+      // Play a REAL, timed note through the sequencer: it positions the fingers,
+      // opens the valve only if setAirflowForNote decides the note actually sounds,
+      // and honours the minimum note duration. Schedule an automatic note-off so
+      // the preview stops on its own (previously it left the valve/airflow hanging).
+      _instrument->noteOn(note, _webVelocity);
+      _testNoteMidi = note;
+      _testNoteOffTime = millis() + TEST_NOTE_DURATION_MS;
     }
+  } else if (strcmp(type, "pump_enable") == 0) {
+    // Keyboard pump mute toggle (v:0 mute, v:1 enable).
+    _instrument->getPressureCtrl().setEnabled((doc["v"] | 1) != 0);
   } else if (strcmp(type, "pump_target") == 0) {
-    _instrument->getPressureCtrl().setTargetPercent(getPercent(doc, "v", 0));
+    int pumpIdx = doc["pump"] | -1;
+    if (pumpIdx >= 0) {
+      // Per-pump test: drive only the requested pump, not all of them.
+      _instrument->getPressureCtrl().testSinglePump((uint8_t)pumpIdx, getPercent(doc, "v", 0));
+    } else {
+      _instrument->getPressureCtrl().setTargetPercent(getPercent(doc, "v", 0));
+    }
   } else if (strcmp(type, "pump_stop") == 0) {
-    _instrument->getPressureCtrl().stop();
+    int pumpIdx = doc["pump"] | -1;
+    if (pumpIdx >= 0) _instrument->getPressureCtrl().stopSinglePumpTest();
+    else _instrument->getPressureCtrl().stop();
     endTestSession(false);
   } else if (strcmp(type, "fan_target") == 0) {
     _instrument->getFanCtrl().setSpeed(getPercent(doc, "v", 0));
@@ -1644,6 +1735,11 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
         // A second start attempt is refused explicitly.
         client->text("{\"t\":\"acal_error\",\"msg\":\"calibration_busy\"}");
       } else {
+        // Pause any running MIDI playback first: otherwise the player keeps
+        // advancing and would drive notes into the actuators the calibration is
+        // about to own. pause() also releases any held note. Position is kept so
+        // the user can resume after calibrating.
+        if (_player) _player->pause();
         // A new start discards any pending (unapplied) range-finder result.
         cancelActiveActuatorSession();
         // Take ownership and snapshot the user's monitor preference.

@@ -15,6 +15,7 @@ InstrumentManager::InstrumentManager()
     _lastActivityTime(0),
     _servosPowered(false),
     _actuatorSessionActive(false),
+    _initializingHardware(false),
     _ccVolume(cfg.ccVolumeDefault),
     _ccExpression(cfg.ccExpressionDefault),
     _ccModulation(cfg.ccModulationDefault),
@@ -52,15 +53,18 @@ bool InstrumentManager::beginSafe() {
   pinMode(PIN_SERVOS_OFF, OUTPUT);
   digitalWrite(PIN_SERVOS_OFF, HIGH);
   _servosPowered = false;
+  _initializingHardware = true;   // program safe PWM values without enabling OE
   _secondBoardEnabled = requiresSecondPca();
   _hardwareInitStatus = HW_CONFIG_INVALID;
 
   if (!detectPca(PCA_ADDR_BOARD0)) {
     _hardwareInitStatus = HW_PCA0_MISSING;
+    _initializingHardware = false;   // failed: setPWM must now refuse all writes
     return false;
   }
   if (_secondBoardEnabled && !detectPca(PCA_ADDR_BOARD1)) {
     _hardwareInitStatus = HW_PCA1_MISSING;
+    _initializingHardware = false;
     return false;
   }
 
@@ -94,6 +98,9 @@ bool InstrumentManager::beginSafe() {
   _sequencer.begin();
   _lastActivityTime = millis();
   _hardwareInitStatus = HW_INIT_OK;
+  // All channels now hold safe values: end the init window and enable OE exactly
+  // once, so the servos move cleanly to their programmed safe positions.
+  _initializingHardware = false;
   powerOnServos();
   return true;
 }
@@ -106,34 +113,26 @@ void InstrumentManager::initializeSafeOutputs() {
 }
 
 void InstrumentManager::update() {
+  if (_hardwareInitStatus != HW_INIT_OK) return;   // failed init: keep everything inert
   // While an actuator session (auto-calibration / range finder) owns the hardware,
   // the MIDI sequencer must not drive the finger/airflow servos or the valve - the
   // calibrator moves them directly. Skipping the sequencer here (plus rejecting
   // noteOn/noteOff/CC below) keeps external MIDI from corrupting the measurement.
   if (!_actuatorSessionActive) _sequencer.update();
   _airflowCtrl.update();
+  // Drive the direct pump / fan from the sequencer's real note transitions (§6/§7).
+  updateAirSourceFromSequencer();
   if (cfg.airMode >= AIR_MODE_PUMP_VALVE) {
     _pressureCtrl.update();
   }
   if (cfg.airMode == AIR_MODE_FAN_SERVO) {
-    // Detect sequencer state transitions for fan idle management
-    NoteState curState = _sequencer.getState();
-    if (curState != _prevSequencerState) {
-      if (curState == STATE_PLAYING && _prevSequencerState != STATE_PLAYING) {
-        // Transition vers jeu actif => signaler noteOn au ventilateur
-        _fanCtrl.onNoteOn();
-      } else if (_prevSequencerState == STATE_PLAYING && curState != STATE_PLAYING) {
-        // Transition depuis jeu actif => signaler noteOff au ventilateur
-        _fanCtrl.onNoteOff();
-      }
-      _prevSequencerState = curState;
-    }
     _fanCtrl.update();
   }
   managePower();
 }
 
 void InstrumentManager::noteOn(byte midiNote, byte velocity) {
+  if (_hardwareInitStatus != HW_INIT_OK) return;   // no usable hardware
   // Calibration owns the actuators: ignore external MIDI (BLE / rtpMIDI / DIN /
   // file player) so it cannot move fingers, the airflow servo, the valve, the
   // pumps or the fan while a measurement is running.
@@ -146,17 +145,10 @@ void InstrumentManager::noteOn(byte midiNote, byte velocity) {
     return;
   }
 
-  if (cfg.airMode == AIR_MODE_FAN_SERVO) {
-    uint8_t fanDemand = cfg.fanFollowAirflow ? (uint8_t)((uint16_t)cfg.fanMaxNotePercent * velocity / 127) : cfg.fanMaxNotePercent;
-    if (fanDemand < cfg.fanDefaultPercent) fanDemand = cfg.fanDefaultPercent;
-    _fanCtrl.setSpeed(fanDemand);
-  }
-  if (cfg.airMode == AIR_MODE_PUMP_VALVE) {
-    uint8_t pumpDemand = cfg.pumpFollowAirflow ? (uint8_t)((uint16_t)cfg.pumpDirectMaxPercent * velocity / 127) : cfg.pumpDirectMaxPercent;
-    if (pumpDemand < cfg.pumpDirectIdlePercent) pumpDemand = cfg.pumpDirectIdlePercent;
-    _pressureCtrl.setTargetPercent(pumpDemand);
-  }
-
+  // NB: the pump / fan demand is NOT set here. Driving it from the raw incoming
+  // MIDI event would let a full event queue start the pump for a note that never
+  // plays. It is instead applied when the sequencer actually starts the note
+  // (updateAirSourceFromSequencer), so demand always tracks a real note.
   bool success = _eventQueue.enqueueLiveEvent(EVENT_NOTE_ON, midiNote, velocity);
 
   if (!success) {
@@ -177,11 +169,11 @@ void InstrumentManager::noteOn(byte midiNote, byte velocity) {
 }
 
 void InstrumentManager::noteOff(byte midiNote) {
+  if (_hardwareInitStatus != HW_INIT_OK) return;   // no usable hardware
   if (_actuatorSessionActive) return;   // calibration owns the actuators
-  if (cfg.airMode == AIR_MODE_PUMP_VALVE) {
-    _pressureCtrl.setTargetPercent(cfg.pumpDirectIdlePercent);
-  }
-
+  // The pump is NOT returned to idle here: a stale NOTE_OFF for an already-replaced
+  // note would otherwise cut the air under the new note. Idle is applied only when
+  // the sequencer truly returns to STATE_IDLE (updateAirSourceFromSequencer).
   bool success = _eventQueue.enqueueLiveEvent(EVENT_NOTE_OFF, midiNote, 0);
 
   if (!success) {
@@ -204,6 +196,59 @@ bool InstrumentManager::isNotePlayable(byte midiNote) const {
 
 NoteSequencer& InstrumentManager::getSequencer() {
   return _sequencer;
+}
+
+uint8_t InstrumentManager::computePumpDemand(byte velocity) const {
+  uint8_t demand = cfg.pumpFollowAirflow
+                       ? (uint8_t)((uint16_t)cfg.pumpDirectMaxPercent * velocity / 127)
+                       : cfg.pumpDirectMaxPercent;
+  if (demand < cfg.pumpDirectIdlePercent) demand = cfg.pumpDirectIdlePercent;
+  return demand;
+}
+
+uint8_t InstrumentManager::computeFanDemand(byte velocity) const {
+  uint8_t demand = cfg.fanFollowAirflow
+                       ? (uint8_t)((uint16_t)cfg.fanMaxNotePercent * velocity / 127)
+                       : cfg.fanMaxNotePercent;
+  if (demand < cfg.fanDefaultPercent) demand = cfg.fanDefaultPercent;
+  return demand;
+}
+
+void InstrumentManager::updateAirSourceFromSequencer() {
+  // Only the velocity-driven air modes are handled here. AIR_MODE_PUMP_RESERVOIR
+  // (5) regulates to a fixed reservoir target and must not be pulled per note.
+  bool directPump = (cfg.airMode == AIR_MODE_PUMP_VALVE);
+  bool fan = (cfg.airMode == AIR_MODE_FAN_SERVO);
+  if (!directPump && !fan) return;
+
+  NoteState curState = _sequencer.getState();
+  if (curState == _prevSequencerState) return;
+
+  // A note the sequencer accepts always enters STATE_POSITIONING (including a fast
+  // replacement PLAYING->POSITIONING->PLAYING, which never reaches IDLE), so this
+  // is where we (re)apply the play demand from the note's real velocity. Every
+  // note has ended only when the sequencer returns to STATE_IDLE, so that is where
+  // we drop back to idle.
+  bool noteStarting = (curState == STATE_POSITIONING && _prevSequencerState != STATE_POSITIONING);
+  bool allNotesEnded = (curState == STATE_IDLE && _prevSequencerState != STATE_IDLE);
+
+  if (noteStarting) {
+    byte vel = _sequencer.getCurrentVelocity();
+    if (directPump) {
+      _pressureCtrl.setTargetPercent(computePumpDemand(vel));
+    } else {
+      _fanCtrl.onNoteOn();
+      _fanCtrl.setSpeed(computeFanDemand(vel));
+    }
+  } else if (allNotesEnded) {
+    if (directPump) {
+      _pressureCtrl.setTargetPercent(cfg.pumpDirectIdlePercent);
+    } else {
+      _fanCtrl.onNoteOff();
+    }
+  }
+
+  _prevSequencerState = curState;
 }
 
 void InstrumentManager::managePower() {
@@ -256,6 +301,9 @@ void InstrumentManager::setActuatorSessionActive(bool active) {
 }
 
 void InstrumentManager::powerOnServos() {
+  // Never energise the servos before a successful safe init (nor during the init
+  // window itself); OE stays HIGH until beginSafe() has programmed every channel.
+  if (_initializingHardware || _hardwareInitStatus != HW_INIT_OK) return;
   digitalWrite(PIN_SERVOS_OFF, LOW);  // OE a LOW = servos actives
   _servosPowered = true;
 
@@ -274,6 +322,7 @@ void InstrumentManager::powerOffServos() {
 }
 
 void InstrumentManager::handleControlChange(byte ccNumber, byte ccValue) {
+  if (_hardwareInitStatus != HW_INIT_OK) return;   // no usable hardware
   if (_actuatorSessionActive) return;   // calibration owns the actuators
   if (ccValue > MIDI_CC_MAX) {
     if (DEBUG) {
@@ -474,7 +523,14 @@ void InstrumentManager::resetAllControllers() {
 }
 
 void InstrumentManager::setPWM(uint8_t channel, uint16_t on, uint16_t off) {
-  registerActuatorActivity();
+  // Refuse writes when the hardware is not usable (failed init), but allow the
+  // safe-init sequence itself to program the PCA registers.
+  if (!_initializingHardware && _hardwareInitStatus != HW_INIT_OK) return;
+  // During the safe-init sequence, program the PWM registers but do NOT register
+  // activity / enable OE: OE must stay HIGH until every channel holds a safe value,
+  // otherwise the servos could be energised (with stale registers after a soft
+  // reset) while the channels are still being initialised one by one.
+  if (!_initializingHardware) registerActuatorActivity();
   if (channel < 16) {
     _pwm0.setPWM(channel, on, off);
   } else if (_secondBoardEnabled) {

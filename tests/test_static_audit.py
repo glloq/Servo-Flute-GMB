@@ -268,7 +268,7 @@ def test_solenoid_modes_and_gpio_filter_helpers():
     assert 'configurationUsesSolenoidValve(cfg)' in air
     assert 'pinMode(cfg.solenoidPin, OUTPUT)' in air
     assert 'closeSolenoid();  // apply closed level immediately' in air
-    assert 'if (configurationUsesSolenoidValve(config)) gpios[gcount++] = config.solenoidPin;' in src
+    assert 'if (configurationUsesSolenoidValve(config)) addGpio(config.solenoidPin, true, false);' in src
 
 def test_web_json_uses_arduinojson_for_unsafe_strings_and_special_cases_documented():
     src = read('Servo_flute_ESP32/WebConfigurator.cpp')
@@ -325,6 +325,160 @@ def test_manual_test_session_server_side():
     assert 'client->id() == _testOwnerClientId' in wc
     # the old unconditional allSoundOff() on any disconnect is gone.
     assert 'if (_testActive && client->id() == _testOwnerClientId)' in wc
+
+
+def test_audit_p0_boot_and_rest_safety():
+    im = read('Servo_flute_ESP32/InstrumentManager.cpp')
+    imh = read('Servo_flute_ESP32/InstrumentManager.h')
+    # P0.1: OE is not enabled until every channel is programmed (init window).
+    assert '_initializingHardware' in im and '_initializingHardware' in imh
+    assert '_initializingHardware = true' in im and '_initializingHardware = false' in im
+    # P0.2: actuator paths are inert unless the hardware initialised successfully.
+    assert 'isHardwareReady' in imh
+    assert im.count('_hardwareInitStatus != HW_INIT_OK') >= 4   # setPWM/update/noteOn/noteOff/CC/power
+    af = read('Servo_flute_ESP32/AirflowController.cpp')
+    # P0.4: return-to-rest cancels attack/vibrato and the attack write is sound-gated.
+    assert '_attackActive = false' in af and '_vibratoActive = false' in af
+    assert '_solenoidOpen && (_attackActive' in af
+    # P0.5: CC2 timeout falls back to velocity on a held note from update().
+    assert '_cc2TimedOut' in af and 'recomputeActiveNote()' in af
+
+
+def test_audit_p0_controlled_restart_on_reboot_required_config():
+    web = read('Servo_flute_ESP32/WebConfigurator.cpp')
+    webh = read('Servo_flute_ESP32/WebConfigurator.h')
+    cfg = read('Servo_flute_ESP32/ConfigStorage.cpp')
+    cfgh = read('Servo_flute_ESP32/ConfigStorage.h')
+    st = read('Servo_flute_ESP32/settings.h')
+    # P0.3/P0.6: a controlled reboot is scheduled and executed from update().
+    assert '_pendingRestartTime' in web and '_pendingRestartTime' in webh
+    assert 'void scheduleControlledRestart()' in webh
+    assert 'scheduleControlledRestart()' in web
+    assert 'restartPending()' in web
+    assert 'ESP.restart()' in web
+    assert 'CONFIG_RESTART_DELAY_MS' in st and 'CONFIG_RESTART_DELAY_MS' in web
+    # Config-mutating routes refuse while a reboot is pending so they cannot
+    # overwrite the persisted pending config before it applies.
+    assert web.count('restart_pending') >= 3   # finalize + reset + factory
+    # P0.3: reboot is scheduled for the reboot-required finalize path only when saved.
+    assert 'if (saved) scheduleControlledRestart();' in web
+    # P0.6: reset / factory-reset report success from the storage layer and reboot.
+    assert 'bool ConfigStorage::resetToDefaults()' in cfg
+    assert 'bool ConfigStorage::factoryReset()' in cfg
+    assert 'static bool resetToDefaults();' in cfgh
+    assert 'static bool factoryReset();' in cfgh
+    assert web.count('if (ok) scheduleControlledRestart();') >= 2
+
+
+def test_audit_p1_actuator_ownership_and_playback_isolation():
+    web = read('Servo_flute_ESP32/WebConfigurator.cpp')
+    webh = read('Servo_flute_ESP32/WebConfigurator.h')
+    wm = read('Servo_flute_ESP32/WirelessManager.cpp')
+    # P1 #8: the physical double-press does not fight an owned actuator session.
+    assert 'isActuatorSessionActive()' in wm
+    assert 'openAllFingers' in wm
+    # The guard precedes the direct actuator drive.
+    assert wm.index('isActuatorSessionActive()') < wm.index('getFingerCtrl().openAllFingers()')
+    # P1 #9: a running MIDI playback is paused before a calibration takes the actuators.
+    # Anchor on the calibration-start comment so this is not satisfied by the unrelated
+    # WS "pause" command handler.
+    marker = 'drive notes into the actuators the calibration is'
+    assert marker in web
+    assert web.index(marker) < web.index('_autoCal->start(')
+    # P1 #10: manual-test ownership cannot be hijacked by a competing client.
+    assert 'bool beginTestSession(uint32_t clientId)' in webh
+    assert 'bool WebConfigurator::beginTestSession' in web
+    assert 'test_busy' in web
+    assert '_testOwnerClientId != 0 && clientId != _testOwnerClientId' in web
+
+
+def test_audit_p1_air_source_tied_to_sequencer_transitions():
+    im = read('Servo_flute_ESP32/InstrumentManager.cpp')
+    nsh = read('Servo_flute_ESP32/NoteSequencer.h')
+    # P1 §6/§7: the direct pump / fan demand is driven from the sequencer's real note
+    # transitions, not from raw incoming MIDI events.
+    assert 'updateAirSourceFromSequencer' in im
+    assert 'getCurrentVelocity' in nsh
+    assert 'STATE_POSITIONING && _prevSequencerState != STATE_POSITIONING' in im
+    assert 'STATE_IDLE && _prevSequencerState != STATE_IDLE' in im
+    # noteOn / noteOff must no longer set the pump/fan demand themselves.
+    note_on = im.split('InstrumentManager::noteOn')[1].split('InstrumentManager::noteOff')[0]
+    note_off = im.split('InstrumentManager::noteOff')[1].split('InstrumentManager::isNotePlayable')[0]
+    assert '_pressureCtrl.setTargetPercent' not in note_on
+    assert '_fanCtrl.setSpeed' not in note_on
+    assert '_pressureCtrl.setTargetPercent' not in note_off
+
+
+def test_audit_p1_test_note_and_pump_commands():
+    web = read('Servo_flute_ESP32/WebConfigurator.cpp')
+    pc = read('Servo_flute_ESP32/PressureController.cpp')
+    pch = read('Servo_flute_ESP32/PressureController.h')
+    # §11: test_note plays a real timed note (via the sequencer) and schedules a stop.
+    test_note = web.split('strcmp(type, "test_note") == 0')[1].split('else if')[0]
+    assert '_instrument->noteOn(' in test_note
+    assert '_testNoteOffTime' in web and 'TEST_NOTE_DURATION_MS' in web
+    assert '_instrument->noteOff(_testNoteMidi)' in web
+    # §12: pump_enable is handled (no longer Unknown message type).
+    assert '"pump_enable"' in web and 'setEnabled(' in web
+    # §12: pump_target / pump_stop honour a per-pump index.
+    assert 'testSinglePump(' in web and 'stopSinglePumpTest(' in web
+    assert 'doc["pump"]' in web
+    # PressureController exposes the mute + single-pump primitives.
+    assert 'void setEnabled(bool enabled)' in pch
+    assert 'void testSinglePump(uint8_t index, uint8_t percent)' in pch
+    assert 'void PressureController::setEnabled' in pc
+    assert 'void PressureController::testSinglePump' in pc
+    # A single-pump test must override normal control in update().
+    assert '_testPumpIndex >= 0' in pc
+
+
+def test_audit_p1_transactional_config_save():
+    cfg = read('Servo_flute_ESP32/ConfigStorage.cpp')
+    web = read('Servo_flute_ESP32/WebConfigurator.cpp')
+    # §15: save() writes a temp file, verifies it re-parses, then atomically renames.
+    assert 'CONFIG_FILE_PATH ".tmp"' in cfg
+    assert 'LittleFS.rename(' in cfg
+    assert 'deserializeJson(check' in cfg
+    # The real config file is not truncated directly on the write path any more.
+    save_body = cfg.split('bool ConfigStorage::save()')[1].split('ConfigStorage::')[0]
+    assert 'LittleFS.open(CONFIG_FILE_PATH, "w")' not in save_body
+    assert 'LittleFS.open(tmpPath, "w")' in save_body
+    # loadWithStatus recovers an interrupted save (temp promoted / discarded on boot).
+    load_body = cfg.split('ConfigStorage::loadWithStatus()')[1].split('ConfigStorage::')[0]
+    assert 'LittleFS.exists(tmpPath)' in load_body
+    # §14: a failed non-restart save rolls back the live config + controllers.
+    assert 'applyRuntimeConfig(failedConfig, previousConfig)' in web
+
+
+def test_audit_p1_gpio_validation_completeness():
+    val = read('Servo_flute_ESP32/ConfigValidator.cpp')
+    st = read('Servo_flute_ESP32/settings.h')
+    # §18: flash pins, I2S mic pins and the full input-only 34-39 range are covered.
+    assert 'isFlashGpio' in val and 'isI2sMicGpio' in val
+    assert 'pin >= 34 && pin <= 39' in val
+    assert 'pin >= 6 && pin <= 11' in val
+    # The serial-MIDI RX pin is now added to the validated used-pin set.
+    assert 'config.serialMidiEnabled' in val and 'config.serialMidiRxPin' in val
+    # Endstop pins needing INPUT_PULLUP are rejected on the pull-up-less 34-39 pins.
+    assert 'needs a pull-up' in val
+    # The default endstop pin is no longer the pull-up-less GPIO34.
+    assert '#define DEFAULT_ENDSTOP_PIN         34' not in st
+    assert 'DEFAULT_ENDSTOP_PIN' in st
+
+
+def test_audit_p1_nonblocking_tof():
+    pc = read('Servo_flute_ESP32/PressureController.cpp')
+    st = read('Servo_flute_ESP32/settings.h')
+    # §19: the blocking single-shot poll loop (delay(1) x50) is gone.
+    assert 'serviceTofMeasurement' in pc
+    assert 'delay(1)' not in pc
+    tof = pc.split('bool PressureController::serviceTofMeasurement')[1].split('\n}\n')[0]
+    assert 'for (int i = 0; i < 50' not in tof
+    # §20: a timeout marks the measurement invalid + counts errors instead of reading
+    # a bogus range, and staleness cuts the pump.
+    assert '_measurementValid' in pc and '_tofErrorCount' in pc
+    assert 'TOF_RANGE_TIMEOUT_MS' in st and 'TOF_STALE_MS' in st and 'TOF_MAX_CONSEC_ERRORS' in st
+    assert '_measurementValid && (now - _lastValidReadTime) >= TOF_STALE_MS' in pc
 
 
 def test_diagnostics_status_vocabulary_and_passive_active_split():

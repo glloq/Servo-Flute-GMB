@@ -123,8 +123,23 @@ private:
   uint32_t _testOwnerClientId = 0;
   unsigned long _testStartTime = 0;
   bool _testActive = false;
-  void beginTestSession(uint32_t clientId);   // start/refresh the manual-test window
+  // Start/refresh the manual-test window. Returns false (and changes nothing) if a
+  // test is already active and owned by a different client, so ownership can't be
+  // stolen mid-test.
+  bool beginTestSession(uint32_t clientId);
   void endTestSession(bool safeHardware);     // stop it (optionally safing hardware)
+
+  // A "test note" preview plays a real timed note through the sequencer and is
+  // stopped automatically after TEST_NOTE_DURATION_MS by update().
+  uint8_t _testNoteMidi = 0;
+  unsigned long _testNoteOffTime = 0;
+
+  // Controlled restart: after a restart-required config change / reset, safe the
+  // hardware and schedule a reboot so the change takes effect cleanly. While set,
+  // config-mutating routes are refused so they cannot overwrite the pending config.
+  unsigned long _pendingRestartTime = 0;
+  void scheduleControlledRestart();
+  bool restartPending() const { return _pendingRestartTime != 0; }
 
   // Fichier temporaire pour upload MIDI
   File _uploadFile;

@@ -32,6 +32,17 @@ public:
   // Arreter la pompe immediatement
   void stop();
 
+  // Global pump mute (keyboard toggle). While disabled the pump is forced off in
+  // update() regardless of demand; enabling resumes normal control.
+  void setEnabled(bool enabled);
+  bool isEnabled() const { return _enabled; }
+
+  // Manual single-pump test: drive ONLY pump `index` at `percent` (bypassing the
+  // global cascade/PID controller) until stopped. Lets the per-pump test button
+  // exercise one pump instead of commanding them all.
+  void testSinglePump(uint8_t index, uint8_t percent);
+  void stopSinglePumpTest();
+
   // Accesseurs pour l'UI
   uint16_t getDistanceMm() const { return _distanceMm; }
   uint8_t  getFillPercent() const { return _fillPercent; }
@@ -54,9 +65,19 @@ private:
   bool _endstopActive;         // Etat endstop (meca/optique)
   uint8_t _fillPercent;        // Pourcentage remplissage (0-100)
 
+  // Non-blocking ToF state machine (single-shot: start -> poll once per update).
+  bool _tofRanging;                 // Une mesure single-shot est en cours
+  unsigned long _tofRangeStartTime; // Debut de la mesure en cours (pour le timeout)
+  bool _measurementValid;           // La derniere mesure ToF est valide (pas un timeout)
+  unsigned long _lastValidReadTime; // Horodatage de la derniere mesure ToF valide
+  uint16_t _tofErrorCount;          // Compteur d'erreurs/timeouts consecutifs
+
   // Etat pompe
   uint8_t _targetPercent;      // Cible demandee (0-100)
   uint8_t _currentPumpPwm;    // PWM global (sortie PID, 0-255)
+  bool _enabled;               // Mute global: false => pompe forcee a l'arret
+  int8_t _testPumpIndex;       // >=0: test manuel d'une seule pompe (cet index)
+  uint8_t _testPumpPercent;    // Consigne du test mono-pompe (0-100)
 
   // Cascade multi-pompes
   bool _pumpActive[MAX_PUMPS];           // Etat actif par pompe
@@ -72,8 +93,10 @@ private:
   unsigned long _lastPidTime;
   unsigned long _lastReadTime;
 
-  // Lecture capteur selon type
-  uint16_t readSensor();
+  // Lecture ToF non bloquante: demarre une mesure single-shot puis interroge son
+  // etat une fois par appel (pas de delay). Retourne true une seule fois quand une
+  // nouvelle distance valide est prete (dans _distanceMm).
+  bool serviceTofMeasurement();
 
   // Appliquer PWM global avec logique cascade multi-pompes
   void setPumpPwm(uint8_t pwm);

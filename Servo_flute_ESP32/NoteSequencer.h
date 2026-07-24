@@ -25,6 +25,12 @@ public:
   NoteState getState() const;
   bool isPlaying() const;
 
+  // The note the sequencer currently owns (positioning or playing) and its
+  // velocity. Used to drive the air source (pump / fan) from the sequencer's real
+  // note transitions rather than from raw incoming MIDI events.
+  byte getCurrentNote() const { return _currentNote; }
+  byte getCurrentVelocity() const { return _currentVelocity; }
+
   // Arrete immediatement toute lecture (pour All Sound Off)
   void stop();
 

@@ -131,3 +131,7 @@ Software CI covers ESP32 firmware build, PlatformIO native behavior tests, pytes
 ## Post-audit safety status
 
 This branch adds software regressions for PCA detection before OE enable, reservoir autostart with sensor guard, and CC73 runtime-only attack state. Hardware validation is still required before merge for PCA/OE, solenoid, fan, pumps and sensors; no hardware PASS is claimed without physical tests.
+
+## Security / access model (known limitation)
+
+The web API and WebSocket are **unauthenticated**, and the SoftAP is open when `AP_PASSWORD` is empty. Anyone who can reach the device on the network can drive the actuators, change the configuration, restart it, and manage MIDI files. Run it only on a **trusted, isolated network**, set a non-empty `AP_PASSWORD`, and do not expose it to untrusted networks or the Internet. See [docs/API_WEB.md](docs/API_WEB.md#access-model-and-known-security-limitation) for the full posture and the planned authentication hardening.

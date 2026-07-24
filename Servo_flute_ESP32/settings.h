@@ -163,6 +163,17 @@ Set MIC_ENABLED to false if no mic is connected.
 // the stop command is lost. The server therefore bounds a manual-test session to
 // this window and returns the actuators to a safe state when it elapses.
 #define TEST_SESSION_MAX_MS 30000
+// After a configuration change that requires a hardware re-init (or a reset /
+// factory reset), the device performs a controlled restart so the new/default
+// configuration takes effect with the matching hardware setup, instead of running
+// on a half-applied config. This is the delay between sending the HTTP response and
+// the actual reboot. While a restart is pending, further config changes are refused
+// so they cannot overwrite the persisted pending configuration.
+#define CONFIG_RESTART_DELAY_MS 1500
+
+// Duration of a "test note" preview from the web UI: the note is played as a real
+// timed sequence (through the sequencer) and this is when it auto-stops.
+#define TEST_NOTE_DURATION_MS 800
 
 // --- Broadcast / legacy timing (still used by range finder + WS throttling) ---
 #define AUTOCAL_SETTLE_MS       300     // Range finder: wait after positioning servos
@@ -281,7 +292,7 @@ Modes modulaires de gestion d'air. L'interface s'adapte au mode choisi.
 #define DEFAULT_FAN_MAX_PWM         255
 #define DEFAULT_FAN_IDLE_PERCENT    20     // Vitesse idle entre notes (% du PWM range)
 #define DEFAULT_FAN_IDLE_TIMEOUT_MS 5000   // Couper le ventilateur apres 5s sans note
-#define DEFAULT_ENDSTOP_PIN         34     // GPIO34 (input only)
+#define DEFAULT_ENDSTOP_PIN         13     // GPIO13 (has internal pull-up; endstop uses INPUT_PULLUP)
 #define DEFAULT_ENDSTOP_ACTIVE_HIGH true
 #define DEFAULT_HALL_PIN            36     // GPIO36 (ADC, input only)
 #define DEFAULT_HALL_THRESHOLD_LOW  1500   // Seuil bas analogique Hall
@@ -305,6 +316,11 @@ Modes modulaires de gestion d'air. L'interface s'adapte au mode choisi.
 #define PRESSURE_PID_INTERVAL_MS    100    // Intervalle boucle PID (ms)
 #define PUMP_SAFETY_MIN_MM          5      // Distance min avant coupure securite (surgonflage)
 #define PUMP_SAFETY_MAX_DIST_MM    300    // Distance max (30cm) : capteur hors portee, couper pompe
+// Non-blocking ToF (VL53L0X/VL6180X): a single-shot measurement is started, then
+// its status is polled once per loop instead of busy-waiting with delay(1).
+#define TOF_RANGE_TIMEOUT_MS        60     // Abandon d'une mesure single-shot au-dela de ce delai
+#define TOF_STALE_MS                500    // Sans mesure valide depuis ce delai => pompe coupee (securite)
+#define TOF_MAX_CONSEC_ERRORS       10     // Erreurs consecutives avant d'invalider le capteur
 
 /*******************************************************************************
 ---------------------------   POWER MANAGEMENT        ------------------------
