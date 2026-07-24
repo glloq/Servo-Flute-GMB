@@ -10,8 +10,34 @@ static bool isReservedGpio(uint8_t pin) {
          pin == I2C_SDA_PIN || pin == I2C_SCL_PIN || pin == PIN_SERVOS_OFF || pin == 1 || pin == 3;
 }
 
+// GPIO34-39 are input-only on the classic ESP32 and have NO internal pull-up.
 static bool isInputOnlyGpio(uint8_t pin) {
-  return pin == 34 || pin == 35 || pin == 36 || pin == 39;
+  return pin >= 34 && pin <= 39;
+}
+
+// GPIO6-11 are wired to the on-package SPI flash: using them hangs the chip.
+static bool isFlashGpio(uint8_t pin) {
+  return pin >= 6 && pin <= 11;
+}
+
+// Pins consumed by the INMP441 I2S microphone (only when the mic is compiled in).
+static bool isI2sMicGpio(uint8_t pin) {
+#if MIC_ENABLED
+  return pin == MIC_PIN_BCLK || pin == MIC_PIN_LRCLK || pin == MIC_PIN_DIN;
+#else
+  (void)pin;
+  return false;
+#endif
+}
+
+// Reason a pin cannot be used at all (regardless of direction), or "" if usable.
+// A single table so every configurable GPIO is validated the same way.
+static const char* gpioHardConflict(uint8_t pin) {
+  if (pin > CONFIG_MAX_GPIO) return "out of range";
+  if (isFlashGpio(pin)) return "reserved for SPI flash";
+  if (isReservedGpio(pin)) return "reserved by board function";
+  if (isI2sMicGpio(pin)) return "used by I2S microphone";
+  return "";
 }
 
 static bool normalizeRangeU8(uint8_t& v, uint8_t lo, uint8_t hi) {
@@ -153,18 +179,32 @@ ConfigValidationResult validateAndNormalizeConfig(RuntimeConfig& config, const R
     if (config.pumpMinPwm[i] > config.pumpMaxPwm[i]) appendIssue(r.error, "pump min PWM > max PWM at index " + String(i));
   }
 
-  uint8_t gpios[8]; uint8_t gcount = 0;
-  if (configurationUsesSolenoidValve(config)) gpios[gcount++] = config.solenoidPin;
-  if (configurationUsesFan(config)) gpios[gcount++] = config.fanPin;
-  if (configurationUsesPumps(config)) for (uint8_t i = 0; i < config.numPumps && i < MAX_PUMPS; i++) gpios[gcount++] = config.pumpPins[i];
-  if (configurationUsesReservoirSensor(config) && config.sensorType == SENSOR_TYPE_HALL_KY024) gpios[gcount++] = config.hallPin;
-  if (configurationUsesReservoirSensor(config) && (config.sensorType == SENSOR_TYPE_ENDSTOP_MECH || config.sensorType == SENSOR_TYPE_ENDSTOP_OPT)) gpios[gcount++] = config.endstopPin;
+  // Build the set of every GPIO the configuration consumes, tagging each one as an
+  // output (solenoid/fan/pump: needs a real output pin) or a pull-up input
+  // (endstop: pinMode(INPUT_PULLUP)). Then validate every pin against a single
+  // capability table and cross-check for conflicts (including the I2S mic and the
+  // serial-MIDI UART, which live outside the PCA but share the same GPIO space).
+  const uint8_t kMaxGpios = 4 + MAX_PUMPS;    // solenoid + fan + sensor + serialMIDI + pumps
+  uint8_t gpios[kMaxGpios]; bool gpioIsOutput[kMaxGpios]; bool gpioNeedsPullup[kMaxGpios];
+  uint8_t gcount = 0;
+  auto addGpio = [&](uint8_t pin, bool isOutput, bool needsPullup) {
+    if (gcount < kMaxGpios) { gpios[gcount] = pin; gpioIsOutput[gcount] = isOutput; gpioNeedsPullup[gcount] = needsPullup; gcount++; }
+  };
+  if (configurationUsesSolenoidValve(config)) addGpio(config.solenoidPin, true, false);
+  if (configurationUsesFan(config)) addGpio(config.fanPin, true, false);
+  if (configurationUsesPumps(config)) for (uint8_t i = 0; i < config.numPumps && i < MAX_PUMPS; i++) addGpio(config.pumpPins[i], true, false);
+  if (configurationUsesReservoirSensor(config) && config.sensorType == SENSOR_TYPE_HALL_KY024) addGpio(config.hallPin, false, false);
+  if (configurationUsesReservoirSensor(config) && (config.sensorType == SENSOR_TYPE_ENDSTOP_MECH || config.sensorType == SENSOR_TYPE_ENDSTOP_OPT)) addGpio(config.endstopPin, false, true);
+  // The serial-MIDI RX pin was previously never validated nor added to the used set.
+  if (config.serialMidiEnabled) addGpio(config.serialMidiRxPin, false, false);
+
   for (uint8_t i = 0; i < gcount; i++) {
-    if (gpios[i] > CONFIG_MAX_GPIO) appendIssue(r.error, "GPIO out of range: " + String(gpios[i]));
-    if (isReservedGpio(gpios[i])) appendIssue(r.error, "GPIO reserved by board function: " + String(gpios[i]));
-    bool outputUse = (configurationUsesSolenoidValve(config) && gpios[i] == config.solenoidPin) || (configurationUsesFan(config) && gpios[i] == config.fanPin);
-    for (uint8_t p = 0; p < config.numPumps && p < MAX_PUMPS; p++) if (gpios[i] == config.pumpPins[p]) outputUse = true;
-    if (outputUse && isInputOnlyGpio(gpios[i])) appendIssue(r.error, "input-only GPIO used as output: " + String(gpios[i]));
+    const char* hard = gpioHardConflict(gpios[i]);
+    if (hard[0] != '\0') appendIssue(r.error, "GPIO " + String(gpios[i]) + " " + hard);
+    if (gpioIsOutput[i] && isInputOnlyGpio(gpios[i])) appendIssue(r.error, "input-only GPIO used as output: " + String(gpios[i]));
+    // GPIO34-39 have no internal pull-up, so a pin needing INPUT_PULLUP (endstop)
+    // there floats: reject it (the default endstop GPIO34 was exactly this trap).
+    if (gpioNeedsPullup[i] && isInputOnlyGpio(gpios[i])) appendIssue(r.error, "GPIO " + String(gpios[i]) + " needs a pull-up (34-39 have none)");
     for (uint8_t j = i + 1; j < gcount; j++) if (gpios[i] == gpios[j]) appendIssue(r.error, "duplicate incompatible GPIO: " + String(gpios[i]));
   }
 

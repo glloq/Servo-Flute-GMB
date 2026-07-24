@@ -268,7 +268,7 @@ def test_solenoid_modes_and_gpio_filter_helpers():
     assert 'configurationUsesSolenoidValve(cfg)' in air
     assert 'pinMode(cfg.solenoidPin, OUTPUT)' in air
     assert 'closeSolenoid();  // apply closed level immediately' in air
-    assert 'if (configurationUsesSolenoidValve(config)) gpios[gcount++] = config.solenoidPin;' in src
+    assert 'if (configurationUsesSolenoidValve(config)) addGpio(config.solenoidPin, true, false);' in src
 
 def test_web_json_uses_arduinojson_for_unsafe_strings_and_special_cases_documented():
     src = read('Servo_flute_ESP32/WebConfigurator.cpp')
@@ -448,6 +448,22 @@ def test_audit_p1_transactional_config_save():
     assert 'LittleFS.exists(tmpPath)' in load_body
     # §14: a failed non-restart save rolls back the live config + controllers.
     assert 'applyRuntimeConfig(failedConfig, previousConfig)' in web
+
+
+def test_audit_p1_gpio_validation_completeness():
+    val = read('Servo_flute_ESP32/ConfigValidator.cpp')
+    st = read('Servo_flute_ESP32/settings.h')
+    # §18: flash pins, I2S mic pins and the full input-only 34-39 range are covered.
+    assert 'isFlashGpio' in val and 'isI2sMicGpio' in val
+    assert 'pin >= 34 && pin <= 39' in val
+    assert 'pin >= 6 && pin <= 11' in val
+    # The serial-MIDI RX pin is now added to the validated used-pin set.
+    assert 'config.serialMidiEnabled' in val and 'config.serialMidiRxPin' in val
+    # Endstop pins needing INPUT_PULLUP are rejected on the pull-up-less 34-39 pins.
+    assert 'needs a pull-up' in val
+    # The default endstop pin is no longer the pull-up-less GPIO34.
+    assert '#define DEFAULT_ENDSTOP_PIN         34' not in st
+    assert 'DEFAULT_ENDSTOP_PIN' in st
 
 
 def test_diagnostics_status_vocabulary_and_passive_active_split():

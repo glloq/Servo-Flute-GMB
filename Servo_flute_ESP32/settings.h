@@ -292,7 +292,7 @@ Modes modulaires de gestion d'air. L'interface s'adapte au mode choisi.
 #define DEFAULT_FAN_MAX_PWM         255
 #define DEFAULT_FAN_IDLE_PERCENT    20     // Vitesse idle entre notes (% du PWM range)
 #define DEFAULT_FAN_IDLE_TIMEOUT_MS 5000   // Couper le ventilateur apres 5s sans note
-#define DEFAULT_ENDSTOP_PIN         34     // GPIO34 (input only)
+#define DEFAULT_ENDSTOP_PIN         13     // GPIO13 (has internal pull-up; endstop uses INPUT_PULLUP)
 #define DEFAULT_ENDSTOP_ACTIVE_HIGH true
 #define DEFAULT_HALL_PIN            36     // GPIO36 (ADC, input only)
 #define DEFAULT_HALL_THRESHOLD_LOW  1500   // Seuil bas analogique Hall

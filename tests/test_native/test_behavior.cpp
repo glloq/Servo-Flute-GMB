@@ -619,6 +619,38 @@ static void pump_enable_and_single_pump_test(){
   assert(__analog_writes[25]==0 && __analog_writes[26]==0 && __analog_writes[27]==0);
 }
 
+// Audit P1 §18. GPIO validation covers flash pins, I2S mic pins, the serial-MIDI
+// UART pin, and the input-only 34-39 range (no internal pull-up) for endstops.
+static void gpio_validation_reserved_and_conflicts(){
+  // Base direct-pump config (valve + 1 pump + hall) is valid.
+  resetCfg(); cfg.airMode=AIR_MODE_PUMP_VALVE; cfg.numPumps=1; cfg.pumpPins[0]=25;
+  cfg.sensorType=SENSOR_TYPE_HALL_KY024; cfg.hallPin=36;
+  assert(validateAndNormalizeConfig(cfg, nullptr).valid);
+  // Pump on an I2S microphone pin is rejected.
+  cfg.pumpPins[0]=MIC_PIN_DIN;
+  assert(!validateAndNormalizeConfig(cfg, nullptr).valid);
+  // Pump on a SPI-flash pin is rejected.
+  cfg.pumpPins[0]=7;
+  assert(!validateAndNormalizeConfig(cfg, nullptr).valid);
+  // Pump on an input-only pin (used as output) is rejected.
+  cfg.pumpPins[0]=34;
+  assert(!validateAndNormalizeConfig(cfg, nullptr).valid);
+  // Serial-MIDI RX pin colliding with the pump is now detected...
+  cfg.pumpPins[0]=25; cfg.serialMidiEnabled=true; cfg.serialMidiRxPin=25;
+  assert(!validateAndNormalizeConfig(cfg, nullptr).valid);
+  // ...and a distinct valid RX pin passes.
+  cfg.serialMidiRxPin=17;
+  assert(validateAndNormalizeConfig(cfg, nullptr).valid);
+  // Endstop reservoir sensor: a pull-up-capable pin (27) is valid, an input-only
+  // pin (34, no internal pull-up) is rejected because it uses INPUT_PULLUP.
+  // (Pin 27 avoids the solenoid valve on 13 and the pump on 25 in this mode.)
+  resetCfg(); cfg.airMode=AIR_MODE_PUMP_RESERVOIR; cfg.numPumps=1; cfg.pumpPins[0]=25;
+  cfg.sensorType=SENSOR_TYPE_ENDSTOP_MECH; cfg.endstopPin=27;
+  assert(validateAndNormalizeConfig(cfg, nullptr).valid);
+  cfg.endstopPin=34;
+  assert(!validateAndNormalizeConfig(cfg, nullptr).valid);
+}
+
 // Review #14. The global timeout scales to the largest note count instead of being
 // clamped below the sum of the per-note budgets (which happened ~24 notes before).
 static void autocal_global_timeout_scales_to_max_notes(){
@@ -858,4 +890,4 @@ static void audio_mic_classification(){
   assert(PitchDetector::classifyRaw(raw.data(), N) == MIC_SIG_OK);
 }
 
-int main(){ pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); airflow_nominal_drives_angle(); autocal_frozen_source_fails(); autocal_air_supply_gate(); autocal_14_notes_no_timeout(); autocal_plus70_cents_rejected(); autocal_storage_failure_restores(); autocal_range_finder(); autocal_range_finder_stale(); autocal_range_apply_storage(); autocal_air_lost_midnote(); calair_reservoir_requires_sensor(); instrument_power_held_during_actuator_session(); instrument_ignores_midi_during_calibration(); instrument_inert_after_pca_failure(); air_pump_demand_follows_real_note(); air_fan_speed_follows_replacement(); pump_enable_and_single_pump_test(); autocal_global_timeout_scales_to_max_notes(); airflow_cc2_silence_and_live_cc(); airflow_attack_cancelled_on_rest(); airflow_cc2_timeout_on_held_note(); audio_yin_pcm_core(); audio_mic_classification(); std::cout << "behavior tests passed\n"; }
+int main(){ pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); airflow_nominal_drives_angle(); autocal_frozen_source_fails(); autocal_air_supply_gate(); autocal_14_notes_no_timeout(); autocal_plus70_cents_rejected(); autocal_storage_failure_restores(); autocal_range_finder(); autocal_range_finder_stale(); autocal_range_apply_storage(); autocal_air_lost_midnote(); calair_reservoir_requires_sensor(); instrument_power_held_during_actuator_session(); instrument_ignores_midi_during_calibration(); instrument_inert_after_pca_failure(); air_pump_demand_follows_real_note(); air_fan_speed_follows_replacement(); pump_enable_and_single_pump_test(); gpio_validation_reserved_and_conflicts(); autocal_global_timeout_scales_to_max_notes(); airflow_cc2_silence_and_live_cc(); airflow_attack_cancelled_on_rest(); airflow_cc2_timeout_on_held_note(); audio_yin_pcm_core(); audio_mic_classification(); std::cout << "behavior tests passed\n"; }
