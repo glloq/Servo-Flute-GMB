@@ -517,10 +517,10 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
         <div class="acal-bar"><div class="acal-fill" id="rfFill"></div></div>
         <div id="rfResult" style="margin-top:8px;display:none">
           <div style="font-size:.85em;padding:8px;background:rgba(78,204,163,.08);border-radius:6px">
-            <span>Min detecte: <b id="rfMinVal">-</b> deg</span> &mdash;
-            <span>Max detecte: <b id="rfMaxVal">-</b> deg</span>
+            <span>Min detected: <b id="rfMinVal">-</b> deg</span> &mdash;
+            <span>Max detected: <b id="rfMaxVal">-</b> deg</span>
             <div class="btn-row" style="margin-top:8px">
-              <button class="btn btn-g btn-s" onclick="applyRangeResult()">Appliquer</button>
+              <button class="btn btn-g btn-s" onclick="applyRangeResult()">Apply</button>
               <button class="btn btn-s" onclick="dismissRangeResult()">Ignorer</button>
             </div>
           </div>
@@ -540,7 +540,7 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
           <span><b id="acalDetCents">-</b> ct</span>
           <span>Conf <b id="acalConf">-</b>%</span>
           <span>RMS <b id="acalRms">-</b></span>
-          <span>Bruit <b id="acalNoise">-</b></span>
+          <span>Noise <b id="acalNoise">-</b></span>
           <span>Trames <b id="acalFrames">-</b></span>
         </div>
         <div id="acalMsg" style="margin-top:6px;font-size:.8em;color:#e94560;display:none"></div>
@@ -695,15 +695,15 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
       <h3>Configuration</h3>
       <div style="display:flex;gap:4px">
         <button class="btn btn-s" onclick="toggleAirHelp()" style="font-size:.65em;padding:2px 8px" title="Quick help">?</button>
-        <button class="btn btn-s" onclick="toggleAllAirBlocks()" style="font-size:.65em;padding:2px 8px">Tout plier/deplier</button>
+        <button class="btn btn-s" onclick="toggleAllAirBlocks()" style="font-size:.65em;padding:2px 8px">Collapse/expand all</button>
       </div>
     </div>
     <div id="airHelpPanel" style="display:none;font-size:.75em;color:#aaa;background:rgba(78,204,163,.05);border:1px solid rgba(78,204,163,.15);border-radius:6px;padding:8px 12px;margin:6px 0;line-height:1.5">
       <b style="color:#4ecca3">Quick guide</b><br>
-      1. Choisir le mode correspondant au materiel<br>
+      1. Choose the mode matching your hardware<br>
       2. Configure the settings in each block<br>
       3. Use the test buttons to verify<br>
-      4. Lancer le diagnostic pour valider le tout<br>
+      4. Run the diagnostic to validate everything<br>
       5. Save the configuration<br>
       <span style="color:#888">Tip: badges below the mode show the required components</span><br>
       <span style="color:#888">Keyboard shortcuts: <b>Ctrl+S</b>=Save, <b>T</b>=Test, <b>Esc</b>=Stop, <b>H</b>=Help, <b>?</b>=Shortcuts</span>
@@ -879,8 +879,8 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
           <div style="font-size:.7em;color:#888;padding:2px 0">Kp: reactivite, Ki: precision long terme. Valeurs /10 (ex: 30 = 3.0)</div>
           <div class="btn-row" style="margin-top:4px">
             <button class="btn btn-s" onclick="$('airPidKp').value=45;$('airPidKi').value=8;markDirty();validateAirConfig()" style="font-size:.7em;padding:3px 8px" title="Fast response, slight overshoot risk">Fast</button>
-            <button class="btn btn-s" onclick="$('airPidKp').value=30;$('airPidKi').value=5;markDirty();validateAirConfig()" style="font-size:.7em;padding:3px 8px" title="Bon compromis reactivite/stabilite">Equilibre</button>
-            <button class="btn btn-s" onclick="$('airPidKp').value=15;$('airPidKi').value=2;markDirty();validateAirConfig()" style="font-size:.7em;padding:3px 8px" title="Montee lente et stable, sans depassement">Soft</button>
+            <button class="btn btn-s" onclick="$('airPidKp').value=30;$('airPidKi').value=5;markDirty();validateAirConfig()" style="font-size:.7em;padding:3px 8px" title="Good responsiveness/stability trade-off">Balanced</button>
+            <button class="btn btn-s" onclick="$('airPidKp').value=15;$('airPidKi').value=2;markDirty();validateAirConfig()" style="font-size:.7em;padding:3px 8px" title="Slow, stable rise without overshoot">Soft</button>
           </div>
         </div>
       </div>
@@ -1148,70 +1148,70 @@ let dirty=false,fpHistory=[],fpFuture=[];
 
 // Presets: {id,n:name,h:holes,th:thumbIdx(-1=none),em:embouchure(trav|bec|naf|end|oca),d:[[midi,[fp],amn,amx],...]}
 const PR=[
-{id:'tabor_d',n:'Tabor Pipe (R\u00e9)',h:3,th:0,em:'bec',d:[
+{id:'tabor_d',n:'Tabor Pipe (D)',h:3,th:0,em:'bec',d:[
 [74,[0,0,0],10,50],[76,[0,0,1],10,50],[78,[0,1,1],10,55],[79,[1,1,1],10,55],
 [81,[0,0,0],30,70],[83,[0,0,1],30,70],[85,[0,1,1],30,75],[86,[1,1,1],35,75]]},
-{id:'ocarina_c',n:'Ocarina 4 trous (Do)',h:4,th:-1,em:'oca',d:[
+{id:'ocarina_c',n:'Ocarina 4 holes (C)',h:4,th:-1,em:'oca',d:[
 [72,[0,0,0,0],10,50],[74,[0,0,1,0],10,55],[76,[0,1,0,0],15,60],[77,[0,1,0,1],20,65],
 [79,[0,1,1,1],25,70],[81,[1,0,1,0],30,75],[83,[1,1,1,0],35,85],[84,[1,1,1,1],35,90]]},
-{id:'naf_a',n:'Fl\u00fbte am\u00e9rindienne (La)',h:4,th:-1,em:'naf',d:[
+{id:'naf_a',n:'Native American flute (A)',h:4,th:-1,em:'naf',d:[
 [69,[0,0,0,0],5,45],[72,[0,0,0,1],5,45],[74,[0,0,1,1],5,50],[76,[0,1,1,1],5,50],[79,[1,1,1,1],5,55],
 [81,[0,0,0,0],40,80],[84,[0,0,0,1],40,80],[86,[0,0,1,1],40,85],[88,[0,1,1,1],45,85]]},
-{id:'shaku_d',n:'Shakuhachi (R\u00e9)',h:5,th:0,em:'end',d:[
+{id:'shaku_d',n:'Shakuhachi (D)',h:5,th:0,em:'end',d:[
 [62,[0,0,0,0,0],5,40],[65,[0,0,0,1,0],5,45],[67,[0,0,1,1,1],5,50],[69,[0,1,1,1,1],10,50],[72,[1,1,1,1,0],10,55],
 [74,[0,0,0,0,0],40,80],[77,[0,0,0,1,0],40,80],[79,[0,0,1,1,1],40,85],[81,[0,1,1,1,1],45,85],[84,[1,1,1,1,0],45,90],[86,[0,0,0,0,0],60,100]]},
-{id:'naf5_fs',n:'Fl\u00fbte am\u00e9rindienne 5 (Fa#)',h:5,th:-1,em:'naf',d:[
+{id:'naf5_fs',n:'Native American flute 5 (F#)',h:5,th:-1,em:'naf',d:[
 [66,[0,0,0,0,0],5,45],[69,[0,0,0,0,1],5,45],[71,[0,0,0,1,1],5,50],[73,[0,0,1,1,1],5,50],[76,[0,1,1,1,1],5,55],[78,[1,1,1,1,1],5,60],
 [81,[0,0,0,0,1],35,75],[83,[0,0,0,1,1],35,80],[85,[0,0,1,1,1],40,80],[88,[0,1,1,1,1],40,85]]},
-{id:'whistle_d',n:'Tin Whistle (R\u00e9)',h:6,th:-1,em:'bec',d:[
+{id:'whistle_d',n:'Tin Whistle (D)',h:6,th:-1,em:'bec',d:[
 [74,[0,0,0,0,0,0],5,50],[76,[0,0,0,0,0,1],5,50],[78,[0,0,0,0,1,1],5,50],[79,[0,0,0,1,1,1],5,55],
 [81,[0,0,1,1,1,1],5,55],[83,[0,1,1,1,1,1],5,60],[85,[1,1,1,1,1,1],5,60],
 [86,[0,0,0,0,0,0],30,80],[88,[0,0,0,0,0,1],30,80],[90,[0,0,0,0,1,1],30,85],[91,[0,0,0,1,1,1],35,85],
 [93,[0,0,1,1,1,1],35,90],[95,[0,1,1,1,1,1],35,90],[97,[1,1,1,1,1,1],40,95]]},
-{id:'irish_c',n:'Fl\u00fbte irlandaise (Do)',h:6,th:-1,em:'trav',d:[
+{id:'irish_c',n:'Irish flute (C)',h:6,th:-1,em:'trav',d:[
 [82,[0,1,1,1,1,1],10,60,40],[83,[1,1,1,1,1,1],0,50,40],
 [84,[0,0,0,0,0,0],20,75,42],[86,[0,0,0,0,0,1],15,70,44],[88,[0,0,0,0,1,1],10,65,46],[89,[0,0,0,1,1,1],10,60,48],
 [91,[0,0,1,1,1,1],5,55,50],[93,[0,1,1,1,1,1],5,50,52],[95,[1,1,1,1,1,1],0,45,54],
 [96,[0,0,0,0,0,0],50,100,55],[98,[0,0,0,0,0,1],45,95,57],[100,[0,0,0,0,1,1],40,90,59],[101,[0,0,0,1,1,1],35,85,61],
 [103,[0,0,1,1,1,1],30,80,63]]},
-{id:'bansuri_a',n:'Bansuri (La)',h:6,th:-1,em:'trav',d:[
+{id:'bansuri_a',n:'Bansuri (A)',h:6,th:-1,em:'trav',d:[
 [64,[0,0,0,0,0,0],5,45,40],[66,[0,0,0,0,0,1],5,45,42],[68,[0,0,0,0,1,1],5,50,44],
 [69,[0,0,0,1,1,1],10,50,46],[71,[0,0,1,1,1,1],10,55,48],[73,[0,1,1,1,1,1],10,55,50],
 [74,[1,0,0,0,0,0],15,60,52],[76,[0,0,0,0,0,0],20,65,55],[78,[0,0,0,0,0,1],20,65,57],[80,[0,0,0,0,1,1],20,70,59],
 [81,[0,0,0,1,1,1],35,80,60],[83,[0,0,1,1,1,1],35,85,62],[85,[0,1,1,1,1,1],40,85,65]]},
-{id:'dizi_d',n:'Dizi (R\u00e9)',h:6,th:-1,em:'trav',d:[
+{id:'dizi_d',n:'Dizi (D)',h:6,th:-1,em:'trav',d:[
 [69,[0,0,0,0,0,0],5,45,42],[71,[0,0,0,0,0,1],5,45,44],[73,[0,0,0,0,1,1],5,50,46],
 [74,[0,0,0,1,1,1],10,50,48],[76,[0,0,1,1,1,1],10,55,50],[78,[0,1,1,1,1,1],10,55,52],
 [81,[0,0,0,0,0,0],30,75,55],[83,[0,0,0,0,0,1],30,75,57],[85,[0,0,0,0,1,1],30,80,59],
 [86,[0,0,0,1,1,1],35,80,60],[88,[0,0,1,1,1,1],35,85,62],[90,[0,1,1,1,1,1],40,85,65]]},
-{id:'fife_bb',n:'Fifre (Sib)',h:6,th:-1,em:'trav',d:[
+{id:'fife_bb',n:'Fife (Bb)',h:6,th:-1,em:'trav',d:[
 [70,[0,0,0,0,0,0],10,55,42],[72,[0,0,0,0,0,1],10,55,44],[74,[0,0,0,0,1,1],10,55,46],[75,[0,0,0,1,1,1],10,60,48],
 [77,[0,0,1,1,1,1],10,60,50],[79,[0,1,1,1,1,1],10,60,52],[81,[1,1,1,1,1,1],10,65,54],
 [82,[0,0,0,0,0,0],35,80,55],[84,[0,0,0,0,0,1],35,80,57],[86,[0,0,0,0,1,1],35,85,59],[87,[0,0,0,1,1,1],40,85,60],
 [89,[0,0,1,1,1,1],40,90,62],[91,[0,1,1,1,1,1],40,90,64],[93,[1,1,1,1,1,1],45,95,65]]},
-{id:'quena_g',n:'Quena (Sol)',h:7,th:0,em:'end',d:[
+{id:'quena_g',n:'Quena (G)',h:7,th:0,em:'end',d:[
 [67,[0,0,0,0,0,0,0],5,45],[69,[0,0,0,0,0,0,1],5,45],[71,[0,0,0,0,0,1,1],5,50],[72,[0,0,0,0,1,1,1],5,50],
 [74,[0,0,0,1,1,1,1],5,55],[76,[0,0,1,1,1,1,1],5,55],[78,[0,1,1,1,1,1,1],5,60],
 [79,[2,0,0,0,0,0,0],25,70],[81,[2,0,0,0,0,0,1],25,70],[83,[2,0,0,0,0,1,1],25,75],[84,[2,0,0,0,1,1,1],30,75],
 [86,[2,0,0,1,1,1,1],30,80],[88,[2,0,1,1,1,1,1],30,80],[90,[2,1,1,1,1,1,1],35,85]]},
-{id:'ney_a',n:'Ney turc (La)',h:7,th:0,em:'end',d:[
+{id:'ney_a',n:'Turkish Ney (A)',h:7,th:0,em:'end',d:[
 [57,[0,0,0,0,0,0,0],0,30],[59,[0,0,0,0,0,0,1],0,30],[60,[0,0,0,0,0,1,1],0,35],
 [62,[0,0,0,0,1,1,1],0,35],[64,[0,0,0,1,1,1,1],0,40],[65,[0,0,1,1,1,1,1],0,40],[67,[0,1,1,1,1,1,1],0,45],
 [69,[0,0,0,0,0,0,0],20,65],[71,[0,0,0,0,0,0,1],20,65],[72,[0,0,0,0,0,1,1],20,70],
 [74,[0,0,0,0,1,1,1],25,70],[76,[0,0,0,1,1,1,1],25,75],[77,[0,0,1,1,1,1,1],25,75],[79,[0,1,1,1,1,1,1],30,80]]},
-{id:'recorder_c',n:'Fl\u00fbte \u00e0 bec (Do)',h:7,th:0,em:'bec',d:[
+{id:'recorder_c',n:'Recorder (C)',h:7,th:0,em:'bec',d:[
 [72,[0,0,0,0,0,0,0],5,40],[74,[0,0,0,0,0,0,1],5,40],[76,[0,0,0,0,0,1,1],5,45],[77,[0,0,0,0,1,1,1],5,45],
 [79,[0,0,0,1,1,1,1],5,50],[81,[0,0,1,1,1,1,1],5,50],[83,[0,1,1,1,1,1,1],5,55],
 [84,[2,0,0,0,0,0,0],20,65],[86,[2,0,0,0,0,0,1],20,65],[88,[2,0,0,0,0,1,1],25,70],[89,[2,0,0,0,1,1,1],25,70],
 [91,[2,0,0,1,1,1,1],25,75],[93,[2,0,1,1,1,1,1],30,75],[95,[2,1,0,1,1,1,1],30,80],[96,[2,0,1,0,1,1,1],35,85]]},
-{id:'recorder_b8',n:'Fl\u00fbte \u00e0 bec baroque (Do)',h:8,th:0,em:'bec',d:[
+{id:'recorder_b8',n:'Baroque recorder (C)',h:8,th:0,em:'bec',d:[
 [72,[0,0,0,0,0,0,0,0],5,40],[74,[0,0,0,0,0,0,1,1],5,40],[76,[0,0,0,0,0,1,1,1],5,45],
 [77,[0,0,0,0,1,0,0,1],5,45],[79,[0,0,0,1,1,1,1,1],5,50],[81,[0,0,1,1,1,1,1,1],10,55],
 [83,[0,1,0,1,1,1,1,1],10,55],
 [84,[2,0,0,1,1,1,1,1],15,60],[86,[2,0,0,0,0,0,1,1],25,70],[88,[2,0,0,0,0,1,1,1],25,70],
 [89,[2,0,0,0,1,0,0,1],30,75],[91,[2,0,0,1,1,1,1,1],30,80],[93,[2,0,1,0,1,1,1,1],35,80],
 [95,[2,1,0,1,0,1,1,1],35,85],[96,[2,0,1,0,1,0,1,1],40,90]]},
-{id:'kaval_d',n:'Kaval (R\u00e9)',h:8,th:0,em:'end',d:[
+{id:'kaval_d',n:'Kaval (D)',h:8,th:0,em:'end',d:[
 [62,[0,0,0,0,0,0,0,0],0,30],[64,[0,0,0,0,0,0,0,1],0,30],[65,[0,0,0,0,0,0,1,1],0,35],
 [67,[0,0,0,0,0,1,1,1],0,35],[69,[0,0,0,0,1,1,1,1],0,40],[71,[0,0,0,1,1,1,1,1],5,40],
 [72,[0,0,1,1,1,1,1,1],5,45],[74,[0,1,1,1,1,1,1,1],5,45],
@@ -1232,7 +1232,7 @@ var _suppressDirty=false;
 function markDirty(){if(_suppressDirty)return;dirty=true;$('unsavedBadge').classList.add('show');updStepDots();const sb=$('btnAirSave');if(sb)sb.style.boxShadow='0 0 8px #4ecca3';updateConfigSummary()}
 function markClean(){dirty=false;$('unsavedBadge').classList.remove('show');updStepDots();const sb=$('btnAirSave');if(sb)sb.style.boxShadow='';const cs=$('airConfigSummary');if(cs)cs.style.display='none'}
 function handleSaveResponse(j){if(j&&j.restart_required){const b=$('restartRequiredBanner');if(b)b.style.display='block';
-  if(j.restarting){const rb=$('btnRestartNow');if(rb){rb.disabled=true;rb.textContent='Redémarrage automatique...'}showToast('Changement matériel enregistré - redémarrage automatique','info')}
+  if(j.restarting){const rb=$('btnRestartNow');if(rb){rb.disabled=true;rb.textContent='Restarting automatically...'}showToast('Hardware change saved - restarting automatically','info')}
   else{showToast('Restart required for hardware changes','info')}}}
 function restartNow(){if(confirm('Put actuators in safe state and restart now?'))fetch('/api/restart',{method:'POST'}).then(()=>showToast('Restarting...','info'))}
 function btnLoad(id,on){const b=$(id);if(!b)return;if(on){b.classList.add('loading');b.disabled=true}else{b.classList.remove('loading');b.disabled=false}}
@@ -1285,15 +1285,15 @@ const AIR_LAYOUT_DESCS=[
   'PWM radial fan blows continuously. The flow servo directs airflow to the flute.'
 ];
 const AIR_DESCS=[
-  'Valve solenoid coupe l\'air, servo flow regle le debit. Ideal pour alimentation externe (compresseur, bouche).',
-  'Valve servo PCA coupe l\'air, servo flow regle le debit. Alternative silencieuse au solenoide.',
-  'Servo flow only. L\'angle min coupe l\'air entre les notes. Simple, un seul servo suffit.',
+  'Solenoid valve cuts the air, the flow servo sets the flow rate. Ideal for an external supply (compressor, mouth).',
+  'PCA servo valve cuts the air, the flow servo sets the flow rate. Quiet alternative to the solenoid.',
+  'Servo flow only. The min angle cuts the air between notes. Simple, a single servo is enough.',
   'PWM fan blows continuously. The flow servo directs airflow to the flute. Good power.',
   'Direct pump(s) + valve. Direct breath without reservoir. 1-3 pumps in parallel.',
   'Pump(s) + reservoir + sensor. Automatic PID pressure regulation. Most complete configuration.'
 ];
 const AIR_PARTS=[
-  ['Servo flow PCA','Valve solenoide'],
+  ['Servo flow PCA','Solenoid valve'],
   ['Servo flow PCA','Valve servo PCA'],
   ['Servo flow PCA'],
   ['Servo flow PCA','Fan PWM'],
@@ -1422,7 +1422,7 @@ function testAirSystem(){
 function testSinglePump(idx){
   wsSend({t:'pump_target',v:30,pump:idx});
   setTimeout(()=>wsSend({t:'pump_stop',pump:idx}),2000);
-  showToast('Test pump '+(idx+1)+' en cours...','success');
+  showToast('Testing pump '+(idx+1)+'...','success');
 }
 function rotateServoNeedle(angle){
   const mn=CFG?(CFG.air_min||0):0,mx=CFG?(CFG.air_max||180):180;
@@ -1524,11 +1524,11 @@ function runAirDiagnostic(){
   }
   if(hasPump){
     steps.push({t:t,msg:'Pump -> 30%...',fn:()=>{wsSend({t:'pump_target',v:30});const pt2=$('pumpTarget');if(pt2)pt2.value=30;const pv=$('pumpTargetVal');if(pv)pv.textContent='30%'}});
-    steps.push({t:t+1300,msg:'Pump -> arret',fn:()=>stopAirSource()});t+=2100;
+    steps.push({t:t+1300,msg:'Pump -> stop',fn:()=>stopAirSource()});t+=2100;
   }
   if(hasFan){
     steps.push({t:t,msg:'Fan -> 30%...',fn:()=>{wsSend({t:'fan_target',v:30});const pt2=$('pumpTarget');if(pt2)pt2.value=30;const pv=$('pumpTargetVal');if(pv)pv.textContent='30%'}});
-    steps.push({t:t+1300,msg:'Fan -> arret',fn:()=>stopAirSource()});t+=2100;
+    steps.push({t:t+1300,msg:'Fan -> stop',fn:()=>stopAirSource()});t+=2100;
   }
   if(hasRes){
     steps.push({t:t,msg:'Sensor reservoir -> verification...',fn:()=>{
@@ -1869,7 +1869,7 @@ function validateAirConfig(){
   const needsOff=(m===2||m===3);
   const aOff=needsOff?parseInt($('cfgAirOff').value):0;
   const aMin=parseInt($('cfgAirMin').value),aMax=parseInt($('cfgAirMax').value);
-  if(isNaN(aMin)||isNaN(aMax)||(needsOff&&isNaN(aOff))){warns.push('Servo flow: angles manquants');errBlocks.add('airBlockServo')}
+  if(isNaN(aMin)||isNaN(aMax)||(needsOff&&isNaN(aOff))){warns.push('Servo flow: missing angles');errBlocks.add('airBlockServo')}
   else{
     if(aMin<0||aMin>180||aMax<0||aMax>180){warns.push('Servo flow: angles doivent etre entre 0 et 180');errBlocks.add('airBlockServo')}
     if(needsOff&&(aOff<0||aOff>180)){warns.push('Servo flow: angle Off doit etre entre 0 et 180');errBlocks.add('airBlockServo')}
@@ -1927,7 +1927,7 @@ function validateAirConfig(){
     const st=parseInt($('airSensorType').value);
     if(st===2){
       const lo=parseInt($('airHallLow').value)||0,hi=parseInt($('airHallHigh').value)||4095;
-      if(lo>=hi){warns.push('Hall: seuil bas >= haut');errBlocks.add('airBlockRes')}
+      if(lo>=hi){warns.push('Hall: low threshold >= high');errBlocks.add('airBlockRes')}
     }
     if(st<=1){
       const smin=parseInt($('airSensMin').value)||0,smax=parseInt($('airSensMax').value)||300,stgt=parseInt($('airSensTarget').value)||50;
@@ -2068,13 +2068,13 @@ function copyAirConfig(){
     'angle_on','angle_ch','ang_pca','ang_off','ang_min','ang_max'];
   const out={};keys.forEach(k=>{if(CFG[k]!=null)out[k]=CFG[k]});
   const json=JSON.stringify(out,null,2);
-  if(navigator.clipboard)navigator.clipboard.writeText(json).then(()=>showToast('Config copiee','success'));
-  else{const ta=document.createElement('textarea');ta.value=json;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();showToast('Config copiee','success')}
+  if(navigator.clipboard)navigator.clipboard.writeText(json).then(()=>showToast('Config copied','success'));
+  else{const ta=document.createElement('textarea');ta.value=json;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();showToast('Config copied','success')}
 }
 const CFG_LABELS={air_mode:'Mode',air_off:'Off',air_min:'Min',air_max:'Max',fan_min:'Fan min',fan_max:'Fan max',fan_idle_pct:'Fan idle%',fan_idle_timeout:'Fan timeout',pid_kp:'Kp',pid_ki:'Ki',
-  valve_type:'Valve',valve_ch:'Channel valve',vlv_close:'Vlv closed',vlv_open:'Vlv open',vlv_dir:'Vlv sens',
-  sol_pin:'Sol GPIO',sol_act:'Sol act',sol_hold:'Sol hold',sol_time:'Sol temps',
-  sens_type:'Sensor',sens_target:'Target',sens_min:'Sens min',sens_max:'Sens max',show_air:'Afficher air'};
+  valve_type:'Valve',valve_ch:'Channel valve',vlv_close:'Vlv closed',vlv_open:'Vlv open',vlv_dir:'Vlv dir',
+  sol_pin:'Sol GPIO',sol_act:'Sol act',sol_hold:'Sol hold',sol_time:'Sol time',
+  sens_type:'Sensor',sens_target:'Target',sens_min:'Sens min',sens_max:'Sens max',show_air:'Show air'};
 function updateConfigSummary(){
   const cs=$('airConfigSummary');if(!cs||!CFG)return;
   const fields=[['air_mode','airModeSelect'],['air_off','cfgAirOff'],['air_min','cfgAirMin'],['air_max','cfgAirMax'],
@@ -2100,14 +2100,14 @@ function importAirConfig(){
   if(!input)return;
   try{
     const d=JSON.parse(input);
-    if(typeof d!=='object'||d===null){showToast('JSON invalide','error');return}
+    if(typeof d!=='object'||d===null){showToast('Invalid JSON','error');return}
     if(d.air_mode!=null&&(d.air_mode<0||d.air_mode>5)){showToast('Invalid air mode','error');return}
     // Remap legacy mode 1
     if(d.air_mode===1){d.air_mode=0;d.valve_type=1}
     Object.assign(CFG,d);
     fillAirSettings();buildAirUI();markDirty();
-    showToast('Config importee - Save pour appliquer','success');
-  }catch(e){showToast('JSON invalide: '+e.message,'error')}
+    showToast('Config imported - Save to apply','success');
+  }catch(e){showToast('Invalid JSON: '+e.message,'error')}
 }
 function fillAirSettings(){
   if(!CFG)return;
@@ -2876,8 +2876,8 @@ function showWizard(){
   let h='';
   PR.forEach((p,i)=>{
     h+='<label class="wiz-card"><input type="radio" name="wizPreset" value="'+i+'"'+(i===0?' checked':'')+'>'+
-      '<span><b>'+p.n+'</b><br><span style="font-size:.75em;color:#9aa">'+p.h+' trous, '+
-      ({trav:'Traversiere',bec:'A bec',naf:'Amerindienne',end:'Embouchure libre',oca:'Ocarina'}[p.em]||p.em)+
+      '<span><b>'+p.n+'</b><br><span style="font-size:.75em;color:#9aa">'+p.h+' holes, '+
+      ({trav:'Transverse',bec:'Recorder',naf:'Native American',end:'End-blown',oca:'Ocarina'}[p.em]||p.em)+
       '</span></span></label>';
   });
   h+='<label class="wiz-card"><input type="radio" name="wizPreset" value="-1">'+
@@ -2978,7 +2978,7 @@ function handleWs(d){
     $('acalProgress').style.display='block';$('acalMsg').style.display='none';
     $('acalStep').textContent='Note '+(d.idx+1)+'/'+d.total+' '+(d.note||'');
     $('acalFill').style.width=(((d.idx||0)/(d.total||1))*100)+'%';
-    const ph={prepare:'Preparation',noise:'Mesure bruit',coarse:'Balayage rapide',fine:'Balayage fin',nominal:'Debit nominal',done:'Analyse'};
+    const ph={prepare:'Preparation',noise:'Noise measurement',coarse:'Coarse sweep',fine:'Fine sweep',nominal:'Nominal flow',done:'Analysis'};
     $('acalState').textContent=ph[d.phase]||d.phase||'...';
     $('acalAngle').textContent='';
     // Live metrics
@@ -2996,29 +2996,29 @@ function handleWs(d){
     $('acalFill').style.width='100%';$('acalAngle').textContent='';$('acalMetrics').style.display='none';
     /* Honour the persisted outcome: only ok (applied AND saved) is a success. */
     if(d.ok){
-      $('acalState').textContent='Termine ('+(d.validCount||0)+' ok'+(d.failedCount?', '+d.failedCount+' echec':'')+')';
-      addLog('Auto-cal OK: '+(d.validCount||0)+' note(s)');showToast('Calibration appliquee et sauvegardee','success');
+      $('acalState').textContent='Done ('+(d.validCount||0)+' ok'+(d.failedCount?', '+d.failedCount+' fail':'')+')';
+      addLog('Auto-cal OK: '+(d.validCount||0)+' note(s)');showToast('Calibration applied and saved','success');
       setTimeout(loadConfig,1000);   /* reload only when something was actually written */
     }else{
       const err=d.error||((d.validCount||0)===0?'no_valid_note':'not_applied');
-      $('acalState').textContent='Echec';
+      $('acalState').textContent='Failed';
       $('acalMsg').textContent=acalErrText(err);$('acalMsg').style.display='block';
-      addLog('Auto-cal ECHEC: '+err+(d.saved===false?' (non sauvegarde)':''));
+      addLog('Auto-cal FAILED: '+err+(d.saved===false?' (not saved)':''));
       showToast(acalErrText(err),'error');
     }
     if(d.results){let h='';d.results.forEach(r=>{
       let detail;
       if(r.ok){detail=esc(r.min+'/'+r.nominal+'/'+r.max+'%')+' <span style="color:#888">conf '+r.confidence+'% · '+(r.cents>=0?'+':'')+(r.cents||0).toFixed(0)+'ct · stab '+((r.stability||0)*100).toFixed(0)+'% · SNR '+(r.snr||0).toFixed(0)+'dB</span>';}
-      else{detail='Echec ('+esc(acalErrText(r.reasonName||'?'))+')';}
+      else{detail='Failed ('+esc(acalErrText(r.reasonName||'?'))+')';}
       h+='<div style="display:flex;justify-content:space-between;gap:8px;font-size:.78em;padding:2px 0">'+
       '<span>'+esc(r.name)+'</span><span style="color:'+(r.ok?'#4ecca3':'#e94560');
       h+=';text-align:right">'+detail+'</span></div>'});
       $('acalResults').innerHTML=h;$('acalResults').style.display='block'}
   }else if(d.t==='acal_error'){
     autoCalRunning=false;$('btnAcalStart').style.display='';$('btnAcalStop').style.display='none';$('btnRfStart').style.display='';
-    $('acalMetrics').style.display='none';$('acalState').textContent='Erreur';
+    $('acalMetrics').style.display='none';$('acalState').textContent='Error';
     $('acalMsg').textContent=d.msg||'Calibration interrompue';$('acalMsg').style.display='block';
-    addLog('Auto-cal ERREUR: '+(d.msg||''));showToast(d.msg||'Calibration interrompue','error')
+    addLog('Auto-cal ERROR: '+(d.msg||''));showToast(d.msg||'Calibration interrupted','error')
   }else if(d.t==='rf_prog'){
     $('rfProgress').style.display='block';$('rfAngle').textContent=(d.angle||0)+' deg';
     /* progress across the bounded safe angle window (see AUTOCAL_RF_MIN/MAX_SAFE_ANGLE) */
@@ -3029,44 +3029,44 @@ function handleWs(d){
     $('rfFill').style.width='100%';
     if(d.ok&&d.min!=null){$('rfMinVal').textContent=d.min;$('rfMaxVal').textContent=d.max;
       /* result is pending on the server (apply / dismiss); show the choice */
-      $('rfResult').style.display='block';$('rfStep').textContent='Plage detectee - appliquer ou ignorer'}
+      $('rfResult').style.display='block';$('rfStep').textContent='Range detected - apply or dismiss'}
     else{$('rfResult').style.display='none';
-      $('rfStep').textContent='Echec: '+acalErrText(d.reasonName||'no_valid_range')}
+      $('rfStep').textContent='Failed: '+acalErrText(d.reasonName||'no_valid_range')}
   }else if(d.t==='rf_applied'){
     /* Honour ok/error: the servo range is only written when ok is true. */
     if(d.ok){
-      showToast('Plage servo mise a jour: '+d.min+'deg-'+d.max+'deg','success');
+      showToast('Servo range updated: '+d.min+'deg-'+d.max+'deg','success');
       $('rfProgress').style.display='none';$('btnRfStart').style.display='';
       if(CFG){CFG.air_min=d.min;CFG.air_max=d.max}
       if($('cfgAirMin'))$('cfgAirMin').value=d.min;if($('cfgAirMax'))$('cfgAirMax').value=d.max;
       buildAirflowRows();setTimeout(loadConfig,500);
     }else{
       showToast('Application echouee: '+acalErrText(d.error||'error'),'error');
-      addLog('rf_applied ECHEC: '+(d.error||''));
+      addLog('rf_applied FAILED: '+(d.error||''));
     }
   }else if(d.t==='rf_expired'){
     /* the server auto-cancelled a pending range-finder result after the review timeout */
     $('rfProgress').style.display='none';$('rfResult').style.display='none';$('btnRfStart').style.display='';
-    showToast('Resultat range finder expire (non applique)','error');addLog('rf_expired')
+    showToast('Range finder result expired (not applied)','error');addLog('rf_expired')
   }else if(d.t==='test_expired'){
     /* server-side manual-test timeout returned the actuators to a safe state */
-    showToast('Test manuel expire: actionneurs remis en securite','error');addLog('test_expired')
+    showToast('Manual test expired: actuators returned to safe state','error');addLog('test_expired')
   }else if(d.t==='test_busy'){
     /* another client already owns the manual-test session; this command was refused */
-    showToast('Test manuel en cours sur un autre client','error');addLog('test_busy')
+    showToast('Manual test running on another client','error');addLog('test_busy')
   }
 }
 function updateCC(n,v){if(v===undefined)return;const p=(v/MIDI_CC_MAX*100).toFixed(0);
   const b=$('ccBar'+n),t=$('ccV'+n);if(b)b.style.width=p+'%';if(t)t.textContent=v}
 /* Human text for auto-cal / range-finder failure codes and per-note reasonName. */
 function acalErrText(e){const M={
-  storage_failed:'Echec de sauvegarde (LittleFS)',no_valid_range:'Aucune plage valide detectee',
-  not_applied:'Non applique',no_valid_note:'Aucune note valide',
-  not_calibration_owner:'Reserve au client proprietaire',calibration_active:'Calibration en cours',
-  no_sound:'Aucun son detecte',wrong_note:'Mauvaise note',low_confidence:'Confiance trop faible',
-  no_stable_nominal:'Pas de nominal stable',audio_stale:'Flux audio fige',note_timeout:'Delai note depasse',
-  global_timeout:'Delai global depasse',air_supply:'Alimentation air non prete',
-  sensor_fault:'Capteur reservoir absent/defaillant',none:'OK'};
+  storage_failed:'Save failed (LittleFS)',no_valid_range:'No valid range detected',
+  not_applied:'Not applied',no_valid_note:'No valid note',
+  not_calibration_owner:'Reserved for the owner client',calibration_active:'Calibration in progress',
+  no_sound:'No sound detected',wrong_note:'Wrong note',low_confidence:'Confidence too low',
+  no_stable_nominal:'No stable nominal',audio_stale:'Audio stream frozen',note_timeout:'Note timeout exceeded',
+  global_timeout:'Global timeout exceeded',air_supply:'Air supply not ready',
+  sensor_fault:'Reservoir sensor missing/faulty',none:'OK'};
   return M[e]||e}
 
 // --- Load config ---
@@ -3424,7 +3424,7 @@ function uploadMidiFile(file){
   xhr.upload.onprogress=e=>{if(e.lengthComputable)uf.style.width=(e.loaded/e.total*100)+'%'};
   xhr.onload=()=>{uf.style.width='100%';setTimeout(()=>ub.style.display='none',1000);
     try{const d=JSON.parse(xhr.responseText);if(d.ok){showToast('Upload OK: '+d.events+' evt','success');addLog('Upload OK');loadMidiList()}
-    else{showToast('Error: '+(d.msg||'echec'),'error')}}catch(e){showToast('Upload error','error')}};
+    else{showToast('Error: '+(d.msg||'failed'),'error')}}catch(e){showToast('Upload error','error')}};
   xhr.onerror=()=>{ub.style.display='none';showToast('Network upload error','error')};
   xhr.open('POST','/api/midi');xhr.send(fd)
 }
@@ -3466,7 +3466,7 @@ function deleteMidiFile(name){
 function loadMidiFile(name){
   fetch('/api/midi/load',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file:name})})
     .then(r=>r.json()).then(d=>{
-      if(d.ok){showToast('Charge: '+d.events+' evt','success');loadMidiList()}
+      if(d.ok){showToast('Loaded: '+d.events+' events','success');loadMidiList()}
       else showToast(d.msg||'Error','error')
     }).catch(()=>showToast('Network error','error'))
 }
@@ -3556,7 +3556,7 @@ function uploadSeqMidi(){
   const fd=new FormData();fd.append('file',blob,'sequence.mid');
   const xhr=new XMLHttpRequest();
   xhr.onload=()=>{try{const d=JSON.parse(xhr.responseText);
-    if(d.ok){showToast('Sequence chargee','success');wsSend({t:'play'})}
+    if(d.ok){showToast('Sequence loaded','success');wsSend({t:'play'})}
     else showToast('Error: '+(d.msg||''),'error')}catch(e){showToast('Error','error')}};
   xhr.onerror=()=>showToast('Network error','error');
   xhr.open('POST','/api/midi');xhr.send(fd)
@@ -3657,13 +3657,13 @@ function buildFingerCards(){
 function buildInstrumentSelect(){
   const s=$('instrumentSelect');if(!s)return;
   s.innerHTML='<option value="">-- Custom --</option>';
-  const emNames={trav:'Traversieres',bec:'A bec / sifflets',naf:'Am\u00e9rindiennes',end:'Emb. libre',oca:'Ocarinas'};
+  const emNames={trav:'Transverse',bec:'Recorder / whistle',naf:'Native American',end:'End-blown',oca:'Ocarinas'};
   const emOrder=['bec','trav','end','naf','oca'];
   const groups={};PR.forEach(p=>{const k=p.em||'bec';(groups[k]=groups[k]||[]).push(p)});
   emOrder.forEach(em=>{if(!groups[em])return;
     const og=document.createElement('optgroup');og.label=emNames[em]||em;
     groups[em].sort((a,b)=>a.h-b.h).forEach(p=>{const o=document.createElement('option');o.value=p.id;
-      o.textContent=p.n+' - '+p.h+' trous';og.appendChild(o)});
+      o.textContent=p.n+' - '+p.h+' holes';og.appendChild(o)});
     s.appendChild(og)})
 }
 
@@ -3677,7 +3677,7 @@ function selectInstrument(val){
   if(p.th>=0&&CFG.fingers[p.th])CFG.fingers[p.th].th=1;
   // Rebuild UI physique
   buildFingerCards();buildFlute(CFG,'calFluteSvg',true);updateTravVisibility();updateAngleBlockVisibility();markDirty();
-  showToast(p.n+' - '+p.h+' trous'+(p.th>=0?' (thumb)':''),'success')
+  showToast(p.n+' - '+p.h+' holes'+(p.th>=0?' (thumb)':''),'success')
 }
 
 function testFinger(i,a){wsSend({t:'test_finger',i:i,a:parseInt(a)});
@@ -3743,7 +3743,7 @@ function buildPresetSelect(){
   // Only compatible presets (same number of holes)
   const compat=PR.filter(p=>p.h===nf);
   if(compat.length){
-    const og=document.createElement('optgroup');og.label='Tunings '+nf+' trous';
+    const og=document.createElement('optgroup');og.label='Tunings '+nf+' holes';
     compat.forEach(p=>{const o=document.createElement('option');o.value=p.id;
       o.textContent=p.n+' - '+p.d.length+' notes ('+mn(p.d[0][0])+'\u2192'+mn(p.d[p.d.length-1][0])+')';og.appendChild(o)});
     s.appendChild(og)}
@@ -3875,7 +3875,7 @@ function drawExprCurve(){
   const tickStep=maxY<=100?25:maxY<=120?20:25;
   let s='<line x1="'+pad+'" y1="'+(h-pad)+'" x2="'+(w-pad)+'" y2="'+(h-pad)+'" stroke="#444" stroke-width="1"/>';
   s+='<line x1="'+pad+'" y1="10" x2="'+pad+'" y2="'+(h-pad)+'" stroke="#444" stroke-width="1"/>';
-  s+='<text x="'+(w/2)+'" y="'+(h-4)+'" text-anchor="middle" style="font-size:9px;fill:#666">Temps (ms)</text>';
+  s+='<text x="'+(w/2)+'" y="'+(h-4)+'" text-anchor="middle" style="font-size:9px;fill:#666">Time (ms)</text>';
   s+='<text x="8" y="'+(h/2-10)+'" style="font-size:9px;fill:#666" transform="rotate(-90 8 '+(h/2-10)+')">Breath %</text>';
   for(let t=0;t<=maxMs;t+=100){const x=pad+(t/maxMs)*gw;
     s+='<line x1="'+x+'" y1="'+(h-pad)+'" x2="'+x+'" y2="'+(h-pad+4)+'" stroke="#555" stroke-width=".5"/>';
