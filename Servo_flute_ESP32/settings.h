@@ -316,6 +316,11 @@ Modes modulaires de gestion d'air. L'interface s'adapte au mode choisi.
 #define PRESSURE_PID_INTERVAL_MS    100    // Intervalle boucle PID (ms)
 #define PUMP_SAFETY_MIN_MM          5      // Distance min avant coupure securite (surgonflage)
 #define PUMP_SAFETY_MAX_DIST_MM    300    // Distance max (30cm) : capteur hors portee, couper pompe
+// Non-blocking ToF (VL53L0X/VL6180X): a single-shot measurement is started, then
+// its status is polled once per loop instead of busy-waiting with delay(1).
+#define TOF_RANGE_TIMEOUT_MS        60     // Abandon d'une mesure single-shot au-dela de ce delai
+#define TOF_STALE_MS                500    // Sans mesure valide depuis ce delai => pompe coupee (securite)
+#define TOF_MAX_CONSEC_ERRORS       10     // Erreurs consecutives avant d'invalider le capteur
 
 /*******************************************************************************
 ---------------------------   POWER MANAGEMENT        ------------------------

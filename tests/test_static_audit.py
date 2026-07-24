@@ -466,6 +466,21 @@ def test_audit_p1_gpio_validation_completeness():
     assert 'DEFAULT_ENDSTOP_PIN' in st
 
 
+def test_audit_p1_nonblocking_tof():
+    pc = read('Servo_flute_ESP32/PressureController.cpp')
+    st = read('Servo_flute_ESP32/settings.h')
+    # §19: the blocking single-shot poll loop (delay(1) x50) is gone.
+    assert 'serviceTofMeasurement' in pc
+    assert 'delay(1)' not in pc
+    tof = pc.split('bool PressureController::serviceTofMeasurement')[1].split('\n}\n')[0]
+    assert 'for (int i = 0; i < 50' not in tof
+    # §20: a timeout marks the measurement invalid + counts errors instead of reading
+    # a bogus range, and staleness cuts the pump.
+    assert '_measurementValid' in pc and '_tofErrorCount' in pc
+    assert 'TOF_RANGE_TIMEOUT_MS' in st and 'TOF_STALE_MS' in st and 'TOF_MAX_CONSEC_ERRORS' in st
+    assert '_measurementValid && (now - _lastValidReadTime) >= TOF_STALE_MS' in pc
+
+
 def test_diagnostics_status_vocabulary_and_passive_active_split():
     src = read('Servo_flute_ESP32/WebConfigurator.cpp')
     api = read('docs/API_WEB.md')

@@ -59,6 +59,8 @@ static uint16_t readReg16_16(uint8_t addr, uint8_t reg) {
 PressureController::PressureController()
   : _sensorDetected(false), _sensorType(0),
     _distanceMm(0), _hallValue(0), _endstopActive(false), _fillPercent(0),
+    _tofRanging(false), _tofRangeStartTime(0), _measurementValid(false),
+    _lastValidReadTime(0), _tofErrorCount(0),
     _targetPercent(0), _currentPumpPwm(0),
     _enabled(true), _testPumpIndex(-1), _testPumpPercent(0),
     _activePumpCount(0), _bangbangPumpOn(false),
@@ -191,40 +193,66 @@ bool PressureController::begin() {
   return true;
 }
 
-uint16_t PressureController::readSensor() {
-  if (!_sensorDetected) return 0;
+bool PressureController::serviceTofMeasurement() {
+  if (!_sensorDetected) return false;
+  unsigned long now = millis();
+  bool isVl6180 = (_sensorType == SENSOR_TYPE_TOF_VL6180X);
 
-  if (_sensorType == 1) {
-    // VL6180X : single-shot range
-    writeReg16(VL6180X_ADDR, VL6180X_REG_SYSTEM_INTERRUPT_CLEAR, 0x07);
-    writeReg16(VL6180X_ADDR, VL6180X_REG_SYSRANGE_START, 0x01);
-    // Attendre resultat (poll status)
-    for (int i = 0; i < 50; i++) {
-      uint8_t status = readReg16(VL6180X_ADDR, VL6180X_REG_RESULT_RANGE_STATUS);
-      if (status & 0x04) break;
-      delay(1);
+  if (!_tofRanging) {
+    // Start a new single-shot only at the configured read cadence.
+    if (now - _lastReadTime < PRESSURE_READ_INTERVAL_MS) return false;
+    _lastReadTime = now;
+    if (isVl6180) {
+      writeReg16(VL6180X_ADDR, VL6180X_REG_SYSTEM_INTERRUPT_CLEAR, 0x07);
+      writeReg16(VL6180X_ADDR, VL6180X_REG_SYSRANGE_START, 0x01);
+    } else {
+      writeReg8(VL53L0X_ADDR, VL53L0X_REG_SYSRANGE_START, 0x01);
     }
-    uint8_t range = readReg16(VL6180X_ADDR, VL6180X_REG_RESULT_RANGE_VAL);
-    writeReg16(VL6180X_ADDR, VL6180X_REG_SYSTEM_INTERRUPT_CLEAR, 0x07);
-    return (uint16_t)range;
-  } else {
-    // VL53L0X : single-shot range
-    writeReg8(VL53L0X_ADDR, VL53L0X_REG_SYSRANGE_START, 0x01);
-    for (int i = 0; i < 50; i++) {
-      uint8_t ready = 0;
-      Wire.beginTransmission(VL53L0X_ADDR);
-      Wire.write(0x13); // RESULT_INTERRUPT_STATUS
-      Wire.endTransmission(false);
-      Wire.requestFrom(VL53L0X_ADDR, (uint8_t)1);
-      if (Wire.available()) ready = Wire.read();
-      if (ready & 0x07) break;
-      delay(1);
-    }
-    uint16_t range = readReg16_16(VL53L0X_ADDR, VL53L0X_REG_RESULT_RANGE);
-    // Clear interrupt
-    writeReg8(VL53L0X_ADDR, 0x0B, 0x01);
-    return range;
+    _tofRanging = true;
+    _tofRangeStartTime = now;
+    return false;
   }
+
+  // Ranging in progress: poll the status register ONCE per call (no busy-wait,
+  // so MIDI / WebSocket / audio / servos are not stalled up to 50 ms).
+  bool ready;
+  if (isVl6180) {
+    ready = (readReg16(VL6180X_ADDR, VL6180X_REG_RESULT_RANGE_STATUS) & 0x04) != 0;
+  } else {
+    uint8_t st = 0;
+    Wire.beginTransmission(VL53L0X_ADDR);
+    Wire.write(0x13); // RESULT_INTERRUPT_STATUS
+    Wire.endTransmission(false);
+    Wire.requestFrom(VL53L0X_ADDR, (uint8_t)1);
+    if (Wire.available()) st = Wire.read();
+    ready = (st & 0x07) != 0;
+  }
+
+  if (ready) {
+    if (isVl6180) {
+      _distanceMm = (uint16_t)readReg16(VL6180X_ADDR, VL6180X_REG_RESULT_RANGE_VAL);
+      writeReg16(VL6180X_ADDR, VL6180X_REG_SYSTEM_INTERRUPT_CLEAR, 0x07);
+    } else {
+      _distanceMm = readReg16_16(VL53L0X_ADDR, VL53L0X_REG_RESULT_RANGE);
+      writeReg8(VL53L0X_ADDR, 0x0B, 0x01); // clear interrupt
+    }
+    _tofRanging = false;
+    _measurementValid = true;
+    _lastValidReadTime = now;
+    _tofErrorCount = 0;
+    return true;
+  }
+
+  // Not ready yet: abandon the measurement only after the timeout (§20). A timeout
+  // no longer reads a bogus range register value; the reading is marked invalid and
+  // repeated failures invalidate the sensor.
+  if (now - _tofRangeStartTime >= TOF_RANGE_TIMEOUT_MS) {
+    _tofRanging = false;
+    _measurementValid = false;
+    if (_tofErrorCount < 0xFFFF) _tofErrorCount++;
+    if (_tofErrorCount >= TOF_MAX_CONSEC_ERRORS) _sensorDetected = false;
+  }
+  return false;
 }
 
 void PressureController::update() {
@@ -348,10 +376,9 @@ void PressureController::update() {
     return;
   }
 
-  // ToF (VL53L0X / VL6180X): lecture I2C periodique
-  if (now - _lastReadTime >= PRESSURE_READ_INTERVAL_MS) {
-    _distanceMm = readSensor();
-    _lastReadTime = now;
+  // ToF (VL53L0X / VL6180X): lecture I2C NON bloquante. _fillPercent n'est mis a
+  // jour que sur une mesure fraiche et valide (jamais sur un timeout).
+  if (serviceTofMeasurement()) {
     if (_distanceMm <= cfg.sensorMinMm) {
       _fillPercent = 100;
     } else if (_distanceMm >= cfg.sensorMaxMm) {
@@ -360,6 +387,15 @@ void PressureController::update() {
       uint16_t sensorSpan = cfg.sensorMaxMm - cfg.sensorMinMm;
       _fillPercent = (sensorSpan == 0) ? 0 : 100 - (uint8_t)(((uint32_t)(_distanceMm - cfg.sensorMinMm) * 100) / sensorSpan);
     }
+  }
+
+  // Securite mesure perimee (§20): sans mesure ToF valide recente, on ne peut plus
+  // reguler en securite -> couper la pompe plutot que de piloter sur une donnee
+  // obsolete (un timeout lu comme distance 0 aurait sinon fait croire au reservoir plein).
+  if (!_measurementValid && (now - _lastValidReadTime) >= TOF_STALE_MS) {
+    setPumpPwm(0);
+    _bangbangPumpOn = false;
+    return;
   }
 
   // Controle pompe selon type moteur

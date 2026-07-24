@@ -651,6 +651,26 @@ static void gpio_validation_reserved_and_conflicts(){
   assert(!validateAndNormalizeConfig(cfg, nullptr).valid);
 }
 
+// Audit P1 §19/§20. The ToF read is non-blocking: a stuck sensor (status never
+// ready) no longer busy-waits and, once measurements go stale, the pump is cut for
+// safety and repeated timeouts invalidate the sensor.
+static void tof_nonblocking_stale_safety(){
+  resetCfg(); extern WireClass Wire; Wire.clear();
+  Wire.setPresent(0x29, true);   // VL53L0X responds at 0x29 (detected), but never "ready"
+  cfg.airMode=AIR_MODE_PUMP_RESERVOIR; cfg.sensorType=SENSOR_TYPE_TOF_VL53L0X;
+  cfg.numPumps=1; cfg.pumpPins[0]=25; cfg.motorType=MOTOR_TYPE_PWM;
+  cfg.sensorMinMm=30; cfg.sensorTargetMm=60; cfg.sensorMaxMm=120; cfg.pidKp=50; cfg.pidKi=0;
+  __test_millis=0;
+  PressureController pc;
+  assert(pc.begin());
+  assert(pc.isSensorDetected());
+  pc.setTargetPercent(80);
+  // Drive many non-blocking updates; every single-shot times out (no "ready").
+  for(int i=0;i<80;i++){ __test_millis+=20; pc.update(); }
+  assert(__analog_writes[25]==0);        // stale measurement -> pump cut (safety)
+  assert(!pc.isSensorDetected());        // repeated timeouts invalidated the sensor
+}
+
 // Review #14. The global timeout scales to the largest note count instead of being
 // clamped below the sum of the per-note budgets (which happened ~24 notes before).
 static void autocal_global_timeout_scales_to_max_notes(){
@@ -890,4 +910,4 @@ static void audio_mic_classification(){
   assert(PitchDetector::classifyRaw(raw.data(), N) == MIC_SIG_OK);
 }
 
-int main(){ pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); airflow_nominal_drives_angle(); autocal_frozen_source_fails(); autocal_air_supply_gate(); autocal_14_notes_no_timeout(); autocal_plus70_cents_rejected(); autocal_storage_failure_restores(); autocal_range_finder(); autocal_range_finder_stale(); autocal_range_apply_storage(); autocal_air_lost_midnote(); calair_reservoir_requires_sensor(); instrument_power_held_during_actuator_session(); instrument_ignores_midi_during_calibration(); instrument_inert_after_pca_failure(); air_pump_demand_follows_real_note(); air_fan_speed_follows_replacement(); pump_enable_and_single_pump_test(); gpio_validation_reserved_and_conflicts(); autocal_global_timeout_scales_to_max_notes(); airflow_cc2_silence_and_live_cc(); airflow_attack_cancelled_on_rest(); airflow_cc2_timeout_on_held_note(); audio_yin_pcm_core(); audio_mic_classification(); std::cout << "behavior tests passed\n"; }
+int main(){ pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); airflow_nominal_drives_angle(); autocal_frozen_source_fails(); autocal_air_supply_gate(); autocal_14_notes_no_timeout(); autocal_plus70_cents_rejected(); autocal_storage_failure_restores(); autocal_range_finder(); autocal_range_finder_stale(); autocal_range_apply_storage(); autocal_air_lost_midnote(); calair_reservoir_requires_sensor(); instrument_power_held_during_actuator_session(); instrument_ignores_midi_during_calibration(); instrument_inert_after_pca_failure(); air_pump_demand_follows_real_note(); air_fan_speed_follows_replacement(); pump_enable_and_single_pump_test(); gpio_validation_reserved_and_conflicts(); tof_nonblocking_stale_safety(); autocal_global_timeout_scales_to_max_notes(); airflow_cc2_silence_and_live_cc(); airflow_attack_cancelled_on_rest(); airflow_cc2_timeout_on_held_note(); audio_yin_pcm_core(); audio_mic_classification(); std::cout << "behavior tests passed\n"; }

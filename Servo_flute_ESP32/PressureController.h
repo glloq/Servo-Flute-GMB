@@ -65,6 +65,13 @@ private:
   bool _endstopActive;         // Etat endstop (meca/optique)
   uint8_t _fillPercent;        // Pourcentage remplissage (0-100)
 
+  // Non-blocking ToF state machine (single-shot: start -> poll once per update).
+  bool _tofRanging;                 // Une mesure single-shot est en cours
+  unsigned long _tofRangeStartTime; // Debut de la mesure en cours (pour le timeout)
+  bool _measurementValid;           // La derniere mesure ToF est valide (pas un timeout)
+  unsigned long _lastValidReadTime; // Horodatage de la derniere mesure ToF valide
+  uint16_t _tofErrorCount;          // Compteur d'erreurs/timeouts consecutifs
+
   // Etat pompe
   uint8_t _targetPercent;      // Cible demandee (0-100)
   uint8_t _currentPumpPwm;    // PWM global (sortie PID, 0-255)
@@ -86,8 +93,10 @@ private:
   unsigned long _lastPidTime;
   unsigned long _lastReadTime;
 
-  // Lecture capteur selon type
-  uint16_t readSensor();
+  // Lecture ToF non bloquante: demarre une mesure single-shot puis interroge son
+  // etat une fois par appel (pas de delay). Retourne true une seule fois quand une
+  // nouvelle distance valide est prete (dans _distanceMm).
+  bool serviceTofMeasurement();
 
   // Appliquer PWM global avec logique cascade multi-pompes
   void setPumpPwm(uint8_t pwm);
