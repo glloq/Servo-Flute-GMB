@@ -1096,6 +1096,15 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
       // a subsequent save cannot re-serialise the reverted (old) active cfg over the
       // pending new config on disk. Only when the save actually succeeded.
       if (saved) scheduleControlledRestart();
+    } else if (!saved) {
+      // §14: persisting a non-restart change failed (e.g. LittleFS error). Roll back
+      // the live config AND the controllers (applyRuntimeConfig re-applies the values
+      // it is given) so the device keeps running exactly on the previously persisted
+      // configuration instead of an applied-but-unsaved one.
+      RuntimeConfig failedConfig = cfg;
+      cfg = previousConfig;
+      if (_instrument) _instrument->applyRuntimeConfig(failedConfig, previousConfig);
+      applyResult.applied = false;
     }
 
     if (DEBUG) {

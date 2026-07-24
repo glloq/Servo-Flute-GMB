@@ -178,6 +178,19 @@ ConfigLoadStatus ConfigStorage::loadWithStatus() {
   s_lastLoadStatus = CONFIG_DEFAULTS;
   s_lastLoadError = "";
 
+  // Recover an interrupted atomic save (§15): a leftover temp file means save()
+  // was interrupted. If the live config is gone, the crash happened after its
+  // removal but before the rename, so promote the (fully written + validated)
+  // temp; otherwise the temp is stale and is discarded.
+  const char* tmpPath = CONFIG_FILE_PATH ".tmp";
+  if (LittleFS.exists(tmpPath)) {
+    if (!LittleFS.exists(CONFIG_FILE_PATH)) {
+      LittleFS.rename(tmpPath, CONFIG_FILE_PATH);
+    } else {
+      LittleFS.remove(tmpPath);
+    }
+  }
+
   File file = LittleFS.open(CONFIG_FILE_PATH, "r");
   if (!file) {
     if (DEBUG) {
@@ -568,10 +581,14 @@ bool ConfigStorage::save() {
   doc["wifi_pass"] = cfg.wifiPassword;
   doc["device"] = cfg.deviceName;
 
-  File file = LittleFS.open(CONFIG_FILE_PATH, "w");
+  // Atomic write (§15): serialise into a temp file, verify it re-parses, then
+  // replace the live config. Truncating the real file directly would destroy a
+  // previously valid configuration if the write were interrupted or incomplete.
+  const char* tmpPath = CONFIG_FILE_PATH ".tmp";
+  File file = LittleFS.open(tmpPath, "w");
   if (!file) {
     if (DEBUG) {
-      Serial.println("ERREUR: ConfigStorage - Impossible d'ecrire le fichier config");
+      Serial.println("ERREUR: ConfigStorage - Impossible d'ecrire le fichier config temporaire");
     }
     return false;
   }
@@ -579,13 +596,44 @@ bool ConfigStorage::save() {
   size_t written = serializeJson(doc, file);
   file.close();
 
+  if (written == 0) {
+    LittleFS.remove(tmpPath);
+    if (DEBUG) { Serial.println("ERREUR: ConfigStorage - Ecriture config vide"); }
+    return false;
+  }
+
+  // Re-read the temp file and confirm it parses (and carries the expected shape)
+  // before it is allowed to replace the good config.
+  bool tmpOk = false;
+  File verify = LittleFS.open(tmpPath, "r");
+  if (verify) {
+    JsonDocument check;
+    DeserializationError verr = deserializeJson(check, verify);
+    tmpOk = (!verr) && check["num_notes"].is<int>();
+    verify.close();
+  }
+  if (!tmpOk) {
+    LittleFS.remove(tmpPath);
+    if (DEBUG) { Serial.println("ERREUR: ConfigStorage - Config temporaire invalide, ancienne conservee"); }
+    return false;
+  }
+
+  // Replace the live config with the validated temp file. If a crash occurs between
+  // the remove and the rename, loadWithStatus() recovers the pending temp on boot.
+  LittleFS.remove(CONFIG_FILE_PATH);
+  if (!LittleFS.rename(tmpPath, CONFIG_FILE_PATH)) {
+    LittleFS.remove(tmpPath);
+    if (DEBUG) { Serial.println("ERREUR: ConfigStorage - Renommage config atomique echoue"); }
+    return false;
+  }
+
   if (DEBUG) {
     Serial.print("DEBUG: ConfigStorage - Config sauvegardee (");
     Serial.print(written);
     Serial.println(" octets)");
   }
 
-  return written > 0;
+  return true;
 }
 
 bool ConfigStorage::resetToDefaults() {

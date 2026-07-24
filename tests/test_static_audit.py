@@ -432,6 +432,24 @@ def test_audit_p1_test_note_and_pump_commands():
     assert '_testPumpIndex >= 0' in pc
 
 
+def test_audit_p1_transactional_config_save():
+    cfg = read('Servo_flute_ESP32/ConfigStorage.cpp')
+    web = read('Servo_flute_ESP32/WebConfigurator.cpp')
+    # §15: save() writes a temp file, verifies it re-parses, then atomically renames.
+    assert 'CONFIG_FILE_PATH ".tmp"' in cfg
+    assert 'LittleFS.rename(' in cfg
+    assert 'deserializeJson(check' in cfg
+    # The real config file is not truncated directly on the write path any more.
+    save_body = cfg.split('bool ConfigStorage::save()')[1].split('ConfigStorage::')[0]
+    assert 'LittleFS.open(CONFIG_FILE_PATH, "w")' not in save_body
+    assert 'LittleFS.open(tmpPath, "w")' in save_body
+    # loadWithStatus recovers an interrupted save (temp promoted / discarded on boot).
+    load_body = cfg.split('ConfigStorage::loadWithStatus()')[1].split('ConfigStorage::')[0]
+    assert 'LittleFS.exists(tmpPath)' in load_body
+    # §14: a failed non-restart save rolls back the live config + controllers.
+    assert 'applyRuntimeConfig(failedConfig, previousConfig)' in web
+
+
 def test_diagnostics_status_vocabulary_and_passive_active_split():
     src = read('Servo_flute_ESP32/WebConfigurator.cpp')
     api = read('docs/API_WEB.md')
