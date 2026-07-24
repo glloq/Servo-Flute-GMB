@@ -1203,6 +1203,10 @@ void WebConfigurator::handleApiConfigReset(AsyncWebServerRequest* request) {
     request->send(409, "application/json", "{\"ok\":false,\"error\":\"restart_pending\"}");
     return;
   }
+  // Safe the hardware while cfg still matches it: resetToDefaults() rewrites cfg to
+  // the defaults, and allSoundOff() reads cfg.airMode to pick which air subsystem to
+  // stop, so it must run before the config is replaced.
+  if (_instrument) _instrument->allSoundOff();
   bool ok = ConfigStorage::resetToDefaults();
 
   if (DEBUG) {
@@ -1223,6 +1227,8 @@ void WebConfigurator::handleApiFactoryReset(AsyncWebServerRequest* request) {
     request->send(409, "application/json", "{\"ok\":false,\"error\":\"restart_pending\"}");
     return;
   }
+  // Safe the hardware before the config is wiped (see handleApiConfigReset).
+  if (_instrument) _instrument->allSoundOff();
   bool ok = ConfigStorage::factoryReset();
 
   if (DEBUG) {
