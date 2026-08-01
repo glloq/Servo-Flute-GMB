@@ -12,6 +12,33 @@ USING_NAMESPACE_APPLEMIDI;
 
 static const byte DNS_PORT = 53;
 
+// Echappe une chaine pour l'inserer entre guillemets dans du JSON. Les SSID sont
+// controles par les AP environnants et peuvent contenir " ou \ (ou des octets
+// de controle) qui, sans echappement, cassent la reponse du scan Wi-Fi.
+static String jsonEscape(const String& s) {
+  String out;
+  out.reserve(s.length() + 2);
+  for (size_t i = 0; i < s.length(); i++) {
+    char c = s[i];
+    switch (c) {
+      case '"':  out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\n': out += "\\n";  break;
+      case '\r': out += "\\r";  break;
+      case '\t': out += "\\t";  break;
+      default:
+        if ((uint8_t)c < 0x20) {
+          char buf[7];
+          snprintf(buf, sizeof(buf), "\\u%04x", (uint8_t)c);
+          out += buf;
+        } else {
+          out += c;
+        }
+    }
+  }
+  return out;
+}
+
 // Instance rtpMIDI globale
 APPLEMIDI_CREATE_DEFAULTSESSION_INSTANCE();
 
@@ -65,6 +92,20 @@ void WifiMidiHandler::update() {
     }
   }
 
+  // Surveiller la chute d'une connexion STA etablie : si le lien Wi-Fi tombe
+  // (routeur/AP disparu), la session rtpMIDI meurt sans garantie de callback
+  // AppleMIDI. On coupe le son puis on retombe en mode AP.
+  if (_state == WIFI_STATE_STA_CONNECTED && WiFi.status() != WL_CONNECTED) {
+    if (DEBUG) {
+      Serial.println("DEBUG: WifiMidiHandler - Lien STA perdu -> panic + fallback AP");
+    }
+    if (_instrument != nullptr) {
+      _instrument->handleTransportLost();
+    }
+    startAP();
+    return;
+  }
+
   // Lire les messages rtpMIDI entrants
   if (_state == WIFI_STATE_STA_CONNECTED || _state == WIFI_STATE_AP_ACTIVE) {
     MIDI.read();
@@ -97,13 +138,27 @@ void WifiMidiHandler::startAP() {
 
   WiFi.mode(WIFI_AP);
 
-  if (strlen(AP_PASSWORD) > 0) {
-    WiFi.softAP(AP_SSID, AP_PASSWORD, AP_CHANNEL, false, AP_MAX_CONNECTIONS);
-  } else {
-    WiFi.softAP(AP_SSID, NULL, AP_CHANNEL, false, AP_MAX_CONNECTIONS);
+  // Ne JAMAIS ouvrir un hotspot non chiffre : sans mot de passe configure (ou
+  // trop court pour du WPA2), on en derive un stable a partir du MAC du chip.
+  // Un client doit connaitre cette cle pour atteindre l'API/WebSocket.
+  String apPass = AP_PASSWORD;
+  bool generated = false;
+  if (apPass.length() < 8) {
+    uint32_t id = (uint32_t)(ESP.getEfuseMac() & 0xFFFFFF);
+    char buf[16];
+    snprintf(buf, sizeof(buf), "flute-%06X", id);
+    apPass = buf;
+    generated = true;
   }
+  WiFi.softAP(AP_SSID, apPass.c_str(), AP_CHANNEL, false, AP_MAX_CONNECTIONS);
 
   _state = WIFI_STATE_AP_ACTIVE;
+
+  // Toujours afficher la cle (meme hors DEBUG) pour un appareil headless.
+  Serial.print("WifiMidiHandler - AP WPA2 '");
+  Serial.print(AP_SSID);
+  Serial.print(generated ? "' (mot de passe genere): " : "' (mot de passe configure): ");
+  Serial.println(apPass);
 
   if (DEBUG) {
     Serial.print("DEBUG: WifiMidiHandler - AP actif, IP: ");
@@ -222,6 +277,12 @@ void WifiMidiHandler::onAppleMidiConnected(const char* name) {
 }
 
 void WifiMidiHandler::onAppleMidiDisconnected() {
+  // Panic : la session rtpMIDI est tombee ; une note tenue ne recevra pas son
+  // Note Off -> couper le son (valve/souffle/pompe/ventilateur).
+  if (_instance != nullptr && _instance->_instrument != nullptr) {
+    _instance->_instrument->handleTransportLost();
+  }
+
   if (DEBUG) {
     Serial.println("DEBUG: WifiMidiHandler - rtpMIDI deconnecte");
   }
@@ -248,7 +309,7 @@ String WifiMidiHandler::getScanResultsJson() const {
   if (n > 0) {
     for (int i = 0; i < n; i++) {
       if (i > 0) json += ",";
-      json += "{\"ssid\":\"" + WiFi.SSID(i) + "\"";
+      json += "{\"ssid\":\"" + jsonEscape(WiFi.SSID(i)) + "\"";
       json += ",\"rssi\":" + String(WiFi.RSSI(i));
       json += ",\"enc\":" + String(WiFi.encryptionType(i) != WIFI_AUTH_OPEN ? 1 : 0);
       json += "}";

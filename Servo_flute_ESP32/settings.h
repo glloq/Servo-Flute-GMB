@@ -453,7 +453,10 @@ const uint16_t SERVO_FREQUENCY = 50;
 
 // WiFi AP mode (hotspot) settings
 #define AP_SSID "ServoFlute-Setup"
-#define AP_PASSWORD ""                // Pas de mot de passe par defaut (portail ouvert)
+// Vide (ou < 8 caracteres) => le firmware genere une cle WPA2 stable derivee du
+// MAC du chip (affichee au demarrage sur le port serie). Le hotspot n'est JAMAIS
+// ouvert. Definir ici une cle >= 8 caracteres pour un mot de passe fixe.
+#define AP_PASSWORD ""
 #define AP_CHANNEL 1
 #define AP_MAX_CONNECTIONS 2
 
@@ -536,6 +539,9 @@ Standard MIDI constants used across the codebase.
 #define MIDI_CC_ALL_SOUND_OFF 120     // CC 120: All Sound Off
 #define MIDI_CC_RESET_ALL_CONTROLLERS 121 // CC 121: Reset All Controllers
 #define MIDI_CC_ALL_NOTES_OFF 123     // CC 123: All Notes Off
+// CC 124-127 (Omni Off/On, Mono/Poly mode) imply All Notes Off per the MIDI spec.
+#define MIDI_CC_OMNI_OFF 124          // CC 124: Omni Mode Off (implies All Notes Off)
+#define MIDI_CC_MONO_ON  126          // CC 126: Mono Mode On  (implies All Notes Off)
 
 /*******************************************************************************
 -----------------------  RATE LIMITING CONSTANTS     -----------------------

@@ -5,10 +5,15 @@
 // MIDI baudrate standard
 #define MIDI_BAUD_RATE 31250
 
+// Fenetre Active Sensing (spec MIDI ~300 ms). Passe ce delai sans aucun octet
+// apres avoir recu du 0xFE, on considere le cable debranche.
+#define MIDI_ACTIVE_SENSING_TIMEOUT_MS 300
+
 SerialMidiHandler::SerialMidiHandler()
   : _instrument(nullptr), _serial(nullptr),
     _enabled(false), _running(false), _rxPin(0),
-    _status(0), _dataIndex(0), _expectedLen(0) {
+    _status(0), _dataIndex(0), _expectedLen(0),
+    _activeSensing(false), _linkLost(false), _lastByteMs(0) {
   _data[0] = 0;
   _data[1] = 0;
 }
@@ -60,13 +65,33 @@ void SerialMidiHandler::update() {
   // Read all available MIDI bytes
   while (_serial->available()) {
     uint8_t b = _serial->read();
+    _lastByteMs = millis();
+    _linkLost = false;   // des donnees circulent de nouveau
     parseByte(b);
+  }
+
+  checkActiveSensingTimeout();
+}
+
+void SerialMidiHandler::checkActiveSensingTimeout() {
+  // Uniquement si la source s'est engagee via Active Sensing, et une seule fois
+  // par silence. (long)(...) rend la comparaison sure au rollover de millis().
+  if (!_activeSensing || _linkLost) return;
+  if ((long)(millis() - _lastByteMs) > MIDI_ACTIVE_SENSING_TIMEOUT_MS) {
+    _linkLost = true;
+    if (_instrument) _instrument->handleTransportLost();
+    if (DEBUG) {
+      Serial.println("DEBUG: SerialMidiHandler - Active Sensing perdu -> panic");
+    }
   }
 }
 
 void SerialMidiHandler::parseByte(uint8_t byte) {
-  // Real-time messages (0xF8-0xFF) - ignore, single byte
+  // Real-time messages (0xF8-0xFF) - single byte, not queued.
+  // Active Sensing (0xFE) is used to detect a disconnected cable (see
+  // checkActiveSensingTimeout): remember that the source is emitting it.
   if (byte >= 0xF8) {
+    if (byte == 0xFE) _activeSensing = true;
     return;
   }
 

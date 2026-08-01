@@ -425,6 +425,11 @@ void InstrumentManager::handleControlChange(byte ccNumber, byte ccValue) {
       break;
 
     case MIDI_CC_ALL_NOTES_OFF:
+    // CC 124-127 (Omni Off/On, Mono/Poly mode) all imply All Notes Off per spec.
+    case MIDI_CC_OMNI_OFF:      // 124
+    case 125:                   // Omni On
+    case MIDI_CC_MONO_ON:       // 126
+    case 127:                   // Poly On
       allSoundOff();
       break;
 
@@ -505,6 +510,15 @@ void InstrumentManager::allSoundOff() {
 
   if (DEBUG) {
     Serial.println("DEBUG: InstrumentManager - All Sound Off");
+  }
+}
+
+void InstrumentManager::handleTransportLost() {
+  // A live MIDI link dropped mid-note: the matching Note Off will never arrive,
+  // so silence everything to avoid a stuck valve/blow/pump/fan.
+  allSoundOff();
+  if (DEBUG) {
+    Serial.println("DEBUG: InstrumentManager - Transport perdu -> panic (allSoundOff)");
   }
 }
 

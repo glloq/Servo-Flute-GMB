@@ -62,6 +62,12 @@ private:
   int _count;     // Nombre d'elements
   unsigned long _referenceTime;  // Timestamp du premier evenement (millis absolu)
   bool _hasReference;
+
+  // Verrou de section critique : les callbacks HTTP/WS (tache AsyncTCP) et loop()
+  // (tache principale) enfilent/defilent depuis DEUX taches FreeRTOS distinctes.
+  // Sans protection, les mises a jour multi-champs de _head/_tail/_count peuvent
+  // se corrompre (compteur qui deborde, index incoherent -> note bloquee).
+  portMUX_TYPE _mux = portMUX_INITIALIZER_UNLOCKED;
 };
 
 #endif

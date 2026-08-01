@@ -20,6 +20,15 @@ static bool isFlashGpio(uint8_t pin) {
   return pin >= 6 && pin <= 11;
 }
 
+// ESP32 strapping pins sampled at reset to set boot mode / flash voltage.
+// Driving them from an actuator output can prevent boot or (GPIO12/MTDI, which
+// selects the flash regulator voltage) brick a 3.3 V module by forcing 1.8 V.
+// GPIO0/2/5 are already blocked as board-function pins; GPIO15 is otherwise only
+// covered when the I2S mic is compiled in, so guard 12 and 15 explicitly here.
+static bool isStrappingGpio(uint8_t pin) {
+  return pin == 12 || pin == 15;
+}
+
 // Pins consumed by the INMP441 I2S microphone (only when the mic is compiled in).
 static bool isI2sMicGpio(uint8_t pin) {
 #if MIC_ENABLED
@@ -36,6 +45,7 @@ static const char* gpioHardConflict(uint8_t pin) {
   if (pin > CONFIG_MAX_GPIO) return "out of range";
   if (isFlashGpio(pin)) return "reserved for SPI flash";
   if (isReservedGpio(pin)) return "reserved by board function";
+  if (isStrappingGpio(pin)) return "strapping pin (boot/flash-voltage select)";
   if (isI2sMicGpio(pin)) return "used by I2S microphone";
   return "";
 }
@@ -214,7 +224,11 @@ ConfigValidationResult validateAndNormalizeConfig(RuntimeConfig& config, const R
         previousConfig->airMode != config.airMode || previousConfig->valveType != config.valveType || previousConfig->solenoidPin != config.solenoidPin ||
         previousConfig->fanPin != config.fanPin || previousConfig->numPumps != config.numPumps || previousConfig->motorType != config.motorType ||
         previousConfig->sensorType != config.sensorType || previousConfig->hallPin != config.hallPin || previousConfig->endstopPin != config.endstopPin ||
-        previousConfig->serialMidiEnabled != config.serialMidiEnabled || previousConfig->serialMidiRxPin != config.serialMidiRxPin) {
+        previousConfig->serialMidiEnabled != config.serialMidiEnabled || previousConfig->serialMidiRxPin != config.serialMidiRxPin ||
+        // angleServoEnabled feeds requiresSecondPca(): toggling it on for an angle
+        // servo on channel >=16 needs the 2nd PCA9685 to be initialized at boot.
+        // Without a restart the board is never brought up and the servo is dead.
+        previousConfig->angleServoEnabled != config.angleServoEnabled) {
       r.restartRequired = true;
     }
     for (uint8_t i = 0; i < config.numFingers && i < previousConfig->numFingers; i++) if (previousConfig->fingers[i].pcaChannel != config.fingers[i].pcaChannel) r.restartRequired = true;

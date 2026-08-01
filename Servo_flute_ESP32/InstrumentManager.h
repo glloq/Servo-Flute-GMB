@@ -56,6 +56,11 @@ public:
   byte getCCBrightness() const { return _ccBrightness; }
 
   void allSoundOff();
+  // Panic entry point for loss of a live MIDI transport (BLE/rtpMIDI/Wi-Fi/DIN).
+  // A held note whose Note Off can no longer arrive would otherwise keep the
+  // valve/airflow/pump/fan energized indefinitely, so route every disconnect to
+  // allSoundOff(). Mirrors what MidiFilePlayer already does on stop/pause.
+  void handleTransportLost();
   void resetAllControllers();
   void powerOnServos();
   void ensureServosPowered();

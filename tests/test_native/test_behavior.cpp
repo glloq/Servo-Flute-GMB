@@ -646,6 +646,12 @@ static void gpio_validation_reserved_and_conflicts(){
   // ...and a distinct valid RX pin passes.
   cfg.serialMidiRxPin=17;
   assert(validateAndNormalizeConfig(cfg, nullptr).valid);
+  // Strapping pins GPIO12 (flash-voltage select -> brick risk) and GPIO15 are
+  // rejected as actuator outputs even though they are neither flash nor input-only.
+  cfg.serialMidiEnabled=false;
+  cfg.pumpPins[0]=12; assert(!validateAndNormalizeConfig(cfg, nullptr).valid);
+  cfg.pumpPins[0]=15; assert(!validateAndNormalizeConfig(cfg, nullptr).valid);
+  cfg.pumpPins[0]=25; assert(validateAndNormalizeConfig(cfg, nullptr).valid);
   // Endstop reservoir sensor: a pull-up-capable pin (27) is valid, an input-only
   // pin (34, no internal pull-up) is rejected because it uses INPUT_PULLUP.
   // (Pin 27 avoids the solenoid valve on 13 and the pump on 25 in this mode.)
@@ -915,6 +921,65 @@ static void audio_mic_classification(){
   assert(PitchDetector::classifyRaw(raw.data(), N) == MIC_SIG_OK);
 }
 
+// Toggling angleServoEnabled must flag a restart: it feeds requiresSecondPca(),
+// which is only evaluated at boot, so a runtime enable on a >=16 channel would
+// otherwise leave the 2nd PCA9685 un-initialized and the angle servo dead.
+static void angle_servo_enable_requires_restart(){
+  resetCfg(); cfg.angleServoPcaChannel=20; cfg.angleServoEnabled=false;
+  RuntimeConfig prev = cfg;
+  cfg.angleServoEnabled=true;
+  auto r = validateAndNormalizeConfig(cfg, &prev);
+  assert(r.valid && r.restartRequired);
+  // No change to the flag -> this field does not force a restart.
+  RuntimeConfig prev2 = cfg;
+  auto r2 = validateAndNormalizeConfig(cfg, &prev2);
+  assert(r2.valid && !r2.restartRequired);
+}
+
+// A live note shorter than the positioning window must still sound: the Note Off
+// arriving during POSITIONING is deferred until the note has played minNoteDurationMs,
+// instead of cancelling the note before the valve ever opens.
+static void note_sequencer_short_note_still_sounds(){
+  resetCfg(); cfg.airMode=AIR_MODE_PUMP_VALVE; cfg.servoToSolenoidDelayMs=100;
+  cfg.minNoteDurationMs=80; cfg.minNoteIntervalForValveCloseMs=0;
+  __test_millis=0;
+  FingerController fc([](uint8_t,uint16_t,uint16_t){});
+  AirflowController ac([](uint8_t,uint16_t,uint16_t){});
+  EventQueue q(8); NoteSequencer ns(q,fc,ac); ns.begin();
+  q.enqueueScheduledEvent(EVENT_NOTE_ON,60,100,0);
+  q.enqueueScheduledEvent(EVENT_NOTE_OFF,60,0,50);   // note off before positioning ends (100ms)
+  __test_millis=0;   ns.update(); assert(ns.getState()==STATE_POSITIONING);
+  __test_millis=50;  ns.update(); assert(ns.getState()==STATE_POSITIONING);  // off deferred, not cancelled
+  __test_millis=100; ns.update(); assert(ns.getState()==STATE_PLAYING && ac.isValveOpen());  // note actually sounds
+  __test_millis=180; ns.update();                                            // minNoteDuration elapsed
+  __test_millis=181; ns.update(); assert(ns.getState()==STATE_IDLE);
+  ns.stop();
+  // Zero-duration note (on and off at the same timestamp) is still cancelled silently.
+  resetCfg(); cfg.airMode=AIR_MODE_PUMP_VALVE; cfg.servoToSolenoidDelayMs=100;
+  EventQueue q2(8); NoteSequencer ns2(q2,fc,ac); ns2.begin();
+  q2.enqueueScheduledEvent(EVENT_NOTE_ON,60,100,0);
+  q2.enqueueScheduledEvent(EVENT_NOTE_OFF,60,0,0);
+  __test_millis=0; ns2.update();
+  assert(ns2.getState()==STATE_IDLE);
+  ns2.stop();
+}
+
+// Transport loss (BLE/rtpMIDI/Wi-Fi/DIN disconnect) must panic: silence the
+// sequencer and drop the reservoir demand so no valve/blow/pump stays energized.
+static void instrument_transport_lost_panics(){
+  resetCfg(); extern WireClass Wire; Wire.clear(); Wire.setPresent(PCA_ADDR_BOARD0,true);
+  cfg.airMode=AIR_MODE_PUMP_RESERVOIR; cfg.sensorType=SENSOR_TYPE_HALL_KY024;
+  cfg.reservoirAutoStart=true; cfg.reservoirTargetPercent=60;
+  InstrumentManager im; assert(im.beginSafe());
+  assert(im.getPressureCtrl().getTargetPercent()==60);
+  __test_millis=0; im.noteOn(60,100);
+  for(int i=0;i<4;i++){ __test_millis+=60; im.update(); }
+  im.handleTransportLost();
+  assert(im.getSequencer().getState()==STATE_IDLE);
+  assert(im.getPressureCtrl().getTargetPercent()==0);
+  im.allSoundOff();
+}
+
 // ---- MIDI file parsing: SMF byte builders (host-side .mid synthesis) ----
 static void midiU32(std::vector<uint8_t>& v, uint32_t x){ v.push_back((x>>24)&0xFF); v.push_back((x>>16)&0xFF); v.push_back((x>>8)&0xFF); v.push_back(x&0xFF); }
 static void midiU16(std::vector<uint8_t>& v, uint16_t x){ v.push_back((x>>8)&0xFF); v.push_back(x&0xFF); }
@@ -1031,4 +1096,4 @@ static void midi_unsupported_formats_rejected(){
   assert(p3.getLoadError()==MIDI_LOAD_ERR_SMPTE);
 }
 
-int main(){ pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); airflow_nominal_drives_angle(); autocal_frozen_source_fails(); autocal_air_supply_gate(); autocal_14_notes_no_timeout(); autocal_plus70_cents_rejected(); autocal_storage_failure_restores(); autocal_range_finder(); autocal_range_finder_stale(); autocal_range_apply_storage(); autocal_air_lost_midnote(); calair_reservoir_requires_sensor(); instrument_power_held_during_actuator_session(); instrument_ignores_midi_during_calibration(); instrument_inert_after_pca_failure(); air_pump_demand_follows_real_note(); air_fan_speed_follows_replacement(); pump_enable_and_single_pump_test(); gpio_validation_reserved_and_conflicts(); tof_nonblocking_stale_safety(); autocal_global_timeout_scales_to_max_notes(); airflow_cc2_silence_and_live_cc(); airflow_attack_cancelled_on_rest(); airflow_cc2_timeout_on_held_note(); audio_yin_pcm_core(); audio_mic_classification(); midi_tempo_map_math(); midi_type1_global_tempo(); midi_type0_tempo_change_midtrack(); midi_truncation_rejected(); midi_unsupported_formats_rejected(); std::cout << "behavior tests passed\n"; }
+int main(){ pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); airflow_nominal_drives_angle(); autocal_frozen_source_fails(); autocal_air_supply_gate(); autocal_14_notes_no_timeout(); autocal_plus70_cents_rejected(); autocal_storage_failure_restores(); autocal_range_finder(); autocal_range_finder_stale(); autocal_range_apply_storage(); autocal_air_lost_midnote(); calair_reservoir_requires_sensor(); instrument_power_held_during_actuator_session(); instrument_ignores_midi_during_calibration(); instrument_inert_after_pca_failure(); air_pump_demand_follows_real_note(); air_fan_speed_follows_replacement(); pump_enable_and_single_pump_test(); gpio_validation_reserved_and_conflicts(); tof_nonblocking_stale_safety(); autocal_global_timeout_scales_to_max_notes(); airflow_cc2_silence_and_live_cc(); airflow_attack_cancelled_on_rest(); airflow_cc2_timeout_on_held_note(); audio_yin_pcm_core(); audio_mic_classification(); note_sequencer_short_note_still_sounds(); instrument_transport_lost_panics(); angle_servo_enable_requires_restart(); midi_tempo_map_math(); midi_type1_global_tempo(); midi_type0_tempo_change_midtrack(); midi_truncation_rejected(); midi_unsupported_formats_rejected(); std::cout << "behavior tests passed\n"; }

@@ -15,7 +15,12 @@ bool EventQueue::enqueueLiveEvent(EventType type, byte note, byte velocity) {
 }
 
 bool EventQueue::enqueueScheduledEvent(EventType type, byte note, byte velocity, unsigned long executeAtMs) {
-  if (isFull()) {
+  // Section critique : cette methode est appelee depuis les callbacks web
+  // (tache AsyncTCP) alors que loop() defile en parallele.
+  portENTER_CRITICAL(&_mux);
+
+  if (_count >= _capacity) {  // isFull() sans reprendre le verrou
+    portEXIT_CRITICAL(&_mux);
     return false;
   }
 
@@ -29,6 +34,7 @@ bool EventQueue::enqueueScheduledEvent(EventType type, byte note, byte velocity,
   _head = (_head + 1) % _capacity;
   _count++;
 
+  portEXIT_CRITICAL(&_mux);
   return true;
 }
 
@@ -40,7 +46,9 @@ MidiEvent* EventQueue::peek() {
 }
 
 void EventQueue::dequeue() {
-  if (isEmpty()) {
+  portENTER_CRITICAL(&_mux);
+  if (_count == 0) {  // isEmpty() sans reprendre le verrou
+    portEXIT_CRITICAL(&_mux);
     return;
   }
 
@@ -51,6 +59,7 @@ void EventQueue::dequeue() {
     _hasReference = false;
     _referenceTime = 0;
   }
+  portEXIT_CRITICAL(&_mux);
 }
 
 bool EventQueue::isEmpty() const {
@@ -66,11 +75,13 @@ int EventQueue::getCount() const {
 }
 
 void EventQueue::clear() {
+  portENTER_CRITICAL(&_mux);
   _head = 0;
   _tail = 0;
   _count = 0;
   _hasReference = false;
   _referenceTime = 0;
+  portEXIT_CRITICAL(&_mux);
 }
 
 unsigned long EventQueue::getReferenceTime() const {
