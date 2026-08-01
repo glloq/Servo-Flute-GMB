@@ -20,7 +20,7 @@ void NoteSequencer::update() {
   processDueEvents();
   switch (_currentState) {
     case STATE_IDLE:
-      handleIdle();
+      // processDueEvents() ci-dessus a deja traite la file ; rien de plus a faire.
       break;
     case STATE_POSITIONING:
       handlePositioning();
@@ -40,10 +40,6 @@ NoteState NoteSequencer::getState() const {
 
 bool NoteSequencer::isPlaying() const {
   return _currentState == STATE_PLAYING;
-}
-
-void NoteSequencer::handleIdle() {
-  processDueEvents();
 }
 
 void NoteSequencer::handlePositioning() {
@@ -143,10 +139,6 @@ void NoteSequencer::processDueEvents() {
       continue;
     }
   }
-}
-
-void NoteSequencer::processNextEvent() {
-  processDueEvents();
 }
 
 void NoteSequencer::startNoteSequence(byte note, byte velocity, unsigned long scheduledTime) {

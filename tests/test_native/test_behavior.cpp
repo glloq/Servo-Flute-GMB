@@ -21,6 +21,7 @@
 #include "AutoCalibrator.h"
 #include "PitchDetector.h"
 #include "MidiTempoMap.h"
+#include "ServoMath.h"
 #define private public
 #include "MidiFilePlayer.h"
 #undef private
@@ -936,6 +937,20 @@ static void angle_servo_enable_requires_restart(){
   assert(r2.valid && !r2.restartRequired);
 }
 
+// Shared servo angle->PWM helper (extracted from Finger/AirflowController).
+static void servo_angle_to_pwm_math(){
+  // Clamps out-of-range angles to the servo limits.
+  assert(servoAngleToPWM(0) == servoAngleToPWM(SERVO_MIN_ANGLE));
+  assert(servoAngleToPWM(200) == servoAngleToPWM(SERVO_MAX_ANGLE));
+  // Monotonic across the range, and endpoints match the configured pulse widths
+  // (pulse_us * freq * 4096 / 1e6, rounded).
+  assert(servoAngleToPWM(SERVO_MIN_ANGLE) < servoAngleToPWM(SERVO_MAX_ANGLE));
+  uint16_t expMin = (uint16_t)((float)SERVO_PULSE_MIN / 1000000.0 * SERVO_FREQUENCY * 4096.0 + 0.5f);
+  uint16_t expMax = (uint16_t)((float)SERVO_PULSE_MAX / 1000000.0 * SERVO_FREQUENCY * 4096.0 + 0.5f);
+  assert(servoAngleToPWM(SERVO_MIN_ANGLE) == expMin);
+  assert(servoAngleToPWM(SERVO_MAX_ANGLE) == expMax);
+}
+
 // A live note shorter than the positioning window must still sound: the Note Off
 // arriving during POSITIONING is deferred until the note has played minNoteDurationMs,
 // instead of cancelling the note before the valve ever opens.
@@ -1096,4 +1111,4 @@ static void midi_unsupported_formats_rejected(){
   assert(p3.getLoadError()==MIDI_LOAD_ERR_SMPTE);
 }
 
-int main(){ pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); airflow_nominal_drives_angle(); autocal_frozen_source_fails(); autocal_air_supply_gate(); autocal_14_notes_no_timeout(); autocal_plus70_cents_rejected(); autocal_storage_failure_restores(); autocal_range_finder(); autocal_range_finder_stale(); autocal_range_apply_storage(); autocal_air_lost_midnote(); calair_reservoir_requires_sensor(); instrument_power_held_during_actuator_session(); instrument_ignores_midi_during_calibration(); instrument_inert_after_pca_failure(); air_pump_demand_follows_real_note(); air_fan_speed_follows_replacement(); pump_enable_and_single_pump_test(); gpio_validation_reserved_and_conflicts(); tof_nonblocking_stale_safety(); autocal_global_timeout_scales_to_max_notes(); airflow_cc2_silence_and_live_cc(); airflow_attack_cancelled_on_rest(); airflow_cc2_timeout_on_held_note(); audio_yin_pcm_core(); audio_mic_classification(); note_sequencer_short_note_still_sounds(); instrument_transport_lost_panics(); angle_servo_enable_requires_restart(); midi_tempo_map_math(); midi_type1_global_tempo(); midi_type0_tempo_change_midtrack(); midi_truncation_rejected(); midi_unsupported_formats_rejected(); std::cout << "behavior tests passed\n"; }
+int main(){ pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); airflow_nominal_drives_angle(); autocal_frozen_source_fails(); autocal_air_supply_gate(); autocal_14_notes_no_timeout(); autocal_plus70_cents_rejected(); autocal_storage_failure_restores(); autocal_range_finder(); autocal_range_finder_stale(); autocal_range_apply_storage(); autocal_air_lost_midnote(); calair_reservoir_requires_sensor(); instrument_power_held_during_actuator_session(); instrument_ignores_midi_during_calibration(); instrument_inert_after_pca_failure(); air_pump_demand_follows_real_note(); air_fan_speed_follows_replacement(); pump_enable_and_single_pump_test(); gpio_validation_reserved_and_conflicts(); tof_nonblocking_stale_safety(); autocal_global_timeout_scales_to_max_notes(); airflow_cc2_silence_and_live_cc(); airflow_attack_cancelled_on_rest(); airflow_cc2_timeout_on_held_note(); audio_yin_pcm_core(); audio_mic_classification(); servo_angle_to_pwm_math(); note_sequencer_short_note_still_sounds(); instrument_transport_lost_panics(); angle_servo_enable_requires_restart(); midi_tempo_map_math(); midi_type1_global_tempo(); midi_type0_tempo_change_midtrack(); midi_truncation_rejected(); midi_unsupported_formats_rejected(); std::cout << "behavior tests passed\n"; }

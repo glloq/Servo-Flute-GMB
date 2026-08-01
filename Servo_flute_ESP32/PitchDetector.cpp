@@ -109,7 +109,7 @@ MicSignalClass PitchDetector::classifyRaw(const int32_t* raw, size_t n) {
   int64_t minV = 0, maxV = 0;
   bool first = true;
   // INMP441 data is left-aligned 24-bit in a 32-bit word: use the upper 24 bits.
-  const int32_t kSatThreshold = (int32_t)0x7F0000 << 8 >> 8;  // near +full-scale (24-bit)
+  const int32_t kSatThreshold = 0x7F0000;  // near +full-scale (24-bit sample)
   for (size_t i = 0; i < n; i++) {
     int32_t s = raw[i] >> 8;  // 24-bit sample
     if (s != 0) nonZero++;

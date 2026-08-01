@@ -1,5 +1,6 @@
 #include "FingerController.h"
 #include "ConfigStorage.h"
+#include "ServoMath.h"
 
 FingerController::FingerController(PwmWriteFn writePwm)
   : _writePwm(writePwm) {
@@ -97,7 +98,7 @@ uint16_t FingerController::calculateServoAngle(int fingerIndex, uint8_t openStat
 
 void FingerController::setServoAngle(int fingerIndex, uint16_t angle) {
   int pcaChannel = cfg.fingers[fingerIndex].pcaChannel;
-  uint16_t pwmValue = angleToPWM(angle);
+  uint16_t pwmValue = servoAngleToPWM(angle);
   _writePwm(pcaChannel, 0, pwmValue);
 }
 
@@ -114,15 +115,3 @@ void FingerController::testFingerAngle(int fingerIndex, uint16_t angle) {
   }
 }
 
-uint16_t FingerController::angleToPWM(uint16_t angle) {
-  if (angle < SERVO_MIN_ANGLE) angle = SERVO_MIN_ANGLE;
-  if (angle > SERVO_MAX_ANGLE) angle = SERVO_MAX_ANGLE;
-
-  uint16_t pulse = map(angle, SERVO_MIN_ANGLE, SERVO_MAX_ANGLE,
-                       SERVO_PULSE_MIN, SERVO_PULSE_MAX);
-
-  float pulseDuration = (float)pulse / 1000000.0;
-  float pwmValue = pulseDuration * SERVO_FREQUENCY * 4096.0;
-
-  return (uint16_t)(pwmValue + 0.5f);
-}
