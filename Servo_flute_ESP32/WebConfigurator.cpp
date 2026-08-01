@@ -597,7 +597,9 @@ void WebConfigurator::setupRoutes() {
 }
 
 void WebConfigurator::handleRoot(AsyncWebServerRequest* request) {
-  AsyncWebServerResponse* response = request->beginResponse_P(200, "text/html", (const uint8_t*)WEB_HTML_CONTENT, sizeof(WEB_HTML_CONTENT) - 1);
+  // beginResponse() (not the deprecated _P variant) handles PROGMEM buffers in
+  // the maintained ESP32Async fork.
+  AsyncWebServerResponse* response = request->beginResponse(200, "text/html", (const uint8_t*)WEB_HTML_CONTENT, sizeof(WEB_HTML_CONTENT) - 1);
   request->send(response);
 }
 

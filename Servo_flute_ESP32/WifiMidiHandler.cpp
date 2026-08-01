@@ -12,6 +12,33 @@ USING_NAMESPACE_APPLEMIDI;
 
 static const byte DNS_PORT = 53;
 
+// Echappe une chaine pour l'inserer entre guillemets dans du JSON. Les SSID sont
+// controles par les AP environnants et peuvent contenir " ou \ (ou des octets
+// de controle) qui, sans echappement, cassent la reponse du scan Wi-Fi.
+static String jsonEscape(const String& s) {
+  String out;
+  out.reserve(s.length() + 2);
+  for (size_t i = 0; i < s.length(); i++) {
+    char c = s[i];
+    switch (c) {
+      case '"':  out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\n': out += "\\n";  break;
+      case '\r': out += "\\r";  break;
+      case '\t': out += "\\t";  break;
+      default:
+        if ((uint8_t)c < 0x20) {
+          char buf[7];
+          snprintf(buf, sizeof(buf), "\\u%04x", (uint8_t)c);
+          out += buf;
+        } else {
+          out += c;
+        }
+    }
+  }
+  return out;
+}
+
 // Instance rtpMIDI globale
 APPLEMIDI_CREATE_DEFAULTSESSION_INSTANCE();
 
@@ -268,7 +295,7 @@ String WifiMidiHandler::getScanResultsJson() const {
   if (n > 0) {
     for (int i = 0; i < n; i++) {
       if (i > 0) json += ",";
-      json += "{\"ssid\":\"" + WiFi.SSID(i) + "\"";
+      json += "{\"ssid\":\"" + jsonEscape(WiFi.SSID(i)) + "\"";
       json += ",\"rssi\":" + String(WiFi.RSSI(i));
       json += ",\"enc\":" + String(WiFi.encryptionType(i) != WIFI_AUTH_OPEN ? 1 : 0);
       json += "}";

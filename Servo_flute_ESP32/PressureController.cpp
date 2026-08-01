@@ -223,7 +223,7 @@ bool PressureController::serviceTofMeasurement() {
     Wire.beginTransmission(VL53L0X_ADDR);
     Wire.write(0x13); // RESULT_INTERRUPT_STATUS
     Wire.endTransmission(false);
-    Wire.requestFrom(VL53L0X_ADDR, (uint8_t)1);
+    Wire.requestFrom((uint8_t)VL53L0X_ADDR, (uint8_t)1);
     if (Wire.available()) st = Wire.read();
     ready = (st & 0x07) != 0;
   }
