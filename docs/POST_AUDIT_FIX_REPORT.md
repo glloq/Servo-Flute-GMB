@@ -19,6 +19,22 @@
 | MIDI-002 | Désync SMF Type 1 | Chaque piste était convertie avec un tempo réinitialisé à 120 BPM ; les changements de tempo de la piste 0 n'atteignaient pas les pistes de notes | Nouvelle `MidiTempoMap` : carte GLOBALE tick→tempo alimentée par toutes les pistes ; parsing en 2 passes (collecte en ticks puis conversion en ms) | `midi_type1_global_tempo`, `midi_type0_tempo_change_midtrack`, `midi_tempo_map_math` | PASS logiciel |
 | MIDI-003 | Troncature silencieuse >2000 évts | Le parsing s'arrêtait à `MIDI_FILE_MAX_EVENTS` mais déclarait le fichier valide | `insertEvent` signale la troncature ; `loadFile` refuse le fichier avec le code `event_limit_exceeded` (jamais joué partiellement) | `midi_truncation_rejected` | PASS logiciel |
 | MIDI-004 | Formats non gérés acceptés | SMF Type 2 fusionné à tort ; erreurs de format vagues | Rejet explicite du Type 2 et des divisions SMPTE ; `getLoadError()`/`getLoadErrorCode()` exposés à l'API web (champ `reason`) | `midi_unsupported_formats_rejected` | PASS logiciel |
+| SAFE-001 | Note/actionneur bloqué à la perte de transport | BLE/rtpMIDI/Wi-Fi/DIN ne coupaient pas le son à la déconnexion | `InstrumentManager::handleTransportLost()` → `allSoundOff()` appelé sur déconnexion BLE, session rtpMIDI, chute du lien STA, et timeout Active Sensing (0xFE) MIDI DIN | `instrument_transport_lost_panics` | PASS logiciel, matériel requis |
+| CFG-002 | `angleServoEnabled` hors détection de redémarrage | Champ absent des deux blocs de comparaison ; 2ᵉ PCA9685 jamais initialisé après activation runtime | Ajout de la comparaison dans `ConfigValidator` (redémarrage exigé) | `angle_servo_enable_requires_restart` | PASS logiciel |
+| GPIO-002 | GPIO12/15 (strapping) acceptés en sortie | Table de rejet incomplète ; GPIO12 sélectionne la tension flash → risque de brique | `isStrappingGpio()` rejette 12 et 15 | `gpio_validation_reserved_and_conflicts` étendu | PASS logiciel |
+| WARN-001 | Avertissements / dépréciations | `Wire.requestFrom(int,uint8_t)` ambigu, `beginResponse_P` déprécié | Cast `(uint8_t)VL53L0X_ADDR` ; `beginResponse()` | Build ESP32 (CI) | PASS logiciel |
+| JSON-002 | SSID non échappés dans le scan Wi-Fi | Concaténation brute de `WiFi.SSID()` | `jsonEscape()` sur chaque SSID | Revue | PASS logiciel |
+| SEQ-002 | Note courte perdue en POSITIONING | Un Note Off arrivant avant l'ouverture de la valve annulait la note | Report de l'arrêt (note ≥ `minNoteDurationMs`) si le Note Off est postérieur au Note On ; note de durée nulle toujours annulée | `note_sequencer_short_note_still_sounds` | PASS logiciel |
+| MIDI-005 | CC 124-127 ignorés | Seuls CC 120/123 coupaient les notes | CC 124-127 (Omni/Mono/Poly) mappés sur All Notes Off | Revue | PASS logiciel |
+| CONC-001 | `EventQueue` non synchronisée entre tâches | Callbacks AsyncTCP vs `loop()` sans verrou | Section critique `portMUX` sur enqueue/dequeue/clear | Build native + revue | PARTIAL logiciel (refonte command-queue restante) |
+| SEC-001 | Hotspot AP ouvert par défaut | `AP_PASSWORD ""` → `softAP(..., NULL)` | Jamais de hotspot ouvert : clé WPA2 dérivée du MAC si non configurée, affichée au boot | Revue | PARTIAL logiciel (auth API/WS restante) |
+
+### Restant à traiter (nécessite refonte ou matériel)
+
+- **SEC-002 — Auth REST/WebSocket** : aucune route/WS n'exige d'authentification. Nécessite un champ mot de passe admin en config + adaptation de l'UI web + validation sur matériel. WPA2 (SEC-001) est la première barrière ; l'auth applicative reste un durcissement à ajouter.
+- **CONC-002 — File de commandes** : les callbacks web pilotent encore `cfg`/I2C/actionneurs directement. Cible : ne faire qu'empiler une commande exécutée dans `loop()`.
+- **TOF-002 — Init VL53L0X** : la branche VL53L0X n'a pas de séquence d'init (DataInit/SPAD) et est probablement non fonctionnelle ; à porter + valider sur capteur réel.
+- **NAME-001 — `deviceName`** : non appliqué au nom BLE (macro `DEVICE_NAME`) ni au mDNS (`MDNS_HOSTNAME`) ; nécessite de toucher l'init NimBLE vendorée + validation.
 
 ## Software verified
 
