@@ -28,13 +28,15 @@
 | MIDI-005 | CC 124-127 ignorés | Seuls CC 120/123 coupaient les notes | CC 124-127 (Omni/Mono/Poly) mappés sur All Notes Off | Revue | PASS logiciel |
 | CONC-001 | `EventQueue` non synchronisée entre tâches | Callbacks AsyncTCP vs `loop()` sans verrou | Section critique `portMUX` sur enqueue/dequeue/clear | Build native + revue | PARTIAL logiciel (refonte command-queue restante) |
 | SEC-001 | Hotspot AP ouvert par défaut | `AP_PASSWORD ""` → `softAP(..., NULL)` | Jamais de hotspot ouvert : clé WPA2 dérivée du MAC si non configurée, affichée au boot | Revue | PARTIAL logiciel (auth API/WS restante) |
+| SEQ-003 | Note Off perdu si file pleine | `enqueueLiveEvent` échouait silencieusement → note bloquée | `enqueue…Forced` évince le plus ancien ; utilisé pour les Note Off | `event_queue_forced_never_drops` | PASS logiciel |
+| NAME-001 | `deviceName` non appliqué | BLE utilisait la macro `DEVICE_NAME`, mDNS `MDNS_HOSTNAME` | `BLEBMIDI.setName(cfg.deviceName)` avant l'init NimBLE ; mDNS via `deviceName` assaini en étiquette DNS | Revue (matériel requis) | PASS logiciel |
+| QUAL-001 | Duplication / code mort / shift no-op | `angleToPWM` dupliqué, `processNextEvent` mort, `<<8>>8` | `ServoMath::servoAngleToPWM` partagé ; code mort retiré ; seuil PitchDetector simplifié | `servo_angle_to_pwm_math` | PASS logiciel |
 
 ### Restant à traiter (nécessite refonte ou matériel)
 
 - **SEC-002 — Auth REST/WebSocket** : aucune route/WS n'exige d'authentification. Nécessite un champ mot de passe admin en config + adaptation de l'UI web + validation sur matériel. WPA2 (SEC-001) est la première barrière ; l'auth applicative reste un durcissement à ajouter.
-- **CONC-002 — File de commandes** : les callbacks web pilotent encore `cfg`/I2C/actionneurs directement. Cible : ne faire qu'empiler une commande exécutée dans `loop()`.
+- **CONC-002 — File de commandes** : les callbacks web pilotent encore `cfg`/I2C/actionneurs directement. La section critique `EventQueue` (CONC-001) élimine la corruption de file ; la refonte « callback → file de commandes exécutée dans `loop()` » reste à faire pour `cfg`/I2C.
 - **TOF-002 — Init VL53L0X** : la branche VL53L0X n'a pas de séquence d'init (DataInit/SPAD) et est probablement non fonctionnelle ; à porter + valider sur capteur réel.
-- **NAME-001 — `deviceName`** : non appliqué au nom BLE (macro `DEVICE_NAME`) ni au mDNS (`MDNS_HOSTNAME`) ; nécessite de toucher l'init NimBLE vendorée + validation.
 
 ## Software verified
 
