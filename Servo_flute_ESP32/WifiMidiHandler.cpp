@@ -138,13 +138,27 @@ void WifiMidiHandler::startAP() {
 
   WiFi.mode(WIFI_AP);
 
-  if (strlen(AP_PASSWORD) > 0) {
-    WiFi.softAP(AP_SSID, AP_PASSWORD, AP_CHANNEL, false, AP_MAX_CONNECTIONS);
-  } else {
-    WiFi.softAP(AP_SSID, NULL, AP_CHANNEL, false, AP_MAX_CONNECTIONS);
+  // Ne JAMAIS ouvrir un hotspot non chiffre : sans mot de passe configure (ou
+  // trop court pour du WPA2), on en derive un stable a partir du MAC du chip.
+  // Un client doit connaitre cette cle pour atteindre l'API/WebSocket.
+  String apPass = AP_PASSWORD;
+  bool generated = false;
+  if (apPass.length() < 8) {
+    uint32_t id = (uint32_t)(ESP.getEfuseMac() & 0xFFFFFF);
+    char buf[16];
+    snprintf(buf, sizeof(buf), "flute-%06X", id);
+    apPass = buf;
+    generated = true;
   }
+  WiFi.softAP(AP_SSID, apPass.c_str(), AP_CHANNEL, false, AP_MAX_CONNECTIONS);
 
   _state = WIFI_STATE_AP_ACTIVE;
+
+  // Toujours afficher la cle (meme hors DEBUG) pour un appareil headless.
+  Serial.print("WifiMidiHandler - AP WPA2 '");
+  Serial.print(AP_SSID);
+  Serial.print(generated ? "' (mot de passe genere): " : "' (mot de passe configure): ");
+  Serial.println(apPass);
 
   if (DEBUG) {
     Serial.print("DEBUG: WifiMidiHandler - AP actif, IP: ");

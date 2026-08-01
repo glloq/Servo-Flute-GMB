@@ -23,6 +23,13 @@ void digitalWrite(uint8_t pin,uint8_t value);
 int digitalRead(uint8_t pin);
 void analogWrite(uint8_t pin,int value);
 int analogRead(uint8_t pin);
+// FreeRTOS critical-section shims. No-ops on the host; on the ESP32 the real
+// portENTER_CRITICAL/portEXIT_CRITICAL come from Arduino.h/FreeRTOS.
+typedef struct { int dummy; } portMUX_TYPE;
+#define portMUX_INITIALIZER_UNLOCKED { 0 }
+inline void portENTER_CRITICAL(portMUX_TYPE*) {}
+inline void portEXIT_CRITICAL(portMUX_TYPE*) {}
+
 class String: public std::string { public: using std::string::string; String():std::string(){} String(const char*s):std::string(s?s:""){} String(const std::string& s):std::string(s){} String(int v):std::string(std::to_string(v)){} bool isEmpty() const { return empty(); }
   int lastIndexOf(char c) const { size_t p = rfind(c); return p==std::string::npos ? -1 : (int)p; }
   int indexOf(char c) const { size_t p = find(c); return p==std::string::npos ? -1 : (int)p; }

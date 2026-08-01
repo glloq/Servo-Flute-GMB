@@ -453,7 +453,10 @@ const uint16_t SERVO_FREQUENCY = 50;
 
 // WiFi AP mode (hotspot) settings
 #define AP_SSID "ServoFlute-Setup"
-#define AP_PASSWORD ""                // Pas de mot de passe par defaut (portail ouvert)
+// Vide (ou < 8 caracteres) => le firmware genere une cle WPA2 stable derivee du
+// MAC du chip (affichee au demarrage sur le port serie). Le hotspot n'est JAMAIS
+// ouvert. Definir ici une cle >= 8 caracteres pour un mot de passe fixe.
+#define AP_PASSWORD ""
 #define AP_CHANNEL 1
 #define AP_MAX_CONNECTIONS 2
 
