@@ -57,7 +57,10 @@ void NoteSequencer::handlePositioning() {
     if (sound) _airflowCtrl.openSolenoid();
     else _airflowCtrl.closeSolenoid();
     _noteSoundStartTime = millis();
-    _pendingStopAfterMinDuration = false;
+    // NB: on ne remet PAS _pendingStopAfterMinDuration a false ici. Un Note Off
+    // recu pendant le POSITIONING (note plus courte que la fenetre de
+    // positionnement) l'a arme pour que la note sonne quand meme au moins
+    // minNoteDurationMs. Il est deja remis a false a chaque nouveau Note On.
     transitionTo(STATE_PLAYING);
 
     if (DEBUG) {
@@ -125,7 +128,16 @@ void NoteSequencer::processDueEvents() {
             stopCurrentNote();
           }
         } else {
-          stopCurrentNote();
+          // POSITIONING : la valve n'est pas encore ouverte. Si le Note Off est
+          // reellement posterieur au Note On (vraie note courte, plus breve que
+          // la fenetre de positionnement), on differe l'arret pour que la note
+          // sonne quand meme minNoteDurationMs une fois lancee. Si le Note Off
+          // est simultane au Note On (duree nulle/degenere), on annule direct.
+          if (due.timestamp > _eventScheduledTime) {
+            _pendingStopAfterMinDuration = true;
+          } else {
+            stopCurrentNote();
+          }
         }
       }
       continue;
