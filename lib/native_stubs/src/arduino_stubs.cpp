@@ -1,8 +1,10 @@
 #include "Arduino.h"
 #include "Wire.h"
 #include "Adafruit_PWMServoDriver.h"
+#include "LittleFS.h"
 #include <map>
 unsigned long __test_millis = 0;
+__LittleFS LittleFS;
 SerialClass Serial;
 WireClass Wire;
 std::map<uint8_t,int> __analog_writes, __digital_writes, __analog_reads, __digital_reads;

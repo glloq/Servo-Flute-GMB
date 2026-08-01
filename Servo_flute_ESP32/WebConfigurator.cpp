@@ -1406,9 +1406,15 @@ void WebConfigurator::handleMidiUploadComplete(AsyncWebServerRequest* request) {
     _ws.textAll(wsMsg);
   } else {
     LittleFS.remove(destPath);
-    String resp = "{\"ok\":false,\"msg\":\"Invalid MIDI format\"}";
+    const char* reason = _player ? _player->getLoadErrorCode() : "no_player";
+    String resp = "{\"ok\":false,\"msg\":\"Invalid MIDI format\",\"reason\":\"";
+    resp += reason;
+    resp += "\"}";
     request->send(400, "application/json", resp);
-    _ws.textAll("{\"t\":\"midi_error\",\"msg\":\"Invalid MIDI format\"}");
+    String errMsg = "{\"t\":\"midi_error\",\"msg\":\"Invalid MIDI format\",\"reason\":\"";
+    errMsg += reason;
+    errMsg += "\"}";
+    _ws.textAll(errMsg);
   }
 }
 
@@ -1535,7 +1541,11 @@ void WebConfigurator::handleMidiLoad(AsyncWebServerRequest* request) {
     wsMsg += "}";
     _ws.textAll(wsMsg);
   } else {
-    request->send(400, "application/json", "{\"ok\":false,\"msg\":\"MIDI load failed\"}");
+    const char* reason = _player ? _player->getLoadErrorCode() : "no_player";
+    String resp = "{\"ok\":false,\"msg\":\"MIDI load failed\",\"reason\":\"";
+    resp += reason;
+    resp += "\"}";
+    request->send(400, "application/json", resp);
   }
 }
 

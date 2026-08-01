@@ -5,7 +5,8 @@ MidiFilePlayer::MidiFilePlayer()
   : _instrument(nullptr), _state(PLAYER_STOPPED),
     _events(nullptr), _eventCount(0), _currentEvent(0),
     _durationMs(0), _playbackStartMs(0), _pausePositionMs(0),
-    _fileLoaded(false), _channelFilter(255), _activeChannels(0) {
+    _fileLoaded(false), _channelFilter(255), _activeChannels(0),
+    _loadError(MIDI_LOAD_OK), _truncated(false) {
 }
 
 MidiFilePlayer::~MidiFilePlayer() {
@@ -30,9 +31,12 @@ bool MidiFilePlayer::loadFile(const char* path) {
   stop();
   _eventCount = 0;
   _fileLoaded = false;
+  _loadError = MIDI_LOAD_OK;
+  _truncated = false;
 
   File file = LittleFS.open(path, "r");
   if (!file) {
+    _loadError = MIDI_LOAD_ERR_OPEN;
     if (DEBUG) {
       Serial.println("ERREUR: MidiFilePlayer - Impossible d'ouvrir le fichier");
     }
@@ -57,28 +61,50 @@ bool MidiFilePlayer::loadFile(const char* path) {
   bool success = parseFile(file);
   file.close();
 
-  if (success && _eventCount > 0) {
-    // Trier les evenements par temps (necessaire pour multi-pistes)
-    sortEvents();
-    _durationMs = _events[_eventCount - 1].absoluteTimeMs;
-    _fileLoaded = true;
-    // Scanner les canaux presents
-    _activeChannels = 0;
-    for (uint16_t i = 0; i < _eventCount; i++) {
-      _activeChannels |= (1 << _events[i].channel);
-    }
-
+  // Refuser explicitement un fichier tronque plutot que de le declarer valide
+  // en n'en jouant qu'une partie (audit P0 : troncature silencieuse).
+  if (_truncated || _tempoMap.overflowed()) {
+    _eventCount = 0;
+    if (_loadError == MIDI_LOAD_OK) _loadError = MIDI_LOAD_ERR_EVENT_LIMIT;
     if (DEBUG) {
-      Serial.print("DEBUG: MidiFilePlayer - Parse OK: ");
-      Serial.print(_eventCount);
-      Serial.print(" evenements, duree: ");
-      Serial.print(_durationMs / 1000);
-      Serial.println("s");
+      Serial.println("ERREUR: MidiFilePlayer - Fichier trop dense (limite d'evenements atteinte), refuse");
     }
-  } else {
+    return false;
+  }
+
+  if (!success) {
+    // _loadError a deja ete positionne par parseMThd/parseFile
     if (DEBUG) {
       Serial.println("ERREUR: MidiFilePlayer - Echec parsing");
     }
+    return false;
+  }
+
+  if (_eventCount == 0) {
+    _loadError = MIDI_LOAD_ERR_NO_EVENTS;
+    if (DEBUG) {
+      Serial.println("ERREUR: MidiFilePlayer - Aucun evenement jouable");
+    }
+    return false;
+  }
+
+  // Passe 2 : carte de tempo globale finalisee, tri par tick, conversion en ms.
+  convertTicksToMs();
+
+  _durationMs = _events[_eventCount - 1].absoluteTimeMs;
+  _fileLoaded = true;
+  // Scanner les canaux presents
+  _activeChannels = 0;
+  for (uint16_t i = 0; i < _eventCount; i++) {
+    _activeChannels |= (1 << _events[i].channel);
+  }
+
+  if (DEBUG) {
+    Serial.print("DEBUG: MidiFilePlayer - Parse OK: ");
+    Serial.print(_eventCount);
+    Serial.print(" evenements, duree: ");
+    Serial.print(_durationMs / 1000);
+    Serial.println("s");
   }
 
   return _fileLoaded;
@@ -192,6 +218,22 @@ uint32_t MidiFilePlayer::getDurationMs() const { return _durationMs; }
 String MidiFilePlayer::getFileName() const { return _fileName; }
 bool MidiFilePlayer::isFileLoaded() const { return _fileLoaded; }
 
+MidiLoadError MidiFilePlayer::getLoadError() const { return _loadError; }
+
+const char* MidiFilePlayer::getLoadErrorCode() const {
+  switch (_loadError) {
+    case MIDI_LOAD_OK:              return "ok";
+    case MIDI_LOAD_ERR_OPEN:        return "open_failed";
+    case MIDI_LOAD_ERR_HEADER:     return "invalid_header";
+    case MIDI_LOAD_ERR_SMPTE:      return "smpte_unsupported";
+    case MIDI_LOAD_ERR_DIVISION:   return "invalid_division";
+    case MIDI_LOAD_ERR_FORMAT2:    return "format2_unsupported";
+    case MIDI_LOAD_ERR_EVENT_LIMIT: return "event_limit_exceeded";
+    case MIDI_LOAD_ERR_NO_EVENTS:  return "no_events";
+  }
+  return "unknown";
+}
+
 void MidiFilePlayer::setChannelFilter(uint8_t channel) { _channelFilter = channel; }
 uint8_t MidiFilePlayer::getChannelFilter() const { return _channelFilter; }
 uint16_t MidiFilePlayer::getActiveChannels() const { return _activeChannels; }
@@ -228,11 +270,26 @@ bool MidiFilePlayer::parseFile(File& file) {
     Serial.println(division);
   }
 
-  // Tempo par defaut : 120 BPM = 500000 us/beat
-  uint32_t baseTempo = 500000;
+  // SMF Type 2 : chaque piste est une sequence temporelle INDEPENDANTE. Les
+  // fusionner sur une seule timeline (comme Type 0/1) produirait un charabia ->
+  // rejeter explicitement (audit : format 2 non gere).
+  if (format == 2 && numTracks > 1) {
+    _loadError = MIDI_LOAD_ERR_FORMAT2;
+    if (DEBUG) {
+      Serial.println("ERREUR: SMF Type 2 (sequences independantes) non supporte");
+    }
+    return false;
+  }
 
-  // Lire chaque piste
-  for (uint16_t t = 0; t < numTracks && _eventCount < MIDI_FILE_MAX_EVENTS; t++) {
+  // Initialiser la carte de tempo GLOBALE : tous les changements de tempo de
+  // toutes les pistes y sont accumules (en ticks absolus) avant conversion.
+  _tempoMap.begin(division);
+
+  // Passe 1 : lire chaque piste, evenements stockes en TICKS absolus.
+  // On continue de parcourir les pistes meme apres avoir atteint la limite
+  // d'evenements, afin de detecter la troncature avec precision (insertEvent
+  // positionne _truncated) et de collecter TOUS les changements de tempo.
+  for (uint16_t t = 0; t < numTracks; t++) {
     // Chercher le chunk MTrk
     uint8_t chunkId[4];
     if (file.read(chunkId, 4) != 4) break;
@@ -255,7 +312,7 @@ bool MidiFilePlayer::parseFile(File& file) {
       Serial.println(" octets");
     }
 
-    if (!parseMTrk(file, trackLength, division, baseTempo)) {
+    if (!parseMTrk(file, trackLength)) {
       if (DEBUG) {
         Serial.print("ERREUR: Echec parsing piste ");
         Serial.println(t);
@@ -263,16 +320,19 @@ bool MidiFilePlayer::parseFile(File& file) {
     }
   }
 
-  return _eventCount > 0;
+  return true;
 }
 
 bool MidiFilePlayer::parseMThd(File& file, uint16_t& format, uint16_t& numTracks, uint16_t& division) {
   uint8_t header[4];
-  if (file.read(header, 4) != 4) return false;
-  if (header[0] != 'M' || header[1] != 'T' || header[2] != 'h' || header[3] != 'd') return false;
+  if (file.read(header, 4) != 4) { _loadError = MIDI_LOAD_ERR_HEADER; return false; }
+  if (header[0] != 'M' || header[1] != 'T' || header[2] != 'h' || header[3] != 'd') {
+    _loadError = MIDI_LOAD_ERR_HEADER;
+    return false;
+  }
 
   uint32_t headerLen = readU32(file);
-  if (headerLen < 6) return false;
+  if (headerLen < 6) { _loadError = MIDI_LOAD_ERR_HEADER; return false; }
 
   format = readU16(file);
   numTracks = readU16(file);
@@ -285,6 +345,7 @@ bool MidiFilePlayer::parseMThd(File& file, uint16_t& format, uint16_t& numTracks
 
   // On ne supporte que les divisions en ticks/beat (bit 15 = 0)
   if (division & 0x8000) {
+    _loadError = MIDI_LOAD_ERR_SMPTE;
     if (DEBUG) {
       Serial.println("ERREUR: SMPTE time division non supporte");
     }
@@ -292,8 +353,9 @@ bool MidiFilePlayer::parseMThd(File& file, uint16_t& format, uint16_t& numTracks
   }
 
   // Garde: une division nulle (ticks/beat = 0) provoquerait un divide-by-zero
-  // dans ticksToMs() sur fichier corrompu/malforme -> rejeter le fichier.
+  // dans la conversion tick->ms sur fichier corrompu/malforme -> rejeter.
   if (division == 0) {
+    _loadError = MIDI_LOAD_ERR_DIVISION;
     if (DEBUG) {
       Serial.println("ERREUR: Division ticks/beat nulle (fichier MIDI invalide)");
     }
@@ -303,25 +365,22 @@ bool MidiFilePlayer::parseMThd(File& file, uint16_t& format, uint16_t& numTracks
   return true;
 }
 
-bool MidiFilePlayer::parseMTrk(File& file, uint32_t trackLength, uint16_t division, uint32_t baseTempo) {
+bool MidiFilePlayer::parseMTrk(File& file, uint32_t trackLength) {
   uint32_t trackEnd = file.position() + trackLength;
   uint32_t currentTick = 0;
-  uint32_t currentTempo = baseTempo;
   uint8_t runningStatus = 0;
 
-  // Pour la conversion temps : on accumule les ms au fur et a mesure des changements de tempo
-  uint32_t lastTempoChangeTick = 0;
-  uint32_t lastTempoChangeMs = 0;
-
-  while (file.position() < trackEnd && _eventCount < MIDI_FILE_MAX_EVENTS) {
+  // Passe 1 : on stocke les evenements en TICKS absolus (dans absoluteTimeMs).
+  // Les changements de tempo sont pousses dans la carte GLOBALE _tempoMap et
+  // seront appliques a toutes les pistes lors de la conversion (passe 2). On ne
+  // borne PLUS la boucle par _eventCount : insertEvent gere le depassement et
+  // signale la troncature, et on doit lire toute la piste de tempo (piste 0)
+  // meme si les pistes de notes ont deja rempli le tableau.
+  while (file.position() < trackEnd) {
     // Lire delta time (VLQ)
     uint32_t bytesRead = 0;
     uint32_t deltaTime = readVLQ(file, bytesRead);
     currentTick += deltaTime;
-
-    // Convertir le tick courant en ms
-    uint32_t ticksSinceTempoChange = currentTick - lastTempoChangeTick;
-    uint32_t currentTimeMs = lastTempoChangeMs + ticksToMs(ticksSinceTempoChange, currentTempo, division);
 
     // Lire le premier octet de l'evenement
     // Garde EOF : sur un fichier tronque (trackEnd > taille reelle), file.read()
@@ -346,7 +405,7 @@ bool MidiFilePlayer::parseMTrk(File& file, uint32_t trackLength, uint16_t divisi
       if (msgType == 0x80 || msgType == 0x90 || msgType == 0xB0) {
         uint8_t data2 = file.read();
         MidiFileEvent evt;
-        evt.absoluteTimeMs = currentTimeMs;
+        evt.absoluteTimeMs = currentTick;  // tick (converti en ms en passe 2)
         evt.type = statusByte;
         evt.channel = channel;
         evt.data1 = data1;
@@ -374,24 +433,21 @@ bool MidiFilePlayer::parseMTrk(File& file, uint32_t trackLength, uint16_t divisi
         uint32_t metaLen = readVLQ(file, br);
 
         if (metaType == 0x51 && metaLen == 3) {
-          // Tempo change : 3 octets = us/quarter note
+          // Tempo change : 3 octets = us/quarter note. Enregistre dans la carte
+          // globale au tick absolu courant (applique a TOUTES les pistes).
           uint32_t newTempo = 0;
           newTempo = (uint32_t)file.read() << 16;
           newTempo |= (uint32_t)file.read() << 8;
           newTempo |= (uint32_t)file.read();
 
-          // Mettre a jour le point de reference tempo
-          lastTempoChangeMs = currentTimeMs;
-          lastTempoChangeTick = currentTick;
-          currentTempo = newTempo;
+          _tempoMap.addTempoChange(currentTick, newTempo);
 
           if (DEBUG) {
-            float bpm = 60000000.0 / newTempo;
+            float bpm = (newTempo > 0) ? (60000000.0 / newTempo) : 0.0;
             Serial.print("DEBUG: Tempo change: ");
             Serial.print(bpm, 1);
-            Serial.print(" BPM a t=");
-            Serial.print(currentTimeMs);
-            Serial.println("ms");
+            Serial.print(" BPM a tick=");
+            Serial.println(currentTick);
           }
         } else if (metaType == 0x2F) {
           // End of Track
@@ -422,7 +478,7 @@ bool MidiFilePlayer::parseMTrk(File& file, uint32_t trackLength, uint16_t divisi
           // On ne garde que Note On/Off et CC
           if (msgType == 0x80 || msgType == 0x90 || msgType == 0xB0) {
             MidiFileEvent evt;
-            evt.absoluteTimeMs = currentTimeMs;
+            evt.absoluteTimeMs = currentTick;  // tick (converti en ms en passe 2)
             evt.type = statusByte;
             evt.channel = channel;
             evt.data1 = data1;
@@ -479,23 +535,35 @@ uint32_t MidiFilePlayer::readU32(File& file) {
 }
 
 void MidiFilePlayer::insertEvent(const MidiFileEvent& evt) {
-  if (_eventCount >= MIDI_FILE_MAX_EVENTS) return;
+  if (_eventCount >= MIDI_FILE_MAX_EVENTS) {
+    // Capacite atteinte : on ne peut pas tout stocker -> fichier trop dense.
+    // On marque la troncature ; loadFile() refusera le fichier au lieu de n'en
+    // jouer qu'une partie sans prevenir (audit P0).
+    _truncated = true;
+    return;
+  }
   _events[_eventCount] = evt;
   _eventCount++;
 }
 
-uint32_t MidiFilePlayer::ticksToMs(uint32_t ticks, uint32_t tempo, uint16_t division) {
-  // tempo = microsecondes par quarter note
-  // division = ticks par quarter note
-  // ms = ticks * (tempo / division) / 1000
-  return (uint32_t)((uint64_t)ticks * tempo / division / 1000);
+void MidiFilePlayer::convertTicksToMs() {
+  // Les evenements portent des TICKS absolus. On finalise la carte de tempo
+  // globale, on trie par tick (ordre temporel reel, toutes pistes confondues),
+  // puis on convertit chaque tick en ms. tickToMs() etant monotone croissant,
+  // l'ordre par tick reste l'ordre par ms.
+  _tempoMap.finalize();
+  sortEvents();
+  for (uint16_t i = 0; i < _eventCount; i++) {
+    _events[i].absoluteTimeMs = _tempoMap.tickToMs(_events[i].absoluteTimeMs);
+  }
 }
 
 void MidiFilePlayer::sortEvents() {
-  // Simple insertion sort (suffisant pour < 2000 elements)
+  // Simple insertion sort stable (suffisant pour <= MIDI_FILE_MAX_EVENTS).
+  // Trie sur la valeur de absoluteTimeMs, qui contient le tick a ce stade.
   for (uint16_t i = 1; i < _eventCount; i++) {
     MidiFileEvent temp = _events[i];
-    int16_t j = i - 1;
+    int32_t j = (int32_t)i - 1;
     while (j >= 0 && _events[j].absoluteTimeMs > temp.absoluteTimeMs) {
       _events[j + 1] = _events[j];
       j--;

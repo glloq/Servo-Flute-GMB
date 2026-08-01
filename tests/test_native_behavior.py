@@ -22,6 +22,7 @@ SOURCES = [
     "Servo_flute_ESP32/CalibrationAirSupply.cpp",
     "Servo_flute_ESP32/AutoCalibrator.cpp",
     "Servo_flute_ESP32/PitchDetector.cpp",
+    "Servo_flute_ESP32/MidiFilePlayer.cpp",
     "tests/test_native/test_behavior.cpp",
 ]
 
