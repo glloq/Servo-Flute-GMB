@@ -118,6 +118,12 @@ void BleMidiHandler::onDisconnected() {
   if (_instance == nullptr) return;
   _instance->_connected = false;
 
+  // Panic : une note tenue au moment de la deconnexion ne recevra jamais son
+  // Note Off -> couper le son pour ne pas laisser valve/souffle/pompe actifs.
+  if (_instance->_instrument != nullptr) {
+    _instance->_instrument->handleTransportLost();
+  }
+
   if (DEBUG) {
     Serial.println("DEBUG: BleMidiHandler - Client BLE deconnecte");
   }

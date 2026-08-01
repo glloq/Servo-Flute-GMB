@@ -508,6 +508,15 @@ void InstrumentManager::allSoundOff() {
   }
 }
 
+void InstrumentManager::handleTransportLost() {
+  // A live MIDI link dropped mid-note: the matching Note Off will never arrive,
+  // so silence everything to avoid a stuck valve/blow/pump/fan.
+  allSoundOff();
+  if (DEBUG) {
+    Serial.println("DEBUG: InstrumentManager - Transport perdu -> panic (allSoundOff)");
+  }
+}
+
 void InstrumentManager::resetAllControllers() {
   _ccVolume = cfg.ccVolumeDefault;
   _ccExpression = cfg.ccExpressionDefault;

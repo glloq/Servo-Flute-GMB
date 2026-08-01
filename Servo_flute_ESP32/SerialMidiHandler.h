@@ -57,8 +57,19 @@ private:
   uint8_t _dataIndex;     // Current data byte index
   uint8_t _expectedLen;   // Expected data bytes for current status
 
+  // Surveillance de perte de lien (Active Sensing 0xFE).
+  // Une source qui emet de l'Active Sensing s'engage a envoyer au moins un octet
+  // toutes les ~300 ms ; son silence prolonge signale un cable debranche. On
+  // declenche alors un panic pour ne pas laisser une note DIN bloquee.
+  bool _activeSensing;    // au moins un 0xFE recu
+  bool _linkLost;         // panic deja emis pour ce silence (evite la repetition)
+  unsigned long _lastByteMs;  // horodatage du dernier octet recu
+
   // Parse un octet MIDI entrant
   void parseByte(uint8_t byte);
+
+  // Coupe le son si l'Active Sensing s'est tu au-dela du timeout.
+  void checkActiveSensingTimeout();
 
   // Traite un message MIDI complet
   void processMessage(uint8_t status, uint8_t data1, uint8_t data2);

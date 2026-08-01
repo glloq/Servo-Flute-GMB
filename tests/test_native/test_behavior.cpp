@@ -915,6 +915,22 @@ static void audio_mic_classification(){
   assert(PitchDetector::classifyRaw(raw.data(), N) == MIC_SIG_OK);
 }
 
+// Transport loss (BLE/rtpMIDI/Wi-Fi/DIN disconnect) must panic: silence the
+// sequencer and drop the reservoir demand so no valve/blow/pump stays energized.
+static void instrument_transport_lost_panics(){
+  resetCfg(); extern WireClass Wire; Wire.clear(); Wire.setPresent(PCA_ADDR_BOARD0,true);
+  cfg.airMode=AIR_MODE_PUMP_RESERVOIR; cfg.sensorType=SENSOR_TYPE_HALL_KY024;
+  cfg.reservoirAutoStart=true; cfg.reservoirTargetPercent=60;
+  InstrumentManager im; assert(im.beginSafe());
+  assert(im.getPressureCtrl().getTargetPercent()==60);
+  __test_millis=0; im.noteOn(60,100);
+  for(int i=0;i<4;i++){ __test_millis+=60; im.update(); }
+  im.handleTransportLost();
+  assert(im.getSequencer().getState()==STATE_IDLE);
+  assert(im.getPressureCtrl().getTargetPercent()==0);
+  im.allSoundOff();
+}
+
 // ---- MIDI file parsing: SMF byte builders (host-side .mid synthesis) ----
 static void midiU32(std::vector<uint8_t>& v, uint32_t x){ v.push_back((x>>24)&0xFF); v.push_back((x>>16)&0xFF); v.push_back((x>>8)&0xFF); v.push_back(x&0xFF); }
 static void midiU16(std::vector<uint8_t>& v, uint16_t x){ v.push_back((x>>8)&0xFF); v.push_back(x&0xFF); }
@@ -1031,4 +1047,4 @@ static void midi_unsupported_formats_rejected(){
   assert(p3.getLoadError()==MIDI_LOAD_ERR_SMPTE);
 }
 
-int main(){ pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); airflow_nominal_drives_angle(); autocal_frozen_source_fails(); autocal_air_supply_gate(); autocal_14_notes_no_timeout(); autocal_plus70_cents_rejected(); autocal_storage_failure_restores(); autocal_range_finder(); autocal_range_finder_stale(); autocal_range_apply_storage(); autocal_air_lost_midnote(); calair_reservoir_requires_sensor(); instrument_power_held_during_actuator_session(); instrument_ignores_midi_during_calibration(); instrument_inert_after_pca_failure(); air_pump_demand_follows_real_note(); air_fan_speed_follows_replacement(); pump_enable_and_single_pump_test(); gpio_validation_reserved_and_conflicts(); tof_nonblocking_stale_safety(); autocal_global_timeout_scales_to_max_notes(); airflow_cc2_silence_and_live_cc(); airflow_attack_cancelled_on_rest(); airflow_cc2_timeout_on_held_note(); audio_yin_pcm_core(); audio_mic_classification(); midi_tempo_map_math(); midi_type1_global_tempo(); midi_type0_tempo_change_midtrack(); midi_truncation_rejected(); midi_unsupported_formats_rejected(); std::cout << "behavior tests passed\n"; }
+int main(){ pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); airflow_nominal_drives_angle(); autocal_frozen_source_fails(); autocal_air_supply_gate(); autocal_14_notes_no_timeout(); autocal_plus70_cents_rejected(); autocal_storage_failure_restores(); autocal_range_finder(); autocal_range_finder_stale(); autocal_range_apply_storage(); autocal_air_lost_midnote(); calair_reservoir_requires_sensor(); instrument_power_held_during_actuator_session(); instrument_ignores_midi_during_calibration(); instrument_inert_after_pca_failure(); air_pump_demand_follows_real_note(); air_fan_speed_follows_replacement(); pump_enable_and_single_pump_test(); gpio_validation_reserved_and_conflicts(); tof_nonblocking_stale_safety(); autocal_global_timeout_scales_to_max_notes(); airflow_cc2_silence_and_live_cc(); airflow_attack_cancelled_on_rest(); airflow_cc2_timeout_on_held_note(); audio_yin_pcm_core(); audio_mic_classification(); instrument_transport_lost_panics(); midi_tempo_map_math(); midi_type1_global_tempo(); midi_type0_tempo_change_midtrack(); midi_truncation_rejected(); midi_unsupported_formats_rejected(); std::cout << "behavior tests passed\n"; }

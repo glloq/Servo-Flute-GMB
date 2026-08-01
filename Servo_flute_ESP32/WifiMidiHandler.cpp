@@ -65,6 +65,20 @@ void WifiMidiHandler::update() {
     }
   }
 
+  // Surveiller la chute d'une connexion STA etablie : si le lien Wi-Fi tombe
+  // (routeur/AP disparu), la session rtpMIDI meurt sans garantie de callback
+  // AppleMIDI. On coupe le son puis on retombe en mode AP.
+  if (_state == WIFI_STATE_STA_CONNECTED && WiFi.status() != WL_CONNECTED) {
+    if (DEBUG) {
+      Serial.println("DEBUG: WifiMidiHandler - Lien STA perdu -> panic + fallback AP");
+    }
+    if (_instrument != nullptr) {
+      _instrument->handleTransportLost();
+    }
+    startAP();
+    return;
+  }
+
   // Lire les messages rtpMIDI entrants
   if (_state == WIFI_STATE_STA_CONNECTED || _state == WIFI_STATE_AP_ACTIVE) {
     MIDI.read();
@@ -222,6 +236,12 @@ void WifiMidiHandler::onAppleMidiConnected(const char* name) {
 }
 
 void WifiMidiHandler::onAppleMidiDisconnected() {
+  // Panic : la session rtpMIDI est tombee ; une note tenue ne recevra pas son
+  // Note Off -> couper le son (valve/souffle/pompe/ventilateur).
+  if (_instance != nullptr && _instance->_instrument != nullptr) {
+    _instance->_instrument->handleTransportLost();
+  }
+
   if (DEBUG) {
     Serial.println("DEBUG: WifiMidiHandler - rtpMIDI deconnecte");
   }
