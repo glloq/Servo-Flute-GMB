@@ -20,8 +20,13 @@
 #include "AutoCalMath.h"
 #include "AutoCalibrator.h"
 #include "PitchDetector.h"
+#include "MidiTempoMap.h"
+#define private public
+#include "MidiFilePlayer.h"
+#undef private
 #include <cmath>
 #include <vector>
+#include <string>
 extern std::map<uint8_t,int> __analog_writes, __digital_writes, __analog_reads, __digital_reads;
 
 // --- Simulated audio source for AutoCalibrator tests (no real I2S hardware) ---
@@ -910,4 +915,120 @@ static void audio_mic_classification(){
   assert(PitchDetector::classifyRaw(raw.data(), N) == MIC_SIG_OK);
 }
 
-int main(){ pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); airflow_nominal_drives_angle(); autocal_frozen_source_fails(); autocal_air_supply_gate(); autocal_14_notes_no_timeout(); autocal_plus70_cents_rejected(); autocal_storage_failure_restores(); autocal_range_finder(); autocal_range_finder_stale(); autocal_range_apply_storage(); autocal_air_lost_midnote(); calair_reservoir_requires_sensor(); instrument_power_held_during_actuator_session(); instrument_ignores_midi_during_calibration(); instrument_inert_after_pca_failure(); air_pump_demand_follows_real_note(); air_fan_speed_follows_replacement(); pump_enable_and_single_pump_test(); gpio_validation_reserved_and_conflicts(); tof_nonblocking_stale_safety(); autocal_global_timeout_scales_to_max_notes(); airflow_cc2_silence_and_live_cc(); airflow_attack_cancelled_on_rest(); airflow_cc2_timeout_on_held_note(); audio_yin_pcm_core(); audio_mic_classification(); std::cout << "behavior tests passed\n"; }
+// ---- MIDI file parsing: SMF byte builders (host-side .mid synthesis) ----
+static void midiU32(std::vector<uint8_t>& v, uint32_t x){ v.push_back((x>>24)&0xFF); v.push_back((x>>16)&0xFF); v.push_back((x>>8)&0xFF); v.push_back(x&0xFF); }
+static void midiU16(std::vector<uint8_t>& v, uint16_t x){ v.push_back((x>>8)&0xFF); v.push_back(x&0xFF); }
+static void midiVLQ(std::vector<uint8_t>& v, uint32_t x){ uint8_t b[4]; int n=0; b[n++]=x&0x7F; while((x>>=7)){ b[n++]=(x&0x7F)|0x80; } for(int i=n-1;i>=0;i--) v.push_back(b[i]); }
+static std::vector<uint8_t> midiTrack(const std::vector<uint8_t>& body){ std::vector<uint8_t> t={'M','T','r','k'}; midiU32(t,(uint32_t)body.size()); t.insert(t.end(),body.begin(),body.end()); return t; }
+static std::vector<uint8_t> midiHeader(uint16_t fmt,uint16_t ntrks,uint16_t div){ std::vector<uint8_t> h={'M','T','h','d'}; midiU32(h,6); midiU16(h,fmt); midiU16(h,ntrks); midiU16(h,div); return h; }
+static void midiTempo(std::vector<uint8_t>& t, uint32_t delta, uint32_t usPerQuarter){ midiVLQ(t,delta); t.push_back(0xFF); t.push_back(0x51); t.push_back(0x03); t.push_back((usPerQuarter>>16)&0xFF); t.push_back((usPerQuarter>>8)&0xFF); t.push_back(usPerQuarter&0xFF); }
+static void midiEoT(std::vector<uint8_t>& t){ midiVLQ(t,0); t.push_back(0xFF); t.push_back(0x2F); t.push_back(0x00); }
+
+// Pure tempo-map math: default 120 BPM until an explicit change, then the new
+// tempo; cumulative ms must chain across segments (the core of the Type-1 fix).
+static void midi_tempo_map_math(){
+  MidiTempoMap m; m.begin(480);
+  m.addTempoChange(480, 1000000);  // switch to 60 BPM at beat 1
+  m.finalize();
+  assert(m.changeCount()==2);
+  assert(m.tickToMs(0)==0);
+  assert(m.tickToMs(240)==250);    // half a beat at 120 BPM
+  assert(m.tickToMs(480)==500);    // one beat at 120 BPM
+  assert(m.tickToMs(960)==1500);   // + one beat at 60 BPM (1000 ms)
+  // Duplicate tick: the last tempo recorded wins.
+  MidiTempoMap d; d.begin(480);
+  d.addTempoChange(480, 1000000);
+  d.addTempoChange(480, 750000);
+  d.finalize();
+  assert(d.tickToMs(960)==1250);   // 500 (120 BPM) + 750 (80 BPM)
+  // Overflow is flagged, never silently dropped.
+  MidiTempoMap o; o.begin(480);
+  for(int i=0;i<MIDI_MAX_TEMPO_CHANGES+5;i++) o.addTempoChange((uint32_t)(i+1)*10, 500000+i);
+  assert(o.overflowed());
+}
+
+// Audit P0 #1: in a Type-1 file the tempo lives in track 0 and the notes in
+// track 1. The track-0 tempo MUST drive the note-track timing (global map),
+// not a per-track 120 BPM reset.
+static void midi_type1_global_tempo(){
+  extern __LittleFS LittleFS;
+  std::vector<uint8_t> t0; midiTempo(t0,0,1000000); midiEoT(t0);  // 60 BPM, whole track 0
+  std::vector<uint8_t> t1;
+  midiVLQ(t1,480); t1.push_back(0x90); t1.push_back(60); t1.push_back(100);  // NoteOn @ tick 480
+  midiVLQ(t1,480); t1.push_back(0x80); t1.push_back(60); t1.push_back(0);    // NoteOff @ tick 960
+  midiEoT(t1);
+  std::vector<uint8_t> f = midiHeader(1,2,480);
+  auto a=midiTrack(t0), b=midiTrack(t1);
+  f.insert(f.end(),a.begin(),a.end()); f.insert(f.end(),b.begin(),b.end());
+  LittleFS.__put("/type1.mid", f);
+
+  MidiFilePlayer p; p.begin(nullptr);
+  assert(p.loadFile("/type1.mid"));
+  assert(p.getEventCount()==2);
+  // At 60 BPM / 480 PPQN, tick 480 = 1000 ms (would be 500 ms under the bug).
+  assert(p._events[0].absoluteTimeMs==1000);
+  assert(p._events[0].type==0x90 && p._events[0].data1==60);
+  assert(p._events[1].absoluteTimeMs==2000);
+  assert(p.getDurationMs()==2000);
+  assert(p.getLoadError()==MIDI_LOAD_OK);
+}
+
+// A mid-track tempo change (in the note track itself) still chains correctly.
+static void midi_type0_tempo_change_midtrack(){
+  extern __LittleFS LittleFS;
+  std::vector<uint8_t> t;
+  midiTempo(t,0,500000);                                   // 120 BPM from tick 0
+  midiVLQ(t,480); t.push_back(0x90); t.push_back(62); t.push_back(90);  // NoteOn @ tick480 -> 500ms
+  midiTempo(t,0,1000000);                                  // 60 BPM from tick 480
+  midiVLQ(t,480); t.push_back(0x80); t.push_back(62); t.push_back(0);   // NoteOff @ tick960 -> 1500ms
+  midiEoT(t);
+  std::vector<uint8_t> f = midiHeader(0,1,480);
+  auto a=midiTrack(t); f.insert(f.end(),a.begin(),a.end());
+  LittleFS.__put("/type0.mid", f);
+  MidiFilePlayer p; p.begin(nullptr);
+  assert(p.loadFile("/type0.mid"));
+  assert(p._events[0].absoluteTimeMs==500);
+  assert(p._events[1].absoluteTimeMs==1500);
+}
+
+// Audit P0 #2: a file exceeding MIDI_FILE_MAX_EVENTS must be REFUSED with a
+// clear reason, never silently truncated and declared valid.
+static void midi_truncation_rejected(){
+  extern __LittleFS LittleFS;
+  std::vector<uint8_t> t;
+  for(int i=0;i<MIDI_FILE_MAX_EVENTS+5;i++){ midiVLQ(t,1); t.push_back(0x90); t.push_back(60); t.push_back(100); }
+  midiEoT(t);
+  std::vector<uint8_t> f = midiHeader(0,1,480);
+  auto a=midiTrack(t); f.insert(f.end(),a.begin(),a.end());
+  LittleFS.__put("/big.mid", f);
+  MidiFilePlayer p; p.begin(nullptr);
+  assert(!p.loadFile("/big.mid"));
+  assert(!p.isFileLoaded());
+  assert(p.getLoadError()==MIDI_LOAD_ERR_EVENT_LIMIT);
+  assert(std::string(p.getLoadErrorCode())=="event_limit_exceeded");
+}
+
+// Audit #8: SMF Type 2 (independent sequences) and SMPTE divisions are rejected
+// explicitly rather than merged/misparsed.
+static void midi_unsupported_formats_rejected(){
+  extern __LittleFS LittleFS;
+  // Format 2 with 2 tracks.
+  std::vector<uint8_t> tt; midiVLQ(tt,0); tt.push_back(0x90); tt.push_back(60); tt.push_back(100); midiEoT(tt);
+  std::vector<uint8_t> f2 = midiHeader(2,2,480);
+  auto x=midiTrack(tt), y=midiTrack(tt);
+  f2.insert(f2.end(),x.begin(),x.end()); f2.insert(f2.end(),y.begin(),y.end());
+  LittleFS.__put("/fmt2.mid", f2);
+  MidiFilePlayer p2; p2.begin(nullptr);
+  assert(!p2.loadFile("/fmt2.mid"));
+  assert(p2.getLoadError()==MIDI_LOAD_ERR_FORMAT2);
+
+  // SMPTE division (bit 15 set).
+  std::vector<uint8_t> fs = midiHeader(0,1,0xE728);
+  auto z=midiTrack(tt); fs.insert(fs.end(),z.begin(),z.end());
+  LittleFS.__put("/smpte.mid", fs);
+  MidiFilePlayer p3; p3.begin(nullptr);
+  assert(!p3.loadFile("/smpte.mid"));
+  assert(p3.getLoadError()==MIDI_LOAD_ERR_SMPTE);
+}
+
+int main(){ pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); airflow_nominal_drives_angle(); autocal_frozen_source_fails(); autocal_air_supply_gate(); autocal_14_notes_no_timeout(); autocal_plus70_cents_rejected(); autocal_storage_failure_restores(); autocal_range_finder(); autocal_range_finder_stale(); autocal_range_apply_storage(); autocal_air_lost_midnote(); calair_reservoir_requires_sensor(); instrument_power_held_during_actuator_session(); instrument_ignores_midi_during_calibration(); instrument_inert_after_pca_failure(); air_pump_demand_follows_real_note(); air_fan_speed_follows_replacement(); pump_enable_and_single_pump_test(); gpio_validation_reserved_and_conflicts(); tof_nonblocking_stale_safety(); autocal_global_timeout_scales_to_max_notes(); airflow_cc2_silence_and_live_cc(); airflow_attack_cancelled_on_rest(); airflow_cc2_timeout_on_held_note(); audio_yin_pcm_core(); audio_mic_classification(); midi_tempo_map_math(); midi_type1_global_tempo(); midi_type0_tempo_change_midtrack(); midi_truncation_rejected(); midi_unsupported_formats_rejected(); std::cout << "behavior tests passed\n"; }

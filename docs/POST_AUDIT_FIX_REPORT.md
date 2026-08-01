@@ -16,6 +16,9 @@
 | RESET-001 | Reset/factory reset pas sûr | Arrêt actionneurs pas centralisé | Non terminé dans cette passe | Non exécuté | FAIL restant |
 | MIDI-001 | CC73 modifie `cfg` | Etat temporaire stocké dans la configuration persistante | Ajout `_runtimeAttackMode` / `_runtimeAttackOffset`; CC73 ne modifie plus `cfg` | `cc73_does_not_mutate_persistent_cfg` | PASS logiciel |
 | TOF-001 | ToF bloquant | Boucles de polling jusqu'à 50 ms | Non terminé dans cette passe | Non exécuté | FAIL restant |
+| MIDI-002 | Désync SMF Type 1 | Chaque piste était convertie avec un tempo réinitialisé à 120 BPM ; les changements de tempo de la piste 0 n'atteignaient pas les pistes de notes | Nouvelle `MidiTempoMap` : carte GLOBALE tick→tempo alimentée par toutes les pistes ; parsing en 2 passes (collecte en ticks puis conversion en ms) | `midi_type1_global_tempo`, `midi_type0_tempo_change_midtrack`, `midi_tempo_map_math` | PASS logiciel |
+| MIDI-003 | Troncature silencieuse >2000 évts | Le parsing s'arrêtait à `MIDI_FILE_MAX_EVENTS` mais déclarait le fichier valide | `insertEvent` signale la troncature ; `loadFile` refuse le fichier avec le code `event_limit_exceeded` (jamais joué partiellement) | `midi_truncation_rejected` | PASS logiciel |
+| MIDI-004 | Formats non gérés acceptés | SMF Type 2 fusionné à tort ; erreurs de format vagues | Rejet explicite du Type 2 et des divisions SMPTE ; `getLoadError()`/`getLoadErrorCode()` exposés à l'API web (champ `reason`) | `midi_unsupported_formats_rejected` | PASS logiciel |
 
 ## Software verified
 
