@@ -23,6 +23,16 @@ SOURCES = [
     "Servo_flute_ESP32/AutoCalibrator.cpp",
     "Servo_flute_ESP32/PitchDetector.cpp",
     "Servo_flute_ESP32/MidiFilePlayer.cpp",
+    # General-Midi-Boop recognition: the pure core (GmbRuntime.cpp is the ESP32
+    # glue - eFuse MAC + NVS - and is not part of the host build).
+    "Servo_flute_ESP32/gmb/Capabilities.cpp",
+    "Servo_flute_ESP32/gmb/GmbDescriptor.cpp",
+    "Servo_flute_ESP32/gmb/GmbInstanceId.cpp",
+    "Servo_flute_ESP32/gmb/GmbMidiBridge.cpp",
+    "Servo_flute_ESP32/gmb/GmbRevision.cpp",
+    "Servo_flute_ESP32/gmb/GmbSysEx.cpp",
+    "Servo_flute_ESP32/gmb/GmbSysExService.cpp",
+    "tests/test_native/test_gmb.cpp",
     "tests/test_native/test_behavior.cpp",
 ]
 

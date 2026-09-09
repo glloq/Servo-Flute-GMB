@@ -20,6 +20,40 @@ The ESP32 exposes a REST API and a WebSocket endpoint used by the embedded web U
 | GET | `/api/wifi/results` | Poll WiFi scan results |
 | POST | `/api/wifi/connect` | Save WiFi credentials and connect |
 | GET | `/api/wifi/status` | Current WiFi state |
+| GET | `/gmb/descriptor.json` | General-Midi-Boop v2 capability descriptor |
+
+### `GET /gmb/descriptor.json`
+
+Returns the General-Midi-Boop v2 capability descriptor for the active
+configuration, as `application/json`. It is byte-for-byte the document served
+over the SysEx block `0x10` transfer — both read the same cached string, so the
+two can never diverge. The route exists only in Wi-Fi mode, and the SysEx
+handshake advertises it through flag bit 0 exactly when it does.
+
+See [General-Midi-Boop protocol](GMB_PROTOCOL.md).
+
+### `GET /api/status` — recognition keys
+
+`/api/status` additionally reports the firmware version and the recognition
+state, for troubleshooting automatic discovery:
+
+```json
+{
+  "firmware": "1.1.0",
+  "gmb": {
+    "instance_id": "0x7AEFE22E",
+    "revision": 3,
+    "descriptor_size": 744,
+    "configured": true,
+    "flags": 3
+  }
+}
+```
+
+`flags` is the handshake flag byte: bit 0 = HTTP descriptor reachable, bit 1 =
+change notifications supported. `configured` is `false` when the active
+configuration is not sufficient to play, which is the case General-Midi-Boop
+reads as "hand this instrument back to manual entry".
 
 ## WebSocket endpoint
 

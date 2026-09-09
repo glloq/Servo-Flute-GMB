@@ -1,6 +1,7 @@
 #include "WifiMidiHandler.h"
 #include "InstrumentManager.h"
 #include "ConfigStorage.h"
+#include "gmb/GmbRuntime.h"
 
 #include <WiFi.h>
 #include <ESPmDNS.h>
@@ -47,7 +48,7 @@ WifiMidiHandler* WifiMidiHandler::_instance = nullptr;
 
 WifiMidiHandler::WifiMidiHandler()
   : _instrument(nullptr), _state(WIFI_STATE_DISCONNECTED),
-    _connectStartTime(0) {
+    _connectStartTime(0), _sessionActive(false) {
   _instance = this;
 }
 
@@ -99,6 +100,7 @@ void WifiMidiHandler::update() {
     if (DEBUG) {
       Serial.println("DEBUG: WifiMidiHandler - Lien STA perdu -> panic + fallback AP");
     }
+    _sessionActive = false;
     if (_instrument != nullptr) {
       _instrument->handleTransportLost();
     }
@@ -224,6 +226,10 @@ void WifiMidiHandler::setupRtpMidi() {
   MIDI.setHandleNoteOn(onNoteOn);
   MIDI.setHandleNoteOff(onNoteOff);
   MIDI.setHandleControlChange(onControlChange);
+  // General-Midi-Boop discovery. The callback only stages the request; the reply
+  // is built and sent from the main loop (AppleMIDI flushes its out buffer at the
+  // start of the next MIDI.read(), so nothing is written mid-parse).
+  MIDI.setHandleSystemExclusive(onSystemExclusive);
 
   // Callbacks de session AppleMIDI
   AppleMIDI.setHandleConnected([](const APPLEMIDI_NAMESPACE::ssrc_t& ssrc, const char* name) {
@@ -269,7 +275,21 @@ void WifiMidiHandler::onControlChange(byte channel, byte number, byte value) {
   _instance->_instrument->handleControlChange(number, value);
 }
 
+void WifiMidiHandler::onSystemExclusive(byte* data, unsigned size) {
+  if (_instance == nullptr) return;
+  gmb::runtime::bridge().onSysEx(_instance, (const uint8_t*)data, (size_t)size);
+}
+
+void WifiMidiHandler::sendSysEx(const uint8_t* data, size_t len) {
+  if (!_sessionActive || data == nullptr || len < 2) return;
+  // The buffer already carries F0 ... F7. AppleMIDI splits a long message into
+  // RFC 4695 continuation blocks by itself, so a 210-byte descriptor segment is
+  // delivered whole.
+  MIDI.sendSysEx((unsigned)len, data, true);
+}
+
 void WifiMidiHandler::onAppleMidiConnected(const char* name) {
+  if (_instance != nullptr) _instance->_sessionActive = true;
   if (DEBUG) {
     Serial.print("DEBUG: WifiMidiHandler - rtpMIDI connecte: ");
     Serial.println(name);
@@ -279,8 +299,11 @@ void WifiMidiHandler::onAppleMidiConnected(const char* name) {
 void WifiMidiHandler::onAppleMidiDisconnected() {
   // Panic : la session rtpMIDI est tombee ; une note tenue ne recevra pas son
   // Note Off -> couper le son (valve/souffle/pompe/ventilateur).
-  if (_instance != nullptr && _instance->_instrument != nullptr) {
-    _instance->_instrument->handleTransportLost();
+  if (_instance != nullptr) {
+    _instance->_sessionActive = false;
+    if (_instance->_instrument != nullptr) {
+      _instance->_instrument->handleTransportLost();
+    }
   }
 
   if (DEBUG) {

@@ -51,6 +51,7 @@
 #include "StatusLed.h"
 #include "HardwareInputs.h"
 #include "WirelessManager.h"
+#include "gmb/GmbRuntime.h"
 
 // Instances globales
 InstrumentManager* instrument = nullptr;
@@ -144,6 +145,12 @@ void setup() {
     Serial.println(cfg.deviceName);
   }
 
+  // Construire l'instantane de capacites General-Midi-Boop a partir de la
+  // configuration ACTIVE et validee, puis le descripteur JSON mis en cache.
+  // A faire avant WirelessManager::begin() : les transports MIDI s'enregistrent
+  // comme ports GMB et peuvent recevoir une requete des la connexion.
+  gmb::runtime::begin(bootConfigSafe);
+
   // Initialiser les entrees hardware (bouton + switch)
   inputs.begin();
 
@@ -191,6 +198,10 @@ void setup() {
     Serial.print("  - Heap libre: ");
     Serial.print(ESP.getFreeHeap() / 1024);
     Serial.println(" KB");
+    Serial.print("  - GMB instance_id: 0x");
+    Serial.println(gmb::runtime::instanceId(), HEX);
+    Serial.print("  - GMB revision: ");
+    Serial.println(gmb::runtime::revision());
     Serial.println();
   }
 

@@ -9,6 +9,9 @@
  * - Reception Note On/Off et Control Change
  * - Gestion connexion/deconnexion
  * - Filtrage canal MIDI
+ * - SysEx bidirectionnel : sert la reconnaissance General-Midi-Boop (blocs 1 /
+ *   0x10 / 0x11) via GmbMidiBridge. Le protocole lui-meme n'est PAS duplique
+ *   ici : ce handler n'est qu'un port (IGmbMidiPort).
  *
  * Dependances :
  * - h2zero/NimBLE-Arduino
@@ -19,11 +22,12 @@
 
 #include <Arduino.h>
 #include "settings.h"
+#include "gmb/GmbMidiPort.h"
 
 // Forward declaration
 class InstrumentManager;
 
-class BleMidiHandler {
+class BleMidiHandler : public gmb::IGmbMidiPort {
 public:
   BleMidiHandler();
 
@@ -41,6 +45,11 @@ public:
   bool isConnected() const;
   bool isAdvertising() const;
 
+  // --- IGmbMidiPort : BLE-MIDI est bidirectionnel ---
+  bool canSendSysEx() const override { return _connected; }
+  void sendSysEx(const uint8_t* data, size_t len) override;
+  const char* gmbPortName() const override { return "ble"; }
+
 private:
   InstrumentManager* _instrument;
   bool _connected;
@@ -51,6 +60,7 @@ private:
   static void onNoteOn(byte channel, byte note, byte velocity);
   static void onNoteOff(byte channel, byte note, byte velocity);
   static void onControlChange(byte channel, byte number, byte value);
+  static void onSystemExclusive(byte* data, unsigned size);
   static void onConnected();
   static void onDisconnected();
 

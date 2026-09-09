@@ -18,6 +18,7 @@ The firmware is organized into small modules around `InstrumentManager`, which c
 | `SerialMidiHandler` | UART MIDI input |
 | `WebConfigurator` | REST API, WebSocket API, and embedded SPA |
 | `ConfigStorage` | Runtime configuration and LittleFS persistence |
+| `gmb/` | General-Midi-Boop recognition: capability snapshot, JSON descriptor, SysEx codec, transport bridge, revision |
 
 ## Data flow
 
@@ -28,9 +29,43 @@ The firmware is organized into small modules around `InstrumentManager`, which c
 5. `AirflowController`, `PressureController`, and `FanController` drive the selected air system.
 6. `WebConfigurator` publishes status and accepts configuration changes.
 
+## General-Midi-Boop recognition
+
+`gmb/` is a self-contained group of modules that turns the active configuration
+into what General-Midi-Boop needs to recognize the instrument and import its
+capabilities. It reads `RuntimeConfig`; it never holds a configuration of its
+own.
+
+```text
+RuntimeConfig (active, validated)
+        ↓  gmb::buildSnapshot()
+CapabilitySnapshot (immutable)
+        ↓  GmbDescriptor::toJson()
+cached JSON descriptor
+        ↓                      ↓
+GmbSysExService           GET /gmb/descriptor.json
+        ↓
+GmbMidiBridge  ←→  BleMidiHandler / WifiMidiHandler  (IGmbMidiPort)
+```
+
+The protocol lives in one place. A MIDI transport implements `IGmbMidiPort` and
+is registered as a port; a transport with no return path (the receive-only DIN
+input) is simply not registered and keeps working for Note and CC traffic.
+SysEx callbacks only stage a request; the reply is built and sent from the main
+loop, so discovery never runs inside the real-time note path.
+
+`GmbRuntime` is the only ESP32-specific piece (eFuse MAC, NVS) and the single
+entry point a configuration change calls once it is validated, committed and
+active. Details in [General-Midi-Boop protocol](GMB_PROTOCOL.md).
+
 ## Persistence
 
 Defaults live in `settings.h`. Runtime values are stored in `RuntimeConfig` and saved to `/config.json` on LittleFS.
+
+The General-Midi-Boop capability revision is deliberately kept out of
+`/config.json` and stored in NVS (`Preferences`, namespace `gmb`): a
+configuration save never rewrites the counter, and a counter bump never rewrites
+the configuration.
 
 ## 2026 runtime safety and validation update
 

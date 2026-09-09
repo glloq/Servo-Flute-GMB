@@ -79,6 +79,7 @@ jobs:
               'platformio.ini', 'Servo_flute_ESP32/web_content.h',
               'docs/CONFIGURATION.md', 'docs/AIR_MANAGEMENT.md', 'docs/API_WEB.md',
               'docs/AUTO_CALIBRATION.md', 'Servo_flute_ESP32/docs/HARDWARE_TEST_MATRIX.md',
+              'docs/GMB_PROTOCOL.md',
           ]
           missing = [p for p in required if not Path(p).exists()]
           if missing:

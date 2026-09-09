@@ -1,6 +1,7 @@
 #include "WirelessManager.h"
 #include "InstrumentManager.h"
 #include "ConfigStorage.h"
+#include "gmb/GmbRuntime.h"
 
 WirelessManager::WirelessManager(StatusLed& led, HardwareInputs& inputs)
   : _led(led), _inputs(inputs), _instrument(nullptr),
@@ -22,11 +23,15 @@ void WirelessManager::begin(InstrumentManager* instrument) {
   if (_currentMode == MODE_BLUETOOTH) {
     // Mode BLE-MIDI
     _bleMidi.begin(instrument);
+    // BLE-MIDI carries SysEx both ways: register it as a General-Midi-Boop port.
+    gmb::runtime::bridge().registerPort(&_bleMidi);
     _led.setPattern(LED_BLINK_FAST);  // Advertising actif
 
   } else {
     // Mode WiFi - tenter STA si credentials sauvegardees, sinon AP
     _wifiMidi.begin(instrument);
+    // rtpMIDI carries SysEx both ways once a session is open.
+    gmb::runtime::bridge().registerPort(&_wifiMidi);
 
     if (strlen(cfg.wifiSsid) > 0) {
       if (DEBUG) {
@@ -53,7 +58,10 @@ void WirelessManager::begin(InstrumentManager* instrument) {
     }
   }
 
-  // Initialiser le MIDI serie (independant du mode BLE/WiFi)
+  // Initialiser le MIDI serie (independant du mode BLE/WiFi).
+  // Le MIDI DIN de cette carte est en RECEPTION SEULE (UART2 RX, pas de TX) : il
+  // ne peut donc pas repondre a une requete SysEx et n'est pas enregistre comme
+  // port GMB. Il continue de fonctionner normalement pour les Note / CC.
   _serialMidi.begin(instrument);
 }
 
@@ -83,6 +91,11 @@ void WirelessManager::update() {
 
   // Mettre a jour le MIDI serie (independant du mode BLE/WiFi)
   _serialMidi.update();
+
+  // Repondre a une eventuelle requete GMB mise en attente par un callback SysEx.
+  // C'est du trafic de plan de controle : il est traite ici, hors du chemin
+  // temps reel des notes, et jamais depuis le callback MIDI lui-meme.
+  gmb::runtime::bridge().service(millis());
 
   // Mettre a jour le pattern LED
   updateLedPattern();
