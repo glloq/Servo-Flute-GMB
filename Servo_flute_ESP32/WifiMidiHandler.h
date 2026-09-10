@@ -9,6 +9,9 @@
  *
  * Gere aussi le serveur web de configuration et mDNS.
  *
+ * SysEx bidirectionnel : sert la reconnaissance General-Midi-Boop (blocs 1 /
+ * 0x10 / 0x11) via GmbMidiBridge, sans dupliquer la logique du protocole.
+ *
  * Modes WiFi :
  * - STA : connexion a un reseau existant
  * - AP  : hotspot autonome (fallback ou force par bouton)
@@ -25,6 +28,7 @@
 #include <WiFi.h>
 #include <DNSServer.h>
 #include "settings.h"
+#include "gmb/GmbMidiPort.h"
 
 // Forward declaration
 class InstrumentManager;
@@ -36,7 +40,7 @@ enum WifiState {
   WIFI_STATE_AP_ACTIVE
 };
 
-class WifiMidiHandler {
+class WifiMidiHandler : public gmb::IGmbMidiPort {
 public:
   WifiMidiHandler();
 
@@ -69,16 +73,25 @@ public:
   // Connexion a un nouveau reseau
   void connectToNetwork(const char* ssid, const char* password);
 
+  // --- IGmbMidiPort : rtpMIDI est bidirectionnel une fois la session ouverte ---
+  // Sans participant, AppleMIDI::beginTransmission() refuse l'envoi : on ne
+  // pretend donc pas pouvoir repondre tant qu'aucune session n'est etablie.
+  bool canSendSysEx() const override { return _sessionActive; }
+  void sendSysEx(const uint8_t* data, size_t len) override;
+  const char* gmbPortName() const override { return "rtpmidi"; }
+
 private:
   InstrumentManager* _instrument;
   WifiState _state;
   unsigned long _connectStartTime;
+  bool _sessionActive;   // au moins un participant rtpMIDI connecte
 
   // Callbacks MIDI (fonctions statiques)
   static WifiMidiHandler* _instance;
   static void onNoteOn(byte channel, byte note, byte velocity);
   static void onNoteOff(byte channel, byte note, byte velocity);
   static void onControlChange(byte channel, byte number, byte value);
+  static void onSystemExclusive(byte* data, unsigned size);
   static void onAppleMidiConnected(const char* name);
   static void onAppleMidiDisconnected();
 

@@ -12,6 +12,15 @@ Architecture avec servo debit + solenoide valve + mode binaire (ouvert/ferme)
 #define DEBUG 1
 
 /*******************************************************************************
+---------------------------   FIRMWARE VERSION        ------------------------
+Single source of truth for the firmware version. Announced verbatim in the
+General-Midi-Boop block-1 handshake (firmware[3]) and in /api/status.
+******************************************************************************/
+#define FIRMWARE_VERSION_MAJOR 1
+#define FIRMWARE_VERSION_MINOR 1
+#define FIRMWARE_VERSION_PATCH 0
+
+/*******************************************************************************
 -------------------------   LIMITES INSTRUMENT (compile)  --------------------
 Dimensionnement memoire maximal. Les valeurs effectives sont dans RuntimeConfig.
 ******************************************************************************/

@@ -489,3 +489,120 @@ def test_diagnostics_status_vocabulary_and_passive_active_split():
     assert '"/api/diagnostics"' in src
     assert '"/api/diagnostics/run"' in src
     assert 'passive' in api.lower() and 'active' in api.lower()
+
+
+def test_gmb_protocol_lives_in_one_place_not_per_transport():
+    """The wire protocol is implemented once; a transport is only a port."""
+    core = read('Servo_flute_ESP32/gmb/GmbSysEx.cpp')
+    # Frame construction happens in the codec, nowhere else.
+    assert '0x7D' in read('Servo_flute_ESP32/gmb/GmbSysEx.h')
+    for transport in ('Servo_flute_ESP32/BleMidiHandler.cpp',
+                      'Servo_flute_ESP32/WifiMidiHandler.cpp',
+                      'Servo_flute_ESP32/SerialMidiHandler.cpp',
+                      'Servo_flute_ESP32/WebConfigurator.cpp',
+                      'Servo_flute_ESP32/Servo_flute_ESP32.ino'):
+        src = read(transport)
+        for token in ('0x7D', '0xF0, 0x7D', 'encodeHandshake', 'encodeDescriptorChunk',
+                      'encodeChangeNotification', 'parseRequest'):
+            assert token not in src, f'{transport} duplicates GMB protocol logic: {token}'
+    assert 'encodeHandshake' in core
+    assert 'encodeDescriptorChunk' in core
+    assert 'encodeChangeNotification' in core
+
+
+def test_gmb_bidirectional_transports_are_registered_and_din_is_not():
+    """DIN MIDI is RX-only on this board: it cannot answer and is not a GMB port."""
+    wm = read('Servo_flute_ESP32/WirelessManager.cpp')
+    assert 'registerPort(&_bleMidi)' in wm
+    assert 'registerPort(&_wifiMidi)' in wm
+    assert 'registerPort(&_serialMidi)' not in wm
+    # ... and it keeps working normally for Note / CC.
+    serial = read('Servo_flute_ESP32/SerialMidiHandler.h')
+    assert 'IGmbMidiPort' not in serial
+    for handler in ('Servo_flute_ESP32/BleMidiHandler.h', 'Servo_flute_ESP32/WifiMidiHandler.h'):
+        assert 'public gmb::IGmbMidiPort' in read(handler)
+        assert 'canSendSysEx' in read(handler)
+
+
+def test_gmb_replies_are_built_off_the_realtime_callback():
+    """SysEx callbacks only stage; the response is built from the main loop."""
+    bridge = read('Servo_flute_ESP32/gmb/GmbMidiBridge.cpp')
+    stage = bridge.split('void GmbMidiBridge::onSysEx', 1)[1].split('void GmbMidiBridge::service', 1)[0]
+    assert 'handleMessage' not in stage, 'a reply must not be built in the MIDI callback'
+    assert 'memcpy' in stage
+    assert 'handleMessage' in bridge.split('void GmbMidiBridge::service', 1)[1]
+    for handler in ('Servo_flute_ESP32/BleMidiHandler.cpp', 'Servo_flute_ESP32/WifiMidiHandler.cpp'):
+        cb = read(handler).split('onSystemExclusive', 2)[2].split('\n}', 1)[0]
+        assert 'bridge().onSysEx' in cb
+        assert 'sendSysEx' not in cb
+    assert 'gmb::runtime::bridge().service(millis())' in read('Servo_flute_ESP32/WirelessManager.cpp')
+
+
+def test_gmb_descriptor_is_cached_not_rebuilt_per_request():
+    svc = read('Servo_flute_ESP32/gmb/GmbSysExService.cpp')
+    handler = svc.split('GmbSysExService::handleMessage', 1)[1]
+    assert 'GmbDescriptor::toJson' not in handler, 'no JSON render on the request path'
+    assert 'GmbDescriptor::toJson' in svc.split('GmbSysExService::setSnapshot', 1)[1].split('}', 1)[0]
+    # A transfer in flight is pinned to the document it started on.
+    assert '_serving' in svc
+    # Abusive traffic is bounded.
+    assert 'allow(nowMs)' in handler
+
+
+def test_gmb_notification_only_after_a_committed_active_configuration():
+    web = read('Servo_flute_ESP32/WebConfigurator.cpp')
+    fn = web.split('void WebConfigurator::handleApiConfigFinalize', 1)[1]
+    # Never for an intermediate draft: validated, saved, and not pending a reboot.
+    assert 'if (saved && !restartRequired) {\n      gmb::runtime::onConfigurationActivated();' in fn
+    runtime = read('Servo_flute_ESP32/gmb/GmbRuntime.cpp')
+    activated = runtime.split('void onConfigurationActivated', 1)[1]
+    # The revision only moves when onConfigurationActivated() says the announced
+    # capabilities changed; otherwise the function returns without notifying.
+    assert 'if (!g_revision.onConfigurationActivated(signature, false)) {' in activated
+    # After the increment: persist -> rebuild the descriptor -> emit block 0x11.
+    tail = activated.split('persist(g_revision.revision()', 1)[1]
+    assert tail.index('setSnapshot(') < tail.index('notifyCapabilitiesChanged(')
+    assert 'notifyCapabilitiesChanged' not in activated.split('persist(g_revision.revision()', 1)[0]
+
+
+def test_gmb_revision_persists_outside_the_configuration_file():
+    runtime = read('Servo_flute_ESP32/gmb/GmbRuntime.cpp')
+    assert 'Preferences' in runtime
+    assert 'kNvsNamespace' in runtime
+    # A configuration save must not rewrite the counter, and vice versa.
+    storage = read('Servo_flute_ESP32/ConfigStorage.cpp')
+    assert 'capabilitiesRevision' not in storage
+    assert 'gmb' not in storage.split('bool ConfigStorage::save()', 1)[1]
+    # A boot never increments on its own.
+    revision = read('Servo_flute_ESP32/gmb/GmbRevision.cpp')
+    begin = revision.split('bool RevisionTracker::begin', 1)[1].split('bool RevisionTracker::onConfigurationActivated', 1)[0]
+    assert 'if (storedSignature == current.all) {' in begin
+    assert 'return false;' in begin
+
+
+def test_gmb_http_and_sysex_serve_the_same_document():
+    web = read('Servo_flute_ESP32/WebConfigurator.cpp')
+    assert '"/gmb/descriptor.json"' in web
+    assert 'gmb::runtime::descriptorJson()' in web
+    runtime = read('Servo_flute_ESP32/gmb/GmbRuntime.h')
+    assert 'descriptorJson' in runtime
+    # Flag bit 0 follows the web server, which only runs in Wi-Fi mode.
+    assert 'gmb::runtime::setHttpDescriptorAvailable(true);' in web
+    assert 'setHttpDescriptorAvailable' in read('Servo_flute_ESP32/gmb/GmbSysExService.h')
+
+
+def test_gmb_capabilities_come_from_the_active_configuration_only():
+    caps = read('Servo_flute_ESP32/gmb/Capabilities.cpp')
+    # Every announced capability is read off RuntimeConfig, not hard-coded.
+    for field in ('config.numNotes', 'config.numFingers', 'config.midiChannel',
+                  'config.embouchure', 'config.servoToSolenoidDelayMs',
+                  'config.minNoteDurationMs', 'config.cc2Enabled',
+                  'config.airVelocityResponse', 'config.angleServoEnabled',
+                  'config.vibratoMaxAmplitudeDeg'):
+        assert field in caps, f'{field} must feed the announced capabilities'
+    # No second configuration model.
+    assert 'struct RuntimeConfig' not in caps
+    assert '#include "../ConfigStorage.h"' in caps
+    # The firmware version has a single source.
+    assert 'FIRMWARE_VERSION_MAJOR' in caps
+    assert '#define FIRMWARE_VERSION_MAJOR' in read('Servo_flute_ESP32/settings.h')

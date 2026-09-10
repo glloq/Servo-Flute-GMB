@@ -19,6 +19,7 @@ Finger count, servo channels, fingering tables, airflow behavior, MIDI settings,
 - Instrument presets and fully editable MIDI fingering tables
 - Six modular air-management modes
 - BLE-MIDI, rtpMIDI/AppleMIDI, serial MIDI DIN, virtual keyboard, and local MIDI-file playback
+- Automatic General-Midi-Boop recognition and capability reporting, generated from the active configuration
 - Embedded responsive web interface for configuration, tests, monitoring, and calibration
 - Optional INMP441 microphone auto-calibration
 - Per-note minimum, nominal, and maximum airflow values
@@ -140,6 +141,25 @@ The web interface displays only the controls relevant to the selected mode. See 
 
 All accepted events converge on the same monophonic `InstrumentManager` and `NoteSequencer` path so finger positioning, airflow timing, replacement notes, note-off handling, and panic behavior use the same logic.
 
+## General-Midi-Boop automatic recognition
+
+The firmware implements the General-Midi-Boop instrument recognition and capability protocol, version 2. When the flute appears as a MIDI device, General-Midi-Boop probes it, reads a capability descriptor, and creates or updates the instrument entry by itself — no manual entry.
+
+Everything announced comes from the active, validated configuration: the playable notes are built from the current fingering table, the MIDI channel, the announced control changes, and the timing model all follow the configuration in use. Nothing is hard-coded, and there is no second capability model in the firmware.
+
+| Element | Value |
+|---|---|
+| Handshake | SysEx block 1, 24 bytes, protocol version 2 |
+| Descriptor | JSON, served over SysEx block `0x10` in 200-byte segments |
+| Change notification | SysEx block `0x11` after a validated and activated configuration change |
+| HTTP descriptor | `GET /gmb/descriptor.json` (Wi-Fi mode) |
+| Instance id | 32-bit, derived from the ESP32 eFuse MAC, stable across reboots |
+| Transports | BLE-MIDI and rtpMIDI. Serial MIDI DIN is receive-only on this board and cannot be recognized automatically. |
+
+Saving a configuration that really changes what the instrument can play increments a persistent revision counter, rebuilds the descriptor, and notifies General-Midi-Boop. A reboot alone never increments it.
+
+See [General-Midi-Boop protocol](docs/GMB_PROTOCOL.md).
+
 ## Web interface
 
 The ESP32 embeds a responsive single-page application. No external server is required.
@@ -242,6 +262,7 @@ The software pipeline is covered by host tests, but physical microphone and flut
 | Embedded web application | Implemented |
 | Configuration validation | Implemented |
 | BLE / Wi-Fi / serial MIDI paths | Implemented in software |
+| General-Midi-Boop recognition (blocks 1 / 0x10 / 0x11) | Implemented and unit-tested; wire format cross-checked against the current General-Midi-Boop parsers |
 | Local MIDI-file playback | Implemented in software |
 | Safe boot and actuator-test timeout logic | Implemented and regression-tested |
 | Physical PCA9685 and servo validation | Requires hardware |
@@ -276,6 +297,7 @@ See [Access model and known security limitation](docs/API_WEB.md#access-model-an
 | [Auto-calibration](docs/AUTO_CALIBRATION.md) | INMP441 pitch and airflow calibration |
 | [Calibration](docs/CALIBRATION.md) | Manual instrument calibration workflow |
 | [Configuration](docs/CONFIGURATION.md) | Runtime parameters and persistence |
+| [General-Midi-Boop protocol](docs/GMB_PROTOCOL.md) | Automatic recognition, descriptor, and capability reporting |
 | [PCA9685 expansion](docs/PCA9685_EXPANSION.md) | Second board and global channel mapping |
 | [Wi-Fi modes](docs/WIFI_MODES.md) | BLE selection, station mode, and access point |
 | [Serial MIDI](docs/MIDI_SERIAL.md) | MIDI DIN input and optocoupler wiring |
@@ -309,6 +331,7 @@ Servo-Flute-GMB/
 │   ├── AUTO_CALIBRATION.md
 │   ├── CALIBRATION.md
 │   ├── CONFIGURATION.md
+│   ├── GMB_PROTOCOL.md
 │   ├── PCA9685_EXPANSION.md
 │   ├── SERVO_ANGLE.md
 │   ├── STATUS.md
@@ -316,6 +339,7 @@ Servo-Flute-GMB/
 ├── Servo_flute_ESP32/
 │   ├── Servo_flute_ESP32.ino
 │   ├── settings.h
+│   ├── gmb/                    General-Midi-Boop recognition modules
 │   └── firmware modules
 └── tests/
 ```

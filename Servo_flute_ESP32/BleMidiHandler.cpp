@@ -1,6 +1,7 @@
 #include "BleMidiHandler.h"
 #include "InstrumentManager.h"
 #include "ConfigStorage.h"
+#include "gmb/GmbRuntime.h"
 
 // BLE-MIDI avec backend NimBLE
 #include <BLEMIDI_Transport.h>
@@ -30,6 +31,10 @@ void BleMidiHandler::begin(InstrumentManager* instrument) {
   BMIDI.setHandleNoteOn(onNoteOn);
   BMIDI.setHandleNoteOff(onNoteOff);
   BMIDI.setHandleControlChange(onControlChange);
+  // General-Midi-Boop discovery. The callback only stages the request; the reply
+  // is built and sent from the main loop so nothing allocates or writes back into
+  // the transport from inside its own parse pass.
+  BMIDI.setHandleSystemExclusive(onSystemExclusive);
 
   // Configurer les callbacks de connexion BLE
   BLEBMIDI.setHandleConnected(onConnected);
@@ -85,6 +90,12 @@ bool BleMidiHandler::isAdvertising() const {
   return _advertising && !_connected;
 }
 
+void BleMidiHandler::sendSysEx(const uint8_t* data, size_t len) {
+  if (!_connected || data == nullptr || len < 2) return;
+  // The buffer already carries F0 ... F7, so pass it through unchanged.
+  BMIDI.sendSysEx((unsigned)len, data, true);
+}
+
 // --- Callbacks statiques ---
 
 void BleMidiHandler::onNoteOn(byte channel, byte note, byte velocity) {
@@ -110,6 +121,11 @@ void BleMidiHandler::onControlChange(byte channel, byte number, byte value) {
   if (!_instance->isChannelAccepted(channel)) return;
 
   _instance->_instrument->handleControlChange(number, value);
+}
+
+void BleMidiHandler::onSystemExclusive(byte* data, unsigned size) {
+  if (_instance == nullptr) return;
+  gmb::runtime::bridge().onSysEx(_instance, (const uint8_t*)data, (size_t)size);
 }
 
 void BleMidiHandler::onConnected() {

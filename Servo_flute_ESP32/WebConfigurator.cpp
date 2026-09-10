@@ -1,4 +1,5 @@
 #include "WebConfigurator.h"
+#include "gmb/GmbRuntime.h"
 #include "InstrumentManager.h"
 #include "FanController.h"
 #include "WirelessManager.h"
@@ -108,6 +109,11 @@ void WebConfigurator::begin(InstrumentManager* instrument, MidiFilePlayer* playe
 
   // Demarrer le serveur
   _server.begin();
+
+  // GET /gmb/descriptor.json is now reachable: announce handshake flag bit 0.
+  // In BLE mode this web server never starts and the flag stays clear, so the
+  // firmware never advertises an HTTP route that does not exist.
+  gmb::runtime::setHttpDescriptorAvailable(true);
 
 #if MIC_ENABLED
   // Initialize microphone (INMP441 via I2S)
@@ -297,6 +303,11 @@ void WebConfigurator::update() {
       // A storage failure rolls the RAM config back (applied==false), so a client
       // is never told success while nothing was actually written.
       bool okOverall = ap.applied && ap.saved;
+      // A persisted calibration is an ACTIVE capability change: per-note airflow
+      // windows decide which fingerings are announced as playable. The revision
+      // only moves if the announced set really changed (a re-calibration that
+      // lands on the same playable notes is a no-op for GMB).
+      if (okOverall) gmb::runtime::onConfigurationActivated();
       String dj = "{\"t\":\"acal_done\"";
       dj += ",\"ok\":" + String(okOverall ? "true" : "false");
       dj += ",\"applied\":" + String(ap.applied ? "true" : "false");
@@ -569,6 +580,19 @@ void WebConfigurator::setupRoutes() {
     handleApiDiagnostics(request);
   });
 
+  // GET /gmb/descriptor.json - General-Midi-Boop v2 capability descriptor.
+  // Served from the SAME cached document as the SysEx block 0x10 transfer, so the
+  // two can never diverge. Advertised by handshake flag bit 0, which is only set
+  // while this web server is running (Wi-Fi mode).
+  _server.on("/gmb/descriptor.json", HTTP_GET, [](AsyncWebServerRequest* request) {
+    // Copied into the response body on purpose: the cached document can be
+    // replaced by a configuration activation while this async response is still
+    // being written, and a zero-copy buffer would dangle when the old one is
+    // released. The descriptor is ~1 kB, so the copy is cheap and this route is
+    // control-plane traffic, not the note path.
+    request->send(200, "application/json", String(gmb::runtime::descriptorJson().c_str()));
+  });
+
   // Captive portal detection endpoints (mode AP)
   _server.on("/generate_204", HTTP_GET, [](AsyncWebServerRequest* request) {
     request->redirect("http://192.168.4.1/");
@@ -608,6 +632,23 @@ void WebConfigurator::handleApiStatus(AsyncWebServerRequest* request) {
   doc["mode"] = _wirelessManager ? _wirelessManager->getStatusText() : "N/A";
   doc["connected"] = _wirelessManager ? _wirelessManager->isMidiConnected() : false;
   doc["uptime"] = millis() / 1000;
+  {
+    char fw[16];
+    snprintf(fw, sizeof(fw), "%d.%d.%d", FIRMWARE_VERSION_MAJOR, FIRMWARE_VERSION_MINOR,
+             FIRMWARE_VERSION_PATCH);
+    doc["firmware"] = fw;
+  }
+  // General-Midi-Boop recognition state (additive keys; see docs/GMB_PROTOCOL.md).
+  {
+    JsonObject g = doc["gmb"].to<JsonObject>();
+    char id[11];
+    snprintf(id, sizeof(id), "0x%08lX", (unsigned long)gmb::runtime::instanceId());
+    g["instance_id"] = id;
+    g["revision"] = gmb::runtime::revision();
+    g["descriptor_size"] = gmb::runtime::service().descriptorSize();
+    g["configured"] = gmb::runtime::isConfigured();
+    g["flags"] = gmb::runtime::service().handshakeFlags();
+  }
 
   if (_instrument) {
     doc["cc7"] = _instrument->getCCVolume();
@@ -1107,6 +1148,16 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
       cfg = previousConfig;
       if (_instrument) _instrument->applyRuntimeConfig(failedConfig, previousConfig);
       applyResult.applied = false;
+    }
+
+    // General-Midi-Boop: the new configuration is validated, committed (saved) and
+    // ACTIVE. Only now may the capability revision move, the descriptor be rebuilt
+    // and block 0x11 be emitted - never for an intermediate web UI draft.
+    // A restart-required change is deliberately NOT reported here: it was reverted
+    // above and is not active. The reboot re-runs gmb::runtime::begin(), which sees
+    // the changed capability signature and advances the revision then.
+    if (saved && !restartRequired) {
+      gmb::runtime::onConfigurationActivated();
     }
 
     if (DEBUG) {
@@ -1778,6 +1829,10 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
           bool hadValid = _autoCal->getRangeFinderMin() >= 0 && _autoCal->getRangeFinderMax() >= 0;
           RangeApplyResult ra = _autoCal->applyRangeResults();
           if (ra.applied && ra.saved) {
+            // Persisted and active: let GMB re-read the capabilities. The servo
+            // travel itself is not announced, so this only moves the revision when
+            // the new travel changes what the instrument can actually play.
+            gmb::runtime::onConfigurationActivated();
             String rj = "{\"t\":\"rf_applied\",\"ok\":true,\"min\":" + String(ra.minAngle) +
                         ",\"max\":" + String(ra.maxAngle) + "}";
             _ws.textAll(rj);
