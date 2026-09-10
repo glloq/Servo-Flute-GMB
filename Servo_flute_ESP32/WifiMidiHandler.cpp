@@ -201,15 +201,38 @@ String WifiMidiHandler::getIPAddress() const {
   return "0.0.0.0";
 }
 
+// Reduit un nom d'appareil libre a une etiquette DNS legale (a-z, 0-9, tirets).
+static String sanitizeHostname(const char* name) {
+  String out;
+  for (const char* p = name; *p; p++) {
+    char c = *p;
+    if (c >= 'A' && c <= 'Z') c = c - 'A' + 'a';
+    if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+      out += c;
+    } else if ((c == '-' || c == '_' || c == ' ') && out.length() > 0 &&
+               out[out.length() - 1] != '-') {
+      out += '-';
+    }
+  }
+  while (out.length() > 0 && out[out.length() - 1] == '-') {
+    out.remove(out.length() - 1);
+  }
+  return out;
+}
+
 void WifiMidiHandler::setupMDNS() {
-  if (MDNS.begin(MDNS_HOSTNAME)) {
+  // Utiliser le nom configure (assaini en etiquette DNS), sinon le nom compile.
+  String host = sanitizeHostname(cfg.deviceName);
+  if (host.length() == 0) host = MDNS_HOSTNAME;
+
+  if (MDNS.begin(host.c_str())) {
     // Annoncer les services
     MDNS.addService("apple-midi", "udp", RTPMIDI_PORT);
     MDNS.addService("http", "tcp", WEB_SERVER_PORT);
 
     if (DEBUG) {
       Serial.print("DEBUG: WifiMidiHandler - mDNS actif: ");
-      Serial.print(MDNS_HOSTNAME);
+      Serial.print(host);
       Serial.println(".local");
     }
   } else {

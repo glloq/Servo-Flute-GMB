@@ -120,7 +120,6 @@ private:
   uint8_t _runtimeAttackOffset;
 
   void setAirflowServoAngle(uint16_t angle);
-  uint16_t angleToPWM(uint16_t angle);
   void setSolenoidPWM(uint8_t pwmValue);
   void setValveServoAngle(bool open);
 

@@ -35,6 +35,13 @@ void BleMidiHandler::begin(InstrumentManager* instrument) {
   BLEBMIDI.setHandleConnected(onConnected);
   BLEBMIDI.setHandleDisconnected(onDisconnected);
 
+  // Utiliser le nom configure par l'utilisateur pour l'annonce BLE (au lieu du
+  // nom compile DEVICE_NAME). setName() doit etre appele AVANT BMIDI.begin(),
+  // qui initialise NimBLE avec le nom courant du transport.
+  if (cfg.deviceName[0] != '\0') {
+    BLEBMIDI.setName(cfg.deviceName);
+  }
+
   // Demarrer MIDI (ecoute tous les canaux, filtrage fait dans les callbacks)
   BMIDI.begin(MIDI_CHANNEL_OMNI);
 

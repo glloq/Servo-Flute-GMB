@@ -38,6 +38,33 @@ bool EventQueue::enqueueScheduledEvent(EventType type, byte note, byte velocity,
   return true;
 }
 
+bool EventQueue::enqueueLiveEventForced(EventType type, byte note, byte velocity) {
+  return enqueueScheduledEventForced(type, note, velocity, millis());
+}
+
+bool EventQueue::enqueueScheduledEventForced(EventType type, byte note, byte velocity, unsigned long executeAtMs) {
+  portENTER_CRITICAL(&_mux);
+
+  if (_count >= _capacity) {
+    // File pleine : evincer le plus ancien pour faire de la place. La section
+    // critique garde l'operation atomique vis-a-vis de loop().
+    _tail = (_tail + 1) % _capacity;
+    _count--;
+  }
+
+  if (!_hasReference) {
+    _referenceTime = executeAtMs;
+    _hasReference = true;
+  }
+
+  _events[_head] = MidiEvent(type, note, velocity, executeAtMs);
+  _head = (_head + 1) % _capacity;
+  _count++;
+
+  portEXIT_CRITICAL(&_mux);
+  return true;
+}
+
 MidiEvent* EventQueue::peek() {
   if (isEmpty()) {
     return nullptr;
