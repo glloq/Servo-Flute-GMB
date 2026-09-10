@@ -48,10 +48,8 @@ private:
   unsigned long _noteSoundStartTime;
   bool _pendingStopAfterMinDuration;
 
-  void processNextEvent();
   void processDueEvents();
   void transitionTo(NoteState newState);
-  void handleIdle();
   void handlePositioning();
   void handlePlaying();
   void handleStopping();

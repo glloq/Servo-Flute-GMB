@@ -32,7 +32,6 @@ private:
 
   uint16_t calculateServoAngle(int fingerIndex, uint8_t openState);
   void setServoAngle(int fingerIndex, uint16_t angle);
-  uint16_t angleToPWM(uint16_t angle);
 };
 
 #endif

@@ -33,6 +33,12 @@ public:
   bool enqueueLiveEvent(EventType type, byte note, byte velocity);
   bool enqueueScheduledEvent(EventType type, byte note, byte velocity, unsigned long executeAtMs);
 
+  // Variantes "forcees" : si la file est pleine, evincent l'evenement le plus
+  // ancien pour garantir l'insertion. A reserver aux Note Off : perdre un
+  // Note Off laisserait une note (et donc valve/souffle) bloquee.
+  bool enqueueLiveEventForced(EventType type, byte note, byte velocity);
+  bool enqueueScheduledEventForced(EventType type, byte note, byte velocity, unsigned long executeAtMs);
+
   // Recupere le prochain evenement sans le retirer
   MidiEvent* peek();
 

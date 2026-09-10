@@ -174,7 +174,10 @@ void InstrumentManager::noteOff(byte midiNote) {
   // The pump is NOT returned to idle here: a stale NOTE_OFF for an already-replaced
   // note would otherwise cut the air under the new note. Idle is applied only when
   // the sequencer truly returns to STATE_IDLE (updateAirSourceFromSequencer).
-  bool success = _eventQueue.enqueueLiveEvent(EVENT_NOTE_OFF, midiNote, 0);
+  // Forced enqueue: a dropped NOTE_OFF on a full queue would strand the note
+  // (valve/air kept on) until the next note-on or a panic. Evict the oldest
+  // event instead so the release always lands.
+  bool success = _eventQueue.enqueueLiveEventForced(EVENT_NOTE_OFF, midiNote, 0);
 
   if (!success) {
     if (DEBUG) {

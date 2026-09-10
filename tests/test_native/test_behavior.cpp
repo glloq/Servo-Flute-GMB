@@ -21,6 +21,7 @@
 #include "AutoCalibrator.h"
 #include "PitchDetector.h"
 #include "MidiTempoMap.h"
+#include "ServoMath.h"
 #define private public
 #include "MidiFilePlayer.h"
 #undef private
@@ -100,6 +101,23 @@ static int physical(int minv,int maxv,int logical){ return logical==0?0:minv+(ma
 static void pressure_direct_pwm_once(){ resetCfg(); PressureController pc; for(int logical: {0,64,128,192,255}){ pc.setPumpPwm(logical); assert(__analog_writes[25]==physical(80,200,logical)); } cfg.numPumps=3; cfg.pumpCascadeThreshold=0; pc.setPumpPwm(128); assert(__analog_writes[25]==physical(80,200,128)); assert(__analog_writes[26]==physical(90,220,128)); assert(__analog_writes[27]==physical(110,255,128)); cfg.motorType=MOTOR_TYPE_ONOFF; pc.setPumpPwm(128); assert(__digital_writes[25]==HIGH); assert(__digital_writes[26]==HIGH); assert(__digital_writes[27]==HIGH); pc.setPumpPwm(0); assert(__digital_writes[25]==LOW); }
 static void pressure_hall_pid_once_and_guards(){ resetCfg(); cfg.airMode=AIR_MODE_PUMP_RESERVOIR; PressureController pc; pc.begin(); pc.setTargetPercent(50); __test_millis=100; __analog_reads[36]=1000; pc.update(); assert(__analog_writes[25]==physical(80,200,127)); cfg.hallThresholdHigh=cfg.hallThresholdLow; __test_millis=200; pc.update(); assert(__analog_writes[25]>=0 && __analog_writes[25]<=255); cfg.numPumps=0; __test_millis=300; pc.update(); cfg.numPumps=9; cfg.pumpCascadeThreshold=100; validateAndNormalizeConfig(cfg,nullptr); assert(cfg.numPumps==MAX_PUMPS && cfg.pumpCascadeThreshold==99); }
 static void event_queue_cases(){ EventQueue q(2); assert(q.isEmpty()); assert(q.enqueueScheduledEvent(EVENT_NOTE_ON,60,100,0)); assert(q.enqueueScheduledEvent(EVENT_NOTE_OFF,60,0,20)); assert(!q.enqueueScheduledEvent(EVENT_NOTE_ON,61,100,20)); q.dequeue(); q.dequeue(); assert(q.isEmpty() && q.getReferenceTime()==0); assert(q.enqueueScheduledEvent(EVENT_NOTE_ON,62,100,0xFFFFFFF0UL)); q.clear(); assert(q.isEmpty()); assert(q.enqueueScheduledEvent(EVENT_NOTE_ON,63,100,1)); }
+// Forced enqueue evicts the oldest event when the queue is full so a NOTE_OFF is
+// never dropped (a dropped release would strand a note).
+static void event_queue_forced_never_drops(){
+  EventQueue q(2);
+  assert(q.enqueueScheduledEvent(EVENT_NOTE_ON,60,100,0));
+  assert(q.enqueueScheduledEvent(EVENT_NOTE_ON,61,100,1));
+  assert(q.getCount()==2);
+  assert(!q.enqueueScheduledEvent(EVENT_NOTE_OFF,61,0,2));   // plain enqueue refuses
+  assert(q.enqueueScheduledEventForced(EVENT_NOTE_OFF,61,0,2)); // forced succeeds
+  assert(q.getCount()==2);
+  // Oldest (note 60) was evicted; the note-off is now the tail-most survivor.
+  MidiEvent* head = q.peek();
+  assert(head != nullptr && head->midiNote==61 && head->type==EVENT_NOTE_ON);
+  q.dequeue();
+  MidiEvent* second = q.peek();
+  assert(second != nullptr && second->type==EVENT_NOTE_OFF && second->midiNote==61);
+}
 static void note_sequencer_min_and_panic(){ resetCfg(); __test_millis=0; int fingerWrites=0, airWrites=0; FingerController fc([&](uint8_t,uint16_t,uint16_t){fingerWrites++;}); AirflowController ac([&](uint8_t,uint16_t,uint16_t){airWrites++;}); EventQueue q(8); NoteSequencer ns(q,fc,ac); ns.begin(); q.enqueueScheduledEvent(EVENT_NOTE_ON,60,100,0); ns.update(); assert(ns.getState()==STATE_POSITIONING && fingerWrites>0); __test_millis=10; ns.update(); assert(ns.getState()==STATE_PLAYING && ac.isValveOpen()); q.enqueueScheduledEvent(EVENT_NOTE_OFF,60,0,20); __test_millis=20; ns.update(); assert(ns.getState()==STATE_PLAYING); __test_millis=99; ns.update(); assert(ns.getState()==STATE_PLAYING); __test_millis=110; ns.update(); assert(ns.getState()==STATE_STOPPING); ns.stop(); assert(ns.getState()==STATE_IDLE && !ac.isValveOpen()); }
 
 static void note_sequencer_monophonic_replacement(){ resetCfg(); cfg.minNoteDurationMs=100; cfg.minNoteIntervalForValveCloseMs=50; __test_millis=0; int fingerWrites=0; FingerController fc([&](uint8_t,uint16_t,uint16_t){fingerWrites++;}); AirflowController ac([&](uint8_t,uint16_t,uint16_t){}); EventQueue q(16); NoteSequencer ns(q,fc,ac); ns.begin(); q.enqueueScheduledEvent(EVENT_NOTE_ON,60,100,0); q.enqueueScheduledEvent(EVENT_NOTE_ON,62,100,0); q.enqueueScheduledEvent(EVENT_NOTE_OFF,60,0,0); q.enqueueScheduledEvent(EVENT_NOTE_OFF,62,0,0); ns.update(); assert(q.isEmpty()); assert(ns.getState()==STATE_IDLE); assert(fingerWrites>=2); ns.stop(); q.enqueueScheduledEvent(EVENT_NOTE_ON,60,100,1000); q.enqueueScheduledEvent(EVENT_NOTE_OFF,60,0,1010); q.enqueueScheduledEvent(EVENT_NOTE_ON,62,100,1010); __test_millis=1000; ns.update(); __test_millis=1010; ns.update(); assert(ns.getState()==STATE_POSITIONING); ns.stop(); q.enqueueScheduledEvent(EVENT_NOTE_ON,60,100,2000); q.enqueueScheduledEvent(EVENT_NOTE_ON,61,100,2000); q.enqueueScheduledEvent(EVENT_NOTE_ON,62,100,2000); q.enqueueScheduledEvent(EVENT_NOTE_OFF,60,0,2000); q.enqueueScheduledEvent(EVENT_NOTE_OFF,61,0,2000); q.enqueueScheduledEvent(EVENT_NOTE_OFF,62,0,2000); __test_millis=2000; ns.update(); assert(q.isEmpty()); assert(ns.getState()==STATE_IDLE); ns.stop(); q.enqueueScheduledEvent(EVENT_NOTE_ON,60,100,0xFFFFFFF0UL); __test_millis=0xFFFFFFF0UL; ns.update(); assert(ns.getState()==STATE_POSITIONING); ns.stop(); }
@@ -934,6 +952,20 @@ static void angle_servo_enable_requires_restart(){
   RuntimeConfig prev2 = cfg;
   auto r2 = validateAndNormalizeConfig(cfg, &prev2);
   assert(r2.valid && !r2.restartRequired);
+}
+
+// Shared servo angle->PWM helper (extracted from Finger/AirflowController).
+static void servo_angle_to_pwm_math(){
+  // Clamps out-of-range angles to the servo limits.
+  assert(servoAngleToPWM(0) == servoAngleToPWM(SERVO_MIN_ANGLE));
+  assert(servoAngleToPWM(200) == servoAngleToPWM(SERVO_MAX_ANGLE));
+  // Monotonic across the range, and endpoints match the configured pulse widths
+  // (pulse_us * freq * 4096 / 1e6, rounded).
+  assert(servoAngleToPWM(SERVO_MIN_ANGLE) < servoAngleToPWM(SERVO_MAX_ANGLE));
+  uint16_t expMin = (uint16_t)((float)SERVO_PULSE_MIN / 1000000.0 * SERVO_FREQUENCY * 4096.0 + 0.5f);
+  uint16_t expMax = (uint16_t)((float)SERVO_PULSE_MAX / 1000000.0 * SERVO_FREQUENCY * 4096.0 + 0.5f);
+  assert(servoAngleToPWM(SERVO_MIN_ANGLE) == expMin);
+  assert(servoAngleToPWM(SERVO_MAX_ANGLE) == expMax);
 }
 
 // A live note shorter than the positioning window must still sound: the Note Off
