@@ -335,6 +335,66 @@ void gmb_descriptor_excludes_disabled_fingerings() {
   assert(j.find("62") == std::string::npos || jsonValue(j, "notes").find("62") == std::string::npos);
 }
 
+// The playable set is the ACTIVE fingering table, never a hard-coded scale: a
+// contiguous set is announced as a range, anything with a gap as the exact list,
+// and a note configured twice is announced once.
+void gmb_descriptor_note_modes_follow_the_configuration() {
+  // 60 61 62 63 -> range 60..63
+  makeConfig(4, 60, 1);
+  CapabilitySnapshot s = snapshotOf(1, 1);
+  assert(s.instrument.noteMode == kNoteRange);
+  assert(s.instrument.notes.size() == 4);
+  assert(jsonValue(GmbDescriptor::toJson(s), "notes") ==
+         "{\"mode\":\"range\",\"min\":60,\"max\":63}");
+
+  // 60 62 64 -> discrete, because 61 and 63 are not playable
+  makeConfig(3, 60, 2);
+  s = snapshotOf(1, 1);
+  assert(s.instrument.noteMode == kNoteDiscrete);
+  assert(jsonValue(GmbDescriptor::toJson(s), "notes") ==
+         "{\"mode\":\"discrete\",\"list\":[60,62,64]}");
+
+  // One missing semitone inside an otherwise contiguous span is enough to force
+  // the discrete list: `range` must never promise a note that is not configured.
+  makeConfig(5, 60, 1);
+  cfg.notes[2].airflowMaxPercent = 0;          // 62 cannot sound
+  cfg.notes[2].airflowNominalPercent = 0;
+  cfg.notes[2].airflowMinPercent = 0;
+  s = snapshotOf(1, 1);
+  assert(s.instrument.noteMode == kNoteDiscrete);
+  assert(jsonValue(GmbDescriptor::toJson(s), "notes") ==
+         "{\"mode\":\"discrete\",\"list\":[60,61,63,64]}");
+
+  // A note configured several times (two fingerings for the same pitch) is
+  // announced once, and does not break the contiguity test.
+  makeConfig(5, 60, 1);
+  cfg.notes[3].midiNote = 60;                  // duplicate of notes[0]
+  cfg.notes[4].midiNote = 61;                  // duplicate of notes[1]
+  s = snapshotOf(1, 1);
+  assert(s.instrument.notes.size() == 3);
+  assert(s.instrument.notes[0] == 60 && s.instrument.notes[1] == 61 &&
+         s.instrument.notes[2] == 62);
+  assert(s.instrument.noteMode == kNoteRange);
+  assert(jsonValue(GmbDescriptor::toJson(s), "notes") ==
+         "{\"mode\":\"range\",\"min\":60,\"max\":62}");
+
+  // Notes are announced in ascending order whatever order the table holds them.
+  makeConfig(3, 60, 1);
+  cfg.notes[0].midiNote = 62;
+  cfg.notes[1].midiNote = 60;
+  cfg.notes[2].midiNote = 61;
+  s = snapshotOf(1, 1);
+  assert(s.instrument.notes[0] == 60 && s.instrument.notes[1] == 61 &&
+         s.instrument.notes[2] == 62);
+
+  // A single playable note is a one-note range, not an empty descriptor.
+  makeConfig(1, 69, 1);
+  s = snapshotOf(1, 1);
+  assert(s.instrument.configured);
+  assert(jsonValue(GmbDescriptor::toJson(s), "notes") ==
+         "{\"mode\":\"range\",\"min\":69,\"max\":69}");
+}
+
 void gmb_descriptor_channel_and_identity() {
   makeConfig(4, 60, 1);
   cfg.midiChannel = 5;              // 1-16 in the configuration
@@ -379,23 +439,79 @@ void gmb_descriptor_timing() {
 
   // Slow silent finger positioning stays in `prepare`, so GMB can anticipate it.
   assert(jsonValue(j, "prepare") == "{\"base_ms\":120,\"max_ms\":120,\"silent\":true}");
-  // Only the remaining valve latency is announced as `excite` - never the
-  // preparation time folded in.
-  assert(jsonValue(j, "excite") == "{\"latency_ms\":45}");
   assert(jsonValue(j, "min_note_ms") == "25");
   assert(jsonValue(j, "rearticulation_ms") == "60");
   // Nothing measures the acoustic decay: the field is absent, not zero.
   assert(!jsonHas(j, "release_ms"));
   assert(!jsonHas(j, "jitter_ms"));
 
-  // An air mode with no valve has no measurable excitation latency: omitted.
+  // An air mode with no valve never closes between two notes, so no
+  // re-articulation figure is announced.
   cfg.airMode = AIR_MODE_SERVO_ONLY;
   j = GmbDescriptor::toJson(snapshotOf(1, 1));
-  assert(!jsonHas(j, "excite"));
   assert(!jsonHas(j, "rearticulation_ms"));
   assert(jsonValue(j, "prepare") == "{\"base_ms\":120,\"max_ms\":120,\"silent\":true}");
-  // An omitted field is never announced as 0.
-  assert(j.find("\"latency_ms\":0") == std::string::npos);
+  assert(jsonValue(j, "min_note_ms") == "25");
+}
+
+// `timing.excite.latency_ms` is the delay GMB uses to line instruments up on the
+// same beat: the time between the order and the note being AUDIBLE. Nothing in
+// this firmware measures it, so under the GMB rule "absent means unknown" the
+// field must not appear at all - and above all must never be announced as 0,
+// which would claim the flute speaks instantly.
+void gmb_descriptor_excite_latency_is_not_announced() {
+  const uint8_t modes[] = {AIR_MODE_SOLENOID_SERVO, AIR_MODE_SERVO_VALVE,
+                           AIR_MODE_SERVO_ONLY, AIR_MODE_FAN_SERVO,
+                           AIR_MODE_PUMP_VALVE, AIR_MODE_PUMP_RESERVOIR};
+  for (size_t i = 0; i < sizeof(modes) / sizeof(modes[0]); i++) {
+    for (int valveType = 0; valveType <= 1; valveType++) {
+      makeConfig(4, 60, 1);
+      cfg.airMode = modes[i];
+      cfg.valveType = (uint8_t)valveType;
+      // The solenoid full-power drive window is deliberately non-zero and
+      // non-default here: it is an electrical parameter of the valve coil
+      // (AirflowController::update switches to the holding PWM after it), NOT the
+      // acoustic onset, so it must not leak into the descriptor.
+      cfg.solenoidActivationTimeMs = 45;
+
+      CapabilitySnapshot s = snapshotOf(1, 1);
+      assert(!s.instrument.timing.hasExciteLatency);
+      assert(s.instrument.timing.exciteLatencyMs == 0);
+
+      const std::string j = GmbDescriptor::toJson(s);
+      assert(jsonWellFormed(j));
+      assert(!jsonHas(j, "excite"));
+      assert(!jsonHas(j, "latency_ms"));
+      // Never announced as a zero, which GMB would read as "speaks instantly".
+      assert(j.find("\"latency_ms\":0") == std::string::npos);
+      // The figures that ARE known stay announced.
+      assert(jsonHas(j, "prepare"));
+      assert(jsonHas(j, "min_note_ms"));
+    }
+  }
+
+  // No configuration value can turn the field on today: it is gated on a measured
+  // acoustic latency, and there is none.
+  makeConfig(4, 60, 1);
+  cfg.solenoidActivationTimeMs = 999;
+  assert(measuredExciteLatencyMs(cfg) == 0);
+  cfg.solenoidActivationTimeMs = 0;
+  assert(measuredExciteLatencyMs(cfg) == 0);
+
+  // The plumbing a future measurement lands in is still wired end to end: a
+  // snapshot that DOES carry a latency serialises it, and it is part of the
+  // capability signature, so the revision will move when the value appears.
+  makeConfig(4, 60, 1);
+  CapabilitySnapshot measured = snapshotOf(1, 1);
+  const CapabilitySignature without = computeSignature(measured);
+  measured.instrument.timing.hasExciteLatency = true;
+  measured.instrument.timing.exciteLatencyMs = 38;
+  const std::string j = GmbDescriptor::toJson(measured);
+  assert(jsonValue(j, "excite") == "{\"latency_ms\":38}");
+  assert(jsonWellFormed(j));
+  const CapabilitySignature with = computeSignature(measured);
+  assert(with.timing != without.timing);
+  assert(with.all != without.all);
 }
 
 void gmb_descriptor_expression() {
@@ -597,6 +713,147 @@ void gmb_descriptor_stable_during_transfer() {
   assert(third.compare(200, lateText.size(), lateText) == 0);
 }
 
+// The payload bytes of a block 0x10 response, i.e. the slice of the document it
+// carries. Header is 9 bytes (F0 7D 00 10 01 + total[2] + index[2]), trailer F7.
+std::string chunkPayload(const std::vector<uint8_t>& m) {
+  std::string out;
+  for (size_t k = 9; k + 1 < m.size(); k++) out.push_back((char)m[k]);
+  return out;
+}
+
+// GMB v2 rule: every segment of ONE transfer must come from ONE snapshot. The
+// regression this guards is a retry of segment 0 mid-transfer re-pinning the
+// service onto a newer document, after which segment 0 and segment 1 would come
+// from two different revisions and the controller would reassemble a document
+// that never existed.
+void gmb_transfer_is_pinned_to_one_snapshot() {
+  makeConfig(30, 48, 3);                   // several segments
+  GmbSysExService svc;
+  svc.setSnapshot(snapshotOf(1, 0xA1A1u));
+  const std::string docA = svc.descriptorJson();
+  const uint16_t totalA = GmbSysEx::chunkCount(docA.size());
+  assert(totalA >= 3);
+
+  uint32_t now = 1000;
+  // --- the transfer starts on descriptor A ---------------------------------
+  std::vector<uint8_t> req0 = chunkRequest(0);
+  std::vector<uint8_t> first0 = svc.handleMessage(req0.data(), req0.size(), now++);
+  assert(!first0.empty());
+  assert(svc.transferInFlight());
+
+  // --- the user saves a new configuration mid-transfer ----------------------
+  makeConfig(12, 60, 1);
+  svc.setSnapshot(snapshotOf(2, 0xA1A1u));
+  const std::string docB = svc.descriptorJson();
+  assert(docB != docA);
+  assert(docB.size() != docA.size());       // the two documents really differ
+
+  // --- the controller RETRIES segment 0 (a lost frame, a BLE hiccup) --------
+  // It must be answered from descriptor A, byte for byte, including the
+  // total_chunks field: a retry belongs to the transfer in flight.
+  std::vector<uint8_t> retry0 = svc.handleMessage(req0.data(), req0.size(), now++);
+  assert(retry0 == first0);
+
+  // --- and every remaining segment as well ---------------------------------
+  std::string rebuilt = chunkPayload(retry0);
+  for (uint16_t i = 1; i < totalA; i++) {
+    std::vector<uint8_t> req = chunkRequest(i);
+    std::vector<uint8_t> m = svc.handleMessage(req.data(), req.size(), now++);
+    assert(!m.empty());
+    uint16_t gotTotal = (uint16_t)((m[5] & 0x7F) | ((m[6] & 0x7F) << 7));
+    uint16_t gotIndex = (uint16_t)((m[7] & 0x7F) | ((m[8] & 0x7F) << 7));
+    assert(gotTotal == totalA);            // the pinned document's segment count
+    assert(gotIndex == i);
+    rebuilt += chunkPayload(m);
+  }
+  assert(rebuilt == docA);                 // one snapshot, reassembled exactly
+  assert(jsonWellFormed(rebuilt));
+  assert(rebuilt.find("\"revision\":1") != std::string::npos);
+
+  // --- the document was delivered in full: the transfer is over -------------
+  assert(!svc.transferInFlight());
+  // A new transfer starting now picks up descriptor B, in full.
+  std::string again;
+  const uint16_t totalB = GmbSysEx::chunkCount(docB.size());
+  for (uint16_t i = 0; i < totalB; i++) {
+    std::vector<uint8_t> req = chunkRequest(i);
+    std::vector<uint8_t> m = svc.handleMessage(req.data(), req.size(), now++);
+    assert(!m.empty());
+    again += chunkPayload(m);
+  }
+  assert(again == docB);
+  assert(!svc.transferInFlight());
+
+  // --- an ABANDONED transfer is released by the idle timeout, not before ----
+  makeConfig(30, 48, 3);
+  svc.setSnapshot(snapshotOf(3, 0xA1A1u));
+  const std::string docC = svc.descriptorJson();
+  uint32_t started = 50000;
+  std::vector<uint8_t> c0 = svc.handleMessage(req0.data(), req0.size(), started);
+  assert(chunkPayload(c0) == docC.substr(0, 200));
+  assert(svc.transferInFlight());
+
+  makeConfig(9, 70, 1);
+  svc.setSnapshot(snapshotOf(4, 0xA1A1u));
+  const std::string docD = svc.descriptorJson();
+  assert(docD != docC);
+
+  // Just inside the idle window: still descriptor C.
+  std::vector<uint8_t> req1 = chunkRequest(1);
+  std::vector<uint8_t> inWindow = svc.handleMessage(req1.data(), req1.size(), started + 5000);
+  assert(chunkPayload(inWindow) == docC.substr(200, 200));
+
+  // Past it: the pin is released and a fresh transfer starts on descriptor D.
+  std::vector<uint8_t> late = svc.handleMessage(req0.data(), req0.size(),
+                                                started + 5000 + 5001);
+  assert(chunkPayload(late) == docD.substr(0, 200));
+
+  // --- an out-of-range segment neither starts nor disturbs a transfer -------
+  GmbSysExService svc2;
+  makeConfig(30, 48, 3);
+  svc2.setSnapshot(snapshotOf(5, 0xB2B2u));
+  const std::string docE = svc2.descriptorJson();
+  std::vector<uint8_t> bogus = chunkRequest(0x3FFE);
+  assert(svc2.handleMessage(bogus.data(), bogus.size(), 100).empty());
+  assert(!svc2.transferInFlight());       // nothing was pinned by a bad index
+  // ...so the real transfer that follows still starts on the current document.
+  makeConfig(12, 60, 1);
+  svc2.setSnapshot(snapshotOf(6, 0xB2B2u));
+  const std::string docF = svc2.descriptorJson();
+  assert(docF != docE);
+  std::vector<uint8_t> start = svc2.handleMessage(req0.data(), req0.size(), 110);
+  assert(chunkPayload(start) == docF.substr(0, 200));
+
+  // --- a handshake that contradicts the pinned document drops the transfer --
+  // The handshake announces the CURRENT revision and descriptor_size; serving the
+  // old document afterwards would contradict the frame just sent, so GMB gets a
+  // clean restart instead of five seconds of mismatched segments.
+  GmbSysExService svc3;
+  makeConfig(30, 48, 3);
+  svc3.setSnapshot(snapshotOf(7, 0xC3C3u));
+  const std::string docG = svc3.descriptorJson();
+  assert(!svc3.handleMessage(req0.data(), req0.size(), 200).empty());
+  assert(svc3.transferInFlight());
+  // A handshake while the pinned document is still the current one changes
+  // nothing: the transfer carries on.
+  std::vector<uint8_t> hs = handshakeRequest();
+  assert(svc3.handleMessage(hs.data(), hs.size(), 201).size() == 24);
+  assert(svc3.transferInFlight());
+  std::vector<uint8_t> cont = svc3.handleMessage(req1.data(), req1.size(), 202);
+  assert(chunkPayload(cont) == docG.substr(200, 200));
+  // Now the configuration changes and the controller re-handshakes.
+  makeConfig(12, 60, 1);
+  svc3.setSnapshot(snapshotOf(8, 0xC3C3u));
+  const std::string docH = svc3.descriptorJson();
+  std::vector<uint8_t> hs2 = svc3.handleMessage(hs.data(), hs.size(), 203);
+  assert(decode21Le7(&hs2[14]) == docH.size());
+  assert(gmbDecode32(&hs2[17]) == 8u);
+  assert(!svc3.transferInFlight());
+  // The segments that follow the handshake match what it announced.
+  std::vector<uint8_t> afterHs = svc3.handleMessage(req0.data(), req0.size(), 204);
+  assert(chunkPayload(afterHs) == docH.substr(0, 200));
+}
+
 // ---------------------------------------------------------------------------
 // 5. Revision management
 // ---------------------------------------------------------------------------
@@ -658,6 +915,112 @@ void gmb_revision_lifecycle() {
   // Neither is the instance id (it is not a capability).
   CapabilitySnapshot c = snapshotOf(1, 0xABCDEF01u);
   assert(computeSignature(a).all == computeSignature(c).all);
+}
+
+// The revision is the ETag General-Midi-Boop compares to decide whether to
+// re-download the descriptor. It must move on every change to the ANNOUNCED
+// document and on nothing else: a missed bump leaves GMB on a stale profile, a
+// spurious one costs a pointless transfer on every save.
+void gmb_revision_tracks_only_announced_capabilities() {
+  // Each row mutates the configuration; `announced` says whether the descriptor
+  // GMB reads actually changes as a result.
+  struct Row {
+    const char* what;
+    bool announced;
+    void (*mutate)();
+  };
+  const Row rows[] = {
+    {"a playable note added", true,
+     []() { cfg.notes[6].midiNote = 66;
+            cfg.notes[6].airflowMinPercent = 10;
+            cfg.notes[6].airflowMaxPercent = 60;
+            cfg.notes[6].airflowNominalPercent = 30;
+            cfg.numNotes = 7; }},
+    {"a note made unplayable", true,
+     []() { cfg.notes[2].airflowMaxPercent = 0; cfg.notes[2].airflowNominalPercent = 0;
+            cfg.notes[2].airflowMinPercent = 0; }},
+    {"the MIDI channel", true,
+     []() { cfg.midiChannel = 9; }},
+    {"an announced CC (breath disabled)", true,
+     []() { cfg.cc2Enabled = false; }},
+    {"an announced CC (vibrato silenced)", true,
+     []() { cfg.vibratoMaxAmplitudeDeg = 0.0f; }},
+    {"the embouchure / instrument type", true,
+     []() { memset(cfg.embouchure, 0, sizeof(cfg.embouchure));
+            strncpy(cfg.embouchure, "oca", sizeof(cfg.embouchure) - 1); }},
+    {"an announced timing value", true,
+     []() { cfg.servoToSolenoidDelayMs = 200; }},
+    {"the device name", true,
+     []() { strncpy(cfg.deviceName, "Autre flute", sizeof(cfg.deviceName) - 1); }},
+    {"the air source", true,
+     []() { cfg.airMode = AIR_MODE_FAN_SERVO; }},
+    // ... and the internal parameters GMB is told nothing about.
+    {"Wi-Fi credentials", false,
+     []() { strncpy(cfg.wifiSsid, "atelier", sizeof(cfg.wifiSsid) - 1);
+            strncpy(cfg.wifiPassword, "s3cret", sizeof(cfg.wifiPassword) - 1); }},
+    {"the solenoid drive profile", false,
+     []() { cfg.solenoidPwmActivation = 200; cfg.solenoidPwmHolding = 90;
+            cfg.solenoidActivationTimeMs = 77; }},
+    {"the breath-controller response curve", false,
+     []() { cfg.cc2ResponseCurve = 2.0f; cfg.cc2SilenceThreshold = 20;
+            cfg.cc2TimeoutMs = 2500; }},
+    {"the vibrato rate", false,
+     []() { cfg.vibratoFrequencyHz = 4.5f; }},
+    {"the CC power-on defaults", false,
+     []() { cfg.ccVolumeDefault = 90; cfg.ccExpressionDefault = 90;
+            cfg.ccBrightnessDefault = 40; }},
+    {"the attack shaping parameters", false,
+     []() { cfg.airAttackMode = 2; cfg.airAttackOffset = 20; cfg.airAttackMs = 300; }},
+  };
+
+  for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+    makeConfig(6, 60, 1);
+    RevisionTracker t;
+    const CapabilitySignature before = computeSignature(snapshotOf(0, 1));
+    t.begin(1, before.all, before);
+    const uint32_t startRevision = t.revision();
+    const std::string docBefore = GmbDescriptor::toJson(snapshotOf(startRevision, 1));
+
+    rows[i].mutate();
+    const CapabilitySignature after = computeSignature(snapshotOf(0, 1));
+    const bool moved = t.onConfigurationActivated(after, false);
+
+    // The descriptor is the ground truth: the revision moves exactly when the
+    // document GMB downloads is not the same document any more.
+    const std::string docAfter = GmbDescriptor::toJson(snapshotOf(startRevision, 1));
+    const bool documentChanged = (docAfter != docBefore);
+    if (documentChanged != rows[i].announced || moved != rows[i].announced) {
+      std::cerr << "GMB revision: '" << rows[i].what << "' expected announced="
+                << rows[i].announced << " got document changed=" << documentChanged
+                << " revision moved=" << moved << "\n";
+      assert(false);
+    }
+    assert(t.revision() == startRevision + (moved ? 1u : 0u));
+    assert((t.changeFlags() != 0) == moved);
+
+    // Re-activating the very same configuration is idempotent: no second bump,
+    // hence no pointless descriptor download on the Raspberry Pi side.
+    assert(!t.onConfigurationActivated(after, false));
+    assert(t.revision() == startRevision + (moved ? 1u : 0u));
+  }
+
+  // Two configurations that produce the same descriptor share a signature, and a
+  // round trip back to the original one does not leave the revision drifting.
+  makeConfig(6, 60, 1);
+  const CapabilitySignature original = computeSignature(snapshotOf(0, 1));
+  RevisionTracker t;
+  t.begin(5, original.all, original);
+  cfg.midiChannel = 9;
+  assert(t.onConfigurationActivated(computeSignature(snapshotOf(0, 1)), false));
+  assert(t.revision() == 6);
+  cfg.midiChannel = 0;                      // back to the initial profile
+  assert(t.onConfigurationActivated(original, false));
+  assert(t.revision() == 7);                // the counter only ever moves forward
+  assert(t.signature() == original.all);
+  // ...and a reboot on that configuration writes nothing and announces the same.
+  RevisionTracker rebooted;
+  assert(!rebooted.begin(t.revision(), t.signature(), original));
+  assert(rebooted.revision() == 7);
 }
 
 void gmb_revision_offline_change_detected_at_boot() {
@@ -880,6 +1243,16 @@ void gmb_malformed_input_is_ignored() {
     {"chunk req too short",  {0xF0, 0x7D, 0x00, 0x10, 0x00, 0x00, 0xF7}},
     {"chunk req too long",   {0xF0, 0x7D, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0xF7}},
     {"handshake with junk",  {0xF0, 0x7D, 0x00, 0x01, 0x00, 0x01, 0xF7}},
+    {"handshake, wrong dir", {0xF0, 0x7D, 0x00, 0x01, 0x02, 0xF7}},
+    {"chunk req, wrong dir", {0xF0, 0x7D, 0x00, 0x10, 0x01, 0x00, 0x00, 0xF7}},
+    {"8-bit chunk index",    {0xF0, 0x7D, 0x00, 0x10, 0x00, 0x80, 0x00, 0xF7}},
+    // Longer than kMaxRequestBytes: dropped without ever being buffered, so a
+    // flood of long SysEx cannot cost more than the read that discards it.
+    {"oversized request",    {0xF0, 0x7D, 0x00, 0x10, 0x00, 0x01, 0x00, 0x00, 0x00,
+                              0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF7}},
+    {"oversized handshake",  {0xF0, 0x7D, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+                              0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                              0x00, 0x00, 0x00, 0x00, 0x00, 0xF7}},
   };
   for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
     const std::vector<uint8_t>& b = cases[i].bytes;
@@ -892,6 +1265,24 @@ void gmb_malformed_input_is_ignored() {
   }
   // A null pointer never dereferences.
   assert(svc.handleMessage(0, 6, 3000).empty());
+  // Nothing above was answered, so nothing above started a descriptor transfer.
+  assert(!svc.transferInFlight());
+
+  // Chunk index boundaries: the last real segment answers, everything past it is
+  // met with silence rather than with an empty or truncated frame.
+  const uint16_t total = GmbSysEx::chunkCount(svc.descriptorJson().size());
+  assert(total >= 2);
+  std::vector<uint8_t> last = chunkRequest((uint16_t)(total - 1));
+  assert(!svc.handleMessage(last.data(), last.size(), 3100).empty());
+  const uint16_t pastEnd[] = {total, (uint16_t)(total + 1), 0x1FFF, 0x3FFF};
+  for (size_t i = 0; i < sizeof(pastEnd) / sizeof(pastEnd[0]); i++) {
+    std::vector<uint8_t> req = chunkRequest(pastEnd[i]);
+    assert(svc.handleMessage(req.data(), req.size(), (uint32_t)(3110 + i)).empty());
+  }
+  // The 14-bit index field cannot address beyond 0x3FFF, so no request can reach
+  // the clamp inside chunkCount().
+  assert(GmbSysEx::encodeDescriptorChunk(svc.descriptorJson(), 0x3FFF).empty());
+  assert(GmbSysEx::chunkCount(0) == 1);   // never zero segments
 
   // The bridge drops foreign / oversized SysEx before it costs a copy.
   GmbMidiBridge bridge;
@@ -950,17 +1341,21 @@ void gmb_run_all_tests() {
   gmb_handshake_frame();
   gmb_descriptor_contiguous_range();
   gmb_descriptor_discrete_notes();
+  gmb_descriptor_note_modes_follow_the_configuration();
   gmb_descriptor_excludes_disabled_fingerings();
   gmb_descriptor_channel_and_identity();
   gmb_descriptor_embouchure_vocabulary();
   gmb_descriptor_timing();
+  gmb_descriptor_excite_latency_is_not_announced();
   gmb_descriptor_expression();
   gmb_descriptor_physical();
   gmb_descriptor_unconfigured_instrument();
   gmb_descriptor_is_ascii_and_escaped();
   gmb_descriptor_transfer();
   gmb_descriptor_stable_during_transfer();
+  gmb_transfer_is_pinned_to_one_snapshot();
   gmb_revision_lifecycle();
+  gmb_revision_tracks_only_announced_capabilities();
   gmb_revision_offline_change_detected_at_boot();
   gmb_change_notification();
   gmb_notification_only_on_a_real_activation();

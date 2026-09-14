@@ -72,6 +72,15 @@ bool isPlayableNote(const RuntimeConfig& config, uint8_t index) {
   return true;
 }
 
+uint16_t measuredExciteLatencyMs(const RuntimeConfig& config) {
+  // No acoustic measurement exists yet (see the contract in Capabilities.h).
+  // Deriving one from a configured actuator delay would announce a number the
+  // instrument does not honour, and announcing 0 would tell General-Midi-Boop the
+  // flute speaks instantly - both are worse than saying nothing.
+  (void)config;
+  return 0;
+}
+
 CapabilitySnapshot buildSnapshot(const RuntimeConfig& config, bool configValidated) {
   CapabilitySnapshot snap;
 
@@ -162,14 +171,15 @@ CapabilitySnapshot buildSnapshot(const RuntimeConfig& config, bool configValidat
   inst.timing.prepareBaseMs = config.servoToSolenoidDelayMs;
   inst.timing.prepareMaxMs = config.servoToSolenoidDelayMs;
 
-  // excite = what remains between opening the air path and the note speaking. Only
-  // the solenoid valve exposes a configured figure: solenoidActivationTimeMs is the
-  // full-power drive window that bounds its mechanical opening time. For a servo
-  // valve, a fan or a direct pump the firmware has no measured figure, so the field
-  // is omitted rather than invented (an unknown is never announced as 0).
-  if (configurationUsesSolenoidValve(config)) {
+  // excite = the non-maskable delay between the order and the note being AUDIBLE.
+  // Nothing in the firmware measures the acoustic onset today, so the field is
+  // omitted rather than invented: see measuredExciteLatencyMs() for why
+  // solenoidActivationTimeMs is NOT that figure, and for where a measured one
+  // plugs in. 0 means unknown, and an unknown is never announced.
+  const uint16_t exciteMs = measuredExciteLatencyMs(config);
+  if (exciteMs > 0) {
     inst.timing.hasExciteLatency = true;
-    inst.timing.exciteLatencyMs = config.solenoidActivationTimeMs;
+    inst.timing.exciteLatencyMs = exciteMs;
   }
 
   inst.timing.hasMinNote = true;

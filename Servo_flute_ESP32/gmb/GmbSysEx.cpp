@@ -4,6 +4,27 @@
 
 namespace gmb {
 
+// ---------------------------------------------------------------------------
+// Out-of-class definitions for the class constants.
+//
+// These are ODR-used (encodeHandshake() and friends pass them to
+// std::vector::push_back(const uint8_t&), which binds a reference). Before
+// C++17 that requires a namespace-scope definition; the ESP32 Arduino
+// toolchain compiles this firmware with a pre-C++17 dialect, so without them
+// the link fails with "undefined reference to gmb::GmbSysEx::kStart" and the
+// others. From C++17 on the in-class initialiser is implicitly inline and
+// these lines are redundant, hence the guard.
+// ---------------------------------------------------------------------------
+#if __cplusplus < 201703L
+constexpr uint8_t GmbSysEx::kStart;
+constexpr uint8_t GmbSysEx::kEnd;
+constexpr uint8_t GmbSysEx::kManufacturer;
+constexpr uint8_t GmbSysEx::kGmbId;
+constexpr uint8_t GmbSysEx::kProtoVer;
+constexpr size_t GmbSysEx::kMaxRequestBytes;
+constexpr size_t GmbSysEx::kDescriptorChunkPayload;
+#endif
+
 namespace {
 
 inline uint8_t b7(uint32_t v) { return (uint8_t)(v & 0x7F); }

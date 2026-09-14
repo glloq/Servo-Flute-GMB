@@ -606,3 +606,98 @@ def test_gmb_capabilities_come_from_the_active_configuration_only():
     # The firmware version has a single source.
     assert 'FIRMWARE_VERSION_MAJOR' in caps
     assert '#define FIRMWARE_VERSION_MAJOR' in read('Servo_flute_ESP32/settings.h')
+
+
+def test_gmb_class_constants_have_an_out_of_class_definition():
+    """Every `static constexpr` member of a gmb class is defined out of class.
+
+    Before C++17 a `static constexpr` data member that is odr-used - passed to
+    `std::vector::push_back(const uint8_t&)`, bound to a reference, taken the
+    address of - needs a namespace-scope definition. The ESP32 Arduino toolchain
+    builds this firmware with a pre-C++17 dialect, so omitting one does not fail
+    the host tests (they run at C++17) but breaks the firmware LINK with
+    "undefined reference to gmb::GmbSysEx::kStart".
+
+    Guarding it here catches the mistake in seconds instead of at the end of an
+    ESP32 build.
+    """
+    import re
+
+    member = re.compile(
+        r'^\s*static\s+constexpr\s+([A-Za-z_][\w:]*)\s+(k[A-Za-z0-9_]*)\s*=', re.M)
+    checked = 0
+    for header in sorted((ROOT / 'Servo_flute_ESP32/gmb').glob('*.h')):
+        source = header.with_suffix('.cpp')
+        if not source.exists():
+            continue
+        text = read(f'Servo_flute_ESP32/gmb/{header.name}')
+        impl = read(f'Servo_flute_ESP32/gmb/{source.name}')
+        cls = None
+        for line in text.splitlines():
+            found = re.match(r'\s*class\s+([A-Za-z_]\w*)\s*\{', line)
+            if found:
+                cls = found.group(1)
+            hit = member.match(line)
+            if not hit or cls is None:
+                continue
+            kind, name = hit.group(1), hit.group(2)
+            expected = f'constexpr {kind} {cls}::{name};'
+            assert expected in impl, (
+                f'{source.name} must define {cls}::{name} out of class '
+                f'("{expected}"), or the ESP32 link fails when it is odr-used')
+            checked += 1
+    assert checked >= 7, 'the GmbSysEx constants must be covered by this check'
+    sysex = read('Servo_flute_ESP32/gmb/GmbSysEx.cpp')
+    assert '#if __cplusplus < 201703L' in sysex, (
+        'the out-of-class definitions are deprecated from C++17 on and must be guarded')
+
+
+def test_gmb_excite_latency_is_not_derived_from_an_actuator_delay():
+    """`timing.excite.latency_ms` is acoustic, and nothing measures it yet.
+
+    `solenoidActivationTimeMs` is the solenoid's full-power drive window before
+    the PWM drops to its holding level - an electrical parameter of the coil, not
+    the moment the air column speaks. Announcing it as the excitation latency
+    would make General-Midi-Boop schedule this flute against a figure it does not
+    honour, so the field stays absent (GMB: absent = unknown) until a real
+    measurement exists.
+    """
+    caps = read('Servo_flute_ESP32/gmb/Capabilities.cpp')
+    assert 'config.solenoidActivationTimeMs' not in caps
+    assert 'uint16_t measuredExciteLatencyMs(const RuntimeConfig& config)' in caps
+    assert 'uint16_t measuredExciteLatencyMs(const RuntimeConfig& config);' in \
+        read('Servo_flute_ESP32/gmb/Capabilities.h')
+    # The single seam a measured value lands in, and the only thing that can turn
+    # the announcement on.
+    body = caps.split('CapabilitySnapshot buildSnapshot', 1)[1]
+    assert 'const uint16_t exciteMs = measuredExciteLatencyMs(config);' in body
+    assert 'if (exciteMs > 0) {' in body
+    # The rest of the two-phase timing model is still announced.
+    for known in ('hasPrepare', 'hasMinNote', 'hasRearticulation'):
+        assert known in body
+    # ...and the serialiser still omits an unknown rather than emitting a zero.
+    descriptor = read('Servo_flute_ESP32/gmb/GmbDescriptor.cpp')
+    assert 'if (t.hasExciteLatency) {' in descriptor
+
+
+def test_gmb_transfer_pin_is_chosen_once_per_transfer():
+    """A retry of segment 0 must not re-pin the transfer onto a newer document.
+
+    The regression: `if (!_serving || index == 0 || stale) _serving = _descriptor;`
+    re-selected the snapshot on every segment-0 request, so a controller that
+    retried segment 0 after a configuration save reassembled segment 0 of one
+    revision with segment 1 of the next.
+    """
+    svc = read('Servo_flute_ESP32/gmb/GmbSysExService.cpp')
+    serve = svc.split('GmbSysExService::serveDescriptorChunk', 1)[1].split('\n}', 1)[0]
+    # The document is chosen on the single question "is a transfer in flight?",
+    # never on which segment was asked for.
+    assert 'const bool starting = !_serving;' in serve
+    assert 'index ==' not in serve, 'the pin must not depend on the segment index'
+    assert 'index == 0' not in svc
+    # Released only when the document has been delivered in full, on the idle
+    # timeout, or when a handshake contradicts it.
+    assert 'expireStaleTransfer' in serve
+    assert '_servingDelivered >= (uint32_t)total' in serve
+    handler = svc.split('GmbSysExService::handleMessage', 1)[1]
+    assert 'if (_serving && _serving != _descriptor) endTransfer();' in handler

@@ -28,6 +28,8 @@ This document centralizes the validation state and known limitations of Servo Fl
 | INMP441 audio analysis | Implemented | Software tested; microphone validation required |
 | Per-note automatic airflow calibration | Implemented | Software tested; flute validation required |
 | Pumps, reservoir, fan, and sensors | Implemented | NOT TESTED — requires hardware |
+| General-Midi-Boop v2 recognition (blocks 1 / 0x10 / 0x11) | Implemented | Software tested; recognition by a real controller over BLE / rtpMIDI requires hardware |
+| GMB announced acoustic latency (`timing.excite.latency_ms`) | Deliberately not announced | Known limitation — requires an acoustic measurement on a real flute |
 | REST/WebSocket authentication | Not implemented | Known limitation |
 
 ## Safety and reliability work completed
@@ -47,6 +49,26 @@ The 2026 firmware audit introduced or reinforced:
 - bounded calibration timeouts and preservation of previous values when a note fails calibration.
 
 These software protections do not replace electrical protection, a physical emergency stop, appropriate fusing, correct power sizing, or physical verification.
+
+## Known General-Midi-Boop limitation
+
+`timing.excite.latency_ms` is the delay between the MIDI order and the note
+being **audible**. General-Midi-Boop uses it to line several instruments up on
+the same beat, so a figure the firmware has not measured is worse than no figure
+at all — and the GMB rule is that an absent field means unknown.
+
+Nothing in this firmware measures the acoustic onset, so the field is **not
+announced**, and in particular is never announced as `0`, which GMB would read as
+"this flute speaks instantly". `solenoidActivationTimeMs` is not that figure
+either: it is the full-power drive window of the solenoid coil before the PWM
+drops to its holding level, an electrical parameter of the valve.
+
+Measuring it needs hardware: a flute, the INMP441, and an onset detection on the
+existing microphone path (`AudioAnalyzer` + `AutoCalibrator`). The firmware side
+is ready for it — `gmb::measuredExciteLatencyMs()` (`Servo_flute_ESP32/gmb/Capabilities.h`)
+is the single seam the value goes through, and the descriptor, the capability
+signature and the block 0x11 notification already carry it end to end, so the
+announcement and the revision bump follow on their own.
 
 ## Known network limitation
 

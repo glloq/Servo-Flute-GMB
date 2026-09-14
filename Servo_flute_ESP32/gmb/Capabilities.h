@@ -110,6 +110,29 @@ CapabilitySnapshot buildSnapshot(const RuntimeConfig& config, bool configValidat
 // can actually play. Exposed for tests and for the descriptor/diagnostics paths.
 bool isPlayableNote(const RuntimeConfig& config, uint8_t index);
 
+// Acoustic excitation latency in milliseconds, or 0 when it is NOT KNOWN.
+//
+// `timing.excite.latency_ms` (GMB section 5.6) is the non-maskable delay between
+// the MIDI order and the moment the note is actually AUDIBLE. General-Midi-Boop
+// uses it to line several instruments up on the same beat, so a wrong figure is
+// worse than no figure at all: an instrument that claims 0 is scheduled as if it
+// spoke instantly.
+//
+// No configuration value measures that delay. In particular
+// `solenoidActivationTimeMs` does NOT: it is the full-power drive window of the
+// solenoid before the PWM drops to its holding level (AirflowController::update),
+// i.e. an electrical parameter of the valve coil, unrelated to when the air
+// column starts to speak.
+//
+// This is the single seam a real figure goes through. A future measurement -
+// naturally an onset detection on the existing microphone path (AudioAnalyzer +
+// AutoCalibrator), persisted as a `measuredExciteLatencyMs` configuration field -
+// only has to be returned here: the snapshot, the descriptor, the revision
+// signature and the block 0x11 notification already carry the value end to end.
+// Until then the honest answer is 0 = unknown, and the descriptor omits the
+// field per the GMB rule "an absent field means unknown".
+uint16_t measuredExciteLatencyMs(const RuntimeConfig& config);
+
 }  // namespace gmb
 
 #endif

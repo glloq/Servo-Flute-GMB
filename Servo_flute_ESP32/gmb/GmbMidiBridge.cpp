@@ -6,6 +6,13 @@
 
 namespace gmb {
 
+// Out-of-class definition of the class constant: ODR-safe on the pre-C++17
+// dialect the ESP32 Arduino toolchain builds this firmware with (same reason as
+// the block at the top of GmbSysEx.cpp). Redundant from C++17 on.
+#if __cplusplus < 201703L
+constexpr size_t GmbMidiBridge::kMaxPorts;
+#endif
+
 GmbMidiBridge::GmbMidiBridge()
   : _service(0), _portCount(0), _pendingLen(0), _pendingPort(0),
     _staged(0), _overruns(0) {

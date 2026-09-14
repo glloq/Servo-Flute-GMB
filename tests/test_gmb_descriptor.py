@@ -90,16 +90,32 @@ def test_configured_instrument_announces_a_real_flute(cases):
         # No string-instrument field is forced into a wind instrument.
         assert not {"tuning", "fret_count", "string_count"} & set(inst["physical"])
         timing = inst["timing"]
-        # Silent finger positioning stays in `prepare` so GMB can anticipate it,
-        # and only the remaining valve latency is charged to `excite`.
+        # Silent finger positioning stays in `prepare` so GMB can anticipate it.
         assert timing["prepare"]["silent"] is True
         assert timing["prepare"]["max_ms"] == 105
-        assert timing["excite"]["latency_ms"] == 50
-        assert timing["excite"]["latency_ms"] < timing["prepare"]["max_ms"]
         # An unknown value is omitted, never announced as 0.
         assert "release_ms" not in timing
-        assert "jitter_ms" not in timing["excite"]
         assert 0 not in [v for v in timing.values() if isinstance(v, int)]
+
+
+def test_acoustic_excite_latency_is_never_guessed(cases):
+    """`timing.excite.latency_ms` is the delay until the note is AUDIBLE.
+
+    General-Midi-Boop aligns instruments on it, so a value the firmware has not
+    measured is worse than no value: the GMB rule is that an absent field means
+    unknown. Nothing here measures the acoustic onset - in particular
+    `solenoidActivationTimeMs` is the solenoid's full-power drive window, not the
+    moment the air column speaks - so the key must be absent everywhere.
+    """
+    for label, case in cases.items():
+        text = case["descriptor"]
+        assert "excite" not in text, f"{label}: excite announced without a measurement"
+        assert "latency_ms" not in text, f"{label}: a latency is announced"
+        inst = json.loads(text)["instruments"][0]
+        timing = inst.get("timing", {})
+        assert "excite" not in timing
+        # And above all it is not announced as an instant attack.
+        assert timing.get("excite", {}).get("latency_ms") != 0
 
 
 def test_note_modes_match_the_configured_fingerings(cases):
