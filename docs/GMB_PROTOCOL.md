@@ -121,12 +121,26 @@ F0 7D 00 10 01 <total_chunks[2]> <chunk_index[2]> <payload…> F7
   never reassemble a document from a segment that does not exist.
 
 **Stability during a transfer.** The descriptor is rendered once, when a
-configuration is activated, and served from a cached string. A transfer is
-pinned to the document it started on: if the user saves a new configuration
-mid-transfer, the remaining segments still come from the original document and
-the block 0x11 notification tells GMB to restart with the new revision. The pin
-is released after the last segment, or after five seconds of silence if the
-controller abandons the transfer.
+configuration is activated, and served from a cached string. A transfer picks its
+document **exactly once**, on the request that starts it, and every later segment
+of that transfer is cut out of that same document — a **retry included, segment 0
+as much as any other**. So if the user saves a new configuration mid-transfer,
+the whole document GMB reassembles is still the one the transfer began with, and
+the block 0x11 notification tells it to restart with the new revision.
+
+The pin is released, and only then may a newer document be chosen, when:
+
+- the pinned document has been delivered in full (its last segment went out and
+  at least as many segments as it has were delivered, so a controller fetching
+  out of order cannot end the transfer on its first request);
+- the controller abandons the transfer — five seconds without a segment request;
+- a handshake announces a `revision` / `descriptor_size` the pinned document no
+  longer matches. Every segment served after that frame would contradict it, so
+  GMB gets a clean restart instead of five seconds of mismatched segments. A
+  handshake that agrees with the pinned document changes nothing.
+
+An out-of-range segment index answers with silence and neither starts a transfer
+nor keeps one alive.
 
 A typical descriptor is 700-1200 bytes, i.e. 4 to 6 segments, fetched once per
 connection.
@@ -185,7 +199,6 @@ compares the revision, so a missed notification only delays the refresh.
       "polyphony": { "max": 1 },
       "timing": {
         "prepare": { "base_ms": 105, "max_ms": 105, "silent": true },
-        "excite": { "latency_ms": 50 },
         "min_note_ms": 10,
         "rearticulation_ms": 50
       },
@@ -232,7 +245,7 @@ are safe extensions.
 | `notes` | the active fingering table (§6.2) |
 | `polyphony.max` | always 1: `NoteSequencer` owns one note at a time and the body has one air column |
 | `timing.prepare` | `servoToSolenoidDelayMs` |
-| `timing.excite.latency_ms` | `solenoidActivationTimeMs`, only with a solenoid valve |
+| `timing.excite.latency_ms` | **not announced**: no measured acoustic latency exists yet (§6.4) |
 | `timing.min_note_ms` | `minNoteDurationMs` |
 | `timing.rearticulation_ms` | `minNoteIntervalForValveCloseMs`, only in an air mode with a physical valve |
 | `expression.cc` | the control changes the firmware really consumes (§6.3) |
@@ -323,17 +336,33 @@ the descriptor keeps them apart:
   and it is **not** charged to latency compensation. The window is fixed rather
   than a function of the interval, so `base_ms` equals `max_ms` and
   `per_semitone_ms` is not announced.
-- **`excite`** is what remains between opening the air path and the note
-  speaking. Only a solenoid valve exposes a configured figure —
-  `solenoidActivationTimeMs`, the full-power drive window that bounds the
-  mechanical opening time.
+- **`excite`** is the delay between opening the air path and the note being
+  **audible**. GMB uses it to line several instruments up on the same beat, so it
+  is the one figure that must never be guessed — and **this firmware does not
+  announce it**, because nothing in it measures the acoustic onset.
 
-The slow preparation time is never folded into `excite.latency_ms`.
+  In particular `solenoidActivationTimeMs` is *not* that figure: it is the
+  full-power drive window of the solenoid coil before the PWM drops to its
+  holding level (`AirflowController::update()`), an electrical parameter of the
+  valve, unrelated to when the air column starts to speak. An earlier revision of
+  this integration announced it as `excite.latency_ms`; that was wrong and has
+  been removed.
 
-**Unknown is omitted, never zero.** `excite.latency_ms` is absent for a servo
-valve, a fan or a direct pump; `excite.jitter_ms` and `release_ms` are always
-absent because nothing measures them. `rearticulation_ms` is absent in an air
-mode with no physical valve, where notes are never re-articulated by closing.
+  The plumbing is in place for the day a real measurement exists:
+  `gmb::measuredExciteLatencyMs()` (`gmb/Capabilities.h`) is the single seam it
+  goes through — naturally an onset detection on the existing microphone path
+  (`AudioAnalyzer` + `AutoCalibrator`), persisted as a configuration field. It
+  returns 0 = unknown today. The snapshot, the descriptor, the capability
+  signature and the block 0x11 notification already carry the value end to end,
+  so the announcement and the revision bump follow on their own.
+
+The slow preparation time is never folded into `excite.latency_ms` either.
+
+**Unknown is omitted, never zero.** A GMB descriptor says "unknown" by leaving a
+field out, so `excite` is absent entirely rather than announced as
+`{"latency_ms": 0}` — which would tell GMB the flute speaks instantly.
+`release_ms` is absent for the same reason. `rearticulation_ms` is absent in an
+air mode with no physical valve, where notes are never re-articulated by closing.
 
 ---
 

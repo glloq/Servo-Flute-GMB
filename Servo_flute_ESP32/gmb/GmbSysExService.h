@@ -7,9 +7,13 @@
  * substring copy, never a JSON render.
  *
  * A transfer in flight is pinned to the descriptor it started on: if the user
- * saves a new configuration while General-Midi-Boop is fetching, the remaining
- * segments still come from the document the transfer began with, and the block
- * 0x11 notification tells GMB to restart with the new revision.
+ * saves a new configuration while General-Midi-Boop is fetching, EVERY remaining
+ * segment - a retry of segment 0 included - still comes from the document the
+ * transfer began with, and the block 0x11 notification tells GMB to restart with
+ * the new revision. The pin is chosen once, when a transfer starts, and released
+ * only when the document has been delivered in full, when the controller
+ * abandons the transfer (idle timeout), or when a handshake announces a document
+ * the pinned one no longer matches.
  *
  * Every MIDI transport that can send SysEx both ways hands complete messages here
  * and writes back whatever bytes are returned; no protocol logic is duplicated
@@ -66,6 +70,9 @@ public:
   // Diagnostics.
   uint32_t handledRequests() const { return _handled; }
   uint32_t droppedRequests() const { return _dropped; }
+  // True while a block 0x10 transfer is pinned to a document. Diagnostics and
+  // tests only; the protocol never exposes it.
+  bool transferInFlight() const { return (bool)_serving; }
 
 private:
   CapabilitySnapshot _snapshot;
@@ -75,6 +82,11 @@ private:
   std::shared_ptr<const std::string> _descriptor;
   std::shared_ptr<const std::string> _serving;   // pinned for the transfer in flight
   uint32_t _servingLastMs;
+  // Segments delivered since this transfer started, retries included. A document
+  // is only considered fully transferred once its last segment has gone out AND
+  // at least as many segments as it has were delivered, so a controller that
+  // fetches out of order cannot end the transfer on its first request.
+  uint32_t _servingDelivered;
 
   uint8_t _handshakeFlags;
   uint32_t _handled;
@@ -93,7 +105,12 @@ private:
   uint32_t _lastRefillMs;
   bool allow(uint32_t nowMs);
 
-  const std::string& servingDocument(uint16_t index, uint32_t nowMs);
+  // Release the pin of a transfer the controller stopped requesting segments for.
+  void expireStaleTransfer(uint32_t nowMs);
+  void endTransfer();
+  // Answer one block 0x10 segment request, starting / advancing / ending the
+  // transfer it belongs to.
+  std::vector<uint8_t> serveDescriptorChunk(uint16_t index, uint32_t nowMs);
 };
 
 }  // namespace gmb
