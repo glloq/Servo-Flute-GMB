@@ -158,6 +158,8 @@ Everything announced comes from the active, validated configuration: the playabl
 
 Saving a configuration that really changes what the instrument can play increments a persistent revision counter, rebuilds the descriptor, and notifies General-Midi-Boop. A reboot alone never increments it.
 
+A field the firmware has not measured is left out rather than guessed — an absent field means "unknown" in GMB. The acoustic excitation latency (`timing.excite.latency_ms`) is therefore not announced: measuring it needs a real flute and the microphone, and announcing `0` would tell General-Midi-Boop the instrument speaks instantly. See [Project status](docs/STATUS.md#known-general-midi-boop-limitation).
+
 See [General-Midi-Boop protocol](docs/GMB_PROTOCOL.md).
 
 ## Web interface
