@@ -142,7 +142,7 @@ The pin is released, and only then may a newer document be chosen, when:
 An out-of-range segment index answers with silence and neither starts a transfer
 nor keeps one alive.
 
-A typical descriptor is 700-1200 bytes, i.e. 4 to 6 segments, fetched once per
+A typical descriptor is 650-1200 bytes, i.e. 4 to 6 segments, fetched once per
 connection.
 
 ---
