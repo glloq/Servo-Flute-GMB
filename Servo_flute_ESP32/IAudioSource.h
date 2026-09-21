@@ -38,6 +38,23 @@ public:
   virtual void setExpectedMidiNote(int midi) { (void)midi; }
   virtual void clearExpectedMidiNote() {}
 
+  // LA NOTE A CHANGE. Signal emis par la chaine d'ACTIONNEURS, qui seule sait
+  // quand l'ordre part ; il ne se devine pas depuis le pitch mesure, ce qui
+  // ferait d'une observation une cause. Tout ce que le suivi acoustique a
+  // appris - ligne de base de brillance du detecteur de couac, historique de
+  // pitch de la mesure de stabilite - decrit la note PRECEDENTE : le garder
+  // fait publier ACOUSTIC_SQUEAK sur une octave montante propre et `stability`
+  // a zero AVEC `stabilityValid` vrai sur une note parfaitement tenue.
+  //
+  // RETOUR VOID, ET C'EST LE CONTRAT : le flux est a SENS UNIQUE. Il n'existe
+  // aucune valeur qu'une decision d'actionneur puisse lire ici, meme par
+  // accident - c'est plus fort qu'un `(void)` a l'appel, qui se retire.
+  //
+  // Implementation par defaut VIDE, comme les deux hooks ci-dessus : une source
+  // qui n'analyse rien (double de test, source simulee) reste valide sans
+  // modification.
+  virtual void resetAcousticTracking() {}
+
   // Frame freshness: the sequence increments once per newly analysed I2S frame,
   // and the timestamp records when that analysis happened (millis). Consumers use
   // these to avoid counting the same frame twice and to detect a frozen source.

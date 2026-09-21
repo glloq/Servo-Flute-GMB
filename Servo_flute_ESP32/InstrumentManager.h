@@ -20,6 +20,11 @@
 // il n'appelle lui-meme aucune de ses methodes.
 class AcousticTiming;
 
+// PHASE 7 (suite) : observateur AUDIO. Meme declaration avancee, meme regle -
+// le manager n'en detient qu'un pointeur OPTIONNEL qu'il transmet ; il
+// n'appelle lui-meme aucune de ses methodes.
+class IAudioSource;
+
 enum HardwareInitStatus {
   HW_INIT_OK,
   HW_PCA0_MISSING,
@@ -104,6 +109,24 @@ public:
   // maintenir en vie tant qu'il est pose (passer nullptr pour le retirer).
   void setTimingObserver(AcousticTiming* obs);
   AcousticTiming* timingObserver() const { return _timingObserver; }
+
+  // --- PHASE 7 : observateur AUDIO -------------------------------------------
+  // OPTIONNEL, nullptr par defaut, MEME discipline que ci-dessus : le pointeur
+  // est transmis tel quel, le flux est a SENS UNIQUE, et l'instrument doit se
+  // comporter STRICTEMENT de la meme facon avec ou sans lui.
+  //
+  // Un SEUL destinataire, le sequenceur, et c'est delibere : ce que cet
+  // observateur recoit, c'est "la note a change", et les seuls instants ou une
+  // note change sont les deux bornes que le sequenceur possede. Le controleur
+  // de souffle, lui, n'a que des instants d'ORDRE intermediaires (consigne
+  // d'air, valve ouverte) : lui faire signaler un changement de note serait
+  // signaler une note neuve au milieu d'une note tenue.
+  //
+  // INDEPENDANT de setTimingObserver() : poser l'un n'impose pas l'autre.
+  // Appartenance : l'appelant reste proprietaire de l'objet vise et doit le
+  // maintenir en vie tant qu'il est pose (passer nullptr pour le retirer).
+  void setAudioObserver(IAudioSource* obs);
+  IAudioSource* audioObserver() const { return _audioObserver; }
 
   void resetAllControllers();
   void powerOnServos();
@@ -220,6 +243,8 @@ private:
 
   // Observateur de chronometrie (PHASE 7). nullptr = aucun, et c'est le defaut.
   AcousticTiming* _timingObserver;
+  // Observateur audio (PHASE 7). nullptr = aucun, et c'est le defaut.
+  IAudioSource* _audioObserver;
 };
 
 #endif

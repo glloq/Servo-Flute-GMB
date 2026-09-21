@@ -147,11 +147,17 @@ WebConfigurator::WebConfigurator(uint16_t port)
 
 WebConfigurator::~WebConfigurator() {
 #if MIC_ENABLED
-  // L'observateur de chronometrie pointe DANS _audio. Le detacher avant de
-  // detruire l'analyseur, sinon l'instrument garde un pointeur pendant et la
-  // premiere note suivante ecrit dans de la memoire liberee. WebConfigurator
-  // possede _audio ; InstrumentManager, lui, survit a sa destruction.
-  if (_instrument) _instrument->setTimingObserver(nullptr);
+  // Les DEUX observateurs pointent dans _audio : celui de chronometrie vise son
+  // membre timing(), celui d'audio vise l'analyseur lui-meme. Les detacher
+  // avant de detruire l'analyseur, sinon l'instrument garde un pointeur pendant
+  // et la premiere note suivante ecrit dans de la memoire liberee.
+  // WebConfigurator possede _audio ; InstrumentManager, lui, survit a sa
+  // destruction. Poses ENSEMBLE dans begin(), retires ENSEMBLE ici : la duree
+  // de vie qu'ils partagent est celle d'un seul objet.
+  if (_instrument) {
+    _instrument->setTimingObserver(nullptr);
+    _instrument->setAudioObserver(nullptr);
+  }
   delete _autoCal;
   delete _audio;
 #endif
@@ -230,6 +236,23 @@ void WebConfigurator::begin(InstrumentManager* instrument, MidiFilePlayer* playe
     // Limite connue, partagee avec _autoCal juste au-dessus : un microphone
     // rebranche apres le demarrage ne rearme pas ce cablage.
     _instrument->setTimingObserver(&_audio->timing());
+    // MEME cablage, MEME sens unique, pour le CHANGEMENT DE NOTE. Sans lui,
+    // resetAcousticTracking() n'a aucun appelant sur le chemin de jeu - seule
+    // une note VISEE la declenche, et seul AutoCalibrator en declare une - donc
+    // la ligne de base de brillance et l'historique de pitch d'une note servent
+    // a juger la suivante : ACOUSTIC_SQUEAK publie sur une octave montante
+    // propre, `stability` a 0,00 avec `stabilityValid` vrai.
+    //
+    // POSE ET RETIRE AVEC L'AUTRE, toujours : les deux visent le meme _audio,
+    // que le destructeur detruit. Les desapparier laisserait un pointeur
+    // pendant.
+    //
+    // Conditionne au MEME `micOk`, mais pour une raison qui lui est propre :
+    // sans microphone, aucune frame n'arrive et il n'y a aucun suivi acoustique
+    // a remettre a zero. Poser l'observateur serait alors sans effet, jamais
+    // dangereux - c'est la symetrie de pose/retrait qui commande ici, pas la
+    // prudence.
+    _instrument->setAudioObserver(_audio);
   }
   if (DEBUG) {
     Serial.print("DEBUG: WebConfigurator - Microphone INMP441: ");

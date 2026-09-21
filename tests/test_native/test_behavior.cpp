@@ -1240,6 +1240,64 @@ static TimingFrame timingFrameAt(unsigned long ms, float db, bool pitchOk){
   f.pitchValid=pitchOk; f.pitchHz=pitchOk?261.63f:0.0f; return f;
 }
 
+// --- Observateur AUDIO de test ----------------------------------------------
+// Il enregistre CE QUI EST NOTIFIE et QUAND. Le hook rend void : il n'a meme
+// pas de valeur a rendre a la chaine d'actionneurs, et ne touche a rien d'autre
+// qu'a lui-meme. C'est exactement le pouvoir que la production accorde a une
+// source audio - aucun.
+struct AudioObserverSpy : public IAudioSource {
+  int resets = 0;
+  unsigned long lastMs = 0;
+
+  // Etat que l'espion PUBLIE. Le rendre absurde (variante hostile) ne doit rien
+  // changer a la mecanique : rien dans la chaine d'actionneurs ne le lit.
+  bool micDetected = true, active = false, snd = false, valid = false;
+  float rms = 0, hz = 0, cents = 0, conf = 0; int midi = 0;
+  uint32_t seq = 0; unsigned long ts = 0;
+
+  // Analyseur qui DERAILLE : dans le hook lui-meme il maltraite son etat, se
+  // reappelle (hook reentrant) et publie n'importe quoi. Aucune de ces lignes
+  // ne peut atteindre un actionneur - c'est ce que le test verifie.
+  bool berserk = false;
+
+  void resetAcousticTracking() override {
+    resets++;
+    lastMs = millis();
+    if (berserk) {
+      active = !active; snd = !snd; valid = true; midi = 127;
+      rms = 1e9f; hz = -1.0f; cents = 9999.0f; conf = 2.0f;
+      seq = 0; ts = millis() + 100000UL;
+      berserk = false; resetAcousticTracking(); berserk = true;  // reentrance bornee
+    }
+  }
+
+  bool isMicDetected() const override { return micDetected; }
+  void setActive(bool a) override { active = a; }
+  bool isActive() const override { return active; }
+  float getRMS() const override { return rms; }
+  bool isSoundDetected() const override { return snd; }
+  float getPitchHz() const override { return hz; }
+  int getPitchMidi() const override { return midi; }
+  float getPitchCents() const override { return cents; }
+  float getPitchConfidence() const override { return conf; }
+  bool isPitchValid() const override { return valid; }
+  uint32_t getFrameSequence() const override { return seq; }
+  unsigned long getFrameTimestamp() const override { return ts; }
+};
+
+// Source audio maltraitee DEPUIS L'EXTERIEUR, en pleine note : remises a zero
+// non sollicitees, mise en pause, note visee inventee puis retiree. Pendant du
+// timingDisturb() ci-dessous, pour l'autre observateur.
+static void audioDisturb(AudioObserverSpy* a, int step){
+  if (a == nullptr) return;
+  switch (step % 4) {
+    case 0: a->resetAcousticTracking(); break;   // remise a zero en pleine note
+    case 1: a->setActive(false); break;
+    case 2: a->setActive(true); break;
+    case 3: a->clearExpectedMidiNote(); a->setExpectedMidiNote(127); break;
+  }
+}
+
 // Signature COMPLETE de ce que la mecanique a fait a cet instant : etat du
 // sequenceur, valve, angles reellement ecrits sur les servos, niveau de commande
 // du solenoide (PWM et TOR), demande de pompe, nombre total d'ecritures PWM,
@@ -1283,7 +1341,13 @@ static void timingDisturb(AcousticTiming* t, int step){
 // note hors plage, note nominale, Control Change sur note tenue, remplacement
 // monophonique, note plus courte que la duree minimale, panic de transport,
 // prise de possession par le calibrateur, All Sound Off.
-static std::string timingScenario(AcousticTiming* obs, void (*disturb)(AcousticTiming*,int)){
+//
+// Les DEUX observateurs de la PHASE 7 y passent, chacun OPTIONNEL et
+// independant : la chronometrie et la source audio. Le meme scenario sert donc
+// aux deux tests d'equivalence, et la trace comparee est la meme.
+static std::string observerScenario(AcousticTiming* obs, void (*disturb)(AcousticTiming*,int),
+                                    AudioObserverSpy* audioObs = nullptr,
+                                    void (*audioDist)(AudioObserverSpy*,int) = nullptr){
   timingCfg();
   extern int __pwm_write_count;
   __pwm_write_count=0; __digital_writes.clear(); __analog_writes.clear();
@@ -1291,9 +1355,21 @@ static std::string timingScenario(AcousticTiming* obs, void (*disturb)(AcousticT
   assert(im.beginSafe());
   im.setTimingObserver(obs);
   assert(im.timingObserver()==obs);
+  im.setAudioObserver(audioObs);
+  assert(im.audioObserver()==audioObs);
   std::string tr;
   int step=0;
-  auto tick=[&](){ if(disturb) disturb(obs,step++); im.update(); tr+=timingTraceStep(im); };
+  // LE MICRO ECOUTE, comme en vrai. AcousticTiming::noteCommanded() refuse
+  // desormais d'ouvrir un cycle quand aucune frame n'est arrivee depuis plus de
+  // MIC_FRAME_STALE_MS : sans ce flux, le scenario n'exercerait plus qu'un
+  // chemin de refus, et l'anti-vacuite du test 1 (t1.hasLast()) serait fausse.
+  // Le flux entre APRES le derangement : la variante hostile appelle reset(),
+  // qui efface la reference de flux, et on veut que la suite reste realiste.
+  auto tick=[&](){ if(disturb) disturb(obs,step);
+                   if(audioDist) audioDist(audioObs,step);
+                   step++;
+                   if(obs) (void)obs->update(timingFrameAt(millis(),-70.0f,false));
+                   im.update(); tr+=timingTraceStep(im); };
 
   tr += timingTraceStep(im);                              // etat initial
   im.noteOn(99,100); tick(); tick();                      // hors plage : refusee
@@ -1322,9 +1398,9 @@ static std::string timingScenario(AcousticTiming* obs, void (*disturb)(AcousticT
 // influencer une decision d'actionneur (par exemple fermer la valve parce que
 // valveOpened() a rendu false), les traces divergeraient.
 static void timing_observer_cannot_touch_actuators(){
-  const std::string without = timingScenario(nullptr, nullptr);
-  AcousticTiming t1; const std::string present = timingScenario(&t1, nullptr);
-  AcousticTiming t2; const std::string hostile = timingScenario(&t2, timingDisturb);
+  const std::string without = observerScenario(nullptr, nullptr);
+  AcousticTiming t1; const std::string present = observerScenario(&t1, nullptr);
+  AcousticTiming t2; const std::string hostile = observerScenario(&t2, timingDisturb);
   assert(present == without);
   assert(hostile == without);
   // ANTI-VACUITE : sans cela le test comparerait deux scenarios ou l'observateur
@@ -1357,6 +1433,13 @@ static void timing_nominal_reports_four_orders_in_order(){
   assert(im.timingObserver()==&t);
   assert(!t.active() && !t.hasLast());
 
+  // 0. LE MICRO ECOUTE AVANT LA NOTE. noteCommanded() refuse d'ouvrir un cycle
+  //    tant que le flux de frames n'est pas vivant : un verdict sur le son
+  //    exige d'abord que quelqu'un ecoute. On fournit donc le plancher que
+  //    fournit une vraie chaine, sur la grille de frames.
+  const unsigned long period = AcousticTimingCfg::kFramePeriodMs;
+  for(int i=0;i<3;i++){ assert(t.update(timingFrameAt(__test_millis,-70.0f,false))); __test_millis += period; }
+
   // 1. ORDRE DE NOTE. Le message MIDI n'est qu'un enfilement : rien n'est
   //    chronometre tant que le sequenceur n'a pas demarre la note.
   im.noteOn(60,100);
@@ -1381,16 +1464,35 @@ static void timing_nominal_reports_four_orders_in_order(){
 
   // Le SON apparait. Les frames sont injectees a la main : ce test ne porte que
   // sur le cote ORDRE, le cote son est cable ailleurs (AudioAnalyzer).
-  const unsigned long period = AcousticTimingCfg::kFramePeriodMs;
+  //
+  // CE QUE CE TEST N'ASSERTE PLUS, ET POURQUOI. Il exigeait
+  // `soundOnsetTimestamp == tOnset`, l'horodatage EXACT de la frame qui
+  // franchit le seuil. Cette egalite n'etait vraie que parce qu'AUCUNE frame ne
+  // precedait l'attaque : sans frame precedente, crossingInstant() n'a pas de
+  // point bas et retombe sur la quantification. Des qu'un micro ecoute
+  // vraiment - et il le faut desormais pour que la note soit chronometree du
+  // tout - l'interpolation du franchissement fait son travail et place
+  // l'attaque ENTRE les deux frames qui l'encadrent. L'assertion passait donc
+  // pour une mauvaise raison depuis le debut. On la remplace par ce qui est
+  // vrai : l'attaque tombe dans l'intervalle, jamais avant sa cause, et les
+  // deux latences en decoulent exactement. L'interpolation reste au reglage de
+  // PRODUCTION : un test qui desactive un comportement de production pour
+  // garder son assertion ne teste plus la production.
   __test_millis += period;
-  const uint32_t tOnset = (uint32_t)__test_millis;
+  const uint32_t tFloor = (uint32_t)__test_millis;     // derniere frame sous le seuil
+  assert(t.update(timingFrameAt(__test_millis,-70.0f,false)));
+  __test_millis += period;
+  const uint32_t tCross = (uint32_t)__test_millis;     // premiere frame au-dessus
   assert(t.update(timingFrameAt(__test_millis,-20.0f,true)));
   for(int i=0;i<4;i++){
     __test_millis += period;
     assert(t.update(timingFrameAt(__test_millis,-20.0f,true)));
     im.update();
   }
-  assert(t.current().hasSoundOnset && t.current().soundOnsetTimestamp==tOnset);
+  assert(t.current().hasSoundOnset);
+  const uint32_t tOnset = t.current().soundOnsetTimestamp;
+  assert((int32_t)(tOnset - tFloor) >= 0 && (int32_t)(tCross - tOnset) >= 0);
+  assert((int32_t)(tOnset - tCmd) > 0);                // le son ne precede pas son ordre
   assert(t.current().commandToSoundLatency.valid && t.current().airToSoundLatency.valid);
   assert(t.current().commandToSoundLatency.ms == tOnset - tCmd);
   assert(t.current().airToSoundLatency.ms == tOnset - tAir);
@@ -1431,9 +1533,15 @@ static void timing_refused_note_is_never_commanded(){
   timingCfg();
   InstrumentManager im; assert(im.beginSafe());
   AcousticTiming t; im.setTimingObserver(&t);
+  // LE MICRO ECOUTE TOUT DU LONG, et c'est essentiel ici : la garde de vivacite
+  // de noteCommanded() ne doit PAS etre ce qui fait passer ce test. On veut que
+  // rien ne soit chronometre parce que rien n'est commande, pas parce que
+  // personne n'ecoutait. Avec le flux vivant, un ordre pose au mauvais endroit
+  // serait ACCEPTE, et les assertions ci-dessous le verraient.
   im.setActuatorSessionActive(true);
+  assert(t.update(timingFrameAt(__test_millis,-70.0f,false)));
   im.noteOn(60,100);
-  for(int i=0;i<5;i++){ __test_millis+=20; im.update(); }
+  for(int i=0;i<5;i++){ __test_millis+=20; assert(t.update(timingFrameAt(__test_millis,-70.0f,false))); im.update(); }
   assert(im.getSequencer().getState()==STATE_IDLE);
   assert(!t.active() && !t.hasLast());
   assert(!t.current().hasNoteCommand);
@@ -1444,7 +1552,7 @@ static void timing_refused_note_is_never_commanded(){
   // (b) Note hors plage : refusee par isNotePlayable(), jamais enfilee.
   im.setActuatorSessionActive(false);
   im.noteOn(99,100);
-  for(int i=0;i<3;i++){ __test_millis+=20; im.update(); }
+  for(int i=0;i<3;i++){ __test_millis+=20; assert(t.update(timingFrameAt(__test_millis,-70.0f,false))); im.update(); }
   assert(im.getSequencer().getState()==STATE_IDLE);
   assert(!t.active() && !t.hasLast() && t.rejectedEvents()==0);
 
@@ -1461,8 +1569,9 @@ static void timing_refused_note_is_never_commanded(){
   assert(!dead.beginSafe());
   assert(dead.hardwareInitStatus()==HW_PCA0_MISSING);
   AcousticTiming t2; dead.setTimingObserver(&t2);
+  assert(t2.update(timingFrameAt(__test_millis,-70.0f,false)));   // le micro ecoute
   dead.noteOn(60,100); dead.noteOff(60);
-  for(int i=0;i<5;i++){ __test_millis+=50; dead.update(); }
+  for(int i=0;i<5;i++){ __test_millis+=50; assert(t2.update(timingFrameAt(__test_millis,-70.0f,false))); dead.update(); }
   dead.allSoundOff();
   assert(dead.getSequencer().getState()==STATE_IDLE);
   assert(!t2.active() && !t2.hasLast());
@@ -1481,6 +1590,9 @@ static void timing_monophonic_replacement_closes_before_opening(){
   AcousticTiming t; im.setTimingObserver(&t);
   const unsigned long period = AcousticTimingCfg::kFramePeriodMs;
 
+  // Le micro ecoute avant la note : sans flux vivant, noteCommanded() refuse
+  // d'ouvrir le cycle et il n'y aurait aucun remplacement a observer.
+  assert(t.update(timingFrameAt(__test_millis,-70.0f,false)));
   im.noteOn(60,100); im.update();
   const uint32_t cmd60 = t.current().noteCommandTimestamp;
   __test_millis += cfg.servoToSolenoidDelayMs; im.update();
@@ -1535,6 +1647,215 @@ static void timing_monophonic_replacement_closes_before_opening(){
   im.allSoundOff();
 }
 
+/*============================================================================
+ * OBSERVATEUR AUDIO - le changement de note
+ *
+ * AudioAnalyzer::resetAcousticTracking() remet a zero la ligne de base de
+ * brillance du detecteur de couac et l'historique de pitch. Son en-tete promet
+ * qu'elle est appelee "quand la note change" ; sur le chemin de JEU elle ne
+ * l'etait JAMAIS - seule une note VISEE la declenchait, et seul AutoCalibrator
+ * en declare une. Mesure sur la chaine reelle, un legato C4 -> C5 publiait six
+ * frames d'etat "squeak" (96 ms) sur une note propre - le couac est 3e dans
+ * l'ordre de priorite, il masque tout ce qui suit - et `stability` a 0,00 AVEC
+ * `stabilityValid` vrai pendant sept frames.
+ *
+ * Le signal existe : NoteSequencer tire deja aux deux bornes de la note. Il lui
+ * manquait un observateur audio. Les trois tests ci-dessous verifient QUAND il
+ * est notifie, que son absence ne change STRICTEMENT rien a la mecanique, et
+ * que le remplacement monophonique - y compris en legato valve ouverte, ou
+ * aucune frame silencieuse ne peut servir de signal de rechange - est bien
+ * signale.
+ *==========================================================================*/
+
+// TEST 5. Les notifications tombent aux DEUX bornes de la note, et NULLE PART
+// ailleurs : ni a l'arrivee du message MIDI, ni sur un Control Change, ni sur
+// une note refusee, ni pendant la fenetre de positionnement, ni sur le silence
+// qui suit.
+static void audio_observer_notified_at_note_bounds_only(){
+  timingCfg();
+  InstrumentManager im; assert(im.beginSafe());
+  AudioObserverSpy spy; im.setAudioObserver(&spy);
+  assert(im.audioObserver()==&spy);
+  assert(spy.resets==0);
+
+  // 1. UN MESSAGE MIDI N'EST PAS UNE NOTE. L'enfilement ne notifie rien : la
+  //    note peut encore etre perdue (file pleine, file videe par un panic).
+  im.noteOn(60,100);
+  assert(spy.resets==0);
+
+  // 2. DEBUT DE NOTE : le sequenceur vient d'ecrire le motif de doigte. C'est
+  //    la, et pas avant, que la note change - et c'est AVANT que la moindre
+  //    frame de la note neuve n'arrive, ce qui est tout l'interet.
+  const unsigned long tOn = (unsigned long)__test_millis;
+  im.update();
+  assert(im.getSequencer().getState()==STATE_POSITIONING);
+  assert(spy.resets==1 && spy.lastMs==tOn);
+
+  // 3. FENETRE DE POSITIONNEMENT : la consigne d'air et l'ouverture de la valve
+  //    sont des instants d'ordre INTERMEDIAIRES, pas des changements de note.
+  //    Notifier ici effacerait l'historique juste avant la frame qu'on mesure.
+  __test_millis += cfg.servoToSolenoidDelayMs; im.update();
+  assert(im.getSequencer().getState()==STATE_PLAYING && im.getAirflowCtrl().isValveOpen());
+  assert(spy.resets==1);
+
+  // 4. CONTROL CHANGE sur note tenue : la note n'a pas change.
+  __test_millis += 30; im.handleControlChange(11,64); im.update();
+  assert(im.getSequencer().getCurrentNote()==60 && im.getSequencer().isPlaying());
+  assert(spy.resets==1);
+  __test_millis += 30; im.handleControlChange(2,100); im.update();   // souffle
+  assert(im.getSequencer().getCurrentNote()==60 && im.getSequencer().isPlaying());
+  assert(spy.resets==1);
+
+  // 5. NOTE REFUSEE (hors plage) : rien n'atteint le sequenceur. Une note qui
+  //    ne sonne pas ne fait pas changer de note.
+  im.noteOn(99,100);
+  for(int i=0;i<3;i++){ __test_millis += 20; im.update(); }
+  assert(im.getSequencer().getCurrentNote()==60 && im.getSequencer().isPlaying());
+  assert(spy.resets==1);
+
+  // 6. FIN DE NOTE, a l'instant ou l'extinction est REELLEMENT commandee - pas
+  //    a l'arrivee du Note Off, qui peut etre differe par minNoteDurationMs.
+  __test_millis += cfg.minNoteDurationMs;
+  const unsigned long tOff = (unsigned long)__test_millis;
+  im.noteOff(60); im.update();
+  assert(!im.getAirflowCtrl().isValveOpen());
+  assert(spy.resets==2 && spy.lastMs==tOff);
+
+  // 7. LE SILENCE QUI SUIT n'est pas un changement de note : plus rien.
+  for(int i=0;i<10;i++){ __test_millis += 20; im.update(); }
+  assert(im.getSequencer().getState()==STATE_IDLE);
+  assert(spy.resets==2);
+
+  // 8. OBSERVATEUR RETIRE : le pointeur est le SEUL chemin, et le retirer le
+  //    coupe vraiment. Sans cette verification, un espion cable en dur quelque
+  //    part ferait passer tout le reste.
+  im.setAudioObserver(nullptr);
+  assert(im.audioObserver()==nullptr);
+  im.noteOn(61,100); im.update();
+  __test_millis += cfg.servoToSolenoidDelayMs; im.update();
+  assert(im.getSequencer().getState()==STATE_PLAYING);
+  im.allSoundOff();
+  assert(spy.resets==2);
+}
+
+// TEST 6. SANS observateur audio le comportement des actionneurs est
+// STRICTEMENT inchange - et il l'est aussi avec un observateur present, ou avec
+// un observateur qui deraille (hook reentrant, etat interne absurde, remises a
+// zero non sollicitees en pleine note). Construction identique a
+// timing_observer_cannot_touch_actuators : meme scenario complet joue trois
+// fois, traces d'actionneurs comparees CARACTERE POUR CARACTERE.
+static void audio_observer_cannot_touch_actuators(){
+  const std::string without = observerScenario(nullptr, nullptr, nullptr, nullptr);
+  AudioObserverSpy a1;  const std::string present = observerScenario(nullptr, nullptr, &a1, nullptr);
+  AudioObserverSpy a2;  a2.berserk = true;
+  const std::string hostile = observerScenario(nullptr, nullptr, &a2, audioDisturb);
+  assert(present == without);
+  assert(hostile == without);
+
+  // ANTI-VACUITE : sans cela le test comparerait trois scenarios ou
+  // l'observateur ne recoit rien, et ne prouverait rigoureusement rien. Le
+  // scenario contient des debuts ET des fins de note.
+  assert(a1.resets > 0);
+  assert(a1.lastMs > 0);
+
+  // LES DEUX OBSERVATEURS ENSEMBLE, qui est la configuration REELLE du
+  // firmware (WebConfigurator les pose et les retire ensemble). Les cabler tous
+  // les deux ne doit pas davantage bouger la mecanique.
+  AcousticTiming t; AudioObserverSpy a3;
+  const std::string both = observerScenario(&t, nullptr, &a3, nullptr);
+  assert(both == without);
+  assert(t.hasLast() && a3.resets > 0);
+
+  // ... y compris quand LES DEUX deraillent en meme temps.
+  AcousticTiming t2; AudioObserverSpy a4; a4.berserk = true;
+  const std::string bothHostile = observerScenario(&t2, timingDisturb, &a4, audioDisturb);
+  assert(bothHostile == without);
+  assert(t2.rejectedEvents() > 0);
+}
+
+// TEST 7. REMPLACEMENT MONOPHONIQUE EN LEGATO - le cas exact de l'audit.
+// Les deux notes s'enchainent sans que la valve se referme entre elles
+// (shouldCloseValveBetweenNotes() rend false quand la note suivante est deja
+// programmee assez tot), donc le flux audio ne contient PAS une seule frame
+// sous le plancher de niveau. Or c'est cette frame silencieuse qui fait
+// normalement oublier au detecteur de couac le timbre de la note precedente
+// (AcousticQuality::forgetHeldNote). Ici elle n'existe pas : la notification
+// est le SEUL signal de changement de note qui existe, et c'est exactement la
+// que le defaut se manifestait (C4 -> C5, +12 demi-tons).
+//
+// On construit le sequenceur directement : seuls des evenements PROGRAMMES
+// (lecture d'un fichier MIDI) ont un horodatage futur, et il en faut un pour
+// que la valve reste ouverte.
+static void audio_observer_sees_the_legato_replacement(){
+  resetCfg();
+  cfg.airMode=AIR_MODE_PUMP_VALVE; cfg.valveType=0;
+  cfg.numNotes=3;
+  for(int i=0;i<3;i++){ cfg.notes[i].midiNote=(uint8_t)(60+12*i); cfg.notes[i].airflowMinPercent=0; cfg.notes[i].airflowMaxPercent=100; cfg.notes[i].airflowNominalPercent=50; }
+  cfg.servoToSolenoidDelayMs=10; cfg.minNoteDurationMs=0;
+  cfg.minNoteIntervalForValveCloseMs=200;   // assez long pour que la valve reste ouverte
+  __test_millis=0;
+
+  FingerController fc([](uint8_t,uint16_t,uint16_t){});
+  AirflowController ac([](uint8_t,uint16_t,uint16_t){});
+  EventQueue q(16); NoteSequencer ns(q,fc,ac); ns.begin();
+  AudioObserverSpy spy; ns.setAudioObserver(&spy);
+  assert(ns.audioObserver()==&spy);
+
+  // C4 a 0, C5 a 100, puis C4 a 200. Le TROISIEME est indispensable : c'est lui
+  // que shouldCloseValveBetweenNotes() voit dans la file au moment du premier
+  // remplacement, et c'est sa proximite qui garde la valve ouverte.
+  assert(q.enqueueScheduledEvent(EVENT_NOTE_ON,60,100,0));
+  assert(q.enqueueScheduledEvent(EVENT_NOTE_ON,72,100,100));
+  assert(q.enqueueScheduledEvent(EVENT_NOTE_ON,60,100,200));
+
+  ns.update();
+  assert(ns.getState()==STATE_POSITIONING && ns.getCurrentNote()==60);
+  assert(spy.resets==1 && spy.lastMs==0);
+
+  __test_millis=10; ns.update();
+  assert(ns.getState()==STATE_PLAYING && ac.isValveOpen());
+  assert(spy.resets==1);          // l'ouverture de la valve n'est pas une note neuve
+
+  __test_millis=50; ns.update();
+  assert(spy.resets==1);          // au milieu de la note : rien
+
+  // C5 est avancee du delai de positionnement : elle devient due a 90.
+  __test_millis=90; ns.update();
+  assert(ns.getCurrentNote()==72 && ns.getState()==STATE_POSITIONING);
+  // LA VALVE N'A PAS ETE REFERMEE. Aucune frame silencieuse ne separera les
+  // deux notes dans le flux audio.
+  assert(ac.isValveOpen());
+  // LES DEUX BORNES ont ete notifiees dans la meme passe : fin de l'ancienne,
+  // debut de la nouvelle. La notification de fin est posee HORS de la branche
+  // qui ferme la valve - sinon ce legato-ci ne notifierait que le debut.
+  assert(spy.resets==3 && spy.lastMs==90);
+
+  __test_millis=100; ns.update();
+  assert(ns.getState()==STATE_PLAYING && ac.isValveOpen());
+  assert(spy.resets==3);
+
+  // Deuxieme remplacement, C5 -> C4. Plus aucun evenement derriere : la valve
+  // se referme cette fois, et les deux bornes sont notifiees de la meme facon.
+  __test_millis=190; ns.update();
+  assert(ns.getCurrentNote()==60 && ns.getState()==STATE_POSITIONING);
+  assert(!ac.isValveOpen());
+  assert(spy.resets==5 && spy.lastMs==190);
+
+  // Arret force (panic / All Sound Off) : c'est une fin de note, et la derniere
+  // occasion de signaler que plus rien ne sonne - aucune note ne suivra pour le
+  // faire a sa place.
+  __test_millis=200; ns.update();
+  assert(ns.getState()==STATE_PLAYING);
+  __test_millis=260; ns.stop();
+  assert(ns.getState()==STATE_IDLE);
+  assert(spy.resets==6 && spy.lastMs==260);
+
+  // Un second stop() sans note en cours ne notifie RIEN : on ne signale pas un
+  // changement de note quand il n'y a pas de note.
+  ns.stop();
+  assert(spy.resets==6);
+}
+
 // General-Midi-Boop recognition tests (tests/test_native/test_gmb.cpp).
 void gmb_run_all_tests();
-int main(){ gmb_run_all_tests(); audit_run_all_tests(); audio_run_all_tests(); spectral_hnr_run_all_tests(); quality_run_all_tests(); timing_run_all_tests(); pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); airflow_nominal_drives_angle(); autocal_frozen_source_fails(); autocal_air_supply_gate(); autocal_14_notes_no_timeout(); autocal_plus70_cents_rejected(); autocal_storage_failure_restores(); autocal_range_finder(); autocal_range_finder_stale(); autocal_range_apply_storage(); autocal_air_lost_midnote(); calair_reservoir_requires_sensor(); instrument_power_held_during_actuator_session(); instrument_ignores_midi_during_calibration(); instrument_inert_after_pca_failure(); air_pump_demand_follows_real_note(); air_fan_speed_follows_replacement(); pump_enable_and_single_pump_test(); gpio_validation_reserved_and_conflicts(); tof_nonblocking_stale_safety(); tof_presence_is_not_initialisation(); autocal_global_timeout_scales_to_max_notes(); airflow_cc2_silence_and_live_cc(); airflow_attack_cancelled_on_rest(); airflow_cc2_timeout_on_held_note(); audio_yin_pcm_core(); audio_mic_classification(); note_sequencer_short_note_still_sounds(); instrument_transport_lost_panics(); angle_servo_enable_requires_restart(); midi_tempo_map_math(); midi_type1_global_tempo(); midi_type0_tempo_change_midtrack(); midi_truncation_rejected(); midi_unsupported_formats_rejected(); timing_observer_cannot_touch_actuators(); timing_nominal_reports_four_orders_in_order(); timing_refused_note_is_never_commanded(); timing_monophonic_replacement_closes_before_opening(); std::cout << "behavior tests passed\n"; }
+int main(){ gmb_run_all_tests(); audit_run_all_tests(); audio_run_all_tests(); spectral_hnr_run_all_tests(); quality_run_all_tests(); timing_run_all_tests(); pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); airflow_nominal_drives_angle(); autocal_frozen_source_fails(); autocal_air_supply_gate(); autocal_14_notes_no_timeout(); autocal_plus70_cents_rejected(); autocal_storage_failure_restores(); autocal_range_finder(); autocal_range_finder_stale(); autocal_range_apply_storage(); autocal_air_lost_midnote(); calair_reservoir_requires_sensor(); instrument_power_held_during_actuator_session(); instrument_ignores_midi_during_calibration(); instrument_inert_after_pca_failure(); air_pump_demand_follows_real_note(); air_fan_speed_follows_replacement(); pump_enable_and_single_pump_test(); gpio_validation_reserved_and_conflicts(); tof_nonblocking_stale_safety(); tof_presence_is_not_initialisation(); autocal_global_timeout_scales_to_max_notes(); airflow_cc2_silence_and_live_cc(); airflow_attack_cancelled_on_rest(); airflow_cc2_timeout_on_held_note(); audio_yin_pcm_core(); audio_mic_classification(); note_sequencer_short_note_still_sounds(); instrument_transport_lost_panics(); angle_servo_enable_requires_restart(); midi_tempo_map_math(); midi_type1_global_tempo(); midi_type0_tempo_change_midtrack(); midi_truncation_rejected(); midi_unsupported_formats_rejected(); timing_observer_cannot_touch_actuators(); timing_nominal_reports_four_orders_in_order(); timing_refused_note_is_never_commanded(); timing_monophonic_replacement_closes_before_opening(); audio_observer_notified_at_note_bounds_only(); audio_observer_cannot_touch_actuators(); audio_observer_sees_the_legato_replacement(); std::cout << "behavior tests passed\n"; }

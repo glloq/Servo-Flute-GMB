@@ -35,7 +35,8 @@ InstrumentManager::InstrumentManager()
     _resetControllersRequested(false),
     _prevSequencerState(STATE_IDLE),
     _prevNoteSounding(false),
-    _timingObserver(nullptr) {
+    _timingObserver(nullptr),
+    _audioObserver(nullptr) {
 }
 
 void InstrumentManager::setTimingObserver(AcousticTiming* obs) {
@@ -48,6 +49,24 @@ void InstrumentManager::setTimingObserver(AcousticTiming* obs) {
   _timingObserver = obs;
   _sequencer.setTimingObserver(obs);
   _airflowCtrl.setTimingObserver(obs);
+}
+
+void InstrumentManager::setAudioObserver(IAudioSource* obs) {
+  // MEME discipline que setTimingObserver() juste au-dessus : simple
+  // transmission d'un pointeur. Aucun appel n'est fait sur l'observateur ici,
+  // aucune consigne d'actionneur n'est (re)calculee, et poser ou retirer un
+  // observateur en pleine note ne touche ni la valve, ni le souffle, ni la
+  // pompe.
+  //
+  // UN destinataire, pas deux : le sequenceur. Ce signal dit "la note a
+  // change", et les deux seuls instants ou une note change sont ses deux
+  // bornes. Le controleur de souffle ne possede que des instants d'ordre
+  // INTERMEDIAIRES (consigne d'air, valve ouverte), qui tombent AU MILIEU
+  // d'une note : lui donner cet observateur ferait effacer l'historique
+  // acoustique de la note en cours a chaque ouverture de valve, c'est-a-dire
+  // juste avant la frame qu'on cherche precisement a mesurer.
+  _audioObserver = obs;
+  _sequencer.setAudioObserver(obs);
 }
 
 void InstrumentManager::begin() {
