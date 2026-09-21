@@ -535,6 +535,28 @@ analysis. This is the same ownership rule the actuator path already follows.
 | 4 | `AcousticFeatures` | **unit tested** |
 | 5+ | Noise model, classification, timing, quality, calibration | not started |
 
+## Next phase recommended
+
+**PHASE 5 — noise model**, for two reasons.
+
+First, `harmonicToNoiseRatio` is currently an approximation that conflates
+breath with high-order harmonics. Every downstream measurement the brief asks
+for — breathiness, acoustic quality score, a better auto-calibration — rests on
+being able to separate *the instrument's noise* from *the note*. Building those
+on the current approximation would mean building on sand.
+
+Second, the flute's own machinery (pump, fan, servos) is part of the noise, and
+its level depends on the operating point. A single global noise floor measured
+once per note, as the auto-calibration does today, cannot represent that. The
+per-state profiles the brief describes (`ambient`, `pump_idle`, `pump_medium`,
+`fan_high`, …) are what make an SNR meaningful.
+
+PHASE 5 also brings the configurable DC-removal / high-pass / low-pass chain,
+which will reduce the mechanical noise reaching every other measurement.
+
+Only after that do PHASE 6 (classification) and PHASE 7 (timing) rest on solid
+ground.
+
 ## Known limitations
 
 - Nothing has been validated against a real microphone or a real flute. Every
