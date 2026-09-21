@@ -1629,6 +1629,18 @@ def test_audio_phase5_noise_is_per_state_and_honest():
     # Une capture trop courte est REJETEE.
     end = nm.split('bool NoiseModel::endCapture')[1].split('\n}\n')[0]
     assert 'MIC_NOISE_MIN_FRAMES' in end
+    # Le spectre doit etre RECALCULE pour une capture de bruit. analyzeSpectrum()
+    # ne calcule rien sans fondamentale fiable, or une capture de bruit n'a par
+    # definition pas de note : reutiliser le spectre laisse par la derniere note
+    # ferait decrire cette note au profil, pas le bruit.
+    aa = code_only(read('Servo_flute_ESP32/AudioAnalyzer.cpp'))
+    frame = aa.split('void AudioAnalyzer::analyzeFrame()')[1].split('\n}\n')[0]
+    cap = frame.split('_noise.isCapturing()')[1]
+    assert '_spectral.computeSpectrum(' in cap
+    assert cap.index('_spectral.computeSpectrum(') < cap.index('_noise.accumulate(')
+    # ...et si le calcul echoue, on passe nullptr plutot qu'un spectre perime.
+    assert 'nullptr' in cap
+
     # L'etat reel est declare par la couche qui le connait.
     web = code_only(read('Servo_flute_ESP32/WebConfigurator.cpp'))
     assert 'setAirSourceState(cfg.airMode' in web

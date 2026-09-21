@@ -592,6 +592,24 @@ instrument to the wanted state with the existing test commands (`pump_target`,
 state it reads. `/api/diagnostics` lists every profile, which were captured, and
 which one the current SNR is measured against.
 
+### A trap found while wiring this up
+
+`analyzeSpectrum()` computes nothing without a reliable fundamental — and a
+noise capture, by definition, has no note. Passing `_spectral` straight to
+`accumulate()` would therefore have made the profile accumulate, frame after
+frame, **the spectrum left over from the last note played**: the profile would
+have described that note rather than the noise, and `spectralValid` would have
+looked perfectly healthy throughout.
+
+The spectrum is now recomputed explicitly for each captured frame, and
+`nullptr` is passed if that fails, so a stale spectrum can never be mistaken for
+a fresh one. A capture is a few tenths of a second of explicit operator action;
+paying one FFT per frame there is the right trade.
+
+The unit tests did not catch this — they feed `NoiseModel` a freshly computed
+spectrum directly. It is guarded by a structural assertion in
+`test_audio_phase5_noise_is_per_state_and_honest`.
+
 ### Persistence — deliberately not yet
 
 Profiles live in RAM and are lost on reboot. Making them persistent needs the

@@ -351,7 +351,19 @@ void AudioAnalyzer::analyzeFrame() {
   // Accumulation d'un profil de bruit : uniquement pendant une capture
   // explicite, et l'appelant garantit qu'aucune note ne sonne.
   if (_noise.isCapturing()) {
-    _noise.accumulate(_frame, MIC_ANALYSIS_FRAME_SIZE, &_spectral);
+#if MIC_FFT_ENABLED
+    // Le spectre est RECALCULE ici, et ce n'est pas une precaution inutile.
+    // analyzeSpectrum() ne calcule rien sans fondamentale fiable - or pendant
+    // une capture de bruit il n'y a par definition pas de note. Reutiliser
+    // _spectral tel quel ferait accumuler, frame apres frame, le spectre laisse
+    // par la DERNIERE note jouee : le profil decrirait cette note et non le
+    // bruit. Mieux vaut payer une FFT par frame pendant les quelques dixiemes
+    // de seconde d'une capture explicite.
+    const bool fresh = _spectral.computeSpectrum(_frame, MIC_ANALYSIS_FRAME_SIZE);
+    _noise.accumulate(_frame, MIC_ANALYSIS_FRAME_SIZE, fresh ? &_spectral : nullptr);
+#else
+    _noise.accumulate(_frame, MIC_ANALYSIS_FRAME_SIZE, nullptr);
+#endif
   }
 
   // Rapport signal/bruit contre le profil de l'etat REEL de la source d'air.
