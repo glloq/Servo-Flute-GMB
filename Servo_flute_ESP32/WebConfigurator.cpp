@@ -276,6 +276,15 @@ void WebConfigurator::update() {
 #if MIC_ENABLED
   // Update audio analyzer
   if (_audio && _audio->isMicDetected()) {
+    // Declarer l'etat REEL de la source d'air AVANT l'analyse : le rapport
+    // signal/bruit est calcule contre le profil de cet etat. Comparer une note
+    // jouee pompe en marche a un plancher mesure pompe arretee surestimerait sa
+    // qualite - or c'est le cas de TOUTES les notes en mode pompe.
+    if (_instrument) {
+      _audio->setAirSourceState(cfg.airMode,
+                                _instrument->getPressureCtrl().getTargetPercent(),
+                                _instrument->getFanCtrl().getSpeed());
+    }
     _audio->update();
 
     // Broadcast audio data if monitoring enabled
@@ -303,6 +312,13 @@ void WebConfigurator::update() {
         }
         // Champs spectraux UNIQUEMENT quand ils ont ete mesures : les omettre
         // vaut mieux que de renvoyer la valeur d'une frame anterieure.
+        // Rapport signal/bruit mesure contre le profil de l'etat REEL. Omis
+        // tant qu'aucun profil n'a ete capture ; le repli est signale pour que
+        // l'interface ne presente pas un chiffre flatteur comme une mesure.
+        if (af.snrValid) {
+          aj += ",\"snr\":" + String(af.snrDb, 1);
+          if (af.snrUsedFallback) aj += ",\"snr_fb\":1";
+        }
         if (af.spectralValid) {
           aj += ",\"h2\":" + String(af.h2Ratio, 3);
           aj += ",\"h3\":" + String(af.h3Ratio, 3);
@@ -1208,6 +1224,68 @@ void WebConfigurator::executeWebOp(WebOp& op) {
       if (_audio) _audio->setActive(_micMonitorEnabled || (_autoCal && _autoCal->isRunning()));
       op.ok = true;
       break;
+
+    // --- Capture d'un profil de bruit (PHASE 5) ------------------------------
+    // L'utilisateur amene d'abord l'instrument dans l'etat voulu (pompe a tel
+    // regime, ventilateur a tel autre) avec les commandes de test existantes,
+    // puis demande la capture. L'analyseur ecrit dans le profil correspondant a
+    // l'etat REEL, lu a chaque passage d'update().
+    case WEBOP_NOISE_START: {
+      JsonDocument resp;
+      resp["t"] = "noise";
+      if (!_audio || !_audio->isMicDetected()) {
+        resp["ok"] = false; resp["error"] = "no_microphone";
+        op.ok = false;
+      } else if (_instrument && _instrument->getSequencer().getState() != STATE_IDLE) {
+        // Capturer un plancher de bruit pendant qu'une note sonne mesurerait la
+        // note, pas le bruit. Le refus est explicite.
+        resp["ok"] = false; resp["error"] = "note_playing";
+        op.ok = false;
+      } else {
+        _audio->setActive(true);
+        _audio->beginNoiseCapture();
+        resp["ok"] = true;
+        resp["capturing"] = NoiseModel::profileName(_audio->currentNoiseProfile());
+        op.ok = true;
+      }
+      serializeJson(resp, op.json);
+      break;
+    }
+
+    case WEBOP_NOISE_STOP: {
+      JsonDocument resp;
+      resp["t"] = "noise";
+      const bool stored = _audio ? _audio->endNoiseCapture() : false;
+      resp["ok"] = stored;
+      if (!stored) {
+        // Une capture trop courte est rejetee plutot que rangee comme un profil
+        // de confiance douteuse.
+        resp["error"] = "too_short";
+        resp["min_frames"] = MIC_NOISE_MIN_FRAMES;
+      } else {
+        const NoiseProfileId id = _audio->currentNoiseProfile();
+        const NoiseProfile& p = _audio->getNoiseModel().profile(id);
+        resp["profile"] = NoiseModel::profileName(id);
+        resp["frames"] = p.frames;
+        resp["rms_dbfs"] = p.rmsDbFS;
+        resp["flatness"] = p.flatness;
+      }
+      if (_audio) _audio->setActive(_micMonitorEnabled || (_autoCal && _autoCal->isRunning()));
+      serializeJson(resp, op.json);
+      op.ok = stored;
+      break;
+    }
+
+    case WEBOP_NOISE_RESET: {
+      if (_audio) _audio->resetNoiseModel();
+      JsonDocument resp;
+      resp["t"] = "noise";
+      resp["ok"] = true;
+      resp["msg"] = "noise profiles cleared";
+      serializeJson(resp, op.json);
+      op.ok = true;
+      break;
+    }
 
     case WEBOP_MIC_RESET: {
       JsonDocument resp;
@@ -2329,6 +2407,45 @@ void WebConfigurator::handleApiDiagnostics(AsyncWebServerRequest* request) {
     a["clipping_ratio"] = _audio->getClippingRatio();
     a["dc_offset"] = _audio->getLevel().dcOffset;
 
+    // Modele de bruit : quels etats ont ete caracterises, et contre lequel le
+    // rapport signal/bruit courant est calcule. Un profil manquant se voit,
+    // plutot que de se deviner a un SNR trop flatteur.
+    const NoiseModel& nm = _audio->getNoiseModel();
+    JsonObject nz = a["noise"].to<JsonObject>();
+    nz["capturing"] = _audio->isCapturingNoise();
+    nz["current"] = NoiseModel::profileName(_audio->currentNoiseProfile());
+    nz["captured"] = nm.capturedCount();
+    JsonArray profs = nz["profiles"].to<JsonArray>();
+    for (uint8_t i = 0; i < NOISE_PROFILE_COUNT; i++) {
+      const NoiseProfileId id = (NoiseProfileId)i;
+      const NoiseProfile& p = nm.profile(id);
+      JsonObject o = profs.add<JsonObject>();
+      o["id"] = NoiseModel::profileName(id);
+      o["valid"] = p.valid;
+      if (p.valid) {
+        o["frames"] = p.frames;
+        o["rms_dbfs"] = p.rmsDbFS;
+        o["flatness"] = p.flatness;
+        o["peak_hz"] = p.peakHz;
+      }
+    }
+    const AcousticFeatures& feat = _audio->getFeatures();
+    a["snr_valid"] = feat.snrValid;
+    a["snr_db"] = feat.snrDb;
+    a["snr_fallback"] = feat.snrUsedFallback;
+
+    if (nm.capturedCount() == 0) {
+      addCheck("noise_model", "warning",
+               "No noise profile captured: SNR is unavailable");
+    } else if (feat.snrUsedFallback) {
+      addCheck("noise_model", "warning",
+               String("No profile for ") + NoiseModel::profileName(_audio->currentNoiseProfile()) +
+                   "; SNR falls back to ambient and likely overstates quality");
+    } else {
+      addCheck("noise_model", "ok",
+               String((unsigned long)nm.capturedCount()) + " noise profile(s) captured");
+    }
+
     // Des echantillons perdus signifient que loop() n'a pas suivi : les mesures
     // portent alors sur un signal troue. C'est un avertissement, pas une panne.
     if (cap.droppedSamples > 0) {
@@ -2942,6 +3059,15 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
 #if MIC_ENABLED
   } else if (strcmp(type, "mic_mon") == 0) {
     WebOp op; op.type = WEBOP_MIC_MONITOR; op.intA = ((doc["on"] | 0) != 0) ? 1 : 0;
+    postWebOp(op);
+  } else if (strcmp(type, "noise_cal") == 0) {
+    const char* mode = doc["mode"] | "";
+    WebOp op;
+    if (strcmp(mode, "start") == 0) op.type = WEBOP_NOISE_START;
+    else if (strcmp(mode, "stop") == 0) op.type = WEBOP_NOISE_STOP;
+    else if (strcmp(mode, "reset") == 0) op.type = WEBOP_NOISE_RESET;
+    else { client->text("{\"t\":\"error\",\"msg\":\"bad_mode\"}"); return; }
+    op.clientId = client->id();
     postWebOp(op);
   } else if (strcmp(type, "mic_reset") == 0) {
     // Le resultat est diffuse par loop() sur le WebSocket (pas d'attente ici).

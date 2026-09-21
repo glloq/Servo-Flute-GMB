@@ -72,6 +72,17 @@ struct AcousticFeatures {
   float spectralCentroid = 0.0f;       // Hz
   float spectralFlatness = 0.0f;       // 0..1
 
+  // --- Rapport signal / bruit (PHASE 5) ------------------------------------
+  // Mesure contre le profil de bruit de l'etat REEL de la source d'air, et non
+  // contre un plancher global. `snrValid` faux signifie qu'aucun profil
+  // exploitable n'a encore ete capture ; `snrUsedFallback` que le profil de
+  // l'etat demande manquait et que l'ambiance a servi de repli - le rapport
+  // surestime alors probablement la qualite.
+  bool snrValid = false;
+  bool snrUsedFallback = false;
+  float snrDb = 0.0f;
+  uint8_t noiseProfile = 0;            // NoiseProfileId de l'etat courant
+
   // --- Verdicts elementaires ------------------------------------------------
   // Deliberement limites a ce qui se deduit directement des mesures ci-dessus.
   // La classification acoustique complete (souffle, couac, note faible...)

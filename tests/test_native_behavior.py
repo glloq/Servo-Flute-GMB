@@ -19,6 +19,8 @@ SOURCES = [
     "Servo_flute_ESP32/TofSensor.cpp",
     "Servo_flute_ESP32/AudioRingBuffer.cpp",
     "Servo_flute_ESP32/SpectralAnalyzer.cpp",
+    "Servo_flute_ESP32/AudioFilters.cpp",
+    "Servo_flute_ESP32/NoiseModel.cpp",
     "Servo_flute_ESP32/AcousticFeatures.cpp",
     "Servo_flute_ESP32/EventQueue.cpp",
     "Servo_flute_ESP32/CommandQueue.cpp",

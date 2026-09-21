@@ -198,6 +198,43 @@ Set MIC_ENABLED to false if no mic is connected.
 // cette valeur la mesure n'est de toute facon plus significative.
 #define MIC_HNR_MAX_DB          40.0f
 
+// --- Filtrage du flux (PHASE 5.1) -----------------------------------------
+//
+// Applique sur le FLUX, avant l'anneau, jamais frame par frame : les frames
+// se recouvrent de 50 %, un filtrage par frame ferait donc passer chaque
+// echantillon deux fois dans le filtre avec des etats differents.
+//
+// Les coupures encadrent LARGEMENT la plage de detection de pitch
+// (200-4000 Hz) : un filtre qui empieterait dessus fausserait la mesure au
+// lieu de nettoyer le bruit. Un static_assert le verifie.
+// Mettre une frequence a 0 desactive l'etage correspondant.
+#define MIC_FILTER_HP_HZ        100.0f  // bruit mecanique lent, vibration chassis
+#define MIC_FILTER_LP_HZ        7000.0f // au-dessus : rien d'utile pour la flute
+// Pole du retrait de continu du premier ordre. 0 desactive l'etage ; 0,995 a
+// 32 kHz donne une coupure d'environ 25 Hz.
+#define MIC_FILTER_DC_POLE      0.995f
+
+// --- Modele de bruit (PHASE 5) --------------------------------------------
+
+// Nombre de bandes d'analyse d'un profil de bruit. Les bornes sont dans
+// NoiseModel.cpp (kBandEdges) et doivent suivre cette valeur.
+#define MIC_NOISE_BANDS         6
+
+// Frames necessaires pour qu'une capture de bruit soit declaree valide, et
+// plafond de duree. A 16 ms par frame : entre 0,5 s et 3,2 s. Une capture plus
+// courte ne decrit rien et est REJETEE plutot que rangee comme douteuse.
+#define MIC_NOISE_MIN_FRAMES    32
+#define MIC_NOISE_MAX_FRAMES    200
+
+// Seuils de regime (%) qui separent ralenti / mi-regime / plein regime pour
+// le choix du profil correspondant a l'etat reel de l'instrument.
+#define MIC_NOISE_IDLE_PERCENT  33
+#define MIC_NOISE_HIGH_PERCENT  66
+
+// Borne du rapport signal/bruit rendu (dB). Au-dela, la mesure n'est plus
+// significative sur un microphone reel.
+#define MIC_SNR_MAX_DB          60.0f
+
 /*----------------------------------------------------------------------------
  * Auto-calibration (microphone-driven per-note airflow calibration)
  *--------------------------------------------------------------------------*/

@@ -35,6 +35,8 @@
 #include "AudioLevel.h"
 #include "SpectralAnalyzer.h"
 #include "AcousticFeatures.h"
+#include "AudioFilters.h"
+#include "NoiseModel.h"
 
 #if MIC_ENABLED
 
@@ -103,8 +105,26 @@ public:
   // renseignes qu'une frame sur MIC_SPECTRAL_DECIMATION : verifier
   // `spectralValid` avant de les lire.
   const AcousticFeatures& getFeatures() const { return _features; }
-  float getSNR() const { return _features.harmonicToNoiseRatio; }
+  float getSNR() const { return _features.snrDb; }
   const SpectralAnalyzer& getSpectral() const { return _spectral; }
+
+  // --- Modele de bruit (PHASE 5) ---
+  // Declare l'etat REEL de la source d'air. Le rapport signal/bruit est alors
+  // calcule contre le profil de CET etat : comparer une note jouee pompe en
+  // marche a un plancher mesure pompe arretee surestimerait sa qualite.
+  void setAirSourceState(uint8_t airMode, uint8_t pumpPercent, uint8_t fanPercent);
+  NoiseProfileId currentNoiseProfile() const { return _noiseProfileId; }
+
+  // Capture du profil de bruit de l'etat courant. L'appelant est responsable de
+  // mettre l'instrument dans cet etat ET de garantir qu'aucune note ne sonne.
+  void beginNoiseCapture();
+  bool endNoiseCapture();
+  bool isCapturingNoise() const { return _noise.isCapturing(); }
+  const NoiseModel& getNoiseModel() const { return _noise; }
+  void resetNoiseModel() { _noise.reset(); }
+
+  // Chaine de filtrage appliquee au flux (voir AudioFilters.h).
+  const AudioFilterChain& getFilters() const { return _filters; }
   bool isActive() const override { return _active; }
   void setActive(bool active) override { _active = active; }
   uint32_t getFrameSequence() const override { return _frameSeq; }
@@ -133,6 +153,13 @@ private:
   PitchResult _lastPitch;
   SpectralAnalyzer _spectral;
   AcousticFeatures _features;
+  AudioFilterChain _filters;
+  NoiseModel _noise;
+  NoiseProfileId _noiseProfileId;
+  // Ecretage compte sur les echantillons BRUTS, avant filtrage, depuis la
+  // derniere frame analysee.
+  uint32_t _rawSamplesSinceFrame;
+  uint32_t _clippedSinceFrame;
   int _expectedMidi;          // 0 = aucune note visee declaree
   uint8_t _spectralCountdown; // decimation de l'analyse spectrale
   FrameLevel _level;

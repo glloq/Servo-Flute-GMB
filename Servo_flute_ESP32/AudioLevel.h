@@ -56,6 +56,19 @@ inline float fromDbFS(float dbfs) {
   return powf(10.0f, dbfs / 20.0f);
 }
 
+// Compte les echantillons au rail dans un bloc BRUT, c'est-a-dire AVANT tout
+// filtrage. C'est le convertisseur qui sature, pas le signal filtre : un
+// echantillon ecrete peut tres bien repasser sous le seuil apres un passe-haut,
+// et l'ecretage deviendrait alors invisible exactement quand il compte.
+inline size_t countClipped(const float* x, size_t n, float threshold = MIC_CLIP_THRESHOLD) {
+  if (x == nullptr || n == 0) return 0;
+  size_t clipped = 0;
+  for (size_t i = 0; i < n; i++) {
+    if (fabsf(x[i]) >= threshold) clipped++;
+  }
+  return clipped;
+}
+
 // Analyse de niveau complete en UN seul parcours apres le calcul de moyenne.
 // `clipThreshold` est le niveau absolu au-dela duquel un echantillon est
 // considere au rail ; `clipRatioWarn` la proportion a partir de laquelle on

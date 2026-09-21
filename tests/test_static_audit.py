@@ -1562,3 +1562,102 @@ def test_audio_web_never_streams_pcm():
     assert block.index('af.spectralValid') < block.index('af.h2Ratio')
     # Le debit reste limite.
     assert 'AUTOCAL_AUDIO_INTERVAL_MS' in web
+
+
+def test_audio_phase5_filtering_runs_on_the_stream():
+    """Filtrer frame par frame ferait passer chaque echantillon deux fois dans
+    le filtre, les frames se recouvrant de 50 %."""
+    aa = code_only(read('Servo_flute_ESP32/AudioAnalyzer.cpp'))
+    drain = aa.split('void AudioAnalyzer::drainI2S()')[1].split('\n}\n')[0]
+    frame = aa.split('void AudioAnalyzer::analyzeFrame()')[1].split('\n}\n')[0]
+    # Le filtrage a lieu dans le vidage du flux, PAS dans l'analyse de frame.
+    assert '_filters.processBlock' in drain
+    assert '_filters.processBlock' not in frame
+    # ...et avant l'ecriture dans l'anneau.
+    assert drain.index('_filters.processBlock') < drain.index('_ring.write')
+    # L'ecretage est mesure AVANT le filtrage, sur le signal brut.
+    assert 'countClipped' in drain
+    assert drain.index('countClipped') < drain.index('_filters.processBlock')
+    # La memoire des filtres repart vierge quand le flux est relance.
+    assert '_filters.configureDefaults();' in aa.split('bool AudioAnalyzer::begin()')[1]
+
+
+def test_audio_phase5_filters_never_touch_the_pitch_range():
+    """Une coupure qui empieterait sur la plage de detection fausserait la
+    mesure au lieu de nettoyer le bruit."""
+    af = read('Servo_flute_ESP32/AudioFilters.cpp')
+    # Le garde est a la COMPILATION, pas seulement dans un test.
+    assert 'static_assert' in af
+    assert 'MIC_PITCH_MIN_HZ' in af and 'MIC_PITCH_MAX_HZ' in af
+    s = read('Servo_flute_ESP32/settings.h')
+    import re
+    def fval(name):
+        m = re.search(r'#define\s+%s\s+([0-9.]+)f' % name, s)
+        assert m, name
+        return float(m.group(1))
+    def ival(name):
+        m = re.search(r'#define\s+%s\s+([0-9.]+)f' % name, s)
+        assert m, name
+        return float(m.group(1))
+    assert fval('MIC_FILTER_HP_HZ') <= ival('MIC_PITCH_MIN_HZ') / 2.0
+    assert fval('MIC_FILTER_LP_HZ') >= ival('MIC_PITCH_MAX_HZ') * 1.2
+    # Une coupure absurde rend la cellule transparente, jamais instable.
+    for fn in ('void Biquad::setHighPass', 'void Biquad::setLowPass'):
+        body = code_only(af).split(fn)[1].split('\n}\n')[0]
+        assert 'setPassthrough();' in body
+        assert 'sampleRate * 0.5f' in body
+
+
+def test_audio_phase5_noise_is_per_state_and_honest():
+    """Comparer une note jouee pompe en marche a un plancher mesure pompe
+    arretee surestime sa qualite - c'est le cas de TOUTES les notes."""
+    nm = code_only(read('Servo_flute_ESP32/NoiseModel.cpp'))
+    nmh = read('Servo_flute_ESP32/NoiseModel.h')
+    # Un profil par etat, pas un plancher global.
+    for state in ('NOISE_AMBIENT', 'NOISE_PUMP_IDLE', 'NOISE_PUMP_MEDIUM',
+                  'NOISE_PUMP_HIGH', 'NOISE_FAN_IDLE', 'NOISE_FAN_MEDIUM', 'NOISE_FAN_HIGH'):
+        assert state in nmh, state
+    # Aucun PCM n'est conserve : uniquement des agregats.
+    assert 'float rms' in nmh and 'float bands[MIC_NOISE_BANDS]' in nmh
+    assert 'samples[' not in nmh and 'float pcm' not in nmh
+    # Le SNR dit quand il ne sait pas, et quand il se replie.
+    snr = nm.split('SnrResult NoiseModel::snrDb')[1].split('\n}\n')[0]
+    assert 'out.usedFallback = true;' in snr
+    assert 'return out;' in snr            # refus quand rien n'est mesure
+    assert 'MIC_SNR_MAX_DB' in snr         # borne
+    assert 'if (db < 0.0f) db = 0.0f;' in snr
+    # Une capture trop courte est REJETEE.
+    end = nm.split('bool NoiseModel::endCapture')[1].split('\n}\n')[0]
+    assert 'MIC_NOISE_MIN_FRAMES' in end
+    # L'etat reel est declare par la couche qui le connait.
+    web = code_only(read('Servo_flute_ESP32/WebConfigurator.cpp'))
+    assert 'setAirSourceState(cfg.airMode' in web
+    assert 'getPressureCtrl().getTargetPercent()' in web
+    assert 'getFanCtrl().getSpeed()' in web
+    # ...avant l'analyse, sinon le SNR porterait sur l'etat precedent.
+    upd = web.split('void WebConfigurator::update()')[1].split('\n}\n')[0]
+    assert upd.index('setAirSourceState') < upd.index('_audio->update();')
+
+
+def test_audio_phase5_noise_capture_is_reachable_and_guarded():
+    """Une fonctionnalite qu'on ne peut pas declencher n'est pas livree."""
+    web = code_only(read('Servo_flute_ESP32/WebConfigurator.cpp'))
+    webh = read('Servo_flute_ESP32/WebConfigurator.h')
+    for op in ('WEBOP_NOISE_START', 'WEBOP_NOISE_STOP', 'WEBOP_NOISE_RESET'):
+        assert op in webh, op
+        assert op in web, op
+    assert '"noise_cal"' in web
+    # Capturer pendant qu'une note sonne mesurerait la note, pas le bruit.
+    start = web.split('case WEBOP_NOISE_START')[1].split('\n    }\n')[0]
+    assert 'getSequencer().getState() != STATE_IDLE' in start
+    assert 'note_playing' in start
+    assert 'no_microphone' in start
+    # Une capture rejetee le dit, avec le minimum attendu.
+    stop = web.split('case WEBOP_NOISE_STOP')[1].split('\n    }\n')[0]
+    assert 'too_short' in stop
+    assert 'MIC_NOISE_MIN_FRAMES' in stop
+    # Le diagnostic expose l'etat du modele et avertit quand il manque.
+    diag = web.split('void WebConfigurator::handleApiDiagnostics')[1].split('\n}\n')[0]
+    assert 'noise_model' in diag
+    assert 'No noise profile captured' in diag
+    assert 'overstates quality' in diag

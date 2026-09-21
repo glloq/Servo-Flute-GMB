@@ -22,6 +22,8 @@
 #include "AudioLevel.h"
 #include "SpectralAnalyzer.h"
 #include "AcousticFeatures.h"
+#include "AudioFilters.h"
+#include "NoiseModel.h"
 #include "audio_signals.h"
 
 namespace {
@@ -1187,6 +1189,416 @@ void features_end_to_end_on_one_frame() {
   assert(f.harmonicToNoiseRatio > 5.0f);
 }
 
+
+// ---------------------------------------------------------------------------
+// PHASE 5.1 - Filtrage : couper le bruit sans toucher a la plage utile
+// ---------------------------------------------------------------------------
+
+// Gain d'un filtre a une frequence, mesure en regime etabli : on laisse passer
+// plusieurs periodes pour que la memoire du filtre soit remplie, puis on
+// compare les RMS entree / sortie.
+float measureGain(AudioFilterChain& chain, float hz, float amp = 0.5f) {
+  const size_t kWarmup = 8192;    // etablissement
+  const size_t kBlock = 4096;
+  std::vector<float> buf(kBlock);
+  chain.reset();
+
+  size_t pos = 0;
+  for (size_t done = 0; done < kWarmup; done += kBlock) {
+    audiosig::pureTone(buf.data(), kBlock, hz, amp, kFs, pos);
+    pos += kBlock;
+    chain.processBlock(buf.data(), kBlock);
+  }
+  audiosig::pureTone(buf.data(), kBlock, hz, amp, kFs, pos);
+  const float inRms = PitchDetector::rms(buf.data(), kBlock);
+  chain.processBlock(buf.data(), kBlock);
+  const float outRms = PitchDetector::rms(buf.data(), kBlock);
+  return (inRms > 0.0f) ? (outRms / inRms) : 0.0f;
+}
+
+void filters_shape_is_correct() {
+  AudioFilterChain chain;
+  chain.configureDefaults();
+  assert(chain.highPassActive() && chain.lowPassActive() && chain.dcBlockerActive());
+
+  // A la coupure, un Butterworth d'ordre 2 attenue de 3 dB (gain 0,707).
+  const float atHp = measureGain(chain, MIC_FILTER_HP_HZ);
+  assert(fabsf(atHp - 0.707f) < 0.12f);
+  const float atLp = measureGain(chain, MIC_FILTER_LP_HZ);
+  assert(fabsf(atLp - 0.707f) < 0.12f);
+
+  // Loin dans la bande coupee, l'attenuation est franche.
+  assert(measureGain(chain, 25.0f) < 0.1f);
+  assert(measureGain(chain, 14000.0f) < 0.2f);
+
+  // POINT CRITIQUE : la plage de detection de pitch ne doit PAS etre touchee.
+  // Un filtre qui empieterait dessus fausserait la mesure au lieu de nettoyer
+  // le bruit. Le critere est exprime en dB parce que c'est ainsi qu'il a un
+  // sens : le niveau ne doit pas bouger de plus d'un demi-decibel dans la plage
+  // utile. Avec les valeurs par defaut, le pire point est 200 Hz a -0,33 dB ;
+  // une coupure remontee a 130 Hz donnerait -0,79 dB et echouerait ici.
+  for (float hz : {(float)MIC_PITCH_MIN_HZ, 300.0f, 440.0f, 1000.0f, 2000.0f,
+                   (float)MIC_PITCH_MAX_HZ}) {
+    const float dB = 20.0f * log10f(measureGain(chain, hz));
+    assert(dB > -0.5f && dB < 0.5f);
+  }
+}
+
+void filters_can_be_disabled_and_are_safe() {
+  AudioFilterChain chain;
+
+  // Frequences nulles ou negatives : l'etage est DESACTIVE, pas regle a zero.
+  chain.configure(kFs, 0.0f, 0.0f, 0.0f);
+  assert(!chain.highPassActive() && !chain.lowPassActive() && !chain.dcBlockerActive());
+  std::vector<float> buf(512), before(512);
+  audiosig::pureTone(buf.data(), 512, 440.0f, 0.5f, kFs);
+  before = buf;
+  chain.processBlock(buf.data(), 512);
+  for (size_t i = 0; i < 512; i++) assert(buf[i] == before[i]);
+
+  // Coupure absurde (au-dessus de Nyquist) : cellule transparente, jamais
+  // instable.
+  chain.configure(kFs, 40000.0f, 0.0f, 0.0f);
+  assert(!chain.highPassActive());
+  chain.configure(kFs, -100.0f, -5.0f, -1.0f);
+  assert(!chain.highPassActive() && !chain.lowPassActive() && !chain.dcBlockerActive());
+
+  // Entrees degenerees : aucun acces memoire.
+  chain.configureDefaults();
+  chain.processBlock(nullptr, 100);
+  chain.processBlock(buf.data(), 0);
+
+  // Le filtre ne diverge pas sur un signal fort et long.
+  chain.configureDefaults();
+  std::vector<float> loud(4096);
+  for (int rep = 0; rep < 20; rep++) {
+    audiosig::pureTone(loud.data(), 4096, 300.0f, 1.0f, kFs, (size_t)rep * 4096);
+    chain.processBlock(loud.data(), 4096);
+    for (size_t i = 0; i < 4096; i++) {
+      assert(loud[i] > -4.0f && loud[i] < 4.0f);
+      assert(loud[i] == loud[i]);   // pas de NaN
+    }
+  }
+}
+
+// Le filtrage doit se faire sur le FLUX. Filtrer frame par frame donnerait des
+// valeurs DIFFERENTES sur la moitie recouverte de deux frames successives.
+void filters_must_run_on_the_stream_not_per_frame() {
+  const size_t kFrameSz = MIC_ANALYSIS_FRAME_SIZE;
+  const size_t kHop = MIC_ANALYSIS_HOP_SIZE;
+
+  // Reference : filtrage continu du flux, puis decoupage en frames.
+  std::vector<float> stream(kFrameSz + kHop);
+  audiosig::fluteLike(stream.data(), stream.size(), 440.0f, 0.4f, 0.02f, kFs);
+  std::vector<float> filtered = stream;
+  AudioFilterChain chain;
+  chain.configureDefaults();
+  chain.processBlock(filtered.data(), filtered.size());
+
+  // Ce que ferait un filtrage par frame : chaque frame repart d'un filtre neuf.
+  std::vector<float> perFrame0(stream.begin(), stream.begin() + kFrameSz);
+  std::vector<float> perFrame1(stream.begin() + kHop, stream.begin() + kHop + kFrameSz);
+  AudioFilterChain c0, c1;
+  c0.configureDefaults(); c1.configureDefaults();
+  c0.processBlock(perFrame0.data(), kFrameSz);
+  c1.processBlock(perFrame1.data(), kFrameSz);
+
+  // Sur le flux filtre, on EXTRAIT les deux frames comme le fait l'anneau. La
+  // seconde moitie de la frame 0 doit etre exactement la premiere moitie de la
+  // frame 1 : le recouvrement reste coherent.
+  std::vector<float> streamFrame0(filtered.begin(), filtered.begin() + kFrameSz);
+  std::vector<float> streamFrame1(filtered.begin() + kHop, filtered.begin() + kHop + kFrameSz);
+  for (size_t i = 0; i < kFrameSz - kHop; i++) {
+    assert(streamFrame0[kHop + i] == streamFrame1[i]);
+  }
+  // Filtre par frame, les memes echantillons donnent des valeurs differentes.
+  float maxDiff = 0.0f;
+  for (size_t i = 0; i < kFrameSz - kHop; i++) {
+    const float d = fabsf(perFrame0[kHop + i] - perFrame1[i]);
+    if (d > maxDiff) maxDiff = d;
+  }
+  assert(maxDiff > 1e-4f);   // l'incoherence est bien reelle et mesurable
+
+  // Et reset() remet la memoire a zero : deux passages identiques sur un flux
+  // identique donnent le meme resultat.
+  std::vector<float> a = stream, b = stream;
+  chain.reset(); chain.processBlock(a.data(), a.size());
+  chain.reset(); chain.processBlock(b.data(), b.size());
+  for (size_t i = 0; i < a.size(); i++) assert(a[i] == b[i]);
+}
+
+// L'ecretage se mesure sur le BRUT : apres un passe-haut, un echantillon au
+// rail peut repasser sous le seuil.
+void clipping_must_be_measured_before_filtering() {
+  std::vector<float> raw(1024);
+  audiosig::pureTone(raw.data(), 1024, 300.0f, 0.5f, kFs);
+  for (int i = 0; i < 200; i++) raw[i * 5] = 1.0f;     // 200 echantillons au rail
+
+  const size_t clippedRaw = AudioLevel::countClipped(raw.data(), 1024);
+  assert(clippedRaw == 200);
+
+  std::vector<float> filtered = raw;
+  AudioFilterChain chain;
+  chain.configureDefaults();
+  chain.processBlock(filtered.data(), filtered.size());
+  const size_t clippedFiltered = AudioLevel::countClipped(filtered.data(), 1024);
+
+  // C'est tout l'enjeu : le meme ecretage devient largement invisible une fois
+  // le signal filtre.
+  assert(clippedFiltered < clippedRaw);
+
+  assert(AudioLevel::countClipped(nullptr, 100) == 0);
+  assert(AudioLevel::countClipped(raw.data(), 0) == 0);
+}
+
+// ---------------------------------------------------------------------------
+// PHASE 5.2 - Profils de bruit
+// ---------------------------------------------------------------------------
+
+// Remplit un profil avec `frames` frames d'un bruit d'amplitude donnee.
+void captureNoise(NoiseModel& nm, NoiseProfileId id, float amp, int frames,
+                  SpectralAnalyzer* sa = nullptr) {
+  std::vector<float> buf(MIC_ANALYSIS_FRAME_SIZE);
+  nm.beginCapture(id);
+  for (int i = 0; i < frames; i++) {
+    audiosig::whiteNoise(buf.data(), buf.size(), amp, 1000u + (uint32_t)i);
+    if (sa) sa->computeSpectrum(buf.data(), buf.size());
+    nm.accumulate(buf.data(), buf.size(), sa);
+  }
+  nm.endCapture();
+}
+
+void noise_capture_requires_enough_frames() {
+  NoiseModel nm;
+  assert(nm.capturedCount() == 0);
+  assert(!nm.hasProfile(NOISE_AMBIENT));
+
+  // Une capture trop courte est REJETEE, pas rangee comme un profil douteux.
+  captureNoise(nm, NOISE_AMBIENT, 0.01f, MIC_NOISE_MIN_FRAMES - 1);
+  assert(!nm.hasProfile(NOISE_AMBIENT));
+  assert(nm.capturedCount() == 0);
+
+  captureNoise(nm, NOISE_AMBIENT, 0.01f, MIC_NOISE_MIN_FRAMES);
+  assert(nm.hasProfile(NOISE_AMBIENT));
+  assert(nm.capturedCount() == 1);
+  const NoiseProfile& p = nm.profile(NOISE_AMBIENT);
+  assert(p.valid);
+  assert(p.frames == MIC_NOISE_MIN_FRAMES);
+  assert(p.rms > 0.0f);
+  assert(p.rmsDbFS > MIC_DBFS_FLOOR && p.rmsDbFS < 0.0f);
+
+  // Une capture jamais commencee ne se termine pas.
+  NoiseModel other;
+  assert(!other.endCapture());
+  assert(!other.isCapturing());
+
+  // abortCapture() abandonne sans rien ranger.
+  other.beginCapture(NOISE_PUMP_HIGH);
+  assert(other.isCapturing() && other.capturingId() == NOISE_PUMP_HIGH);
+  other.abortCapture();
+  assert(!other.isCapturing());
+  assert(!other.hasProfile(NOISE_PUMP_HIGH));
+
+  // reset() efface tout.
+  nm.reset();
+  assert(nm.capturedCount() == 0 && !nm.hasProfile(NOISE_AMBIENT));
+
+  // Identifiant hors plage : ignore proprement.
+  nm.beginCapture((NoiseProfileId)99);
+  assert(!nm.isCapturing());
+  assert(!nm.profile((NoiseProfileId)99).valid);
+}
+
+void noise_profiles_are_per_state() {
+  NoiseModel nm;
+  // Trois etats de bruit croissant, comme sur l'instrument reel.
+  captureNoise(nm, NOISE_AMBIENT,     0.002f, MIC_NOISE_MIN_FRAMES);
+  captureNoise(nm, NOISE_PUMP_IDLE,   0.010f, MIC_NOISE_MIN_FRAMES);
+  captureNoise(nm, NOISE_PUMP_HIGH,   0.060f, MIC_NOISE_MIN_FRAMES);
+  assert(nm.capturedCount() == 3);
+
+  const float ambient = nm.profile(NOISE_AMBIENT).rms;
+  const float idle = nm.profile(NOISE_PUMP_IDLE).rms;
+  const float high = nm.profile(NOISE_PUMP_HIGH).rms;
+  assert(ambient < idle && idle < high);
+
+  // C'EST LE POINT DE LA PHASE 5. Une meme note comparee au bon profil ou au
+  // mauvais ne donne pas du tout le meme rapport signal/bruit.
+  const float signal = 0.20f;
+  const SnrResult againstAmbient = nm.snrDb(signal, NOISE_AMBIENT);
+  const SnrResult againstPump = nm.snrDb(signal, NOISE_PUMP_HIGH);
+  assert(againstAmbient.valid && againstPump.valid);
+  assert(!againstAmbient.usedFallback && !againstPump.usedFallback);
+  // Mesuree contre l'ambiance, la note parait bien meilleure qu'elle n'est.
+  assert(againstAmbient.db > againstPump.db + 20.0f);
+
+  // Une recapture ECRASE le profil, elle ne moyenne pas avec une mesure faite
+  // dans d'autres conditions.
+  captureNoise(nm, NOISE_PUMP_HIGH, 0.004f, MIC_NOISE_MIN_FRAMES);
+  assert(nm.profile(NOISE_PUMP_HIGH).rms < high / 2.0f);
+}
+
+void noise_snr_is_honest_when_unmeasured() {
+  NoiseModel nm;
+
+  // Rien de capture : aucun rapport n'est rendu, plutot qu'un chiffre calcule
+  // contre un plancher imaginaire.
+  SnrResult none = nm.snrDb(0.2f, NOISE_PUMP_HIGH);
+  assert(!none.valid);
+
+  // Ambiance seule connue : repli EXPLICITE, signale a l'appelant.
+  captureNoise(nm, NOISE_AMBIENT, 0.005f, MIC_NOISE_MIN_FRAMES);
+  SnrResult fb = nm.snrDb(0.2f, NOISE_PUMP_HIGH);
+  assert(fb.valid);
+  assert(fb.usedFallback);
+  assert(fb.source == NOISE_AMBIENT);
+  assert(fb.db > 0.0f);
+
+  // Le profil demande existe : plus de repli.
+  captureNoise(nm, NOISE_PUMP_HIGH, 0.05f, MIC_NOISE_MIN_FRAMES);
+  SnrResult direct = nm.snrDb(0.2f, NOISE_PUMP_HIGH);
+  assert(direct.valid && !direct.usedFallback && direct.source == NOISE_PUMP_HIGH);
+  assert(direct.db < fb.db);
+
+  // Signal SOUS le bruit : rapport ramene a 0, jamais negatif.
+  SnrResult buried = nm.snrDb(0.001f, NOISE_PUMP_HIGH);
+  assert(buried.valid && buried.db == 0.0f);
+
+  // Signal nul / identifiant invalide : refus.
+  assert(!nm.snrDb(0.0f, NOISE_AMBIENT).valid);
+  assert(!nm.snrDb(-1.0f, NOISE_AMBIENT).valid);
+  assert(!nm.snrDb(0.2f, (NoiseProfileId)99).valid);
+
+  // Le rapport est BORNE.
+  NoiseModel quiet;
+  std::vector<float> silent(MIC_ANALYSIS_FRAME_SIZE, 0.0f);
+  quiet.beginCapture(NOISE_AMBIENT);
+  for (int i = 0; i < MIC_NOISE_MIN_FRAMES; i++) {
+    quiet.accumulate(silent.data(), silent.size(), nullptr);
+  }
+  assert(quiet.endCapture());
+  SnrResult capped = quiet.snrDb(0.5f, NOISE_AMBIENT);
+  assert(capped.valid && capped.db == MIC_SNR_MAX_DB);
+}
+
+void noise_profile_selection_follows_the_real_state() {
+  // Mode pompe : le profil suit le regime reel de la pompe.
+  assert(NoiseModel::profileForState(AIR_MODE_PUMP_VALVE, 0, 0) == NOISE_AMBIENT);
+  assert(NoiseModel::profileForState(AIR_MODE_PUMP_VALVE, 10, 0) == NOISE_PUMP_IDLE);
+  assert(NoiseModel::profileForState(AIR_MODE_PUMP_VALVE, 50, 0) == NOISE_PUMP_MEDIUM);
+  assert(NoiseModel::profileForState(AIR_MODE_PUMP_VALVE, 95, 0) == NOISE_PUMP_HIGH);
+  assert(NoiseModel::profileForState(AIR_MODE_PUMP_RESERVOIR, 80, 0) == NOISE_PUMP_HIGH);
+
+  // Mode ventilateur : c'est le ventilateur qui compte, pas la pompe.
+  assert(NoiseModel::profileForState(AIR_MODE_FAN_SERVO, 90, 0) == NOISE_AMBIENT);
+  assert(NoiseModel::profileForState(AIR_MODE_FAN_SERVO, 0, 20) == NOISE_FAN_IDLE);
+  assert(NoiseModel::profileForState(AIR_MODE_FAN_SERVO, 0, 50) == NOISE_FAN_MEDIUM);
+  assert(NoiseModel::profileForState(AIR_MODE_FAN_SERVO, 0, 99) == NOISE_FAN_HIGH);
+
+  // Modes passifs : rien de motorise, donc ambiance.
+  assert(NoiseModel::profileForState(AIR_MODE_SOLENOID_SERVO, 90, 90) == NOISE_AMBIENT);
+  assert(NoiseModel::profileForState(AIR_MODE_SERVO_ONLY, 90, 90) == NOISE_AMBIENT);
+
+  // Les bornes de seuil sont exactement celles configurees.
+  assert(NoiseModel::profileForState(AIR_MODE_PUMP_VALVE, MIC_NOISE_IDLE_PERCENT, 0)
+         == NOISE_PUMP_IDLE);
+  assert(NoiseModel::profileForState(AIR_MODE_PUMP_VALVE, MIC_NOISE_IDLE_PERCENT + 1, 0)
+         == NOISE_PUMP_MEDIUM);
+  assert(NoiseModel::profileForState(AIR_MODE_PUMP_VALVE, MIC_NOISE_HIGH_PERCENT, 0)
+         == NOISE_PUMP_MEDIUM);
+  assert(NoiseModel::profileForState(AIR_MODE_PUMP_VALVE, MIC_NOISE_HIGH_PERCENT + 1, 0)
+         == NOISE_PUMP_HIGH);
+
+  // Chaque profil a un nom stable, aucun n'est "?".
+  for (uint8_t i = 0; i < NOISE_PROFILE_COUNT; i++) {
+    const char* n = NoiseModel::profileName((NoiseProfileId)i);
+    assert(n != nullptr && n[0] != '?' && n[0] != '\0');
+  }
+}
+
+#if MIC_FFT_ENABLED
+// Un profil doit distinguer DEUX BRUITS DE MEME NIVEAU mais de spectres
+// differents : c'est ce qui permettra plus tard de reconnaitre une raie
+// mecanique d'un souffle large bande.
+void noise_bands_distinguish_spectra() {
+  SpectralAnalyzer sa;
+  NoiseModel nm;
+  std::vector<float> buf(MIC_ANALYSIS_FRAME_SIZE);
+
+  // Bruit large bande.
+  nm.beginCapture(NOISE_AMBIENT);
+  for (int i = 0; i < MIC_NOISE_MIN_FRAMES; i++) {
+    audiosig::whiteNoise(buf.data(), buf.size(), 0.05f, 7000u + (uint32_t)i);
+    sa.computeSpectrum(buf.data(), buf.size());
+    nm.accumulate(buf.data(), buf.size(), &sa);
+  }
+  assert(nm.endCapture());
+
+  // Raie mecanique grave, de niveau comparable.
+  nm.beginCapture(NOISE_PUMP_HIGH);
+  for (int i = 0; i < MIC_NOISE_MIN_FRAMES; i++) {
+    audiosig::pureTone(buf.data(), buf.size(), 180.0f, 0.07f, kFs, (size_t)i * buf.size());
+    sa.computeSpectrum(buf.data(), buf.size());
+    nm.accumulate(buf.data(), buf.size(), &sa);
+  }
+  assert(nm.endCapture());
+
+  const NoiseProfile& broad = nm.profile(NOISE_AMBIENT);
+  const NoiseProfile& tonal = nm.profile(NOISE_PUMP_HIGH);
+
+  // La raie se voit : elle concentre son energie dans la bande la plus grave.
+  assert(tonal.bands[0] > broad.bands[0] * 3.0f);
+  // Le bruit large bande est beaucoup plus PLAT.
+  assert(broad.flatness > tonal.flatness * 3.0f);
+  // Le pic dominant de la raie est bien a sa frequence.
+  assert(fabsf(tonal.peakHz - 180.0f) < 150.0f);
+
+  // Les bandes couvrent la plage utile sans trou ni recouvrement.
+  for (uint8_t b = 0; b + 1 < MIC_NOISE_BANDS; b++) {
+    assert(NoiseModel::bandHighHz(b) == NoiseModel::bandLowHz(b + 1));
+    assert(NoiseModel::bandLowHz(b) < NoiseModel::bandHighHz(b));
+  }
+  assert(NoiseModel::bandLowHz(MIC_NOISE_BANDS) == 0.0f);   // hors plage
+}
+#endif
+
+// Sans FFT, la capture doit quand meme produire un profil de NIVEAU utilisable.
+void noise_works_without_spectrum() {
+  NoiseModel nm;
+  captureNoise(nm, NOISE_AMBIENT, 0.01f, MIC_NOISE_MIN_FRAMES, nullptr);
+  const NoiseProfile& p = nm.profile(NOISE_AMBIENT);
+  assert(p.valid && p.rms > 0.0f);
+  // Les bandes ne sont pas renseignees, et ne sont pas inventees.
+  for (uint8_t b = 0; b < MIC_NOISE_BANDS; b++) assert(p.bands[b] == 0.0f);
+  assert(p.flatness == 0.0f);
+  // Le rapport signal/bruit reste calculable.
+  assert(nm.snrDb(0.2f, NOISE_AMBIENT).valid);
+}
+
+// La duree d'une capture est bornee : un appelant qui oublie endCapture() ne
+// peut pas accumuler indefiniment.
+void noise_capture_is_bounded() {
+  NoiseModel nm;
+  std::vector<float> buf(MIC_ANALYSIS_FRAME_SIZE);
+  nm.beginCapture(NOISE_AMBIENT);
+  for (int i = 0; i < MIC_NOISE_MAX_FRAMES + 500; i++) {
+    audiosig::whiteNoise(buf.data(), buf.size(), 0.01f, 55u + (uint32_t)i);
+    nm.accumulate(buf.data(), buf.size(), nullptr);
+  }
+  assert(nm.endCapture());
+  assert(nm.profile(NOISE_AMBIENT).frames == MIC_NOISE_MAX_FRAMES);
+
+  // Accumuler hors capture ne fait rien.
+  NoiseModel idle;
+  idle.accumulate(buf.data(), buf.size(), nullptr);
+  assert(!idle.hasProfile(NOISE_AMBIENT));
+  // Entrees degenerees.
+  idle.beginCapture(NOISE_AMBIENT);
+  idle.accumulate(nullptr, 100, nullptr);
+  idle.accumulate(buf.data(), 0, nullptr);
+  assert(!idle.endCapture());   // aucune frame accumulee
+}
+
 }  // namespace
 
 void audio_run_all_tests() {
@@ -1222,4 +1634,17 @@ void audio_run_all_tests() {
   features_level_and_pitch_assembly();
   features_spectral_assembly();
   features_end_to_end_on_one_frame();
+  filters_shape_is_correct();
+  filters_can_be_disabled_and_are_safe();
+  filters_must_run_on_the_stream_not_per_frame();
+  clipping_must_be_measured_before_filtering();
+  noise_capture_requires_enough_frames();
+  noise_profiles_are_per_state();
+  noise_snr_is_honest_when_unmeasured();
+  noise_profile_selection_follows_the_real_state();
+#if MIC_FFT_ENABLED
+  noise_bands_distinguish_spectra();
+#endif
+  noise_works_without_spectrum();
+  noise_capture_is_bounded();
 }

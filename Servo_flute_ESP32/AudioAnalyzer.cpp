@@ -13,6 +13,7 @@ AudioAnalyzer::AudioAnalyzer()
 #if MIC_I2S_STD_DRIVER
     _rxHandle(NULL),
 #endif
+    _noiseProfileId(NOISE_AMBIENT), _rawSamplesSinceFrame(0), _clippedSinceFrame(0),
     _expectedMidi(0), _spectralCountdown(0),
     _lastDrain(0) {
 }
@@ -100,6 +101,11 @@ bool AudioAnalyzer::begin() {
   _ring.reset();
   _stats.reset();
   _level = FrameLevel();
+  // La memoire des filtres doit repartir vierge : sans cela le premier bloc du
+  // nouveau flux serait melange a la queue de l'ancien.
+  _filters.configureDefaults();
+  _rawSamplesSinceFrame = 0;
+  _clippedSinceFrame = 0;
   _lastDrain = 0;
   _initialized = true;
   _micDetected = detectMicrophone();
@@ -229,6 +235,9 @@ void AudioAnalyzer::markMeasurementInvalid() {
   // resetTracking() efface aussi la note visee : on la restaure, car une source
   // momentanement muette ne signifie pas que la calibration a change de note.
   if (_expectedMidi > 0) _pitch.setExpectedMidiNote(_expectedMidi);
+  // Une capture de bruit en cours devient sans objet : elle accumulerait des
+  // frames qui ne viennent plus du microphone.
+  _noise.abortCapture();
   _features.reset();
 }
 
@@ -271,6 +280,18 @@ void AudioAnalyzer::drainI2S() {
     if (samples < MIC_I2S_CHUNK_SAMPLES) _stats.partialReads++;
 
     for (size_t i = 0; i < samples; i++) _chunkFloat[i] = (float)_chunk[i] * kScale;
+
+    // Ecretage mesure ICI, sur le signal BRUT : c'est le convertisseur qui
+    // sature. Apres le passe-haut un echantillon au rail peut repasser sous le
+    // seuil, et l'ecretage deviendrait invisible exactement quand il compte.
+    _clippedSinceFrame += (uint32_t)AudioLevel::countClipped(_chunkFloat, samples);
+    _rawSamplesSinceFrame += (uint32_t)samples;
+
+    // Filtrage du FLUX, avant l'anneau. Voir AudioFilters.h : filtrer frame par
+    // frame ferait passer chaque echantillon deux fois dans le filtre, les
+    // frames se recouvrant de 50 %.
+    _filters.processBlock(_chunkFloat, samples);
+
     _ring.write(_chunkFloat, samples, &_stats);
 
     if (samples < MIC_I2S_CHUNK_SAMPLES) return;   // DMA epuise
@@ -311,7 +332,47 @@ void AudioAnalyzer::analyzeFrame() {
   // L'assemblage lui-meme vit dans AcousticFeatureBuilder, qui est pur et donc
   // testable sur hote ; cette classe, elle, depend de l'I2S.
   AcousticFeatureBuilder::fillLevel(_features, _level);
+
+  // L'ecretage vient du chemin BRUT, pas de la frame filtree. Le ratio porte
+  // sur tous les echantillons recus depuis la frame precedente, donc un peu
+  // plus que la frame elle-meme : c'est volontaire, cela couvre aussi ce qui
+  // tombe entre deux frames.
+  if (_rawSamplesSinceFrame > 0) {
+    _features.clippingRatio = (float)_clippedSinceFrame / (float)_rawSamplesSinceFrame;
+    _features.clipping = (_features.clippingRatio > MIC_CLIP_RATIO_WARN);
+    _level.clippingRatio = _features.clippingRatio;
+    _level.clippingDetected = _features.clipping;
+  }
+  _rawSamplesSinceFrame = 0;
+  _clippedSinceFrame = 0;
+
   AcousticFeatureBuilder::fillPitch(_features, _lastPitch, _soundDetected);
+
+  // Accumulation d'un profil de bruit : uniquement pendant une capture
+  // explicite, et l'appelant garantit qu'aucune note ne sonne.
+  if (_noise.isCapturing()) {
+    _noise.accumulate(_frame, MIC_ANALYSIS_FRAME_SIZE, &_spectral);
+  }
+
+  // Rapport signal/bruit contre le profil de l'etat REEL de la source d'air.
+  const SnrResult snr = _noise.snrDb(_level.rms, _noiseProfileId);
+  _features.snrValid = snr.valid;
+  _features.snrUsedFallback = snr.usedFallback;
+  _features.snrDb = snr.valid ? snr.db : 0.0f;
+  _features.noiseProfile = (uint8_t)_noiseProfileId;
+}
+
+void AudioAnalyzer::setAirSourceState(uint8_t airMode, uint8_t pumpPercent,
+                                      uint8_t fanPercent) {
+  _noiseProfileId = NoiseModel::profileForState(airMode, pumpPercent, fanPercent);
+}
+
+void AudioAnalyzer::beginNoiseCapture() {
+  _noise.beginCapture(_noiseProfileId);
+}
+
+bool AudioAnalyzer::endNoiseCapture() {
+  return _noise.endCapture();
 }
 
 void AudioAnalyzer::analyzeSpectrum() {

@@ -496,6 +496,143 @@ was available to measure them, and that remains the single largest unknown.
 
 ---
 
+## PHASE 5 — Filtering and noise model
+
+New files: `AudioFilters.{h,cpp}`, `NoiseModel.{h,cpp}`. Both hardware-free and
+natively tested.
+
+### 5.1 — Filtering, and *where* it is applied
+
+```
+retrait du continu  ->  passe-haut 100 Hz  ->  passe-bas 7 kHz
+```
+
+The chain runs on the **stream**, inside `drainI2S()`, before the ring — not
+frame by frame. Two reasons, and the second is the decisive one:
+
+1. An IIR filter has memory. Resetting it per frame would produce a settling
+   transient at the start of *every* frame — a periodic artefact at exactly the
+   analysis rate.
+2. **Frames overlap by 50 %.** Filtering per frame would push each sample
+   through the filter twice, with different states: the overlapping half of two
+   consecutive frames would not even hold the same values. The test
+   `filters_must_run_on_the_stream_not_per_frame` measures that divergence
+   rather than asserting it.
+
+**Clipping is not measured here.** The converter saturates, not the filtered
+signal: a railed sample can drop back under the threshold after a high-pass, and
+clipping would become invisible exactly when it matters. `countClipped()` runs
+on the **raw** chunk, before the chain.
+
+**What the filter must not break.** Measured gain of the default chain:
+
+| Frequency | Gain | dB |
+|---|---|---|
+| 25 Hz | 0.044 | −27.1 |
+| 100 Hz (HP cutoff) | 0.679 | −3.4 |
+| **200 Hz (`MIC_PITCH_MIN_HZ`)** | **0.963** | **−0.33** |
+| 1000 Hz | 1.002 | +0.02 |
+| **4000 Hz (`MIC_PITCH_MAX_HZ`)** | **0.972** | −0.25 |
+| 7000 Hz (LP cutoff) | 0.709 | −3.0 |
+| 14000 Hz | 0.027 | −31.4 |
+
+The pitch range moves by less than half a decibel. A `static_assert` enforces
+`MIC_FILTER_HP_HZ ≤ MIC_PITCH_MIN_HZ / 2` at compile time, and the test asserts
+the ±0.5 dB budget — a cutoff raised to 130 Hz gives −0.79 dB at 200 Hz and
+fails both. An absurd cutoff makes the cell **transparent**, never unstable.
+
+### 5.2 — Why one noise floor is not enough
+
+The auto-calibration measured one noise floor per note, valve closed and air at
+rest. That is insufficient for a simple reason: **the flute's machinery is part
+of the noise, and its level depends on the operating point.** A pump at 90 %
+does not sound like a stopped pump, and does not have the same spectrum. An SNR
+computed against a floor measured with the pump off therefore overstates the
+quality of every note played with the pump running — which is every note.
+
+Seven profiles: `ambient`, `pump_idle/medium/high`, `fan_idle/medium/high`.
+`profileForState(airMode, pumpPercent, fanPercent)` selects the one matching the
+**real** state, which `WebConfigurator::update()` declares before every analysis.
+
+The test `noise_profiles_are_per_state` measures the size of the error: the same
+0.20 signal scores **more than 20 dB better** against `ambient` than against
+`pump_high`.
+
+### What is stored
+
+No PCM. A profile keeps only statistics — mean level, per-band energy, spectral
+flatness, dominant peak. One second of raw audio would cost 128 kB; a complete
+profile costs **48 bytes**.
+
+Six bands (100/250/500/1000/2000/4000/8000 Hz) let a profile distinguish two
+noises of the *same level* but different spectra — a tonal mechanical line from
+broadband breath. Band energies need the FFT; without it a profile still carries
+a usable level, which is less rich but not wrong.
+
+### What is not measured is not invented
+
+- A profile that was never captured stays `valid = false`.
+- `snrDb()` returns `valid = false` rather than a number computed against an
+  imaginary floor.
+- The fallback to `ambient` is **explicit** (`usedFallback`), because it likely
+  overstates quality — and `/api/diagnostics` raises a warning saying so.
+- A capture shorter than `MIC_NOISE_MIN_FRAMES` (32 frames ≈ 0.5 s) is
+  **rejected**, not filed as a low-confidence profile. Capture length is capped
+  at `MIC_NOISE_MAX_FRAMES` so a caller that forgets to stop cannot accumulate
+  forever.
+- Capturing while a note is sounding is refused (`note_playing`): it would
+  measure the note, not the noise.
+
+### Reachable, not theoretical
+
+A capability nobody can trigger is not delivered. The WebSocket carries
+`{"t":"noise_cal","mode":"start"|"stop"|"reset"}`. The operator brings the
+instrument to the wanted state with the existing test commands (`pump_target`,
+`fan_target`), then captures; the analyser writes into the profile matching the
+state it reads. `/api/diagnostics` lists every profile, which were captured, and
+which one the current SNR is measured against.
+
+### Persistence — deliberately not yet
+
+Profiles live in RAM and are lost on reboot. Making them persistent needs the
+versioned configuration format that a later phase introduces; doing it here
+would create a format to migrate twice.
+
+### Cost
+
+| | PHASE 4 | PHASE 5 |
+|---|---|---|
+| `AudioFilterChain` | — | 76 B |
+| `NoiseModel` (7 × 48 B) | — | 388 B |
+| `AcousticFeatures` | 80 B | 88 B |
+| **Total static RAM** | 21 532 B | **22 004 B** |
+| Operations/frame | 99 712 | 105 344 |
+| Estimated core load | ~15.6 % | **~16.5 %** |
+
+**+472 B** for the whole phase. Net over the original baseline: +8.7 kB.
+
+### Tests added
+
+| Test | What it proves |
+|---|---|
+| `filters_shape_is_correct` | −3 dB at both cutoffs, steep rejection outside, **< 0.5 dB across the whole pitch range** |
+| `filters_can_be_disabled_and_are_safe` | Zero/negative/absurd cutoffs disable the stage instead of destabilising it; no NaN over 20 loud blocks |
+| `filters_must_run_on_the_stream_not_per_frame` | Stream filtering keeps overlapping halves byte-identical; per-frame filtering measurably does not |
+| `clipping_must_be_measured_before_filtering` | 200 railed samples counted raw, fewer after filtering — the reason clipping is measured first |
+| `noise_capture_requires_enough_frames` | Short captures rejected, abort stores nothing, invalid ids handled |
+| `noise_profiles_are_per_state` | Rising levels per state, **>20 dB SNR error from using the wrong profile**, recapture overwrites |
+| `noise_snr_is_honest_when_unmeasured` | Invalid when nothing captured, explicit fallback, floored at 0, bounded, degenerate inputs refused |
+| `noise_profile_selection_follows_the_real_state` | Pump vs fan vs passive modes, exact threshold boundaries, every profile named |
+| `noise_bands_distinguish_spectra` | A tonal line and broadband noise of similar level are told apart by band energy, flatness and peak |
+| `noise_works_without_spectrum` | Level profile still usable with the FFT compiled out; bands stay zero rather than invented |
+| `noise_capture_is_bounded` | Capture capped; accumulating outside a capture does nothing |
+
+Sensitivity was verified by reintroducing each defect: an SNR that ignores the
+requested profile, an accepted short capture, and a high-pass raised into the
+pitch range each make the corresponding test fail.
+
+---
+
 ## Target architecture
 
 ```
@@ -533,29 +670,21 @@ analysis. This is the same ownership rule the actuator path already follows.
 | 2 | YIN without window, expected-note tracking, richer result | **unit tested** |
 | 3 | Goertzel + optional FFT | **unit tested** |
 | 4 | `AcousticFeatures` | **unit tested** |
-| 5+ | Noise model, classification, timing, quality, calibration | not started |
+| 5 | Filtering + per-state noise model | **unit tested** |
+| 6+ | Classification, timing, quality, calibration | not started |
 
 ## Next phase recommended
 
-**PHASE 5 — noise model**, for two reasons.
+**PHASE 6 — acoustic classification**, now that a real SNR exists.
 
-First, `harmonicToNoiseRatio` is currently an approximation that conflates
-breath with high-order harmonics. Every downstream measurement the brief asks
-for — breathiness, acoustic quality score, a better auto-calibration — rests on
-being able to separate *the instrument's noise* from *the note*. Building those
-on the current approximation would mean building on sand.
+`AcousticState` (silence / good / weak / breathy / unstable / wrong note /
+overblow / squeak) needs exactly the three things PHASE 5 just made available:
+a level relative to a *meaningful* floor, a harmonic/noise balance, and spectral
+flatness. Breathiness in particular is the ratio of broadband noise to harmonic
+energy — it could not be computed honestly before the noise model existed.
 
-Second, the flute's own machinery (pump, fan, servos) is part of the noise, and
-its level depends on the operating point. A single global noise floor measured
-once per note, as the auto-calibration does today, cannot represent that. The
-per-state profiles the brief describes (`ambient`, `pump_idle`, `pump_medium`,
-`fan_high`, …) are what make an SNR meaningful.
-
-PHASE 5 also brings the configurable DC-removal / high-pass / low-pass chain,
-which will reduce the mechanical noise reaching every other measurement.
-
-Only after that do PHASE 6 (classification) and PHASE 7 (timing) rest on solid
-ground.
+PHASE 7 (timing) is independent and could run in parallel; it needs only the
+level envelope, which has existed since PHASE 1.
 
 ## Known limitations
 
@@ -563,8 +692,11 @@ ground.
   measurement in this document comes from synthetic PCM.
 - CPU time is estimated from operation counts, never measured on the device.
   This is the largest unknown in the whole chain.
-- `harmonicToNoiseRatio` is an approximation (see PHASE 4) until the noise model
-  of PHASE 5 exists.
+- `harmonicToNoiseRatio` remains the PHASE 4 approximation. PHASE 5 added a
+  *separate*, properly measured `snrDb` based on the noise profiles; the two
+  coexist and measure different things. Replacing the HNR with a spectrum-based
+  one is still open.
+- Noise profiles are lost on reboot (see PHASE 5, persistence).
 - The 62.5 frames/s rate only applies while `setActive(true)` — mic monitor or
   calibration — not during ordinary MIDI playback.
 - Pitch accuracy on synthetic pure tones is now < 1 cent (was ±47). This has
