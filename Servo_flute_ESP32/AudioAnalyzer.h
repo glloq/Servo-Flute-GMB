@@ -146,7 +146,6 @@ private:
   // Frame d'analyse contigue extraite de l'anneau. Toujours COMPLETE.
   float _frame[MIC_ANALYSIS_FRAME_SIZE];
   unsigned long _lastDrain;
-  unsigned long _lastUpdate;
 
   bool installI2S();
   void uninstallI2S();

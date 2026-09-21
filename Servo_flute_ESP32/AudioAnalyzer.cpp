@@ -14,7 +14,7 @@ AudioAnalyzer::AudioAnalyzer()
     _rxHandle(NULL),
 #endif
     _expectedMidi(0), _spectralCountdown(0),
-    _lastDrain(0), _lastUpdate(0) {
+    _lastDrain(0) {
 }
 
 // ------------------------------------------------------------- I2S lifecycle --
@@ -101,7 +101,6 @@ bool AudioAnalyzer::begin() {
   _stats.reset();
   _level = FrameLevel();
   _lastDrain = 0;
-  _lastUpdate = 0;
   _initialized = true;
   _micDetected = detectMicrophone();
 
@@ -207,11 +206,14 @@ void AudioAnalyzer::update() {
     return;
   }
 
-  _lastUpdate = now;
   analyzeFrame();
   _frameSeq++;
   _frameTimestamp = now;
   _stats.lastFrameTimestamp = now;
+  // Renseigne APRES l'increment : l'identite de la frame ne depend pas de
+  // l'ordre des appels a l'interieur d'analyzeFrame().
+  _features.frameSequence = _frameSeq;
+  _features.timestamp = (uint32_t)now;
 }
 
 void AudioAnalyzer::markMeasurementInvalid() {
@@ -308,8 +310,6 @@ void AudioAnalyzer::analyzeFrame() {
   // --- Assemblage des descripteurs (PHASE 4) --------------------------------
   // L'assemblage lui-meme vit dans AcousticFeatureBuilder, qui est pur et donc
   // testable sur hote ; cette classe, elle, depend de l'I2S.
-  _features.frameSequence = _frameSeq + 1;   // _frameSeq est incremente apres
-  _features.timestamp = (uint32_t)millis();
   AcousticFeatureBuilder::fillLevel(_features, _level);
   AcousticFeatureBuilder::fillPitch(_features, _lastPitch, _soundDetected);
 }
