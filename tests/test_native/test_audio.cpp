@@ -975,6 +975,120 @@ void spectral_centroid_and_flatness() {
   assert(sa.bandEnergy(2200.0f, 1800.0f, kFs) == 0.0f);   // bande inversee
 }
 
+// Les deux mesures de FORME ignorent ce qui est hors de la bande d'analyse ;
+// bandEnergy, elle, ne l'ignore pas.
+//
+// C'est la difference de nature entre les trois, et elle se verifie SANS
+// filtre : il suffit de deposer une raie franche dans la bande coupee. Une
+// moyenne (platitude, centroide) qui la compterait decrirait un domaine que la
+// chaine de production a vide ; une SOMME sur une bande que l'appelant a
+// nommee doit la compter, sans quoi elle repondrait a une autre question.
+void spectral_shape_ignores_what_the_chain_removes() {
+  const SpectralAnalyzer::AnalysisBand band = SpectralAnalyzer::analysisBand(kFs);
+  // Sans coupure haute il n'y a pas de "hors bande" ou deposer quoi que ce
+  // soit : la propriete n'a pas d'objet et le test le dit plutot que de
+  // passer a vide.
+  if (band.hi >= (uint16_t)(MIC_FFT_SIZE / 2)) {
+    printf("  [shape] MIC_FILTER_LP_HZ <= 0 : la bande EST le spectre entier, "
+           "rien a exclure\n");
+    return;
+  }
+
+  SpectralAnalyzer sa;
+  std::vector<float> buf(kFrame);
+
+  // Les MEMES deux mesures, prises sur TOUT le spectre. C'est la reference dont
+  // on doit montrer qu'elle se laisse tromper ; elle vit dans le test pour que
+  // la comparaison reste valable apres la correction.
+  auto wholeFlatness = [&sa]() {
+    double logSum = 0.0, arithSum = 0.0;
+    size_t n = 0;
+    for (size_t k = 1; k <= (size_t)(MIC_FFT_SIZE / 2); k++) {
+      double m = sa.magnitudes()[k];
+      if (m < 1e-12) m = 1e-12;
+      logSum += log(m); arithSum += m; n++;
+    }
+    return (n && arithSum > 0.0) ? exp(logSum / (double)n) / (arithSum / (double)n) : 0.0;
+  };
+  auto wholeCentroid = [&sa]() {
+    double w = 0.0, t = 0.0;
+    for (size_t k = 1; k <= (size_t)(MIC_FFT_SIZE / 2); k++) {
+      w += (double)SpectralAnalyzer::binToHz(k, kFs) * sa.magnitudes()[k];
+      t += sa.magnitudes()[k];
+    }
+    return (t > 1e-12) ? (w / t) : 0.0;
+  };
+
+  // Note LEGEREMENT SOUFFLEE, entierement dans la bande. Un souffle, meme
+  // faible, place la platitude dans une plage ou elle veut dire quelque chose ;
+  // sur un sinus pur elle vaut 5e-4 et tout ecart y est du bruit numerique.
+  audiosig::fluteLike(buf.data(), kFrame, 440.0f, 0.40f, 0.010f, kFs);
+  assert(sa.computeSpectrum(buf.data(), kFrame));
+  const float aloneCentroid = sa.spectralCentroid(kFs);
+  const float aloneFlatness = sa.spectralFlatness(kFs);
+  const double aloneWholeCentroid = wholeCentroid();
+  const double aloneWholeFlatness = wholeFlatness();
+  const float aloneHigh = sa.bandEnergy(SpectralAnalyzer::binToHz(band.hi + 1, kFs),
+                                        kFs * 0.5f, kFs);
+
+  // La MEME note, plus une raie forte posee au milieu de la bande coupee. En
+  // production, cette raie-la n'atteint jamais la FFT : le firmware l'a
+  // retiree. Une mesure de forme qui la voit mesure donc autre chose que le
+  // signal analyse.
+  const float kOutOfBandHz =
+      0.5f * (SpectralAnalyzer::binToHz(band.hi, kFs) + kFs * 0.5f);
+  assert(kOutOfBandHz > SpectralAnalyzer::binToHz(band.hi, kFs));
+  audiosig::fluteLike(buf.data(), kFrame, 440.0f, 0.40f, 0.010f, kFs);
+  for (size_t i = 0; i < (size_t)kFrame; i++) {
+    buf[i] += 0.5f * sinf(2.0f * audiosig::kPi * kOutOfBandHz * (float)i / kFs);
+  }
+  assert(sa.computeSpectrum(buf.data(), kFrame));
+
+  const float withCentroid = sa.spectralCentroid(kFs);
+  const float withFlatness = sa.spectralFlatness(kFs);
+  const double withWholeCentroid = wholeCentroid();
+  const double withWholeFlatness = wholeFlatness();
+  printf("  [shape] raie a %.0f Hz (hors bande) ajoutee a une note a 440 Hz :\n"
+         "  [shape]   bande          centroide %7.1f -> %7.1f Hz   platitude %.5f -> %.5f\n"
+         "  [shape]   spectre entier centroide %7.1f -> %7.1f Hz   platitude %.5f -> %.5f\n",
+         (double)kOutOfBandHz,
+         (double)aloneCentroid, (double)withCentroid,
+         (double)aloneFlatness, (double)withFlatness,
+         aloneWholeCentroid, withWholeCentroid, aloneWholeFlatness, withWholeFlatness);
+
+  // 1. Les deux FORMES ne bougent PAS : elles ne regardent pas la. La tolerance
+  //    est serree a dessein - mesure : centroide inchange au dixieme de Hz,
+  //    platitude inchangee a la cinquieme decimale.
+  assert(fabsf(withCentroid - aloneCentroid) < 0.001f * aloneCentroid);
+  assert(fabsf(withFlatness - aloneFlatness) < 0.001f * aloneFlatness);
+
+  // 2. ...alors que les memes mesures prises sur tout le spectre sont
+  //    massivement trompees par cette seule raie : le centroide quadruple et la
+  //    platitude perd 39 %. C'est cette moitie-la qui rend la premiere
+  //    significative - sans elle, une mesure bloquee passerait aussi.
+  assert(withWholeCentroid > 3.0 * aloneWholeCentroid);
+  assert(withWholeFlatness < 0.75 * aloneWholeFlatness);
+
+  // 3. bandEnergy, elle, la voit - et c'est voulu : la bande est un ARGUMENT.
+  //    Si elle ne la voyait pas, l'appelant ne pourrait plus rien mesurer
+  //    au-dessus de la coupure, y compris pour constater qu'il y a quelque
+  //    chose.
+  const float withHigh = sa.bandEnergy(SpectralAnalyzer::binToHz(band.hi + 1, kFs),
+                                       kFs * 0.5f, kFs);
+  assert(withHigh > 100.0f * (aloneHigh + 1e-12f));
+
+  // 4. Une frequence d'echantillonnage degeneree vide la bande : les deux
+  //    formes REFUSENT alors de rendre un nombre, exactement comme sans spectre
+  //    calcule. Le spectre, lui, est bien la - c'est la bande qui n'existe pas,
+  //    et un centroide "moyen" y serait une invention.
+  assert(sa.hasSpectrum());
+  assert(SpectralAnalyzer::analysisBand(0.0f).count() == 0);
+  assert(sa.spectralFlatness(0.0f) == 0.0f);
+  assert(sa.spectralCentroid(0.0f) == 0.0f);
+  assert(sa.spectralFlatness(-kFs) == 0.0f);
+  assert(sa.spectralCentroid(-kFs) == 0.0f);
+}
+
 // Sans spectre calcule, aucun descripteur ne doit inventer de valeur.
 void spectral_accessors_are_safe_without_spectrum() {
   SpectralAnalyzer sa;
@@ -1564,6 +1678,81 @@ void noise_bands_distinguish_spectra() {
   }
   assert(NoiseModel::bandLowHz(MIC_NOISE_BANDS) == 0.0f);   // hors plage
 }
+
+// Un profil de bruit reste COHERENT quand il est capture sur la chaine de
+// production.
+//
+// NoiseModel::accumulate() range la platitude spectrale dans le profil, donc
+// la correction de spectralFlatness() change la valeur stockee : un profil de
+// bruit large bande passe de 0,37 a 0,85 sur la chaine de production. Ce test
+// verifie que cette valeur decrit toujours le SIGNAL - c'est-a-dire qu'elle ne
+// depend plus du filtrage - et que le reste du profil, lui, n'a pas bouge.
+//
+// La question "un profil d'avant est-il comparable a un profil d'apres ?" ne
+// se pose pas : les profils vivent en RAM et sont perdus au redemarrage (voir
+// NoiseModel.h), beginCapture() ecrase le precedent, et rien dans
+// ConfigStorage ne les persiste. Aucune comparaison ne traverse donc une mise
+// a jour du firmware.
+void noise_profile_flatness_survives_the_production_chain() {
+  std::vector<float> buf(MIC_ANALYSIS_FRAME_SIZE);
+  NoiseProfile captured[2];
+
+  for (int production = 0; production < 2; production++) {
+    NoiseModel nm;
+    SpectralAnalyzer sa;
+    AudioFilterChain chain;
+    chain.configureDefaults();
+    nm.beginCapture(NOISE_AMBIENT);
+    for (int i = 0; i < MIC_NOISE_MIN_FRAMES; i++) {
+      audiosig::whiteNoise(buf.data(), buf.size(), 0.05f, 7000u + (uint32_t)i);
+      // Comme drainI2S() : le flux traverse la chaine avant l'anneau, et la
+      // memoire du filtre s'etablit sur les frames precedentes.
+      if (production) chain.processBlock(buf.data(), buf.size());
+      sa.computeSpectrum(buf.data(), buf.size());
+      nm.accumulate(buf.data(), buf.size(), &sa);
+    }
+    assert(nm.endCapture());
+    captured[production] = nm.profile(NOISE_AMBIENT);
+  }
+
+  printf("  [noise] profil de bruit large bande - platitude %.4f (PCM brut) / "
+         "%.4f (production) ; rms %.5f / %.5f\n",
+         (double)captured[0].flatness, (double)captured[1].flatness,
+         (double)captured[0].rms, (double)captured[1].rms);
+  fflush(stdout);
+
+  // Le filtrage ne deplace plus la platitude stockee. Avec la mesure pleine
+  // bande, les memes captures donnaient 0,845 et 0,370 : un profil de bruit
+  // decrivait alors le passe-bas autant que la piece.
+  assert(fabsf(captured[1].flatness - captured[0].flatness) < 0.05f);
+  // Et c'est bien du bruit large bande des DEUX cotes, pas une valeur ecrasee.
+  assert(captured[0].flatness > 0.5f && captured[1].flatness > 0.5f);
+
+  assert(captured[0].frames == captured[1].frames);
+  assert(captured[0].valid && captured[1].valid);
+
+  // CE QUE LE FILTRAGE DEPLACE ENCORE, et qui n'est pas un defaut : le NIVEAU.
+  // Le passe-bas retire reellement du bruit hors bande, donc le rms d'un profil
+  // capture en production est plus bas - c'est une propriete du SIGNAL, pas de
+  // la mesure. Ce champ n'a pas ete touche par la correction, et c'est le seul
+  // du profil que la regulation consomme (NoiseModel::snrDb).
+  //
+  // Conditionne au passe-bas : avec MIC_FILTER_LP_HZ a 0 il ne reste que le
+  // retrait de continu, qui ne retire quasiment aucune energie a du bruit
+  // blanc - mesure, 0,02843 contre 0,02850, l'ecart change meme de signe. Y
+  // exiger une baisse serait affirmer une propriete que la configuration ne
+  // produit pas.
+  {
+    AudioFilterChain probe;
+    probe.configureDefaults();
+    if (probe.lowPassActive()) {
+      assert(captured[1].rms < captured[0].rms);
+      assert(captured[1].rms > 0.5f * captured[0].rms);   // il en retire, il n'efface pas
+    } else {
+      assert(fabsf(captured[1].rms - captured[0].rms) < 0.05f * captured[0].rms);
+    }
+  }
+}
 #endif
 
 // Sans FFT, la capture doit quand meme produire un profil de NIVEAU utilisable.
@@ -1744,6 +1933,7 @@ void audio_run_all_tests() {
 #if MIC_FFT_ENABLED
   spectral_fft_places_the_peak_correctly();
   spectral_centroid_and_flatness();
+  spectral_shape_ignores_what_the_chain_removes();
   spectral_accessors_are_safe_without_spectrum();
   spectral_fft_agrees_with_goertzel();
 #endif
@@ -1763,6 +1953,7 @@ void audio_run_all_tests() {
   noise_profile_selection_follows_the_real_state();
 #if MIC_FFT_ENABLED
   noise_bands_distinguish_spectra();
+  noise_profile_flatness_survives_the_production_chain();
 #endif
   noise_works_without_spectrum();
   noise_capture_is_bounded();

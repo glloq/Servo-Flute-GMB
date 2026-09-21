@@ -15,6 +15,21 @@
  * platitude, energie hors harmoniques. Elle coute bien plus cher et n'est pas
  * necessaire a chaque frame - d'ou MIC_SPECTRAL_DECIMATION.
  *
+ * "TOUT LE SPECTRE" S'ARRETE OU LA CHAINE S'ARRETE
+ * ------------------------------------------------
+ * Une FORME spectrale - centroide, platitude - est une moyenne sur des bins.
+ * AudioAnalyzer::drainI2S() filtre le FLUX avant l'anneau, donc plus de la
+ * moitie des bins que cette moyenne parcourrait ont ete vides par le firmware
+ * lui-meme : moyenner dessus, c'est moyenner l'effet du filtre. Ces deux
+ * mesures se font donc dans analysisBand(), exactement comme le plancher de
+ * bruit du HNR. Les trois statistiques decrivent ainsi la MEME partie du
+ * signal, et aucune ne bouge quand on change une coupure sans changer le son.
+ *
+ * bandEnergy() echappe a cette regle, et pour une raison de fond : c'est une
+ * SOMME sur une bande que l'APPELANT nomme. Un bin vide y pese zero, ce qui est
+ * une description exacte du signal recu ; et restreindre la bande demandee
+ * repondrait a une autre question que celle posee. Voir son commentaire.
+ *
  * FENETRAGE
  * ---------
  * Ici, contrairement a YIN, la fenetre de Hann est LEGITIME et necessaire : elle
@@ -233,13 +248,63 @@ public:
 
   // Centre de gravite spectral (Hz) : ou se situe "en moyenne" l'energie. Un
   // son souffle le fait monter, une note pleine le garde bas.
+  //
+  // Mesure DANS LA BANDE ANALYSEE (voir analysisBand). Le centroide est une
+  // moyenne ponderee par l'energie, donc un bin vide n'y pese presque rien -
+  // le biais est plus doux que sur la platitude, mais il est du meme signe et
+  // il est grand : sur du bruit blanc, le centroide vaut 8300 Hz sur le PCM
+  // brut et 4636 Hz apres AudioFilterChain, soit -44 % pour un signal
+  // inchange. Le filtre a RETIRE cette energie-la, donc il n'y a rien a en
+  // deduire sur la source ; dans la bande, les memes signaux donnent 3582 Hz
+  // brut et 3444 Hz filtre, soit -4 %.
+  // CONSEQUENCE D'ECHELLE, assumee : la valeur rendue vit desormais dans
+  // [MIC_FILTER_HP_HZ, MIC_FILTER_LP_HZ] et non dans [0, Nyquist]. Un son dont
+  // toute l'energie serait au-dessus du passe-bas rend le centroide de ce qui
+  // reste dans la bande, et non sa propre frequence - c'est le prix a payer
+  // pour que la mesure ne depende plus du filtre, et la plage utile de
+  // l'instrument (MIC_PITCH_MIN_HZ..MIC_PITCH_MAX_HZ) est entierement dedans.
   float spectralCentroid(float sampleRate = (float)MIC_SAMPLE_RATE) const;
 
   // Platitude spectrale 0..1 (moyenne geometrique / moyenne arithmetique).
   // Proche de 1 = bruit large bande, proche de 0 = spectre a raies.
-  float spectralFlatness() const;
+  //
+  // Mesure DANS LA BANDE ANALYSEE (voir analysisBand), et c'est ici que cela
+  // compte le plus : la moyenne geometrique passe par un LOGARITHME, donc un
+  // bin vide y pese enormement - log(plancher) est un grand nombre negatif -
+  // alors qu'il ne porte aucune energie. Sur les 56 % de bins que la chaine
+  // vide, ce sont donc des bins SANS signal qui dominaient le vote.
+  // Consequence mesuree : du bruit blanc pur - le signal le plus plat qui
+  // existe - lisait 0,85 sur PCM brut et 0,39 apres AudioFilterChain. Le seuil
+  // AQ_BREATH_FLATNESS_NOISE, place a 0,70, etait donc devenu inatteignable et
+  // la composante platitude de computeBreathiness() ne pouvait plus jamais
+  // declarer "du bruit". Dans la bande, le meme bruit lit 0,84 a 0,87 filtre
+  // contre 0,85 a 0,88 brut : la mesure ne voit plus le filtre.
+  float spectralFlatness(float sampleRate = (float)MIC_SAMPLE_RATE) const;
 
   // Energie dans une bande [loHz, hiHz].
+  //
+  // PAS de restriction a analysisBand, DELIBEREMENT. Les deux mesures
+  // ci-dessus sont des moyennes sur un domaine que la fonction choisit
+  // elle-meme, et ce domaine etait faux ; ici le domaine est un ARGUMENT, et
+  // c'est une somme : un bin vide y ajoute zero, ce qui decrit exactement le
+  // signal recu, sans rien extrapoler. Restreindre repondrait a une question
+  // que l'appelant n'a pas posee, et effacerait silencieusement la partie
+  // hors bande d'une bande demandee a cheval sur une coupure.
+  // A SAVOIR quand meme : une bande a cheval sur MIC_FILTER_HP_HZ ou
+  // MIC_FILTER_LP_HZ rend une energie amputee du flanc du filtre. DEUX des six
+  // bandes de NoiseModel sont dans ce cas, la premiere et la derniere. Ecart
+  // brut / production sur du bruit blanc, pire cas sur six realisations :
+  //
+  //     100-250 Hz  -56 %   |  250-500  -7 %   |  500-1000  -2 %
+  //     1k-2k       +1 %    |  2k-4k    -2 %   |  4k-8k     -38 %
+  //
+  // La derniere (4k-8k) perd regulierement 30 a 38 % : c'est le passe-bas. La
+  // premiere (100-250) est plus traitre - elle ne compte que TROIS bins a
+  // 32 kHz sur 512 points, si bien que son ecart va de -56 % a +24 % selon la
+  // realisation : c'est le flanc du passe-haut ET un echantillon minuscule.
+  // Comparer deux profils de bruit reste juste - ils traversent la MEME chaine
+  // - mais lire l'une de ces deux bandes comme une energie acoustique absolue
+  // ne l'est pas, et la premiere ne devrait pas etre lue seule du tout.
   float bandEnergy(float loHz, float hiHz,
                    float sampleRate = (float)MIC_SAMPLE_RATE) const;
 
@@ -252,7 +317,8 @@ public:
     return hz * (float)MIC_FFT_SIZE / sampleRate;
   }
 
-  // Bornes INCLUSIVES, en bins, de la bande sur laquelle le HNR est mesure.
+  // Bornes INCLUSIVES, en bins, de la bande sur laquelle le HNR, le centroide
+  // et la platitude sont mesures.
   //
   // POURQUOI CETTE BANDE EXISTE. Le HNR compare une energie de raies a un
   // plancher de bruit EXTRAPOLE : on mesure le plancher sur les bins ou aucune
@@ -265,11 +331,25 @@ public:
   // mesurer le plancher, c'est mesurer l'effet du filtre ; l'etendre au reste
   // du spectre, c'est pretendre que la bande utile est aussi vide.
   //
+  // Le meme raisonnement vaut, mot pour mot, pour toute STATISTIQUE prise en
+  // moyenne sur les bins : la platitude (moyenne geometrique) et le centroide
+  // (moyenne ponderee) decrivaient eux aussi un domaine dont le firmware avait
+  // retire le contenu. Ils utilisent donc cette meme bande.
+  //
   // La bande est donc celle du filtre, bornes a -3 dB comprises, et elle se
   // DERIVE de settings.h : aucune frequence n'est ecrite ici. Une coupure a 0
   // desactive l'etage correspondant (AudioFilterChain::configure : la cellule
   // devient transparente), et la borne correspondante revient alors au spectre
   // entier - la mesure reste donc exacte sans filtrage.
+  //
+  // CE QUI CASSERAIT CETTE BANDE. Elle suppose que la chaine reellement
+  // appliquee au flux est celle de settings.h. AudioAnalyzer::begin() appelle
+  // configureDefaults(), donc c'est vrai en production ; cela cesserait de
+  // l'etre si quelqu'un configurait AudioFilterChain avec d'autres coupures a
+  // l'execution, ou analysait a une frequence d'echantillonnage differente de
+  // celle a laquelle le filtre a ete regle. Dans ces deux cas les mesures
+  // redeviendraient un melange de signal et de filtre, SANS que rien ne le
+  // signale - c'est le point faible connu de cette correction.
   //
   // `sampleRate` est celle des echantillons analyses ; la chaine de filtrage
   // etant configuree a MIC_SAMPLE_RATE sur le meme flux, les deux coincident en
