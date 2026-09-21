@@ -257,8 +257,28 @@ void AudioAnalyzer::markMeasurementInvalid() {
   _pitchValid = false;
   _pitchHz = 0;
   _pitchMidi = 0;
+  // _pitchCents manquait a l'appel alors que ses trois voisins y sont et que
+  // getPitchCents() le publie : un ecart en cents survivait donc a la note qui
+  // l'avait produit. Meme famille que le trou ci-dessous, en plus discret.
+  _pitchCents = 0;
   _pitchConfidence = 0;
   _soundDetected = false;
+  // CINQUIEME TROU DE CYCLE DE VIE - la liste des quatre n'etait pas exhaustive.
+  // _level et _rms n'etaient remis a zero QUE dans begin(), et seulement apres
+  // un installI2S() REUSSI. Apres end(), apres setActive(false) (extinction du
+  // moniteur, fin de capture de bruit, fin de calibration) ou apres un
+  // resetMicrophone() dont le begin() echoue, /api/diagnostics republiait donc
+  // rms_dbfs, peak_dbfs, clipping et clipping_ratio de la DERNIERE frame
+  // analysee - et, si cette frame ecretait, le verdict ACTIF "Microphone input
+  // is clipping" alors que plus rien n'ecrete et que plus rien n'est mesure.
+  // Pendant ce temps acoustic_state rendait deja "unclassified" : les deux
+  // moities du meme bloc JSON ne decrivaient pas le meme instant.
+  // FrameLevel() par defaut pose rmsDbFS et peakDbFS a MIC_DBFS_FLOOR, PAS a
+  // zero : un 0 dBFS signifierait pleine echelle, soit le contraire de "rien
+  // n'est mesure". _rms suit, sans quoi getRMS() (IAudioSource) et getLevel()
+  // se contrediraient.
+  _level = FrameLevel();
+  _rms = 0.0f;
   _lastPitch = PitchResult();
   _pitch.resetTracking();
   // resetTracking() efface aussi la note visee : on la restaure, car une source
@@ -339,14 +359,58 @@ void AudioAnalyzer::setActive(bool active) {
   _active = active;
 }
 
+// --- NOTE VISEE : pourquoi la changer remet le suivi acoustique a zero -------
+//
+// Declarer une note visee, c'est declarer qu'une AUTRE note commence. Tout ce
+// que le suivi acoustique a appris - ligne de base de brillance du detecteur de
+// couac, etendue de pitch de l'historique de stabilite - decrit la note
+// PRECEDENTE. Le garder a deux effets, tous deux faux :
+//   - la premiere frame de la nouvelle note est comparee a la brillance de
+//     l'ancienne ; une montee d'une octave depasse AQ_SQUEAK_MIN_SEMITONES et
+//     1,6x la brillance de reference, donc le detecteur publie ACOUSTIC_SQUEAK
+//     - troisieme dans l'ordre de priorite, il masque tout ce qui suit - sur
+//     une note parfaitement propre ;
+//   - l'historique de pitch traverse les deux notes, donc `stability` tombe a
+//     zero AVEC `stabilityValid` vrai : un ecart mesure entre deux notes
+//     differentes se lit comme l'instabilite d'une seule.
+//
+// TRANSITIONS SEULEMENT, comme setActive(). Un appelant qui redeclarerait la
+// meme note a chaque passage - c'est exactement ce que font les appelants de
+// setActive() - effacerait sinon l'historique a chaque tour, et la stabilite ne
+// serait JAMAIS mesuree.
+//
+// PORTEE REELLE, dite franchement : seul AutoCalibrator declare une note visee.
+// En lecture MIDI ordinaire _expectedMidi vaut 0 d'un bout a l'autre, donc ce
+// chemin-ci ne se declenche pas et le defaut decrit ci-dessus subsiste sur la
+// chaine de jeu. Ce qui manque est un signal de changement de note venu de la
+// chaine d'actionneurs - elle seule sait QUAND l'ordre part - et non une
+// heuristique qui le devinerait depuis le pitch mesure : ce serait reintroduire
+// une mesure inventee. Le point d'accrochage existe deja et n'est PAS dans ce
+// fichier : NoteSequencer notifie la chronometrie aux DEUX bornes de la note
+// (voir dans NoteSequencer.cpp la section "Notifications de chronometrie"), et
+// ces deux notifications sont exactement les instants ou il faudrait aussi
+// appeler resetAcousticTracking(). Il leur manque un observateur audio ;
+// InstrumentManager::setTimingObserver() est l'endroit ou il se cablerait.
+
 void AudioAnalyzer::setExpectedMidiNote(int midi) {
-  _expectedMidi = (midi > 0 && midi <= 127) ? midi : 0;
+  const int wanted = (midi > 0 && midi <= 127) ? midi : 0;
+  const bool changed = (wanted != _expectedMidi);
+  _expectedMidi = wanted;
   _pitch.setExpectedMidiNote(midi);
+  // APRES l'affectation de _expectedMidi : resetAcousticTracking() restaure la
+  // note visee du detecteur depuis ce membre, et la restaurerait a l'ANCIENNE
+  // valeur s'il etait appele avant.
+  if (changed) resetAcousticTracking();
 }
 
 void AudioAnalyzer::clearExpectedMidiNote() {
+  const bool changed = (_expectedMidi != 0);
   _expectedMidi = 0;
   _pitch.clearExpectedMidiNote();
+  // Retirer la cible est aussi une fin de note : la ligne de base apprise sous
+  // l'ancienne cible ne doit pas servir a juger ce qui vient apres. C'est le
+  // cas de AutoCalibrator::safeHardware(), qui rend la main au moniteur live.
+  if (changed) resetAcousticTracking();
 }
 
 void AudioAnalyzer::drainI2S() {

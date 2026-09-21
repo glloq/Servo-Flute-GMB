@@ -261,7 +261,9 @@ enum TimingOutcome : uint8_t {
   TIMING_NO_SOUND,           // jamais apparue : plafond atteint ou coupee avant
   TIMING_CUT_SHORT,          // coupee avant que le niveau soit etabli
   TIMING_TIMEOUT,            // ABANDON explicite : un plafond a ete atteint
-  TIMING_ABORTED             // remplacee par une nouvelle note, ou reset()
+  TIMING_ABORTED             // suivi ABANDONNE sans conclure : note remplacee
+                             // par une autre, reset(), ou flux desynchronise
+                             // (horodatage qui recule, voir update())
 };
 
 // Releve complet d'une note. Les horodatages sont en ms (millis() replie sur
@@ -335,6 +337,15 @@ public:
   // Ordre MIDI parti. Demarre un suivi. Si un suivi etait en cours, il est
   // clos en TIMING_ABORTED : une note en remplace une autre, elle ne la
   // prolonge pas.
+  //
+  // REFUSE, et compte dans rejectedEvents(), tant que le flux de frames n'est
+  // pas VIVANT - aucune frame jamais recue, ou derniere frame plus vieille que
+  // MIC_FRAME_STALE_MS. Sans cela, avec l'analyseur inactif (son etat par
+  // DEFAUT), le cycle s'ouvrait et se refermait sur un verdict TIMING_NO_SOUND
+  // qui affirmait que l'instrument n'avait pas sonne, alors que personne
+  // n'ecoutait. Un refus ne touche ni last() ni hasLast() : il ne fabrique
+  // aucun verdict et n'en efface aucun. Les trois autres hooks n'ont pas besoin
+  // de garde : aucune note n'etant alors active, ils refusent deja d'eux-memes.
   void noteCommanded(unsigned long nowMs);
 
   // Consigne d'air posee. Acceptee uniquement entre l'ordre MIDI et
@@ -353,6 +364,10 @@ public:
   // --- Flux d'analyse -------------------------------------------------------
 
   // Injecte UNE frame. Rend false si la frame est refusee (temps qui recule).
+  // Une frame refusee n'alimente aucune mesure, mais son horodatage devient la
+  // nouvelle reference et la note en cours est close en TIMING_ABORTED : une
+  // garde qui garderait sa reference figee rejetterait ensuite tout un flux
+  // pourtant sain (voir le corps de update() pour les ~25 jours en question).
   bool update(const TimingFrame& f);
 
   // Adaptateur depuis la chaine audio. `pitchValid` est le verdict du
@@ -428,6 +443,14 @@ private:
   float _releaseThresholdDb; // seuil de chute, fige a l'ordre d'arret
 
   // --- Interne --------------------------------------------------------------
+
+  // Le flux d'analyse est-il VIVANT a cet instant ? Faux si aucune frame n'est
+  // jamais entree, ou si la derniere est plus vieille que le plafond
+  // d'obsolescence DU FIRMWARE (MIC_FRAME_STALE_MS, settings.h). Aucune seconde
+  // definition de "le flux est mort" n'est introduite ici : c'est celle que
+  // AudioAnalyzer applique deja pour invalider ses propres mesures.
+  bool frameStreamIsLive(uint32_t nowMs) const;
+
   void clearNoteTracking();
   void closeNote(TimingOutcome outcome);
   void pushBaseline(float db);

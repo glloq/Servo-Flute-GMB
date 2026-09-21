@@ -9,6 +9,21 @@ def code_only(text):
     that happens to quote the same symbol."""
     return '\n'.join(l for l in text.splitlines() if not l.strip().startswith('//'))
 
+
+def norm(text):
+    """Normalise l'espacement AUTOUR des separateurs, sans rien retirer d'autre.
+
+    Un audit statique qui echoue sur un simple reformatage - couper une
+    affectation sur deux lignes, aligner un '=' - crie au loup : on finit par
+    le contourner au lieu de l'ecouter, et il ne protege plus rien. Cette
+    normalisation ne fait perdre AUCUN mordant : elle ne change ni les jetons
+    ni leur ordre, donc aucun code different de celui qu'on exige ne passe
+    grace a elle. Les deux cotes d'une comparaison doivent y passer.
+    """
+    import re
+    t = re.sub(r'\s*([=;,()])\s*', r'\1', text)
+    return re.sub(r'[ \t]*\n[ \t]*', '\n', t)
+
 def test_validation_entry_points_present():
     assert 'validateAndNormalizeConfig(RuntimeConfig& config' in read('Servo_flute_ESP32/ConfigStorage.h')
     assert 'validateAndNormalizeConfig(RuntimeConfig& config' in read('Servo_flute_ESP32/ConfigValidator.cpp')
@@ -1764,8 +1779,11 @@ def test_audio_phase6_context_is_honest_about_what_was_measured():
     fraiche une mesure qui ne l'est pas sans que rien ne le detecte."""
     aa, fn = _analyzer_bodies()
     acou = fn['analyzeAcoustics']
+    # norm() : ces assertions portent sur des JETONS, pas sur une mise en page.
+    # Couper une affectation sur deux lignes ne change pas ce que le code fait.
+    nacou, naa = norm(acou), norm(aa)
 
-    assert 'ctx.fftFresh = _features.fftValid;' in acou, (
+    assert norm('ctx.fftFresh = _features.fftValid;') in nacou, (
         "ctx.fftFresh doit valoir _features.fftValid, le drapeau que fillSpectral() pose "
         "quand la FFT a REELLEMENT tourne sur cette frame. Toute autre source (un compteur "
         "de decimation recopie ici, spectralValid, une constante) finirait par diverger de "
@@ -1773,33 +1791,33 @@ def test_audio_phase6_context_is_honest_about_what_was_measured():
     # L'invariant central de la PHASE 6 : jamais de fraicheur inconditionnelle.
     import re
     bad = [rhs.strip() for rhs in re.findall(r'fftFresh\s*=([^;]+);', aa)
-           if rhs.strip() != '_features.fftValid']
+           if ' '.join(rhs.split()) != '_features.fftValid']
     assert not bad, (
         "AcousticContext::fftFresh est pose a '%s' dans AudioAnalyzer.cpp. Le centroide et "
         "la platitude spectrale ne sont recalcules qu'une frame sur MIC_SPECTRAL_DECIMATION "
         "(64 ms) et ne sont PAS effaces entre-temps : les declarer frais a chaque frame fait "
         "juger la respiration et la brillance sur une mesure perimee. Seul "
         "_features.fftValid dit la verite." % bad[0])
-    assert 'ctx.fftFresh = true' not in aa and 'ctx.fftFresh = 1' not in aa
+    assert norm('ctx.fftFresh = true') not in naa and norm('ctx.fftFresh = 1') not in naa
 
-    assert 'ctx.stabilityMeasured = _features.stabilityValid;' in acou, (
+    assert norm('ctx.stabilityMeasured = _features.stabilityValid;') in nacou, (
         "ctx.stabilityMeasured doit valoir _features.stabilityValid (propage depuis "
         "PitchResult::stabilityValid). pitchStability vaut 0 tant que l'historique n'est pas "
         "rempli ET 0 pour une note franchement instable : sans ce drapeau, chaque debut de "
         "note serait classe ACOUSTIC_UNSTABLE.")
-    assert 'stabilityMeasured = true' not in aa, (
+    assert norm('stabilityMeasured = true') not in naa, (
         "ctx.stabilityMeasured est force a vrai : la stabilite serait lue comme mesuree "
         "alors que l'historique de pitch n'est pas encore rempli.")
 
-    assert 'ctx.frame = _frame;' in acou, (
+    assert norm('ctx.frame = _frame;') in nacou, (
         "ctx.frame doit pointer le PCM de la frame courante. Sans lui, evaluateOverblow() "
         "rend valid=false et l'etat ACOUSTIC_OVERBLOW devient inatteignable : son critere "
         "spectral se mesure a la note VISEE et a son octave, alors que les harmoniques deja "
         "rangees dans _features sont ancrees sur la frequence DETECTEE - donc sur l'octave "
         "elle-meme pendant un overblow.")
-    assert 'ctx.frameSize = MIC_ANALYSIS_FRAME_SIZE;' in acou
-    assert 'ctx.sampleRate = (float)MIC_SAMPLE_RATE;' in acou
-    assert 'ctx.expectedMidi = _expectedMidi;' in acou, (
+    assert norm('ctx.frameSize = MIC_ANALYSIS_FRAME_SIZE;') in nacou
+    assert norm('ctx.sampleRate = (float)MIC_SAMPLE_RATE;') in nacou
+    assert norm('ctx.expectedMidi = _expectedMidi;') in nacou, (
         "ctx.expectedMidi doit venir de la note visee declaree a l'analyseur : sans elle, "
         "ni fausse note ni overblow ne peuvent etre juges (missingExpectedNote).")
 
@@ -2103,3 +2121,307 @@ def test_audio_every_path_that_stops_acquisition_invalidates_the_verdicts():
             "sans invalider les mesures rangees. update() sortant immediatement dans cet etat, "
             "le plafond d'obsolescence ne s'appliquera jamais : appeler "
             "markMeasurementInvalid()." % name)
+
+
+# ===========================================================================
+# VERROUS DE STRUCTURE - ordre, multiplicite, coexistence obligatoire
+#
+# Une assertion qui ne verifie que la PRESENCE d'un litteral detecte la
+# suppression d'une ligne, jamais sa neutralisation : un `return;` premature,
+# un `if (false)`, une affectation ecrasee plus bas la laissent toutes passer.
+# Les verrous ci-dessous encodent des invariants qu'un texte present ne peut
+# pas simuler : un ordre entre deux instructions, un nombre d'appelants, une
+# portee syntaxique partagee.
+#
+# Ils protegent deux defauts CONSTATES sur ce fichier, et reproduits :
+#   - resetAcousticTracking() n'avait qu'un seul appelant (setActive(true)),
+#     alors que trois endroits promettaient qu'un changement de note l'appelait
+#     aussi ;
+#   - markMeasurementInvalid() laissait _level et _rms intacts, donc
+#     /api/diagnostics publiait le niveau et le verdict d'ecretage de la
+#     derniere frame analysee apres end(), apres setActive(false) et apres un
+#     resetMicrophone() rate.
+# ===========================================================================
+
+def _fn_body(fns, name):
+    """Corps d'une fonction rendue par _analyzer_functions(), signature exclue."""
+    assert name in fns, (
+        "AudioAnalyzer.cpp ne definit plus %s() : ce verrou s'appuie sur ce "
+        "decoupage. Si la fonction a ete renommee, mettre a jour ce test." % name)
+    src = fns[name]
+    return src[src.index('{') + 1:].split('\n}\n')[0]
+
+
+def _braced(text, marker):
+    """Bloc { ... } qui suit `marker`, accolades APPARIEES.
+
+    Verifier que deux cles JSON partent 'sous la meme garde' demande de
+    connaitre la portee, pas de chercher une sous-chaine : deux cles peuvent se
+    suivre dans le fichier et vivre dans deux `if` differents. A n'employer que
+    sur des gardes dont le corps ne contient pas d'accolade en chaine.
+    """
+    i = text.index(marker)
+    j = text.index('{', i)
+    depth = 0
+    for k in range(j, len(text)):
+        if text[k] == '{':
+            depth += 1
+        elif text[k] == '}':
+            depth -= 1
+            if depth == 0:
+                return text[j + 1:k]
+    raise AssertionError("bloc non ferme apres %r" % marker)
+
+
+def test_audio_a_declared_note_change_resets_the_acoustic_tracking():
+    """MULTIPLICITE + ORDRE. resetAcousticTracking() n'avait qu'UN appelant -
+    setActive(true) - alors que le contrat d'interface, son propre commentaire
+    et l'en-tete promettaient qu'un changement de note l'appelait. Effet
+    reproduit sur un legato montant d'une octave : la premiere frame de la
+    nouvelle note est comparee a la ligne de base de brillance de l'ancienne,
+    le detecteur publie ACOUSTIC_SQUEAK - troisieme dans l'ordre de priorite,
+    donc il masque tout ce qui suit - pendant six frames sur une note propre.
+    """
+    import re
+    fns = _analyzer_functions()
+
+    # --- MULTIPLICITE : une fonction de remise a zero sans appelant est morte.
+    callers = sorted(n for n in fns
+                     if n != 'resetAcousticTracking'
+                     and 'resetAcousticTracking(' in _fn_body(fns, n))
+    for expected in ('setActive', 'setExpectedMidiNote', 'clearExpectedMidiNote'):
+        assert expected in callers, (
+            "AudioAnalyzer::%s() n'appelle pas resetAcousticTracking(). Appelants "
+            "trouves : %s. Declarer une note visee, la retirer, ou reprendre apres une "
+            "pause sont les trois SEULS signaux de changement de note dont cette classe "
+            "dispose ; en perdre un laisse la ligne de base de brillance et l'historique "
+            "de pitch d'une note servir a juger la suivante." % (expected, callers or 'aucun'))
+    assert len(callers) >= 3, (
+        "resetAcousticTracking() n'a plus que %d appelant(s) : %s. Le defaut d'origine "
+        "etait exactement celui-la - un seul appelant pour une fonction que trois "
+        "endroits de la documentation declaraient appelee a chaque changement de note."
+        % (len(callers), callers or 'aucun'))
+
+    # --- ORDRE : on ne detecte pas une transition apres avoir ecrase l'ancienne
+    # valeur, et on ne restaure pas la note visee avant de l'avoir posee.
+    for name in ('setExpectedMidiNote', 'clearExpectedMidiNote'):
+        body = _fn_body(fns, name)
+        read = re.search(r'(_expectedMidi\s*[!=<>]=|[!=<>]=\s*_expectedMidi)', body)
+        write = re.search(r'(?<![\w.])_expectedMidi\s*=(?!=)', body)
+        reset = re.search(r'resetAcousticTracking\s*\(', body)
+        assert write, (
+            "AudioAnalyzer::%s() n'affecte plus _expectedMidi : ce verrou s'appuie sur "
+            "cette fonction comme point de declaration de la note visee." % name)
+        assert read, (
+            "AudioAnalyzer::%s() ne compare plus rien a _expectedMidi avant de l'ecrire. "
+            "La remise a zero doit se faire sur TRANSITION : un appelant qui redeclare la "
+            "meme note a chaque passage - c'est ce que font les appelants de setActive() - "
+            "effacerait sinon l'historique de pitch a chaque tour, et la stabilite ne "
+            "serait JAMAIS mesuree (MIC_PITCH_HISTORY frames sont necessaires)." % name)
+        assert read.start() < write.start(), (
+            "AudioAnalyzer::%s() lit _expectedMidi APRES l'avoir ecrit : le test de "
+            "transition compare alors la nouvelle valeur a elle-meme et est toujours "
+            "faux, donc resetAcousticTracking() ne serait plus jamais appelee." % name)
+        assert reset and write.start() < reset.start(), (
+            "Dans AudioAnalyzer::%s(), resetAcousticTracking() est appelee AVANT que "
+            "_expectedMidi ne recoive sa nouvelle valeur. Elle restaure la note visee du "
+            "detecteur depuis ce membre : appelee trop tot, elle y remet l'ANCIENNE note "
+            "et la levee d'ambiguite d'octave de YIN vise la note precedente." % name)
+
+
+def test_audio_no_published_measurement_survives_an_invalidation():
+    """COEXISTENCE, deduite du code et non d'une liste ecrite a la main : tout
+    membre qu'analyzeFrame() renseigne a chaque frame ET qu'un accesseur publie
+    doit etre remis a zero par markMeasurementInvalid().
+
+    Sans cet invariant, _level et _rms ont survecu a end(), a setActive(false)
+    et a un resetMicrophone() rate : /api/diagnostics rendait encore rms_dbfs,
+    peak_dbfs, clipping et clipping_ratio de la derniere frame analysee, et le
+    verdict ACTIF "Microphone input is clipping" avec, pendant qu'acoustic_state
+    rendait deja "unclassified" - les deux moities du meme bloc JSON ne
+    decrivaient pas le meme instant. Le verrou s'etend tout seul au prochain
+    champ ajoute.
+    """
+    import re
+    fns = _analyzer_functions()
+    h = code_only(read('Servo_flute_ESP32/AudioAnalyzer.h'))
+    frame = _fn_body(fns, 'analyzeFrame')
+    stale = _fn_body(fns, 'markMeasurementInvalid')
+
+    assign = r'(?<![\w.])(_\w+)\s*=(?!=)'
+    written = []
+    for m in re.finditer(assign, frame):
+        if m.group(1) not in written:
+            written.append(m.group(1))
+    assert '_level' in written and '_rms' in written, (
+        "analyzeFrame() ne renseigne plus _level / _rms : ce verrou deduit du code la "
+        "liste des mesures a invalider, et cette liste vient de la.")
+
+    # Un membre est PUBLIE s'il sort par un accesseur du header.
+    published = [m for m in written if re.search(r'return\s+%s\s*[;.]' % m, h)]
+
+    # Seule exception, et elle est motivee : `_noiseCaptureFinished` ne dit pas
+    # ce que mesure la frame courante, il dit qu'une capture de bruit s'est
+    # terminee D'ELLE-MEME au plafond de duree. endNoiseCapture() s'en sert pour
+    # rapporter comme un succes un profil reellement range. L'effacer ici
+    # perdrait une capture legitimement terminee.
+    EXEMPT = {'_noiseCaptureFinished'}
+
+    for member in published:
+        if member in EXEMPT:
+            continue
+        cleared = (re.search(r'(?<![\w.])%s\s*=(?!=)' % member, stale)
+                   or ('%s.reset()' % member) in stale)
+        assert cleared, (
+            "AudioAnalyzer::analyzeFrame() renseigne %s a chaque frame et un accesseur du "
+            "header le publie, mais markMeasurementInvalid() ne le remet pas a zero. "
+            "update() sort des sa premiere ligne quand l'analyseur est inactif : le "
+            "plafond d'obsolescence ne s'appliquera donc JAMAIS, et cette mesure restera "
+            "publiee apres end(), apres setActive(false) et apres un resetMicrophone() "
+            "dont le begin() echoue, comme si elle venait d'etre prise. Ajouter sa remise "
+            "a zero dans markMeasurementInvalid(), ou - si elle doit survivre - "
+            "l'inscrire dans EXEMPT avec la raison." % member)
+
+    # ANTI-NEUTRALISATION. Ces deux fonctions sont des remises a zero
+    # inconditionnelles : elles n'ont rien a rendre. Un `return` y est, par
+    # construction, un moyen de sauter la fin de la liste - exactement la
+    # neutralisation qu'une assertion de presence ne verrait pas.
+    for name in ('markMeasurementInvalid', 'resetAcousticTracking'):
+        body = _fn_body(fns, name)
+        assert not re.search(r'\breturn\b', body), (
+            "AudioAnalyzer::%s() contient un `return`. Cette fonction remet a zero une "
+            "LISTE de champs ; un retour anticipe en laisse une partie intacte, et les "
+            "champs sautes continueront d'etre publies comme des mesures. Si une "
+            "condition est vraiment necessaire, garder l'instruction concernee, pas le "
+            "reste de la fonction." % name)
+
+    # ORDRE. resetTracking() efface aussi la note visee du detecteur : la
+    # restaurer AVANT reviendrait a ne pas la restaurer du tout.
+    for name in ('markMeasurementInvalid', 'resetAcousticTracking'):
+        body = _fn_body(fns, name)
+        wipe = body.index('_pitch.resetTracking()')
+        restore = body.index('_pitch.setExpectedMidiNote(_expectedMidi)')
+        assert wipe < restore, (
+            "Dans AudioAnalyzer::%s(), la note visee est rendue au detecteur AVANT "
+            "_pitch.resetTracking(), qui l'efface juste apres. Le detecteur repart donc "
+            "sans note visee : YIN perd la levee d'ambiguite d'octave deterministe et un "
+            "overblow cesse d'etre detecte COMME overblow." % name)
+
+
+def test_audio_ws_push_never_separates_a_value_from_its_scale_or_weight():
+    """COEXISTENCE DE PORTEE. Trois couples de la poussee WebSocket n'ont de
+    sens qu'ensemble : les separer ne degrade pas l'information, il la rend
+    fausse.
+
+    - "hnr" recouvre DEUX echelles (mesure spectrale ou approximation Goertzel
+      a quatre raies) qui different de 31,88 dB sur la MEME note et classent
+      donc les notes a l'envers ; "hnr_sp" dit laquelle. La FFT ne tournant
+      qu'une frame sur MIC_SPECTRAL_DECIMATION, la cle alterne entre les deux a
+      15,6 Hz.
+    - "br" est une moyenne ponderee dont deux composantes sur trois n'existent
+      qu'une frame sur MIC_SPECTRAL_DECIMATION : "brw" descend a 0,30, et seul
+      lui distingue "pas de souffle" de "presque rien de mesure".
+    - "stab" vaut 0 pour "pas encore mesure" AUTANT que pour "tres instable" :
+      il ne part que sous af.stabilityValid.
+    """
+    web = code_only(read('Servo_flute_ESP32/WebConfigurator.cpp'))
+    push = web.split('{\\"t\\":\\"audio\\"')[1].split('_ws.textAll(aj);')[0]
+
+    def key(k):
+        return '\\"%s\\":' % k
+
+    for guard, pair, why in (
+        ('if (af.spectralValid)', ('hnr', 'hnr_sp'),
+         "l'echelle du HNR - 31,88 dB d'ecart entre les deux - serait perdue et le "
+         "chiffre nu classerait les notes a l'envers"),
+        ('if (br.valid)', ('br', 'brw'),
+         "le poids de la respiration serait perdu, et 0,00 a poids 0,30 se lirait "
+         "comme 0,00 a poids 1,00"),
+    ):
+        scope = _braced(push, guard)
+        for k in pair:
+            assert key(k) in scope, (
+                "La poussee WebSocket n'emet pas \"%s\" sous %s : %s." % (k, guard, why))
+            assert push.count(key(k)) == 1, (
+                "\"%s\" est emis %d fois dans la poussee WebSocket. Une seule emission, "
+                "sous la garde qui la qualifie : une seconde, ailleurs, echapperait a la "
+                "garde et c'est exactement ce que ce verrou interdit."
+                % (k, push.count(key(k))))
+        assert scope.index(key(pair[0])) < scope.index(key(pair[1])), (
+            "\"%s\" doit etre emis JUSTE APRES \"%s\", pas ailleurs dans le message : un "
+            "lecteur qui ne trouve pas le qualificatif a l'endroit de la valeur le croira "
+            "absent." % (pair[1], pair[0]))
+
+    stab = _braced(push, 'if (af.stabilityValid)')
+    assert key('stab') in stab, (
+        "\"stab\" n'est plus emis sous if (af.stabilityValid). AcousticFeatures.h le dit : "
+        "0 signifie 'pas encore mesure' AUTANT que 'tres instable'. Il faut "
+        "MIC_PITCH_HISTORY frames pour que le chiffre veuille dire quelque chose, alors "
+        "que la poussee part toutes les AUTOCAL_AUDIO_INTERVAL_MS : la PREMIERE poussee "
+        "de chaque note porterait \"stab\":0.00 et chaque debut de note serait lu comme "
+        "un defaut.")
+    assert push.count(key('stab')) == 1, (
+        "\"stab\" est emis %d fois : une emission hors garde republierait la valeur non "
+        "mesuree que la garde sert a taire." % push.count(key('stab')))
+
+
+def test_audio_diagnostics_keeps_each_measure_next_to_what_qualifies_it():
+    """ORDRE + COEXISTENCE DE PORTEE dans /api/diagnostics, sur le modele de
+    quality_score / quality_weight_used.
+
+    breathiness_weight_used doit etre publie ENTRE la valeur et son drapeau :
+    l'ecart est plus grand que pour la qualite (le poids descend a 0,30 contre
+    0,75) et valid reste vrai dans les deux cas.
+
+    hnr_valid part TOUJOURS ; hnr_db et hnr_is_spectral seulement mesures. Quand
+    spectralValid est faux, fillSpectral() remet harmonicToNoiseRatio a 0.0f, et
+    ce "hnr_db": 0 etait indistinguable d'une vraie mesure Goertzel autour de
+    0 dB - la reference documentee d'une note timbree sur cette echelle vaut
+    -0,06 dB.
+    """
+    web = code_only(read('Servo_flute_ESP32/WebConfigurator.cpp'))
+    diag = web.split('void WebConfigurator::handleApiDiagnostics')[1]
+    block = diag.split('doc["audio"].to<JsonObject>()')[1].split('\n}\n')[0]
+
+    for f in ('a["breathiness"]', 'a["breathiness_weight_used"]', 'a["breathiness_valid"]'):
+        assert f in block, (
+            "/api/diagnostics n'expose plus %s dans le bloc audio." % f)
+    assert (block.index('a["breathiness"]')
+            < block.index('a["breathiness_weight_used"]')
+            < block.index('a["breathiness_valid"]')), (
+        "breathiness_weight_used doit etre publie ENTRE breathiness et "
+        "breathiness_valid, pas ailleurs dans le document. La respiration est une "
+        "moyenne ponderee de trois composantes dont deux n'existent qu'une frame sur "
+        "MIC_SPECTRAL_DECIMATION : sur une note tenue immobile la valeur alterne entre "
+        "une mesure pleine et 0,00 a 62,5 Hz avec valid=true dans les DEUX cas. Un "
+        "lecteur qui ne trouve pas le poids a l'endroit de la valeur le croira absent et "
+        "comparera des mesures incomparables.")
+
+    # hnr_valid dehors, hnr_db et hnr_is_spectral dedans : la portee EST
+    # l'invariant, la presence ne suffit pas.
+    scope = _braced(block, 'if (feat.spectralValid)')
+    assert 'a["hnr_valid"]' in block and 'a["hnr_valid"]' not in scope, (
+        "a[\"hnr_valid\"] doit etre publie INCONDITIONNELLEMENT : c'est lui qui dit que "
+        "hnr_db n'a pas ete mesure. Le mettre sous la garde le fait disparaitre "
+        "exactement quand il est necessaire, et l'absence des trois cles redevient "
+        "indistinguable d'un bloc audio tronque.")
+    for f in ('a["hnr_db"]', 'a["hnr_is_spectral"]'):
+        assert f in scope, (
+            "%s doit etre publie SOUS if (feat.spectralValid). Sans mesure spectrale, "
+            "fillSpectral() remet harmonicToNoiseRatio a 0.0f : publie tel quel, ce "
+            "\"hnr_db\": 0 est indistinguable d'une vraie mesure Goertzel autour de 0 dB, "
+            "soit la valeur de reference documentee d'une note timbree sur cette "
+            "echelle (-0,06 dB). Et une valeur sans son echelle ment de 31,88 dB." % f)
+        assert block.count(f) == 1, (
+            "%s est publie %d fois : une seconde emission hors garde republierait le 0 "
+            "que la garde sert a taire." % (f, block.count(f)))
+
+    # Les deux modes de panne de la chronometrie. Les compter sans jamais les
+    # publier revient a ne pas les compter.
+    tm = block.split('a["timing"]')[1]
+    for f in ('rejected_frames', 'rejected_events'):
+        assert 'tm["%s"]' % f in tm, (
+            "a[\"timing\"] n'expose pas \"%s\". C'est l'un des deux SEULS temoins des "
+            "modes de panne de la chronometrie : sans lui, un releve vide ou immobile ne "
+            "se distingue pas d'une absence de jeu, et un cablage d'appels errone "
+            "(rejected_events) passe pour un defaut de jeu." % f)

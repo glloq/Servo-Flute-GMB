@@ -565,10 +565,18 @@ void timing_note_cut_during_attack() {
 // ===========================================================================
 //
 // Toute la machine travaille en uint32_t, comme millis() sur ESP32. Ce test
-// place la note A CHEVAL sur le repliement : les horodatages passent de
-// 0xFFFFFF.. a 0x000000.., et les durees doivent rester justes. Une
-// comparaison ecrite sans le cast (int32_t)(a - b) donnerait ici des durees
+// place la NOTE a cheval sur le repliement : les horodatages passent de
+// 0xFFFFFF.. a 0x000000.. pendant qu'elle sonne, et la machine doit continuer
+// a avancer - plafonds, confirmations, hysteresis - au lieu de voir un ecart
 // d'environ 4,29 milliards de millisecondes.
+//
+// CE QU'IL NE COUVRE PAS, ET OU C'EST COUVERT. Ses deux bornes de mesure
+// tombent du meme cote du repliement a chaque fois (ordre et son avant, arret
+// et disparition apres) : la SOUSTRACTION, elle, ne l'enjambe jamais, et seul
+// timeReached() est reellement exerce ici. Le cas ou une mesure chevauche le
+// repliement - celui qui distingue elapsed() d'une soustraction bornee a zero,
+// et le test d'ordre de setMeasure() d'une comparaison non signee - est le
+// test 18, timing_measure_straddles_the_millis_wrap.
 
 void timing_survives_millis_overflow() {
   AcousticTiming t;
@@ -649,7 +657,9 @@ void timing_rejects_inconsistent_events() {
   assert(!t.airCommanded(cmd + 20u));
   assert(t.current().airCommandTimestamp == cmd + 10u);
 
-  // Une frame dont l'horodatage RECULE est rejetee, et n'altere pas l'etat.
+  // Une frame dont l'horodatage RECULE est rejetee, et ne declenche rien. Elle
+  // ABANDONNE en revanche la note en cours : l'identite temporelle du flux vient
+  // d'etre perdue (voir timing_backward_frame_resynchronises_the_reference).
   s.feed(-60.0f, 2);
   const uint32_t before = s.ts;
   TimingFrame back;
@@ -658,7 +668,15 @@ void timing_rejects_inconsistent_events() {
   assert(!t.update(back));
   assert(t.rejectedFrames() == 1);
   assert(!t.current().hasSoundOnset);       // la frame n'a rien declenche
+  assert(t.hasLast() && t.last().outcome == TIMING_ABORTED);
+  assert(!t.last().hasSoundOnset);          // elle n'a rien date non plus
+  assert(!t.last().commandToSoundLatency.valid);
   s.ts = before;
+
+  // La suite du test reprend sur une note neuve, flux de nouveau sain.
+  s.feed(-60.0f, 2);
+  t.noteCommanded(s.ts);
+  assert(t.state() == TIMING_WAIT_ONSET);
 
   // Valve ouverte APRES l'apparition du son : refusee, ce n'est pas elle qui
   // a ouvert le passage.
@@ -1155,15 +1173,24 @@ void timing_from_features_trusts_the_detector_verdict() {
 
 void timing_baseline_fallback_is_explicit() {
   AcousticTiming t;
-  // Ordre donne AVANT la moindre frame : le critere relatif est impossible.
-  t.noteCommanded(140000);
-  assert(!t.current().baselineValid);
-  // Seul le plancher absolu s'applique, et il vaut ce que le firmware appelle
-  // deja "en dessous, ce n'est pas du son".
+  // Un plancher MESURE, mais si bas que le critere relatif (plancher + 12 dB)
+  // resterait sous le plancher ABSOLU. C'est le plancher absolu qui s'applique
+  // alors, et il vaut ce que le firmware appelle deja "en dessous, ce n'est pas
+  // du son" : passer d'un silence numerique a un autre silence numerique est
+  // une montee de 20 dB parfaitement inaudible.
+  //
+  // (Le repli `baselineValid == false` - ordre donne avant la moindre frame -
+  // n'est plus ATTEIGNABLE depuis l'ouverture du cycle : noteCommanded() refuse
+  // desormais tant qu'aucune frame n'est arrivee, et toute frame vue hors note
+  // alimente le plancher. Il reste dans le code comme garde de defense, et le
+  // refus lui-meme est couvert par timing_no_frame_stream_means_no_verdict.)
+  FakeStream s(t, 140000);
+  s.feed(-90.0f, 10);
+  t.noteCommanded(s.ts);
+  assert(t.current().baselineValid);
   assert(fabsf(t.current().onsetThresholdDbFS -
                AudioLevel::toDbFS(MIC_RMS_ABSOLUTE_MIN)) < 0.01f);
 
-  FakeStream s(t, 140000);
   s.feed(-70.0f, 2);                 // sous le plancher absolu : rien
   assert(!t.current().hasSoundOnset);
   s.feed(-30.0f, 2);                 // largement au-dessus : apparition
@@ -1224,6 +1251,261 @@ void timing_isolated_frame_is_not_an_onset() {
   assert((int32_t)(onset - (first - kHop)) >= 0);
 }
 
+// ===========================================================================
+// 16 - Aucun verdict quand PERSONNE n'ecoute
+// ===========================================================================
+//
+// L'analyseur est INACTIF par defaut : le moniteur micro est eteint et pas une
+// frame n'entre. Les quatre hooks d'ordre, eux, tournent a CHAQUE note jouee.
+// La machine ouvrait alors un cycle qu'aucune frame ne pouvait renseigner, et
+// le Note Off le refermait en TIMING_NO_SOUND - "l'instrument n'a pas produit
+// de son" - alors que la verite est "personne n'ecoutait". Aucune mesure
+// n'etait fausse ; le VERDICT, lui, l'etait, et /api/diagnostics le publiait
+// pour chaque note d'un morceau.
+
+void timing_no_frame_stream_means_no_verdict() {
+  // (a) Trois notes completes, exactement comme en lecture MIDI ordinaire,
+  //     sans qu'aucune frame n'ait jamais ete injectee.
+  {
+    AcousticTiming t;
+    uint32_t now = 100000;
+    for (int i = 0; i < 3; i++) {
+      t.noteCommanded(now);
+      assert(t.state() == TIMING_IDLE);        // le cycle ne s'ouvre pas
+      assert(!t.active());
+      assert(!t.current().hasNoteCommand);
+      // Les trois autres hooks n'ont pas besoin de garde a eux : aucune note
+      // n'etant active, ils refusent deja d'eux-memes.
+      assert(!t.airCommanded(now + 10u));
+      assert(!t.valveOpened(now + 20u));
+      assert(!t.noteReleased(now + 300u));
+      now += 500u;
+    }
+    // LE POINT DU TEST. Avant la garde, hasLast() valait vrai et outcome valait
+    // TIMING_NO_SOUND apres CHACUNE de ces trois notes.
+    assert(!t.hasLast());
+    assert(t.last().outcome == TIMING_OUTCOME_NONE);
+    assert(!t.last().hasNoteCommand);
+    // Un refus se diagnostique : quatre ordres refuses par note, et aucune
+    // frame n'a evidemment ete refusee puisqu'aucune n'est venue.
+    assert(t.rejectedEvents() == 12);
+    assert(t.rejectedFrames() == 0);
+  }
+
+  // (b) ANTI-VACUITE : le meme enchainement, flux VIVANT, ouvre bien le cycle -
+  //     et la conclusion "pas de son" redevient alors une affirmation fondee,
+  //     parce que quelqu'un ecoutait.
+  {
+    AcousticTiming t;
+    FakeStream s(t, 110000);
+    s.feed(-60.0f, 10);
+    const uint32_t cmd = s.ts;
+    t.noteCommanded(cmd);
+    assert(t.state() == TIMING_WAIT_ONSET);
+    assert(t.current().hasNoteCommand);
+    assert(t.airCommanded(cmd + 10u));
+    assert(t.valveOpened(cmd + 20u));
+    s.feed(-60.0f, 3);                        // le micro ecoute, rien ne sonne
+    assert(t.noteReleased(s.ts));
+    assert(t.hasLast());
+    assert(t.last().outcome == TIMING_NO_SOUND);
+    assert(t.rejectedEvents() == 0);
+  }
+
+  // (c) Le flux MEURT. Le critere n'est pas un second seuil ecrit ici : c'est
+  //     le plafond d'obsolescence du firmware, celui-la meme qui fait invalider
+  //     les mesures d'AudioAnalyzer quand plus rien n'arrive.
+  {
+    AcousticTiming t;
+    FakeStream s(t, 120000);
+    s.feed(-60.0f, 10);
+    const uint32_t lastFrame = s.ts - kHop;   // derniere frame reellement vue
+
+    // Pile au plafond : le flux est encore vivant, le cycle s'ouvre.
+    t.noteCommanded(lastFrame + (uint32_t)MIC_FRAME_STALE_MS);
+    assert(t.state() == TIMING_WAIT_ONSET);
+    assert(t.rejectedEvents() == 0);
+  }
+  {
+    AcousticTiming t;
+    FakeStream s(t, 130000);
+    s.feed(-60.0f, 10);
+    const uint32_t lastFrame = s.ts - kHop;
+
+    // Une milliseconde de plus : le flux est perime, l'ordre est refuse.
+    t.noteCommanded(lastFrame + (uint32_t)MIC_FRAME_STALE_MS + 1u);
+    assert(t.state() == TIMING_IDLE);
+    assert(t.rejectedEvents() == 1);
+    assert(!t.hasLast());
+
+    // Le moniteur est rallume : UNE frame suffit a rendre la machine utilisable
+    // de nouveau - le refus ne laisse aucun etat derriere lui.
+    const uint32_t resumed = lastFrame + 5000u;
+    assert(s.at(resumed, -60.0f));
+    t.noteCommanded(resumed + kHop);
+    assert(t.state() == TIMING_WAIT_ONSET);
+    assert(t.rejectedEvents() == 1);          // toujours le seul refus
+  }
+}
+
+// ===========================================================================
+// 17 - Une frame qui recule RESYNCHRONISE la reference
+// ===========================================================================
+//
+// La garde "le temps ne recule pas" rejette la frame. Si elle laisse en plus sa
+// reference figee, le rejet dure aussi longtemps que l'ecart reste vu comme
+// negatif - et sur 32 bits SIGNES il l'est pour tout ecart reel de 24,86 a
+// 49,71 jours. Une seule frame apres une pause de 26 jours (moniteur micro
+// eteint puis rallume) verrouillait donc la chronometrie pendant ~25 jours.
+
+void timing_backward_frame_resynchronises_the_reference() {
+  // (a) Un vrai desordre : la frame est refusee et comptee, elle ne declenche
+  //     rien, et la note en cours est ABANDONNEE - son horloge n'est plus
+  //     comparable a ce qui suivra.
+  {
+    AcousticTiming t;
+    FakeStream s(t, 200000);
+    s.feed(-60.0f, 10);
+    t.noteCommanded(s.ts);
+    s.feed(-20.0f, 4);                        // la note sonne
+    assert(t.current().hasSoundOnset);
+
+    const uint32_t backTs = s.ts - 500u;
+    TimingFrame back;
+    back.timestampMs = backTs;
+    back.rmsDbFS = -20.0f;
+    assert(!t.update(back));
+    assert(t.rejectedFrames() == 1);
+    assert(t.state() == TIMING_IDLE);
+    assert(t.hasLast());
+    // ABANDONNEE, pas conclue : TIMING_NO_SOUND ou TIMING_TIMEOUT
+    // affirmeraient quelque chose sur l'instrument.
+    assert(t.last().outcome == TIMING_ABORTED);
+    assert(t.last().hasSoundOnset);              // ce qui etait mesure le reste
+    assert(t.last().commandToSoundLatency.valid);
+    assert(!t.last().releaseTime.valid);         // et rien n'est fabrique
+
+    // La reference a suivi la frame refusee : le flux qui repart DE CET
+    // INSTANT-LA est accepte sans autre refus, et une note s'y mesure.
+    s.ts = backTs + kHop;
+    s.feed(-60.0f, 10);
+    assert(t.rejectedFrames() == 1);
+    t.noteCommanded(s.ts);
+    s.feed(-20.0f, 4);
+    assert(t.current().hasSoundOnset);
+    assert(t.current().commandToSoundLatency.valid);
+  }
+
+  // (b) LE DEFAUT LUI-MEME : un ecart REEL de 26 jours, qui sur 32 bits signes
+  //     se presente comme un recul. Sans resynchronisation, toutes les frames
+  //     suivantes etaient rejetees jusqu'a ce que l'ecart cumule repasse sous
+  //     24,86 jours, soit environ 25 jours plus tard.
+  {
+    AcousticTiming t;
+    FakeStream s(t, 300000);
+    s.feed(-60.0f, 10);
+    const uint32_t lastFrame = s.ts - kHop;
+
+    const uint32_t kDayMs = 86400000u;
+    const uint32_t resume = lastFrame + 26u * kDayMs;
+    // L'ecart est bien REEL et POSITIF, et pourtant vu comme un recul : c'est
+    // toute la nature du piege.
+    assert(26u * kDayMs > 0x80000000u);
+    assert((int32_t)(resume - lastFrame) < 0);
+
+    assert(!s.at(resume, -60.0f));             // refusee, comme il se doit
+    assert(t.rejectedFrames() == 1);
+
+    // Et le flux REPREND des la frame suivante. C'est ici que le defaut se
+    // voyait : ces dix frames-la etaient rejetees, et leurs 25 jours de
+    // successeurs avec elles.
+    for (int i = 1; i <= 10; i++) {
+      assert(s.at(resume + (uint32_t)i * kHop, -60.0f));
+    }
+    assert(t.rejectedFrames() == 1);
+
+    // La chronometrie remarche vraiment : une note se mesure de bout en bout.
+    t.noteCommanded(s.ts);
+    assert(t.state() == TIMING_WAIT_ONSET);
+    s.feed(-20.0f, 6);
+    assert(t.current().hasSoundOnset);
+    assert(t.current().commandToSoundLatency.valid);
+    assert(t.current().commandToSoundLatency.ms < 1000u);
+  }
+}
+
+// ===========================================================================
+// 18 - Une MESURE a cheval sur le repliement de millis()
+// ===========================================================================
+//
+// Le test 7 fait traverser le repliement a la NOTE, mais ses deux bornes de
+// mesure tombent du meme cote a chaque fois : seul timeReached() y etait
+// reellement exerce. Ici, la soustraction elle-meme enjambe le repliement -
+// l'instant d'arrivee est numeriquement PLUS PETIT que l'ordre qui le precede.
+// C'est ce cas, et lui seul, qui distingue elapsed() d'une soustraction bornee
+// a zero, et le test d'ordre de setMeasure() d'une comparaison non signee :
+// borner elapsed() a zero rendrait "latence = 0 ms, valide", soit exactement la
+// valeur que ce module s'interdit de produire, et comparer `to < from` sans
+// cast ferait disparaitre la mesure en silence.
+
+void timing_measure_straddles_the_millis_wrap() {
+  const uint32_t kWrap = 0xFFFFFFFFu;
+
+  // (a) ORDRE avant le repliement, SON apres.
+  {
+    AcousticTiming t;
+    FakeStream s(t, kWrap - 400u);
+    s.feed(-60.0f, 10);                  // plancher, tout avant le repliement
+    const uint32_t cmd = s.ts;
+    t.noteCommanded(cmd);
+    s.feed(-60.0f, 16);                  // silence, jusqu'a la derniere frame
+                                         // d'avant le repliement (kWrap)
+    s.feed(-20.0f, 6);                   // le son apparait APRES
+
+    const NoteTiming& r = t.current();
+    assert(r.hasSoundOnset);
+    const uint32_t onset = r.soundOnsetTimestamp;
+    // ANTI-VACUITE : la mesure enjambe bien le repliement. L'onset SUIT l'ordre
+    // au sens du temps, et pourtant son entier lui est INFERIEUR.
+    assert((int32_t)(onset - cmd) > 0);
+    assert(onset < cmd);
+
+    assert(r.commandToSoundLatency.valid);        // la mesure n'est pas perdue
+    assert(r.commandToSoundLatency.ms == (uint32_t)(onset - cmd));
+    assert(r.commandToSoundLatency.ms > 0u);      // et surtout pas ramenee a 0
+    assert(r.commandToSoundLatency.ms < 1000u);   // ni a ~4,29 milliards
+  }
+
+  // (b) Symetriquement : ORDRE D'ARRET avant le repliement, DISPARITION apres.
+  {
+    AcousticTiming t;
+    FakeStream s(t, kWrap - 560u);
+    s.feed(-60.0f, 10);                  // plancher
+    t.noteCommanded(s.ts);
+    s.feed(-20.0f, 18);                  // apparition, palier, tenue
+    assert(t.state() == TIMING_SUSTAIN);
+
+    const uint32_t rel = s.ts;           // ordre d'arret, avant le repliement
+    assert(t.noteReleased(rel));
+    s.feed(-30.0f, 8);                   // le son baisse mais tient, jusqu'a la
+                                         // derniere frame d'avant le repliement
+    s.feed(-45.0f, 1);                   // sous le seuil (-40), APRES : 1
+    s.feed(-60.0f, 1);                   // confirme : 2 -> relache
+
+    const NoteTiming& r = t.last();
+    assert(r.outcome == TIMING_COMPLETE);
+    assert(r.hasSoundRelease);
+    const uint32_t off = r.soundReleaseTimestamp;
+    assert((int32_t)(off - rel) > 0);
+    assert(off < rel);                            // le repliement est enjambe
+
+    assert(r.releaseTime.valid);
+    assert(r.releaseTime.ms == (uint32_t)(off - rel));
+    assert(r.releaseTime.ms > 0u);
+    assert(r.releaseTime.ms < 1000u);
+  }
+}
+
 }  // namespace
 
 void timing_run_all_tests() {
@@ -1243,6 +1525,9 @@ void timing_run_all_tests() {
   timing_from_features_trusts_the_detector_verdict();
   timing_baseline_fallback_is_explicit();
   timing_isolated_frame_is_not_an_onset();
+  timing_no_frame_stream_means_no_verdict();
+  timing_backward_frame_resynchronises_the_reference();
+  timing_measure_straddles_the_millis_wrap();
 }
 
 #ifdef STANDALONE_TEST_MAIN

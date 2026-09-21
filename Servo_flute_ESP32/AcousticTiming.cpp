@@ -162,11 +162,43 @@ uint32_t AcousticTiming::crossingInstant(uint32_t curTs, float curDb, float thre
  * Evenements d'ordre
  *--------------------------------------------------------------------------*/
 
+bool AcousticTiming::frameStreamIsLive(uint32_t nowMs) const {
+  // "Le flux est mort" n'est PAS redefini ici. C'est le plafond d'obsolescence
+  // que le firmware possede deja - MIC_FRAME_STALE_MS - et c'est le meme test,
+  // au sens de comparaison pres, que celui qui fait invalider les mesures dans
+  // AudioAnalyzer::update() : une seule definition de la notion, pas deux.
+  // La comparaison passe par timeDelta, donc elle survit au repliement ; un
+  // ecart NEGATIF (une frame plus recente que l'ordre) dit que le flux est bien
+  // vivant, pas qu'il est perime.
+  if (!_havePrev) return false;
+  return timeDelta(nowMs, _prevTs) <= (int32_t)MIC_FRAME_STALE_MS;
+}
+
 void AcousticTiming::noteCommanded(unsigned long nowMs) {
   // Conversion a l'entree : `unsigned long` fait 64 bits sur l'hote et 32 sur
   // ESP32. Replier ici, et non a la comparaison, garantit que le test natif
   // exerce le MEME repliement que la cible.
   const uint32_t t = (uint32_t)nowMs;
+
+  // PERSONNE N'ECOUTE : on n'ouvre pas de cycle. L'analyseur est INACTIF par
+  // defaut (moniteur micro eteint), les quatre hooks d'ordre tournent malgre
+  // tout a chaque note, et aucune frame n'entre jamais. La machine concluait
+  // quand meme - noteReleased() en attente de son clot la note en
+  // TIMING_NO_SOUND - et /api/diagnostics publiait "l'instrument n'a pas
+  // produit de son" pour chaque note jouee, alors que la verite est "personne
+  // n'ecoutait". Aucune mesure n'etait fausse, mais le VERDICT, lui, l'etait.
+  // Le refus est place ici, a l'ouverture, et non dans l'appelant : un
+  // detachement cote NoteSequencer serait oublie a la premiere evolution,
+  // alors que la machine, elle, sait toujours si des frames lui arrivent.
+  // On compte le refus dans _rejectedEvents (un ordre refuse se diagnostique),
+  // et on ne touche NI _last NI _hasLast : un refus ne fabrique pas de verdict,
+  // et n'efface pas non plus celui d'une vraie note precedente. Une note deja
+  // en cours reste en cours : la fermer ici serait une conclusion, alors qu'on
+  // vient precisement de constater qu'on ne peut plus rien conclure.
+  if (!frameStreamIsLive(t)) {
+    bump(_rejectedEvents);
+    return;
+  }
 
   // Une note en remplace une autre, elle ne la prolonge pas. L'ancienne est
   // rangee telle quelle : ses mesures deja faites restent lisibles, celles qui
@@ -349,6 +381,29 @@ bool AcousticTiming::update(const TimingFrame& f) {
   // timeDelta le voit positif. Seul un vrai desordre est rejete.
   if (_havePrev && timeDelta(ts, _prevTs) < 0) {
     bump(_rejectedFrames);
+    // POURQUOI la reference est reprise sur la frame REFUSEE : une garde "le
+    // temps ne recule pas" qui laisse sa reference figee transforme un
+    // echantillon aberrant en panne durable. L'ecart etant lu sur 32 bits
+    // SIGNES, tout ecart reel de 24,86 a 49,71 jours se presente comme un
+    // recul : sans resynchronisation, la premiere frame d'apres une telle
+    // pause - moniteur micro rallume trois semaines plus tard - faisait
+    // rejeter TOUTES les suivantes jusqu'a ce que l'ecart cumule repasse sous
+    // le seuil, environ 25 jours plus tard. On repart donc du present. La
+    // frame reste REFUSEE (return false) : c'est son horodatage qui devient la
+    // reference, jamais son contenu, qui n'alimente aucune mesure.
+    // _prevDb suit _prevTs dans le meme geste : les deux forment le point bas
+    // de l'interpolation, et les desapparier daterait le franchissement suivant
+    // avec un niveau qui n'est plus celui de cet instant-la.
+    _prevTs = ts;
+    _prevDb = f.rmsDbFS;
+    // La note en cours est ABANDONNEE, pas conclue. Apres un tel saut, plus
+    // aucun instant deja date n'est comparable a ceux qui suivront : la garder
+    // en l'etat produirait des durees calculees entre deux horloges
+    // differentes. TIMING_ABORTED dit exactement cela - "suivi perdu" - la ou
+    // TIMING_NO_SOUND ou TIMING_TIMEOUT affirmeraient quelque chose sur
+    // l'instrument. Ce que la note avait deja mesure reste lisible dans last(),
+    // chaque mesure avec son propre drapeau ; rien n'est fabrique.
+    if (_state != TIMING_IDLE) closeNote(TIMING_ABORTED);
     return false;
   }
 

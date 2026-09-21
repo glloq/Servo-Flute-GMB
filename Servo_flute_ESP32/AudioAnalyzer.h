@@ -99,6 +99,10 @@ public:
   float getPitchStability() const { return _lastPitch.stability; }
   // Note visee : permet au detecteur de lever l'ambiguite d'octave de facon
   // deterministe (f0/2, f0, 2*f0, 3*f0). Pose par l'auto-calibration.
+  // CHANGER la note visee, ou la retirer, vaut declaration de changement de
+  // note : les deux appellent resetAcousticTracking() sur TRANSITION, sans
+  // quoi la ligne de base de brillance et l'historique de pitch de la note
+  // precedente serviraient a juger la suivante. Voir le corps dans le .cpp.
   void setExpectedMidiNote(int midi) override;
   void clearExpectedMidiNote() override;
 
@@ -132,9 +136,13 @@ public:
   // --- Classification et note de qualite (PHASE 6) --------------------------
   // Verdicts de la DERNIERE frame analysee. Ils ne survivent pas a la mesure
   // qui les a produits : des qu'une frame n'est plus fraiche
-  // (markMeasurementInvalid) ou que la note change (resetAcousticTracking),
-  // ils redeviennent invalides au lieu de rester ceux de la derniere frame
-  // reussie. Lire `classified` / `valid` AVANT le contenu.
+  // (markMeasurementInvalid) ou que la note visee change
+  // (resetAcousticTracking), ils redeviennent invalides au lieu de rester ceux
+  // de la derniere frame reussie. Lire `classified` / `valid` AVANT le contenu.
+  // RESERVE : "la note visee change" n'est pas "la note change". Un changement
+  // de note joue sans note visee declaree - le cas de la lecture MIDI
+  // ordinaire - n'invalide rien du tout ; voir resetAcousticTracking() plus
+  // bas pour ce que cela coute et pour le hook qui manque.
   const AcousticClassification& getClassification() const { return _classification; }
   const QualityScore&           getQualityScore() const { return _quality; }
   // La respiration et le couac sont calcules PAR la classification, qui les
@@ -146,9 +154,29 @@ public:
   // AcousticClassification::state garde alors sa valeur par defaut
   // (ACOUSTIC_SILENCE), qui ne doit pas etre affichee comme un etat mesure.
   const char*                   getAcousticStateName() const;
-  // Note changee / arret. Remet a zero le detecteur de couac ET l'historique
-  // de pitch, et invalide les verdicts de la note precedente. Ne touche PAS a
-  // AcousticTiming, dont le cycle est pilote par les ordres d'actionneur.
+  // Note changee / reprise apres pause. Remet a zero le detecteur de couac ET
+  // l'historique de pitch, et invalide les verdicts de la note precedente. Ne
+  // touche PAS a AcousticTiming, dont le cycle est pilote par les ordres
+  // d'actionneur.
+  //
+  // QUI L'APPELLE, EXACTEMENT - la liste, pas une intention :
+  //   - setActive(true) : reprise apres une pause de duree inconnue ;
+  //   - setExpectedMidiNote() / clearExpectedMidiNote(), sur TRANSITION de la
+  //     note visee. Seul AutoCalibrator declare une note visee.
+  //
+  // CE QUI MANQUE, ET IL FAUT LE LIRE AVANT DE SE FIER AUX VERDICTS : en
+  // lecture MIDI ordinaire personne ne declare de note visee (_expectedMidi
+  // vaut 0), donc AUCUN appel ci-dessus ne survient a un changement de note
+  // joue. Un legato montant d'une octave fait alors comparer la premiere frame
+  // de la note nouvelle a la brillance de l'ancienne : le detecteur de couac
+  // publie ACOUSTIC_SQUEAK - troisieme dans l'ordre de priorite, donc il
+  // masque tout ce qui suit - pendant quelques frames sur une note propre, et
+  // `stability` tombe a zero AVEC `stabilityValid` vrai, l'historique
+  // traversant les deux notes. Le signal manquant ne peut PAS etre fabrique
+  // ici : le deviner depuis le pitch mesure ferait d'une observation une
+  // cause. Il doit venir de la chaine d'actionneurs, qui seule sait quand
+  // l'ordre part : NoteSequencer notifie deja la chronometrie aux deux bornes
+  // de la note, et il manque a ces deux notifications un observateur audio.
   void                          resetAcousticTracking();
 
   // --- Chronometrie acoustique (PHASE 7) ------------------------------------
