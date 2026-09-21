@@ -12,8 +12,13 @@ SOURCES = [
     "lib/native_stubs/src/arduino_stubs.cpp",
     "lib/native_stubs/src/config_test_stub.cpp",
     "Servo_flute_ESP32/ConfigValidator.cpp",
+    "Servo_flute_ESP32/ConfigCommit.cpp",
+    "Servo_flute_ESP32/WebAuth.cpp",
+    "Servo_flute_ESP32/Sha256.cpp",
     "Servo_flute_ESP32/PressureController.cpp",
+    "Servo_flute_ESP32/TofSensor.cpp",
     "Servo_flute_ESP32/EventQueue.cpp",
+    "Servo_flute_ESP32/CommandQueue.cpp",
     "Servo_flute_ESP32/FingerController.cpp",
     "Servo_flute_ESP32/AirflowController.cpp",
     "Servo_flute_ESP32/FanController.cpp",
@@ -33,6 +38,7 @@ SOURCES = [
     "Servo_flute_ESP32/gmb/GmbSysEx.cpp",
     "Servo_flute_ESP32/gmb/GmbSysExService.cpp",
     "tests/test_native/test_gmb.cpp",
+    "tests/test_native/test_audit.cpp",
     "tests/test_native/test_behavior.cpp",
 ]
 

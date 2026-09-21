@@ -6,8 +6,12 @@ InstrumentManager::InstrumentManager()
   : _pwm0(PCA_ADDR_BOARD0),
     _pwm1(PCA_ADDR_BOARD1),
     _secondBoardEnabled(false),
+    _pca0Detected(false),
+    _pca1Detected(false),
+    _hardwareProbeDone(false),
     _hardwareInitStatus(HW_CONFIG_INVALID),
     _eventQueue(EVENT_QUEUE_SIZE),
+    _commands(COMMAND_QUEUE_SIZE),
     _fingerCtrl([this](uint8_t ch, uint16_t on, uint16_t off) { setPWM(ch, on, off); }),
     _airflowCtrl([this](uint8_t ch, uint16_t on, uint16_t off) { setPWM(ch, on, off); }),
     _calAirSupply(_pressureCtrl, _fanCtrl),
@@ -21,11 +25,14 @@ InstrumentManager::InstrumentManager()
     _ccModulation(cfg.ccModulationDefault),
     _ccBreath(cfg.ccBreathDefault),
     _ccBrightness(cfg.ccBrightnessDefault),
-    _lastCCTime(0),
     _ccCount(0),
     _ccWindowStart(0),
     _cc2Count(0),
     _cc2WindowStart(0),
+    _cc2Pending(false),
+    _cc2PendingValue(0),
+    _powerOnRequested(false),
+    _resetControllersRequested(false),
     _prevSequencerState(STATE_IDLE) {
 }
 
@@ -56,13 +63,21 @@ bool InstrumentManager::beginSafe() {
   _initializingHardware = true;   // program safe PWM values without enabling OE
   _secondBoardEnabled = requiresSecondPca();
   _hardwareInitStatus = HW_CONFIG_INVALID;
+  _commands.clear();
+  _eventQueue.clear();
 
-  if (!detectPca(PCA_ADDR_BOARD0)) {
+  // Le resultat du sondage I2C est memorise : les diagnostics exposent l'etat
+  // REEL des cartes plutot qu'un "probe requires hardware" generique.
+  _hardwareProbeDone = true;
+  _pca0Detected = detectPca(PCA_ADDR_BOARD0);
+  _pca1Detected = detectPca(PCA_ADDR_BOARD1);
+
+  if (!_pca0Detected) {
     _hardwareInitStatus = HW_PCA0_MISSING;
     _initializingHardware = false;   // failed: setPWM must now refuse all writes
     return false;
   }
-  if (_secondBoardEnabled && !detectPca(PCA_ADDR_BOARD1)) {
+  if (_secondBoardEnabled && !_pca1Detected) {
     _hardwareInitStatus = HW_PCA1_MISSING;
     _initializingHardware = false;
     return false;
@@ -113,7 +128,17 @@ void InstrumentManager::initializeSafeOutputs() {
 }
 
 void InstrumentManager::update() {
+  // Les commandes venues des autres taches (AsyncTCP/WebSocket, NimBLE) sont
+  // appliquees ICI, sur la tache proprietaire des actionneurs. C'est le seul
+  // endroit ou une commande web touche le bus I2C ou un GPIO d'actionneur.
+  // Le drainage a lieu meme quand le hardware n'est pas pret : applyCommand()
+  // refuse alors toute commande physique, mais la file ne se remplit pas
+  // indefiniment et un panic reste consomme.
+  processCommands();
+
   if (_hardwareInitStatus != HW_INIT_OK) return;   // failed init: keep everything inert
+
+  serviceCc2Coalescing(millis());
   // While an actuator session (auto-calibration / range finder) owns the hardware,
   // the MIDI sequencer must not drive the finger/airflow servos or the valve - the
   // calibrator moves them directly. Skipping the sequencer here (plus rejecting
@@ -264,6 +289,10 @@ void InstrumentManager::managePower() {
     _lastActivityTime = millis();
     return;
   }
+  if (_powerOnRequested) {
+    _powerOnRequested = false;
+    ensureServosPowered();
+  }
   if (cfg.timeUnpower == 0) {
     ensureServosPowered();
     return;
@@ -288,7 +317,10 @@ void InstrumentManager::ensureServosPowered() {
 }
 
 void InstrumentManager::registerActuatorActivity() {
-  ensureServosPowered();
+  // Peut etre appelee depuis une tache productrice (enfilement d'une note). On
+  // ne touche donc PAS au GPIO d'OE ici : on note l'activite et on demande
+  // l'alimentation ; managePower() (tache loop()) execute l'ecriture.
+  _powerOnRequested = true;
   _lastActivityTime = millis();
 }
 
@@ -324,9 +356,36 @@ void InstrumentManager::powerOffServos() {
   }
 }
 
+// CC 120-127 sont les "Channel Mode Messages" de la norme MIDI. Ils portent les
+// commandes de securite (All Sound Off, Reset All Controllers, All Notes Off,
+// Omni/Mono/Poly qui impliquent All Notes Off). Ils ne doivent JAMAIS etre
+// rejetes par le limiteur de debit : les jeter laisserait une note soufflee avec
+// la valve ouverte alors que le controleur vient justement de demander l'arret.
+static inline bool isChannelModeControlChange(byte cc) {
+  return cc >= 120 && cc <= 127;
+}
+
+void InstrumentManager::applyBreathValue(byte ccValue) {
+  _ccBreath = ccValue;
+  _airflowCtrl.updateCC2Breath(ccValue);
+  _airflowCtrl.recomputeActiveNote();   // breath silences/resumes the held note
+}
+
+void InstrumentManager::serviceCc2Coalescing(unsigned long now) {
+  if (!_cc2Pending) return;
+  if (_actuatorSessionActive) { _cc2Pending = false; return; }
+  if ((int32_t)(now - _cc2WindowStart) >= (int32_t)CC_RATE_WINDOW_MS) {
+    _cc2WindowStart = now;
+    _cc2Count = 0;
+  }
+  if (_cc2Count >= CC2_RATE_LIMIT_PER_SECOND) return;   // fenetre encore saturee
+  _cc2Count++;
+  byte value = _cc2PendingValue;
+  _cc2Pending = false;
+  applyBreathValue(value);
+}
+
 void InstrumentManager::handleControlChange(byte ccNumber, byte ccValue) {
-  if (_hardwareInitStatus != HW_INIT_OK) return;   // no usable hardware
-  if (_actuatorSessionActive) return;   // calibration owns the actuators
   if (ccValue > MIDI_CC_MAX) {
     if (DEBUG) {
       Serial.print("ERREUR: CC invalide - valeur: ");
@@ -335,35 +394,69 @@ void InstrumentManager::handleControlChange(byte ccNumber, byte ccValue) {
     return;
   }
 
+  // --- 1. Messages de mode canal (120-127) : jamais limites, jamais differes ---
+  // Traites AVANT toute comptabilite de debit et meme pendant une session
+  // d'actionneurs : ce sont les commandes d'arret.
+  if (isChannelModeControlChange(ccNumber)) {
+    switch (ccNumber) {
+      case MIDI_CC_ALL_SOUND_OFF:            // 120
+      case MIDI_CC_ALL_NOTES_OFF:            // 123
+      case MIDI_CC_OMNI_OFF:                 // 124
+      case 125:                              // Omni On
+      case MIDI_CC_MONO_ON:                  // 126
+      case 127:                              // Poly On
+        allSoundOff();
+        break;
+      case MIDI_CC_RESET_ALL_CONTROLLERS:    // 121
+        resetAllControllers();
+        break;
+      case 122:                              // Local Control: sans objet ici
+      default:
+        break;
+    }
+    return;
+  }
+
+  if (_hardwareInitStatus != HW_INIT_OK) return;   // no usable hardware
+  if (_actuatorSessionActive) return;   // calibration owns the actuators
+
   unsigned long currentTime = millis();
 
-  // Rate limiting CC2 (Breath Controller) separe
+  // --- 2. CC2 (Breath Controller) : coalescence, jamais de rejet sec ---
   if (ccNumber == MIDI_CC_BREATH) {
     if (cfg.cc2Enabled) {
+      // Une demande de silence (valeur sous le seuil) est TOUJOURS appliquee
+      // immediatement : c'est elle qui coupe le souffle.
+      bool silenceRequest = (ccValue <= cfg.cc2SilenceThreshold);
       if (currentTime - _cc2WindowStart >= CC_RATE_WINDOW_MS) {
         _cc2WindowStart = currentTime;
         _cc2Count = 0;
       }
+      if (!silenceRequest && _cc2Count >= CC2_RATE_LIMIT_PER_SECOND) {
+        // Fenetre saturee : on conserve la DERNIERE valeur recue au lieu de la
+        // jeter. serviceCc2Coalescing() l'appliquera des la fenetre suivante, donc
+        // une rafale de CC2 ne peut plus laisser la note souffler indefiniment.
+        _cc2Pending = true;
+        _cc2PendingValue = ccValue;
+        return;
+      }
       _cc2Count++;
-      if (_cc2Count > CC2_RATE_LIMIT_PER_SECOND) {
-        return;
-      }
+      _cc2Pending = false;
     }
-  } else {
-    // Rate limiting normal
-    if (currentTime - _ccWindowStart >= CC_RATE_WINDOW_MS) {
-      _ccWindowStart = currentTime;
-      _ccCount = 0;
-    }
-    if (ccNumber != MIDI_CC_ALL_SOUND_OFF && ccNumber != MIDI_CC_RESET_ALL_CONTROLLERS && ccNumber != MIDI_CC_ALL_NOTES_OFF) {
-      _ccCount++;
-      if (_ccCount > CC_RATE_LIMIT_PER_SECOND) {
-        return;
-      }
-    }
+    applyBreathValue(ccValue);
+    return;
   }
 
-  _lastCCTime = currentTime;
+  // --- 3. Autres CC : limiteur de debit classique ---
+  if (currentTime - _ccWindowStart >= CC_RATE_WINDOW_MS) {
+    _ccWindowStart = currentTime;
+    _ccCount = 0;
+  }
+  _ccCount++;
+  if (_ccCount > CC_RATE_LIMIT_PER_SECOND) {
+    return;
+  }
+
 
   switch (ccNumber) {
     case MIDI_CC_MODULATION:  // Vibrato
@@ -374,12 +467,6 @@ void InstrumentManager::handleControlChange(byte ccNumber, byte ccValue) {
         Serial.print("DEBUG: CC 1 (Modulation) = ");
         Serial.println(ccValue);
       }
-      break;
-
-    case MIDI_CC_BREATH:  // Breath Controller
-      _ccBreath = ccValue;
-      _airflowCtrl.updateCC2Breath(ccValue);
-      _airflowCtrl.recomputeActiveNote();   // breath silences/resumes the held note
       break;
 
     case MIDI_CC_VOLUME:  // Volume
@@ -419,32 +506,130 @@ void InstrumentManager::handleControlChange(byte ccNumber, byte ccValue) {
       }
       break;
 
-    case MIDI_CC_ALL_SOUND_OFF:
+    default:
+      break;
+  }
+}
+
+/*******************************************************************************
+ * File de commandes inter-taches
+ ******************************************************************************/
+
+bool InstrumentManager::commandDrivesActuators(uint8_t type) {
+  switch (type) {
+    // Commandes sans effet physique (etat interne / arret).
+    case ACMD_NONE:
+    case ACMD_ALL_SOUND_OFF:
+    case ACMD_RESET_CONTROLLERS:
+    case ACMD_PUMP_STOP:
+    case ACMD_PUMP_STOP_SINGLE:
+    case ACMD_FAN_STOP:
+    case ACMD_SET_ACTUATOR_SESSION:
+      return false;
+    default:
+      return true;
+  }
+}
+
+bool InstrumentManager::postCommand(const ActuatorCommand& cmd) {
+  // Les commandes de securite ne transitent JAMAIS par l'anneau : elles ne
+  // doivent pas pouvoir etre perdues par saturation.
+  if (cmd.type == ACMD_ALL_SOUND_OFF) {
+    requestPanic();
+    return true;
+  }
+  if (cmd.type == ACMD_CONTROL_CHANGE && isChannelModeControlChange(cmd.a)) {
+    if (cmd.a == MIDI_CC_RESET_ALL_CONTROLLERS) {
+      _resetControllersRequested = true;
+      return true;
+    }
+    if (cmd.a == 122) return true;   // Local Control: sans objet
+    requestPanic();
+    return true;
+  }
+  return _commands.push(cmd);
+}
+
+bool InstrumentManager::postCommand(uint8_t type, uint8_t a, uint8_t b, uint16_t c) {
+  return postCommand(ActuatorCommand(type, a, b, c));
+}
+
+void InstrumentManager::requestPanic() {
+  _commands.requestPanic();
+}
+
+void InstrumentManager::processCommands() {
+  // Le panic prime sur tout : il a deja vide la file cote CommandQueue.
+  if (_commands.takePanicRequest()) {
+    allSoundOff();
+  }
+  if (_resetControllersRequested) {
+    _resetControllersRequested = false;
+    resetAllControllers();
+  }
+
+  ActuatorCommand cmd;
+  while (_commands.pop(cmd)) {
+    applyCommand(cmd);
+    // Un panic arrive pendant le drainage annule les commandes restantes.
+    if (_commands.panicPending()) {
+      _commands.takePanicRequest();
       allSoundOff();
+      return;
+    }
+  }
+}
+
+void InstrumentManager::applyCommand(const ActuatorCommand& cmd) {
+  // PROTECTION CENTRALE : une commande qui met un actionneur en mouvement est
+  // refusee tant que l'initialisation hardware n'a pas reussi (PCA0/PCA1 absents,
+  // configuration invalide, systeme de fichiers en panne). C'est le SEUL point
+  // d'entree des commandes web/BLE, donc aucun chemin ne peut contourner ce test.
+  if (commandDrivesActuators(cmd.type) && _hardwareInitStatus != HW_INIT_OK) {
+    if (DEBUG) {
+      Serial.print("ERREUR: InstrumentManager - commande actionneur refusee (hardware_not_ready), type ");
+      Serial.println(cmd.type);
+    }
+    return;
+  }
+
+  switch (cmd.type) {
+    case ACMD_NOTE_ON:           noteOn(cmd.a, cmd.b); break;
+    case ACMD_NOTE_OFF:          noteOff(cmd.a); break;
+    case ACMD_CONTROL_CHANGE:    handleControlChange(cmd.a, cmd.b); break;
+    case ACMD_RESET_CONTROLLERS: resetAllControllers(); break;
+    case ACMD_ALL_SOUND_OFF:     allSoundOff(); break;
+
+    case ACMD_TEST_FINGER:
+      if (cmd.a < cfg.numFingers) _fingerCtrl.testFingerAngle(cmd.a, cmd.c);
+      break;
+    case ACMD_TEST_AIRFLOW_ANGLE: _airflowCtrl.testAirflowAngle(cmd.c); break;
+    case ACMD_TEST_ANGLE_SERVO:   _airflowCtrl.testAngleServoAngle(cmd.c); break;
+    case ACMD_AIR_LIVE_PERCENT:   _airflowCtrl.setAirflowLivePercent(cmd.b); break;
+    case ACMD_ANGLE_LIVE_PERCENT: _airflowCtrl.setAngleLivePercent(cmd.b); break;
+    case ACMD_TEST_SOLENOID:      _airflowCtrl.testSolenoid(cmd.a != 0); break;
+
+    case ACMD_PUMP_TARGET:        _pressureCtrl.setTargetPercent(cmd.b); break;
+    case ACMD_PUMP_SINGLE_TEST:   _pressureCtrl.testSinglePump(cmd.a, cmd.b); break;
+    case ACMD_PUMP_STOP_SINGLE:   _pressureCtrl.stopSinglePumpTest(); break;
+    case ACMD_PUMP_STOP:          _pressureCtrl.stop(); break;
+    case ACMD_PUMP_ENABLE:        _pressureCtrl.setEnabled(cmd.a != 0); break;
+    case ACMD_FAN_TARGET:         _fanCtrl.setSpeed(cmd.b); break;
+    case ACMD_FAN_STOP:           _fanCtrl.stop(); break;
+
+    case ACMD_OPEN_ALL_FINGERS:
+      ensureServosPowered();
+      _fingerCtrl.openAllFingers();
       break;
 
-    case MIDI_CC_RESET_ALL_CONTROLLERS:
-      resetAllControllers();
-      break;
-
-    case MIDI_CC_ALL_NOTES_OFF:
-    // CC 124-127 (Omni Off/On, Mono/Poly mode) all imply All Notes Off per spec.
-    case MIDI_CC_OMNI_OFF:      // 124
-    case 125:                   // Omni On
-    case MIDI_CC_MONO_ON:       // 126
-    case 127:                   // Poly On
-      allSoundOff();
-      break;
+    case ACMD_SET_ACTUATOR_SESSION: setActuatorSessionActive(cmd.a != 0); break;
 
     default:
       break;
   }
 }
 
-
-ConfigApplyResult InstrumentManager::applyRuntimeConfig(const RuntimeConfig& oldConfig, const RuntimeConfig& newConfig) {
-  ConfigApplyResult result{true, false, "", ""};
-
+bool InstrumentManager::configChangeRequiresRestart(const RuntimeConfig& oldConfig, const RuntimeConfig& newConfig) {
   bool restartNeeded =
     oldConfig.numFingers != newConfig.numFingers ||
     oldConfig.numPumps != newConfig.numPumps ||
@@ -464,6 +649,13 @@ ConfigApplyResult InstrumentManager::applyRuntimeConfig(const RuntimeConfig& old
   for (uint8_t i = 0; i < MAX_PUMPS && !restartNeeded; i++) {
     if (oldConfig.pumpPins[i] != newConfig.pumpPins[i]) restartNeeded = true;
   }
+  return restartNeeded;
+}
+
+ConfigApplyResult InstrumentManager::applyRuntimeConfig(const RuntimeConfig& oldConfig, const RuntimeConfig& newConfig) {
+  ConfigApplyResult result{true, false, "", ""};
+
+  bool restartNeeded = configChangeRequiresRestart(oldConfig, newConfig);
 
   result.restartRequired = restartNeeded;
   result.applied = !restartNeeded;
@@ -497,10 +689,18 @@ ConfigApplyResult InstrumentManager::applyRuntimeConfig(const RuntimeConfig& old
 }
 
 void InstrumentManager::allSoundOff() {
-  while (!_eventQueue.isEmpty()) {
-    _eventQueue.dequeue();
-  }
+  // clear() incremente l'epoque de la file : une salve d'evenements en cours de
+  // traitement dans NoteSequencer::processDueEvents() est abandonnee, donc aucun
+  // evenement anterieur au panic ne peut encore etre joue apres lui.
+  _eventQueue.clear();
+  // Les commandes actionneurs en attente sont elles aussi abandonnees.
+  _commands.clear();
+  _cc2Pending = false;
   _sequencer.stop();
+  // Hardware jamais initialise (PCA absent / config invalide) : les controleurs
+  // n'ont pas configure leurs GPIO, on ne doit rien ecrire dessus. Vider les files
+  // et remettre la machine a etats au repos suffit - rien n'a pu etre active.
+  if (_hardwareInitStatus != HW_INIT_OK) return;
   _airflowCtrl.closeSolenoid();
   _airflowCtrl.setAirflowToRest();  // inclut setAngleToRest()
   _fingerCtrl.closeAllFingers();
@@ -547,7 +747,7 @@ void InstrumentManager::setPWM(uint8_t channel, uint16_t on, uint16_t off) {
   // activity / enable OE: OE must stay HIGH until every channel holds a safe value,
   // otherwise the servos could be energised (with stale registers after a soft
   // reset) while the channels are still being initialised one by one.
-  if (!_initializingHardware) registerActuatorActivity();
+  if (!_initializingHardware) registerActuatorActivity();   // differe l'OE a managePower()
   if (channel < 16) {
     _pwm0.setPWM(channel, on, off);
   } else if (_secondBoardEnabled) {

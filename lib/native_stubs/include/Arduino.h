@@ -5,6 +5,14 @@
 #include <algorithm>
 #include <string>
 using byte = uint8_t;
+// <cmath> retire les macros C isfinite/isnan ; le firmware ESP32 les voit comme
+// macros via math.h. On retablit les noms non qualifies pour le build hote.
+#ifndef isfinite
+using std::isfinite;
+#endif
+#ifndef isnan
+using std::isnan;
+#endif
 #define HIGH 1
 #define LOW 0
 #define OUTPUT 1
@@ -12,7 +20,10 @@ using byte = uint8_t;
 #define INPUT_PULLUP 2
 #define HEX 16
 #define PROGMEM
-#define pgm_read_byte(addr) (*(const int8_t*)(addr))
+// Fidele a l'ESP32/AVR : pgm_read_byte() rend un octet NON signe. Le stub rendait
+// un int8_t, ce qui masquait sur hote le bug de vibrato (demi-periode negative lue
+// comme 129..255). Ne pas "corriger" ce type : c'est le comportement reel.
+#define pgm_read_byte(addr) ((uint8_t)(*(const uint8_t*)(addr)))
 extern unsigned long __test_millis;
 inline unsigned long millis(){ return __test_millis; }
 inline void delay(unsigned long ms){ __test_millis += ms; }

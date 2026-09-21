@@ -75,9 +75,9 @@ void SerialMidiHandler::update() {
 
 void SerialMidiHandler::checkActiveSensingTimeout() {
   // Uniquement si la source s'est engagee via Active Sensing, et une seule fois
-  // par silence. (long)(...) rend la comparaison sure au rollover de millis().
+  // par silence. Le cast int32_t rend la comparaison sure au rollover de millis().
   if (!_activeSensing || _linkLost) return;
-  if ((long)(millis() - _lastByteMs) > MIDI_ACTIVE_SENSING_TIMEOUT_MS) {
+  if ((int32_t)(millis() - _lastByteMs) > MIDI_ACTIVE_SENSING_TIMEOUT_MS) {
     _linkLost = true;
     if (_instrument) _instrument->handleTransportLost();
     if (DEBUG) {

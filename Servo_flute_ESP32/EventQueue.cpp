@@ -1,9 +1,13 @@
 #include "EventQueue.h"
 
 EventQueue::EventQueue(int capacity)
-  : _capacity(capacity), _head(0), _tail(0), _count(0),
-    _referenceTime(0), _hasReference(false) {
-  _events = new MidiEvent[capacity];
+  : _capacity(capacity < 1 ? 1 : capacity), _head(0), _tail(0), _count(0),
+    _referenceTime(0), _hasReference(false), _epoch(0) {
+  _events = new MidiEvent[_capacity];
+}
+
+EventQueue::~EventQueue() {
+  delete[] _events;
 }
 
 bool EventQueue::enqueue(EventType type, byte note, byte velocity, unsigned long absoluteTime) {
@@ -65,11 +69,58 @@ bool EventQueue::enqueueScheduledEventForced(EventType type, byte note, byte vel
   return true;
 }
 
-MidiEvent* EventQueue::peek() {
-  if (isEmpty()) {
-    return nullptr;
+void EventQueue::popLocked() {
+  _tail = (_tail + 1) % _capacity;
+  _count--;
+  if (_count == 0) {
+    _hasReference = false;
+    _referenceTime = 0;
   }
-  return &_events[_tail];
+}
+
+bool EventQueue::peekCopy(MidiEvent& out) const {
+  portENTER_CRITICAL(&_mux);
+  if (_count == 0) {
+    portEXIT_CRITICAL(&_mux);
+    return false;
+  }
+  out = _events[_tail];
+  portEXIT_CRITICAL(&_mux);
+  return true;
+}
+
+bool EventQueue::tryPopDueEvent(unsigned long now, unsigned long noteOnLeadMs, MidiEvent& out,
+                                uint32_t* epochOut) {
+  portENTER_CRITICAL(&_mux);
+
+  if (_count == 0) {
+    portEXIT_CRITICAL(&_mux);
+    return false;
+  }
+
+  const MidiEvent& head = _events[_tail];
+  unsigned long dueTime = head.timestamp;
+  if (head.type == EVENT_NOTE_ON) {
+    // Les NOTE_ON sont avances du delai de positionnement des servos. Soustraction
+    // saturante : une avance superieure a l'horodatage rend l'evenement du
+    // immediatement (jamais un rollover vers un futur lointain).
+    dueTime = (head.timestamp > noteOnLeadMs) ? head.timestamp - noteOnLeadMs : 0;
+  }
+  // Comparaison signee sur 32 bits EXPLICITES : reste correcte au rollover de
+  // millis() (~49,7 jours). `long` ne convient pas : il fait 64 bits sur l'hote
+  // des tests et la difference ne reboucle alors plus comme sur l'ESP32.
+  if ((int32_t)(now - dueTime) < 0) {
+    portEXIT_CRITICAL(&_mux);
+    return false;
+  }
+
+  // Lecture ET retrait du MEME evenement, sous le MEME verrou.
+  out = head;
+  popLocked();
+  if (epochOut) *epochOut = _epoch;
+
+  portEXIT_CRITICAL(&_mux);
+  return true;
 }
 
 void EventQueue::dequeue() {
@@ -78,27 +129,29 @@ void EventQueue::dequeue() {
     portEXIT_CRITICAL(&_mux);
     return;
   }
-
-  _tail = (_tail + 1) % _capacity;
-  _count--;
-
-  if (_count == 0) {
-    _hasReference = false;
-    _referenceTime = 0;
-  }
+  popLocked();
   portEXIT_CRITICAL(&_mux);
 }
 
 bool EventQueue::isEmpty() const {
-  return _count == 0;
+  portENTER_CRITICAL(&_mux);
+  bool empty = (_count == 0);
+  portEXIT_CRITICAL(&_mux);
+  return empty;
 }
 
 bool EventQueue::isFull() const {
-  return _count >= _capacity;
+  portENTER_CRITICAL(&_mux);
+  bool full = (_count >= _capacity);
+  portEXIT_CRITICAL(&_mux);
+  return full;
 }
 
 int EventQueue::getCount() const {
-  return _count;
+  portENTER_CRITICAL(&_mux);
+  int count = _count;
+  portEXIT_CRITICAL(&_mux);
+  return count;
 }
 
 void EventQueue::clear() {
@@ -108,9 +161,20 @@ void EventQueue::clear() {
   _count = 0;
   _hasReference = false;
   _referenceTime = 0;
+  _epoch++;   // invalide toute salve de traitement en cours cote consommateur
   portEXIT_CRITICAL(&_mux);
 }
 
+uint32_t EventQueue::epoch() const {
+  portENTER_CRITICAL(&_mux);
+  uint32_t e = _epoch;
+  portEXIT_CRITICAL(&_mux);
+  return e;
+}
+
 unsigned long EventQueue::getReferenceTime() const {
-  return _referenceTime;
+  portENTER_CRITICAL(&_mux);
+  unsigned long ref = _referenceTime;
+  portEXIT_CRITICAL(&_mux);
+  return ref;
 }

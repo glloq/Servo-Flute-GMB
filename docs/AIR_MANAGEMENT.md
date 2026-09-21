@@ -19,7 +19,34 @@ Pump modes support one to three independent pumps. PWM motors can be controlled 
 
 ## Reservoir sensors
 
-Reservoir mode supports ToF distance sensors, Hall sensors, and endstops. PWM motors can use PID control; On/Off motors use threshold control.
+Reservoir mode supports ToF distance sensors (VL53L0X, VL6180X), Hall sensors,
+and endstops. PWM motors can use PID control; On/Off motors use threshold
+control.
+
+### ToF sensor states
+
+A device acknowledging on I2C is **not** a working sensor. The driver
+(`TofSensor`) identifies the part by its model ID and then runs the full
+initialisation sequence — for the VL53L0X: data init, reference SPAD selection,
+the ST default tuning table, interrupt configuration, and the VHV and phase
+reference calibrations. Without that, the range register holds a value with no
+metric meaning.
+
+Diagnostics and the live status therefore distinguish four things:
+
+| State | Meaning | Pump behaviour in reservoir mode |
+|---|---|---|
+| `absent` | nothing answers at 0x29 | stopped |
+| `unsupported_device` | something answers, but it is not the configured sensor | stopped |
+| `init_failed` | the sensor answered but its initialisation did not complete | stopped |
+| `ready` + valid measurement | initialised and returning a fresh, valid range | regulated |
+| `ready` + stale measurement | no valid reading for `TOF_STALE_MS` | stopped |
+| `fault` | repeated timeouts invalidated the sensor | stopped |
+
+Ranging is non-blocking: a single-shot measurement is started and its status is
+polled once per loop iteration, so MIDI, WebSocket, audio and servo timing are
+never stalled waiting on I2C. A measurement the sensor itself rejects (range
+status other than 11) is treated as "no measurement", never as a distance.
 
 ## Valve and flow servo
 

@@ -99,6 +99,20 @@ private:
   void setupMDNS();
   void setupRtpMidi();
 
+  // --- Transitions reseau centralisees (§10) --------------------------------
+  // Chaque bascule AP <-> STA passe par ces deux points. Avant tout demontage,
+  // handleTransportLost() est appele si une session rtpMIDI a pu etre active :
+  // sans cela, une note tenue au moment d'un forceAP() n'aurait jamais recu son
+  // Note Off et laissait la valve/le souffle/la pompe en marche.
+  // Les demarrages sont idempotents : mDNS, AppleMIDI et le DNS captif ne sont
+  // jamais reinitialises deux fois sans avoir ete arretes entre-temps.
+  void stopNetworkServices(bool notifyTransportLost);
+  void startNetworkServices();
+
+  bool _mdnsStarted;
+  bool _rtpMidiStarted;
+  bool _captiveDnsStarted;
+
   // Captive portal DNS (mode AP uniquement)
   DNSServer _dnsServer;
   void startCaptiveDNS();

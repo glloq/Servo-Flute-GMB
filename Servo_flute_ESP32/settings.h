@@ -212,6 +212,10 @@ Set MIC_ENABLED to false if no mic is connected.
 ---------------------------   EVENT QUEUE SETTINGS    ------------------------
 ******************************************************************************/
 #define EVENT_QUEUE_SIZE 16
+// Profondeur de la file de commandes actionneurs inter-taches (CommandQueue.h).
+// Dimensionnee pour absorber une rafale de commandes WebSocket (curseurs de test)
+// entre deux tours de loop() sans allouer : 24 * 8 octets = 192 octets.
+#define COMMAND_QUEUE_SIZE 24
 
 /*******************************************************************************
 ---------------------------     SOLENOID VALVE        ------------------------
@@ -266,12 +270,6 @@ Modes modulaires de gestion d'air. L'interface s'adapte au mode choisi.
 #define AIR_MODE_PUMP_VALVE       4
 #define AIR_MODE_PUMP_RESERVOIR   5
 
-// Legacy aliases
-#define AIR_MODE_CLASSIC          AIR_MODE_SOLENOID_SERVO
-#define AIR_MODE_PUMP             AIR_MODE_PUMP_VALVE
-#define AIR_MODE_PUMP_ENDSTOP     5  // Fusionne dans mode 5 (sensor_type selectionne endstop)
-#define AIR_MODE_PUMP_RESERVOIR_LEGACY AIR_MODE_PUMP_RESERVOIR
-
 // Types de moteur (pompe/ventilateur)
 #define MOTOR_TYPE_PWM    0     // Moteur PWM variable
 #define MOTOR_TYPE_ONOFF  1     // Moteur On/Off simple (GPIO HIGH/LOW)
@@ -306,7 +304,6 @@ Modes modulaires de gestion d'air. L'interface s'adapte au mode choisi.
 #define DEFAULT_HALL_PIN            36     // GPIO36 (ADC, input only)
 #define DEFAULT_HALL_THRESHOLD_LOW  1500   // Seuil bas analogique Hall
 #define DEFAULT_HALL_THRESHOLD_HIGH 2500   // Seuil haut analogique Hall
-#define DEFAULT_RESERVOIR_ENABLED   false
 #define DEFAULT_SENSOR_TYPE         SENSOR_TYPE_TOF_VL6180X
 #define DEFAULT_SENSOR_TARGET_MM    50     // Hauteur cible ballon (mm)
 #define DEFAULT_SENSOR_MIN_MM       10     // Hauteur min (vide)
@@ -518,13 +515,32 @@ const uint16_t SERVO_FREQUENCY = 50;
 #define WS_CLEANUP_INTERVAL_MS 1000   // Intervalle nettoyage clients deconnectes
 #define WS_STATUS_INTERVAL_MS 500     // Intervalle envoi status aux clients
 
+// Hand-off AsyncTCP -> loop() : duree maximale d'attente d'un callback web pour
+// qu'une operation (commit de configuration, LittleFS, calibration) soit
+// executee par la tache proprietaire. Au-dela, la requete repond 503 plutot que
+// de bloquer la pile TCP. Une iteration de loop() dure normalement quelques ms.
+#define WEBOP_TIMEOUT_MS 3000
+
+// Verrou d'upload MIDI exclusif : libere d'office si le client disparait en
+// cours de transfert (onglet ferme, Wi-Fi coupe) pour ne pas bloquer le suivant.
+#define UPLOAD_LOCK_TIMEOUT_MS 30000
+
+// Duree de vie (glissante) d'une session web authentifiee.
+#define WEB_SESSION_TTL_MS 3600000UL
+
+// Maintien du bouton BOOT au demarrage pour regenerer les secrets d'acces
+// (cle du hotspot + mot de passe web). Recuperation par presence physique.
+#define SECRET_RESET_HOLD_MS 5000
+
 /*******************************************************************************
 -----------------------  MIDI FILE PLAYER SETTINGS    ------------------------
 ******************************************************************************/
 
 #define MIDI_FILE_MAX_SIZE 102400     // Taille max fichier MIDI (100 KB)
 #define MIDI_FILE_MAX_EVENTS 2000     // Nombre max d'evenements parses
-#define MIDI_FILE_PATH "/midi_temp.mid"  // Chemin temporaire (compat, parsing)
+// Les fichiers temporaires d'upload portent desormais un nom unique par
+// transfert ("/.up<n>.tmp", hors de MIDI_DIR) : un chemin temporaire partage
+// laissait deux clients simultanes ecrire dans le meme fichier.
 #define MIDI_DIR "/midi"              // Repertoire stockage fichiers MIDI
 #define DEFAULT_MIDI_STORAGE_LIMIT_KB 500  // Limite stockage total MIDI (Ko)
 
@@ -571,7 +587,6 @@ Standard MIDI constants used across the codebase.
 /*******************************************************************************
 -----------------------  INIT / STARTUP DELAYS       -----------------------
 ******************************************************************************/
-#define SAFE_STATE_SETTLE_MS 100      // Delay after safe state init (servo settle)
 #define SERIAL_STARTUP_DELAY_MS 500   // Delay for serial port initialization
 #define PWM_INIT_DELAY_MS 10          // Delay after PCA9685 frequency set
 
@@ -579,8 +594,5 @@ Standard MIDI constants used across the codebase.
 -----------------------  WEB INTERFACE CONSTANTS     -----------------------
 ******************************************************************************/
 #define WEB_DEFAULT_VELOCITY 100      // Default velocity for web keyboard
-#define TEST_NOTE_SOLENOID_MS 2000    // Solenoid open duration for note test (ms)
-#define VU_METER_SCALE 500            // RMS to percentage scale for VU meter
-#define PITCH_OK_CENTS 15             // Pitch tolerance (cents) shown as "OK"
 
 #endif

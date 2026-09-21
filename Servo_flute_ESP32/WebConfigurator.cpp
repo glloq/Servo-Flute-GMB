@@ -3,6 +3,8 @@
 #include "InstrumentManager.h"
 #include "FanController.h"
 #include "WirelessManager.h"
+#include "ConfigCommit.h"
+#include "DeviceSecrets.h"
 #include "web_content.h"
 #include "WebValueParsers.h"
 #include <WiFi.h>
@@ -23,9 +25,16 @@ static String jsonStr(const char* s) {
 // Per-request POST body. Stored in AsyncWebServerRequest::_tempObject so concurrent
 // requests on different routes (or two close requests) never share one buffer - the
 // previous shared members could be overwritten, mixed, or read by the wrong route.
+//
+// IMPORTANT : ESPAsyncWebServer libere _tempObject avec free() dans le destructeur
+// de la requete. L'objet doit donc etre un POD alloue avec malloc() : un objet C++
+// contenant un String serait libere sans appeler son destructeur (fuite memoire a
+// chaque requete interrompue) et free()-e alors qu'il vient de new.
 struct WebReqBody {
-  String data;
-  bool tooLarge = false;
+  size_t capacity;
+  size_t length;
+  bool tooLarge;
+  char data[1];   // tableau flexible : capacity+1 octets alloues a la suite
 };
 
 // Accumulate a chunked POST body into the request's own WebReqBody. Call from the
@@ -35,17 +44,26 @@ static void webAccumulateBody(AsyncWebServerRequest* request, uint8_t* data, siz
                               size_t index, size_t total) {
   WebReqBody* b = (WebReqBody*)request->_tempObject;
   if (index == 0) {
-    delete b;   // safe on nullptr; guards against a reused request object
-    b = new WebReqBody();
-    b->data.reserve(min(total + 1, (size_t)CONFIG_MAX_POST_BYTES + 1));
+    if (b) { free(b); request->_tempObject = nullptr; b = nullptr; }
+    size_t capacity = (total > 0 && total <= (size_t)CONFIG_MAX_POST_BYTES)
+                          ? total : (size_t)CONFIG_MAX_POST_BYTES;
+    b = (WebReqBody*)malloc(sizeof(WebReqBody) + capacity);
+    if (!b) return;
+    b->capacity = capacity;
+    b->length = 0;
+    b->tooLarge = (total > (size_t)CONFIG_MAX_POST_BYTES);
+    b->data[0] = '\0';
     request->_tempObject = b;
   }
   if (!b) return;
-  if (total > CONFIG_MAX_POST_BYTES || b->data.length() + len > CONFIG_MAX_POST_BYTES) {
+  if (b->tooLarge) return;
+  if (b->length + len > b->capacity) {
     b->tooLarge = true;
     return;
   }
-  b->data.concat((const char*)data, len);
+  memcpy(b->data + b->length, data, len);
+  b->length += len;
+  b->data[b->length] = '\0';
 }
 
 // Move the accumulated body out of the request into local variables and free the
@@ -54,8 +72,14 @@ static void webAccumulateBody(AsyncWebServerRequest* request, uint8_t* data, siz
 static void takeRequestBody(AsyncWebServerRequest* request, String& outBody, bool& outTooLarge) {
   WebReqBody* b = (WebReqBody*)request->_tempObject;
   request->_tempObject = nullptr;
-  if (b) { outBody = b->data; outTooLarge = b->tooLarge; delete b; }
-  else { outBody = String(); outTooLarge = false; }
+  if (b) {
+    outTooLarge = b->tooLarge;
+    outBody = b->tooLarge ? String() : String(b->data);
+    free(b);
+  } else {
+    outBody = String();
+    outTooLarge = false;
+  }
 }
 
 // WS commands that drive an actuator open-endedly (until the user stops them) and
@@ -69,16 +93,44 @@ static bool isManualTestCommand(const char* type) {
   return false;
 }
 
+// Reduit un nom de fichier recu du reseau a un nom simple et sur : pas de
+// chemin, pas de "..", caracteres limites, extension .mid/.midi obligatoire.
+static bool sanitizeMidiFileName(const String& raw, String& out) {
+  String name = raw;
+  int ls = name.lastIndexOf('/');
+  if (ls >= 0) name = name.substring(ls + 1);
+  int bs = name.lastIndexOf('\\');
+  if (bs >= 0) name = name.substring(bs + 1);
+  if (name.length() == 0 || name.length() > 48) return false;
+  if (name.indexOf("..") >= 0) return false;
+  if (name[0] == '.') return false;
+  for (size_t i = 0; i < name.length(); i++) {
+    char c = name[i];
+    bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+              c == '-' || c == '_' || c == '.' || c == ' ' || c == '(' || c == ')';
+    if (!ok) return false;
+  }
+  String lower = name;
+  lower.toLowerCase();
+  if (!lower.endsWith(".mid") && !lower.endsWith(".midi")) return false;
+  out = name;
+  return true;
+}
+
 WebConfigurator::WebConfigurator(uint16_t port)
   : _server(port), _ws("/ws"),
     _instrument(nullptr), _player(nullptr), _wirelessManager(nullptr),
     _webVelocity(WEB_DEFAULT_VELOCITY), _lastStatusBroadcast(0), _lastWsCleanup(0),
-    _uploadSize(0), _uploadError(false)
+    _opPending(false), _opAbandoned(false), _opDoneSeq(0), _opSeqCounter(0),
+    _opMutex(nullptr), _opDone(nullptr),
+    _wsOpHead(0), _wsOpTail(0), _wsOpCount(0),
+    _uploadSequence(0)
 #if MIC_ENABLED
     , _audio(nullptr), _autoCal(nullptr), _micMonitorEnabled(false), _lastAudioBroadcast(0), _lastAcalBroadcast(0)
     , _autoCalOwnerClientId(0), _micMonitorBeforeCalibration(false), _rfDoneSent(false), _rfDoneTime(0)
 #endif
 {
+  for (uint8_t i = 0; i < WS_MAX_CLIENTS; i++) _wsAuthClients[i] = 0;
 }
 
 WebConfigurator::~WebConfigurator() {
@@ -86,11 +138,23 @@ WebConfigurator::~WebConfigurator() {
   delete _autoCal;
   delete _audio;
 #endif
+  if (_opDone) vSemaphoreDelete(_opDone);
+  if (_opMutex) vSemaphoreDelete(_opMutex);
 }
 
 void WebConfigurator::begin(InstrumentManager* instrument, MidiFilePlayer* player) {
   _instrument = instrument;
   _player = player;
+
+  // Hand-off vers la tache loop() : un mutex serialise les producteurs AsyncTCP,
+  // un semaphore binaire signale la fin de l'execution cote loop().
+  _opMutex = xSemaphoreCreateMutex();
+  _opDone = xSemaphoreCreateBinary();
+  _opPending = false;
+
+  // Sessions web : jeton aleatoire tire du RNG materiel, expiration glissante.
+  DeviceSecrets::begin();
+  _auth.begin(DeviceSecrets::randomWord, WEB_SESSION_TTL_MS);
 
   // Configurer le WebSocket
   _ws.onEvent([this](AsyncWebSocket* server, AsyncWebSocketClient* client,
@@ -140,9 +204,18 @@ void WebConfigurator::begin(InstrumentManager* instrument, MidiFilePlayer* playe
 void WebConfigurator::update() {
   unsigned long now = millis();
 
+  // Executer, sur la tache loop(), les operations web en attente. C'est le SEUL
+  // endroit ou une demande venue d'AsyncTCP fait modifier `cfg`, LittleFS, le
+  // lecteur MIDI ou le calibrateur.
+  serviceWsOps();      // commandes WebSocket (non bloquantes)
+  servicePendingOp();  // requete HTTP en attente de sa reponse
+
+  // Liberer un slot d'upload abandonne (client disparu en plein transfert).
+  abandonStaleUpload(now);
+
   // Controlled restart after a restart-required config change / reset: the response
   // has been sent; reboot so the persisted config takes effect with a clean init.
-  if (_pendingRestartTime != 0 && (long)(now - _pendingRestartTime) >= 0) {
+  if (_pendingRestartTime != 0 && (int32_t)(now - _pendingRestartTime) >= 0) {
     ESP.restart();
   }
 
@@ -155,8 +228,8 @@ void WebConfigurator::update() {
   }
 
   // Auto-stop a "test note" preview once its bounded duration has elapsed.
-  if (_testNoteOffTime != 0 && (long)(now - _testNoteOffTime) >= 0) {
-    if (_instrument) _instrument->noteOff(_testNoteMidi);
+  if (_testNoteOffTime != 0 && (int32_t)(now - _testNoteOffTime) >= 0) {
+    if (_instrument) _instrument->postCommand(ACMD_NOTE_OFF, _testNoteMidi);
     _testNoteOffTime = 0;
   }
 
@@ -357,6 +430,739 @@ void WebConfigurator::setWirelessManager(WirelessManager* wm) {
   _wirelessManager = wm;
 }
 
+/*******************************************************************************
+ * Hand-off AsyncTCP -> loop()
+ *
+ * Les callbacks HTTP/WebSocket s'executent sur la tache AsyncTCP. Ils ne doivent
+ * toucher NI `cfg`, NI LittleFS, NI un actionneur, NI le calibrateur : ces
+ * ressources appartiennent a la tache loop(). Le callback prepare donc une
+ * operation, la depose dans l'unique emplacement protege par _opMutex, puis
+ * attend (au plus WEBOP_TIMEOUT_MS) que loop() l'execute et publie son resultat.
+ *
+ * Il n'y a pas d'interblocage possible : loop() n'attend jamais AsyncTCP.
+ ******************************************************************************/
+
+void WebConfigurator::releaseWebOp(WebOp& op) {
+  // Le candidat de configuration est alloue sur le tas par le callback web et sa
+  // propriete est transferee a la tache loop() des que l'operation est armee.
+  // C'est donc TOUJOURS loop() qui le libere, qu'elle l'applique ou l'abandonne.
+  if (op.candidate) {
+    delete op.candidate;
+    op.candidate = nullptr;
+  }
+}
+
+bool WebConfigurator::runOnLoop(WebOp& op) {
+  if (_opMutex == nullptr || _opDone == nullptr) return false;
+  if (xSemaphoreTake(_opMutex, pdMS_TO_TICKS(WEBOP_TIMEOUT_MS)) != pdTRUE) return false;
+
+  // Ne JAMAIS ecraser une operation que loop() serait encore en train d'executer :
+  // l'emplacement est unique et il serait lu et ecrit en meme temps.
+  unsigned long spinDeadline = millis() + WEBOP_TIMEOUT_MS;
+  while (_opPending && (int32_t)(millis() - spinDeadline) < 0) {
+    vTaskDelay(pdMS_TO_TICKS(1));
+  }
+  if (_opPending) {
+    xSemaphoreGive(_opMutex);
+    return false;   // l'appelant garde la propriete de ce qu'il portait
+  }
+
+  uint32_t seq = ++_opSeqCounter;
+  if (seq == 0) seq = ++_opSeqCounter;   // 0 est reserve a "aucune operation"
+
+  // Vider un eventuel signal de fin laisse par une operation abandonnee, sinon
+  // l'attente ci-dessous retournerait immediatement avec un resultat etranger.
+  xSemaphoreTake(_opDone, 0);
+
+  _op = op;
+  _op.seq = seq;
+  _op.ok = false;
+  _op.httpStatus = 200;
+  _op.json = "";
+  _opAbandoned = false;
+  _opPending = true;
+  // Propriete transferee : l'appelant ne doit plus liberer le candidat.
+  op.candidate = nullptr;
+
+  bool done = false;
+  unsigned long deadline = millis() + WEBOP_TIMEOUT_MS;
+  while (true) {
+    int32_t remaining = (int32_t)(deadline - millis());
+    if (remaining <= 0) break;
+    if (xSemaphoreTake(_opDone, pdMS_TO_TICKS(remaining)) != pdTRUE) break;
+    // Ne retenir que la fin de NOTRE operation (une operation precedemment
+    // abandonnee peut avoir signale sa fin entre-temps).
+    if (_opDoneSeq == seq) { done = true; break; }
+  }
+
+  if (done) {
+    op = _op;
+  } else {
+    // loop() n'a pas repondu a temps. On marque l'operation abandonnee : si elle
+    // n'a pas encore demarre, loop() la liberera sans l'appliquer ; si elle a
+    // demarre, elle ira a son terme mais personne n'attendra son resultat.
+    _opAbandoned = true;
+  }
+  xSemaphoreGive(_opMutex);
+  return done;
+}
+
+bool WebConfigurator::postWebOp(const WebOp& op) {
+  portENTER_CRITICAL(&_wsOpMux);
+  if (_wsOpCount >= kWsOpQueueSize) {
+    portEXIT_CRITICAL(&_wsOpMux);
+    return false;
+  }
+  _wsOps[_wsOpHead] = op;
+  _wsOpHead = (uint8_t)((_wsOpHead + 1) % kWsOpQueueSize);
+  _wsOpCount++;
+  portEXIT_CRITICAL(&_wsOpMux);
+  return true;
+}
+
+void WebConfigurator::serviceWsOps() {
+  while (true) {
+    WebOp op;
+    portENTER_CRITICAL(&_wsOpMux);
+    if (_wsOpCount == 0) {
+      portEXIT_CRITICAL(&_wsOpMux);
+      return;
+    }
+    op = _wsOps[_wsOpTail];
+    _wsOps[_wsOpTail] = WebOp();
+    _wsOpTail = (uint8_t)((_wsOpTail + 1) % kWsOpQueueSize);
+    _wsOpCount--;
+    portEXIT_CRITICAL(&_wsOpMux);
+
+    executeWebOp(op);
+    // Le demandeur n'attend pas : son resultat eventuel part sur le WebSocket.
+    if (op.json.length() > 0) _ws.textAll(op.json);
+    releaseWebOp(op);
+  }
+}
+
+void WebConfigurator::servicePendingOp() {
+  if (!_opPending) return;
+  bool abandoned = _opAbandoned;
+  if (!abandoned) executeWebOp(_op);
+  releaseWebOp(_op);
+  uint32_t seq = _op.seq;
+  _opPending = false;
+  _opDoneSeq = seq;
+  // Ne signaler que si quelqu'un attend encore ce resultat.
+  if (!abandoned && _opDone) xSemaphoreGive(_opDone);
+}
+
+/*******************************************************************************
+ * Authentification
+ ******************************************************************************/
+
+bool WebConfigurator::isWsAuthenticated(uint32_t clientId) const {
+  if (clientId == 0) return false;
+  for (uint8_t i = 0; i < WS_MAX_CLIENTS; i++) {
+    if (_wsAuthClients[i] == clientId) return true;
+  }
+  return false;
+}
+
+void WebConfigurator::setWsAuthenticated(uint32_t clientId, bool authenticated) {
+  if (clientId == 0) return;
+  if (!authenticated) {
+    for (uint8_t i = 0; i < WS_MAX_CLIENTS; i++) {
+      if (_wsAuthClients[i] == clientId) _wsAuthClients[i] = 0;
+    }
+    return;
+  }
+  if (isWsAuthenticated(clientId)) return;
+  for (uint8_t i = 0; i < WS_MAX_CLIENTS; i++) {
+    if (_wsAuthClients[i] == 0) { _wsAuthClients[i] = clientId; return; }
+  }
+  // Table pleine : recycler la premiere entree (les clients WS sont limites a
+  // WS_MAX_CLIENTS par cleanupClients()).
+  _wsAuthClients[0] = clientId;
+}
+
+String WebConfigurator::extractToken(AsyncWebServerRequest* request) const {
+  if (request->hasHeader("X-Auth-Token")) {
+    return request->getHeader("X-Auth-Token")->value();
+  }
+  if (request->hasParam("token")) {
+    return request->getParam("token")->value();
+  }
+  return String();
+}
+
+bool WebConfigurator::rejectIfUnauthorized(AsyncWebServerRequest* request) {
+  String token = extractToken(request);
+  if (_auth.validate(token, millis())) return false;
+  request->send(401, "application/json", "{\"ok\":false,\"error\":\"unauthorized\"}");
+  return true;
+}
+
+void WebConfigurator::handleApiLogin(AsyncWebServerRequest* request) {
+  String body; bool tooLarge;
+  takeRequestBody(request, body, tooLarge);
+  if (tooLarge || body.length() == 0) {
+    request->send(400, "application/json", "{\"ok\":false,\"error\":\"bad_request\"}");
+    return;
+  }
+  JsonDocument doc;
+  if (deserializeJson(doc, body)) {
+    request->send(400, "application/json", "{\"ok\":false,\"error\":\"invalid_json\"}");
+    return;
+  }
+  String password = doc["password"] | "";
+  if (!DeviceSecrets::verifyAdminPassword(password)) {
+    // Pas de detail sur la raison de l'echec.
+    request->send(401, "application/json", "{\"ok\":false,\"error\":\"invalid_credentials\"}");
+    return;
+  }
+  JsonDocument resp;
+  resp["ok"] = true;
+  resp["token"] = _auth.createSession(millis());
+  resp["ttl_ms"] = (uint32_t)WEB_SESSION_TTL_MS;
+  String out;
+  serializeJson(resp, out);
+  request->send(200, "application/json", out);
+}
+
+void WebConfigurator::handleApiAuthStatus(AsyncWebServerRequest* request) {
+  JsonDocument doc;
+  doc["auth_required"] = true;
+  doc["authenticated"] = _auth.validate(extractToken(request), millis());
+  doc["default_password"] = DeviceSecrets::adminPasswordIsGenerated();
+  String out;
+  serializeJson(doc, out);
+  request->send(200, "application/json", out);
+}
+
+void WebConfigurator::handleApiAuthPassword(AsyncWebServerRequest* request) {
+  String body; bool tooLarge;
+  takeRequestBody(request, body, tooLarge);
+  if (rejectIfUnauthorized(request)) return;
+  if (tooLarge || body.length() == 0) {
+    request->send(400, "application/json", "{\"ok\":false,\"error\":\"bad_request\"}");
+    return;
+  }
+  JsonDocument doc;
+  if (deserializeJson(doc, body)) {
+    request->send(400, "application/json", "{\"ok\":false,\"error\":\"invalid_json\"}");
+    return;
+  }
+  WebOp op;
+  op.type = WEBOP_SET_ADMIN_PASSWORD;
+  op.strA = String((const char*)(doc["password"] | ""));
+  if (op.strA.length() < 8) {
+    request->send(400, "application/json", "{\"ok\":false,\"error\":\"password_too_short\"}");
+    return;
+  }
+  if (!runOnLoop(op)) {
+    request->send(503, "application/json", "{\"ok\":false,\"error\":\"busy\"}");
+    return;
+  }
+  request->send(op.httpStatus, "application/json", op.json);
+}
+
+/*******************************************************************************
+ * Protection hardware_not_ready
+ *
+ * isHardwareReady() existait deja mais plusieurs commandes web attaquaient
+ * directement getAirflowCtrl() / getPressureCtrl() / getFanCtrl() / le
+ * calibrateur, contournant les gardes de noteOn()/setPWM(). Le refus est
+ * desormais applique en DEUX endroits complementaires :
+ *   - ici, pour repondre explicitement "hardware_not_ready" au client,
+ *   - dans InstrumentManager::applyCommand(), qui est le seul chemin
+ *     d'application et refuse toute commande physique quoi qu'il arrive.
+ * Apres un echec PCA0/PCA1, aucun actionneur n'est donc activable, par aucun
+ * chemin. Diagnostics, lecture/modification de configuration, reset et
+ * recovery reseau restent disponibles.
+ ******************************************************************************/
+
+bool WebConfigurator::hardwareReady() const {
+  return _instrument != nullptr && _instrument->isHardwareReady();
+}
+
+bool WebConfigurator::rejectIfHardwareNotReady(AsyncWebServerRequest* request) {
+  if (hardwareReady()) return false;
+  request->send(503, "application/json", "{\"ok\":false,\"error\":\"hardware_not_ready\"}");
+  return true;
+}
+
+bool WebConfigurator::isPhysicalWsCommand(const char* type) {
+  // Toute commande qui met un actionneur en mouvement : test de doigt, test de
+  // souffle, angle de servo, solenoide, pompe, ventilateur, note de test, note
+  // jouee, CC expressif, calibration automatique et range finder.
+  static const char* kPhysical[] = {
+    "non", "nof", "cc", "air_live", "angle_live",
+    "test_finger", "test_air", "test_angle", "test_sol", "test_note",
+    "pump_target", "pump_enable", "fan_target", "play", "auto_cal", "auto_stop"
+  };
+  for (const char* t : kPhysical) if (strcmp(type, t) == 0) return true;
+  return false;
+}
+
+/*******************************************************************************
+ * Verrou d'upload MIDI exclusif
+ ******************************************************************************/
+
+bool WebConfigurator::acquireUploadLock(AsyncWebServerRequest* request) {
+  if (_upload.owner != nullptr && _upload.owner != request) return false;
+  _upload.owner = request;
+  _upload.lastActivity = millis();
+  return true;
+}
+
+void WebConfigurator::releaseUploadLock(AsyncWebServerRequest* request) {
+  if (_upload.owner != request) return;
+  if (_upload.file) _upload.file.close();
+  if (_upload.tmpPath.length() > 0 && LittleFS.exists(_upload.tmpPath)) {
+    LittleFS.remove(_upload.tmpPath);
+  }
+  _upload.owner = nullptr;
+  _upload.tmpPath = "";
+  _upload.fileName = "";
+  _upload.size = 0;
+  _upload.error = false;
+  _upload.errorCode = "";
+}
+
+void WebConfigurator::abandonStaleUpload(unsigned long now) {
+  // Transfert interrompu (onglet ferme, Wi-Fi coupe) : le slot serait sinon
+  // bloque pour toujours et le fichier temporaire resterait sur LittleFS.
+  if (_upload.owner == nullptr) return;
+  if ((now - _upload.lastActivity) < UPLOAD_LOCK_TIMEOUT_MS) return;
+  if (DEBUG) Serial.println("DEBUG: WebConfigurator - upload abandonne, slot libere");
+  AsyncWebServerRequest* owner = _upload.owner;
+  releaseUploadLock(owner);
+}
+
+/*******************************************************************************
+ * Execution des operations web - TACHE loop() UNIQUEMENT
+ ******************************************************************************/
+
+void WebConfigurator::executeWebOp(WebOp& op) {
+  switch (op.type) {
+    case WEBOP_COMMIT_CONFIG: {
+      // Commit TRANSACTIONNEL (voir ConfigCommit.h) : valider -> sauvegarder ->
+      // commit atomique. Aucun etat intermediaire n'est jamais visible.
+      if (op.candidate == nullptr) {
+        op.ok = false; op.httpStatus = 500;
+        op.json = "{\"ok\":false,\"error\":\"internal\"}";
+        break;
+      }
+      ConfigCommitResult res =
+          commitCandidateConfig(cfg, *op.candidate, _instrument, &ConfigStorage::saveFrom);
+
+      JsonDocument resp;
+      if (!res.valid) {
+        resp["ok"] = false;
+        resp["msg"] = "Invalid configuration";
+        resp["error"] = res.error;
+        op.httpStatus = 400;
+        op.ok = false;
+      } else if (!res.saved) {
+        // Sauvegarde impossible : ni la configuration active ni les controleurs
+        // n'ont bouge. L'appareil continue sur la configuration persistee.
+        resp["ok"] = false;
+        resp["saved"] = false;
+        resp["applied"] = false;
+        resp["restart_required"] = res.restartRequired;
+        resp["error"] = res.error;
+        op.httpStatus = 500;
+        op.ok = false;
+      } else {
+        resp["ok"] = true;
+        resp["saved"] = true;
+        resp["applied"] = res.applied;
+        resp["restart_required"] = res.restartRequired;
+        resp["corrected"] = res.corrected;
+        JsonArray reinit = resp["reinitialized"].to<JsonArray>();
+        int start = 0;
+        while (start < (int)res.reinitialized.length()) {
+          int comma = res.reinitialized.indexOf(',', start);
+          if (comma < 0) comma = res.reinitialized.length();
+          if (comma > start) reinit.add(res.reinitialized.substring(start, comma));
+          start = comma + 1;
+        }
+        JsonArray warnings = resp["warnings"].to<JsonArray>();
+        if (res.warnings.length() > 0) warnings.add(res.warnings);
+
+        if (res.restartRequired) {
+          // La nouvelle configuration est sauvegardee mais PAS active : elle
+          // demande une re-init hardware. On met les actionneurs en securite et
+          // on programme un reboot controle ; l'ancienne configuration reste
+          // active jusque-la, donc les controleurs restent coherents avec le
+          // hardware reellement initialise.
+          scheduleControlledRestart();
+        } else if (res.activated) {
+          // Configuration validee, sauvegardee ET active : c'est seulement ici
+          // que la revision General-Midi-Boop peut avancer.
+          gmb::runtime::onConfigurationActivated();
+        }
+        resp["restarting"] = restartPending();
+        op.ok = true;
+        op.httpStatus = 200;
+      }
+      serializeJson(resp, op.json);
+      delete op.candidate;
+      op.candidate = nullptr;
+      break;
+    }
+
+    case WEBOP_RESET_CONFIG:
+    case WEBOP_FACTORY_RESET: {
+      // Mettre le hardware en securite PENDANT que `cfg` correspond encore a lui :
+      // allSoundOff() lit cfg.airMode pour choisir quel sous-systeme d'air arreter.
+      if (_instrument) _instrument->allSoundOff();
+      bool ok = (op.type == WEBOP_RESET_CONFIG) ? ConfigStorage::resetToDefaults()
+                                                : ConfigStorage::factoryReset();
+      JsonDocument resp;
+      resp["ok"] = ok;
+      resp["restart_required"] = true;
+      resp["restarting"] = ok;
+      if (!ok) resp["error"] = "storage_failed";
+      serializeJson(resp, op.json);
+      op.ok = ok;
+      op.httpStatus = ok ? 200 : 500;
+      if (ok) scheduleControlledRestart();
+      break;
+    }
+
+    case WEBOP_RESTART: {
+      if (_instrument) _instrument->allSoundOff();
+      op.ok = true;
+      op.json = "{\"ok\":true,\"msg\":\"Restarting\"}";
+      scheduleControlledRestart();
+      break;
+    }
+
+    case WEBOP_FORMAT_FS: {
+      // Action DESTRUCTIVE et volontaire (mode recovery). Jamais automatique.
+      if (_instrument) _instrument->allSoundOff();
+      bool ok = ConfigStorage::formatFilesystem();
+      JsonDocument resp;
+      resp["ok"] = ok;
+      resp["fs_status"] = (int)ConfigStorage::filesystemStatus();
+      if (!ok) resp["error"] = ConfigStorage::filesystemError();
+      resp["restarting"] = ok;
+      serializeJson(resp, op.json);
+      op.ok = ok;
+      op.httpStatus = ok ? 200 : 500;
+      if (ok) scheduleControlledRestart();
+      break;
+    }
+
+    case WEBOP_WIFI_CONNECT: {
+      // Les identifiants sont d'abord persistes de facon transactionnelle, puis
+      // la bascule reseau est demandee. startSTA() effectue le panic + demontage.
+      RuntimeConfig candidate = cfg;
+      strncpy(candidate.wifiSsid, op.strA.c_str(), sizeof(candidate.wifiSsid) - 1);
+      candidate.wifiSsid[sizeof(candidate.wifiSsid) - 1] = '\0';
+      strncpy(candidate.wifiPassword, op.strB.c_str(), sizeof(candidate.wifiPassword) - 1);
+      candidate.wifiPassword[sizeof(candidate.wifiPassword) - 1] = '\0';
+      ConfigCommitResult res =
+          commitCandidateConfig(cfg, candidate, _instrument, &ConfigStorage::saveFrom);
+      JsonDocument resp;
+      resp["ok"] = res.saved;
+      if (!res.saved) resp["error"] = res.valid ? "storage_failed" : res.error;
+      else resp["msg"] = "Connecting...";
+      serializeJson(resp, op.json);
+      op.ok = res.saved;
+      op.httpStatus = res.saved ? 200 : 500;
+      if (res.saved && _wirelessManager) {
+        _wirelessManager->getWifiMidi().connectToNetwork(op.strA.c_str(), op.strB.c_str());
+      }
+      break;
+    }
+
+    case WEBOP_MIDI_DELETE: {
+      String path = String(MIDI_DIR) + "/" + op.strA;
+      JsonDocument resp;
+      if (!LittleFS.exists(path)) {
+        resp["ok"] = false;
+        resp["msg"] = "File not found";
+        op.httpStatus = 404;
+        op.ok = false;
+      } else {
+        // Ne jamais supprimer le fichier en cours de lecture sans arreter le
+        // lecteur : il lirait un descripteur invalide.
+        if (_player && _player->isFileLoaded() && _player->getFileName() == op.strA) {
+          _player->stop();
+        }
+        bool removed = LittleFS.remove(path);
+        resp["ok"] = removed;
+        if (!removed) { resp["msg"] = "Delete failed"; op.httpStatus = 500; }
+        resp["used"] = getMidiStorageUsed();
+        resp["limit"] = (size_t)cfg.midiStorageLimitKb * 1024;
+        op.ok = removed;
+      }
+      serializeJson(resp, op.json);
+      break;
+    }
+
+    case WEBOP_MIDI_FINALIZE: {
+      // ORDRE VOLONTAIRE : on VALIDE d'abord le fichier televerse (taille, quota,
+      // parsing MIDI reel) et on ne remplace le fichier existant qu'ensuite.
+      // L'ancien code renommait le temporaire par-dessus la destination AVANT de
+      // le parser : un fichier valide etait donc detruit par un upload invalide.
+      JsonDocument resp;
+      String destPath = String(MIDI_DIR) + "/" + _upload.fileName;
+      size_t limitBytes = (size_t)cfg.midiStorageLimitKb * 1024;
+
+      // Quota : la taille du fichier remplace ne compte pas deux fois.
+      size_t currentUsed = getMidiStorageUsed();
+      size_t existingSize = 0;
+      if (LittleFS.exists(destPath)) {
+        File ef = LittleFS.open(destPath, "r");
+        if (ef) { existingSize = ef.size(); ef.close(); }
+      }
+      if (currentUsed - existingSize + _upload.size > limitBytes) {
+        resp["ok"] = false;
+        resp["error"] = "storage_full";
+        resp["msg"] = "MIDI storage full";
+        resp["used"] = currentUsed;
+        resp["limit"] = limitBytes;
+        serializeJson(resp, op.json);
+        op.ok = false;
+        op.httpStatus = 400;
+        break;
+      }
+
+      // Validation du CONTENU sur le fichier temporaire, avant tout remplacement.
+      if (!_player || !_player->loadFile(_upload.tmpPath.c_str())) {
+        resp["ok"] = false;
+        resp["error"] = "invalid_midi";
+        resp["msg"] = "Invalid MIDI format";
+        resp["reason"] = _player ? _player->getLoadErrorCode() : "no_player";
+        serializeJson(resp, op.json);
+        op.ok = false;
+        op.httpStatus = 400;
+        break;   // le fichier existant est intact
+      }
+
+      if (!LittleFS.exists(MIDI_DIR)) LittleFS.mkdir(MIDI_DIR);
+
+      // Le contenu est valide : on peut maintenant remplacer la destination.
+      if (LittleFS.exists(destPath)) LittleFS.remove(destPath);
+      bool moved = LittleFS.rename(_upload.tmpPath, destPath);
+      if (!moved) {
+        // Repli : copie manuelle (certaines versions de LittleFS ESP32).
+        File src = LittleFS.open(_upload.tmpPath, "r");
+        File dst = LittleFS.open(destPath, "w");
+        if (src && dst) {
+          uint8_t buf[512];
+          moved = true;
+          while (src.available()) {
+            size_t n = src.read(buf, sizeof(buf));
+            if (dst.write(buf, n) != n) { moved = false; break; }
+          }
+          dst.close();
+          src.close();
+          if (moved) LittleFS.remove(_upload.tmpPath);
+          else LittleFS.remove(destPath);
+        } else {
+          if (src) src.close();
+          if (dst) dst.close();
+        }
+      }
+      if (!moved) {
+        resp["ok"] = false;
+        resp["error"] = "storage_error";
+        resp["msg"] = "MIDI file storage error";
+        serializeJson(resp, op.json);
+        op.ok = false;
+        op.httpStatus = 500;
+        break;
+      }
+
+      // Recharger depuis la destination definitive pour que le lecteur pointe sur
+      // le fichier final (et non sur le temporaire qui vient de disparaitre).
+      bool loaded = _player->loadFile(destPath.c_str());
+      resp["ok"] = loaded;
+      resp["file"] = _upload.fileName;
+      if (loaded) {
+        resp["events"] = _player->getEventCount();
+        resp["duration"] = _player->getDurationMs();
+        resp["channels"] = _player->getActiveChannels();
+      } else {
+        resp["error"] = "invalid_midi";
+        resp["reason"] = _player->getLoadErrorCode();
+      }
+      resp["storage_used"] = getMidiStorageUsed();
+      resp["storage_limit"] = limitBytes;
+      serializeJson(resp, op.json);
+      op.ok = loaded;
+      op.httpStatus = loaded ? 200 : 400;
+
+      if (loaded) {
+        JsonDocument ws;
+        ws["t"] = "midi_loaded";
+        ws["file"] = _upload.fileName;
+        ws["events"] = _player->getEventCount();
+        ws["duration"] = _player->getDurationMs();
+        ws["channels"] = _player->getActiveChannels();
+        String wsMsg;
+        serializeJson(ws, wsMsg);
+        _ws.textAll(wsMsg);
+      }
+      break;
+    }
+
+    case WEBOP_MIDI_LOAD: {
+      String path = String(MIDI_DIR) + "/" + op.strA;
+      JsonDocument resp;
+      if (!LittleFS.exists(path)) {
+        resp["ok"] = false;
+        resp["msg"] = "File not found";
+        op.httpStatus = 404;
+        op.ok = false;
+      } else if (_player && _player->loadFile(path.c_str())) {
+        resp["ok"] = true;
+        resp["events"] = _player->getEventCount();
+        resp["duration"] = _player->getDurationMs();
+        resp["file"] = _player->getFileName();
+        resp["channels"] = _player->getActiveChannels();
+        op.ok = true;
+        JsonDocument ws;
+        ws["t"] = "midi_loaded";
+        ws["file"] = _player->getFileName();
+        ws["events"] = _player->getEventCount();
+        ws["duration"] = _player->getDurationMs();
+        ws["channels"] = _player->getActiveChannels();
+        String wsMsg;
+        serializeJson(ws, wsMsg);
+        _ws.textAll(wsMsg);
+      } else {
+        resp["ok"] = false;
+        resp["msg"] = "MIDI load failed";
+        resp["reason"] = _player ? _player->getLoadErrorCode() : "no_player";
+        op.httpStatus = 400;
+        op.ok = false;
+      }
+      serializeJson(resp, op.json);
+      break;
+    }
+
+    case WEBOP_PLAYER_PLAY:      if (_player) _player->play(); op.ok = true; break;
+    case WEBOP_PLAYER_PAUSE:     if (_player) _player->pause(); op.ok = true; break;
+    case WEBOP_PLAYER_STOP:      if (_player) _player->stop(); op.ok = true; break;
+    case WEBOP_PLAYER_CH_FILTER:
+      if (_player) _player->setChannelFilter(op.intA > 15 ? 255 : (uint8_t)op.intA);
+      op.ok = true;
+      break;
+
+#if MIC_ENABLED
+    case WEBOP_AUTOCAL_START_AIR:
+    case WEBOP_AUTOCAL_START_RANGE: {
+      if (!_autoCal || !_audio || !_audio->isMicDetected()) {
+        op.ok = false; op.json = "{\"t\":\"acal_error\",\"msg\":\"no_microphone\"}";
+        break;
+      }
+      if (_autoCal->isRunning()) {
+        op.ok = false; op.json = "{\"t\":\"acal_error\",\"msg\":\"calibration_busy\"}";
+        break;
+      }
+      // Suspendre la lecture MIDI : sinon le lecteur continuerait a pousser des
+      // notes vers les actionneurs que la calibration s'apprete a posseder.
+      if (_player) _player->pause();
+      cancelActiveActuatorSession();
+      _autoCalOwnerClientId = op.clientId;
+      _micMonitorBeforeCalibration = _micMonitorEnabled;
+      _rfDoneSent = false;
+      _audio->setActive(true);
+      if (_instrument) _instrument->setActuatorSessionActive(true);
+      _autoCal->start(op.type == WEBOP_AUTOCAL_START_AIR ? ACAL_MODE_AIRFLOW : ACAL_MODE_RANGE_FIND);
+      op.ok = true;
+      break;
+    }
+
+    case WEBOP_AUTOCAL_CANCEL:
+      cancelActiveActuatorSession();
+      op.ok = true;
+      break;
+
+    case WEBOP_AUTOCAL_APPLY_RANGE: {
+      if (!_autoCal || !_autoCal->isRangeFinderComplete()) { op.ok = false; break; }
+      bool hadValid = _autoCal->getRangeFinderMin() >= 0 && _autoCal->getRangeFinderMax() >= 0;
+      RangeApplyResult ra = _autoCal->applyRangeResults();
+      JsonDocument resp;
+      resp["t"] = "rf_applied";
+      if (ra.applied && ra.saved) {
+        // Persiste et actif : GMB peut relire les capacites.
+        gmb::runtime::onConfigurationActivated();
+        resp["ok"] = true;
+        resp["min"] = ra.minAngle;
+        resp["max"] = ra.maxAngle;
+        op.ok = true;
+      } else {
+        resp["ok"] = false;
+        resp["error"] = hadValid ? "storage_failed" : "no_valid_range";
+        op.ok = false;
+      }
+      serializeJson(resp, op.json);
+      cancelActiveActuatorSession();
+      break;
+    }
+
+    case WEBOP_MIC_MONITOR:
+      _micMonitorEnabled = (op.intA != 0);
+      if (_audio) _audio->setActive(_micMonitorEnabled || (_autoCal && _autoCal->isRunning()));
+      op.ok = true;
+      break;
+
+    case WEBOP_MIC_RESET: {
+      JsonDocument resp;
+      resp["t"] = "mic_reset";
+      bool ok = _audio ? _audio->resetMicrophone() : false;
+      resp["ok"] = ok;
+      resp["status"] = _audio ? _audio->getMicStatusString() : "not_init";
+      serializeJson(resp, op.json);
+      op.ok = ok;
+      break;
+    }
+#endif
+
+    case WEBOP_SET_ADMIN_PASSWORD: {
+      bool ok = DeviceSecrets::setAdminPassword(op.strA);
+      JsonDocument resp;
+      resp["ok"] = ok;
+      if (!ok) resp["error"] = "password_too_short";
+      serializeJson(resp, op.json);
+      op.ok = ok;
+      op.httpStatus = ok ? 200 : 400;
+      // Les sessions ouvertes sont revoquees : le changement de secret doit
+      // invalider les jetons distribues sous l'ancien.
+      if (ok) {
+        _auth.revokeAll();
+        for (uint8_t i = 0; i < WS_MAX_CLIENTS; i++) _wsAuthClients[i] = 0;
+      }
+      break;
+    }
+
+    case WEBOP_REGEN_AP_PASSWORD: {
+      String pass = DeviceSecrets::regenerateApPassword();
+      JsonDocument resp;
+      resp["ok"] = true;
+      resp["msg"] = "Hotspot key regenerated; printed on the serial console";
+      serializeJson(resp, op.json);
+      Serial.print("WifiMidiHandler - nouvelle cle hotspot: ");
+      Serial.println(pass);
+      op.ok = true;
+      break;
+    }
+
+    default:
+      op.ok = false;
+      op.httpStatus = 400;
+      op.json = "{\"ok\":false,\"error\":\"unknown_operation\"}";
+      break;
+  }
+
+  if (op.json.length() == 0) {
+    op.json = op.ok ? "{\"ok\":true}" : "{\"ok\":false}";
+  }
+}
+
 bool WebConfigurator::beginTestSession(uint32_t clientId) {
   // Ownership cannot be stolen: while a manual test is active and owned by another
   // client, refuse a competing client's test command so two browsers can never
@@ -371,7 +1177,10 @@ bool WebConfigurator::beginTestSession(uint32_t clientId) {
 }
 
 void WebConfigurator::endTestSession(bool safeHardware) {
-  if (safeHardware && _instrument) _instrument->allSoundOff();
+  // Le panic est POSTE : endTestSession() est appelee aussi bien depuis update()
+  // (tache loop()) que depuis un evenement WebSocket (tache AsyncTCP), et seul
+  // loop() a le droit de piloter les actionneurs.
+  if (safeHardware && _instrument) _instrument->requestPanic();
   _testActive = false;
   _testOwnerClientId = 0;
   _testNoteOffTime = 0;   // cancel any pending test-note auto-stop
@@ -380,6 +1189,8 @@ void WebConfigurator::endTestSession(bool safeHardware) {
 void WebConfigurator::scheduleControlledRestart() {
   // Return the hardware to a safe state now; the reboot (in update()) then reloads
   // the persisted config with the matching hardware initialisation.
+  // Appelee uniquement depuis executeWebOp() (tache loop()), donc l'appel direct
+  // a allSoundOff() est legitime et immediat.
   if (_instrument) _instrument->allSoundOff();
   if (_pendingRestartTime == 0) _pendingRestartTime = millis() + CONFIG_RESTART_DELAY_MS;
 }
@@ -434,17 +1245,57 @@ bool WebConfigurator::actuatorCommandBlockedDuringCalibration(AsyncWebSocketClie
 #endif
 
 void WebConfigurator::setupRoutes() {
+  // MODELE D'AUTORISATION
+  // ---------------------
+  // Ouvert (purement informatif, ne modifie rien et ne bouge aucun actionneur) :
+  //   GET /, /api/status, /api/config, /api/diagnostics, /api/wifi/status,
+  //   /gmb/descriptor.json, /api/auth/status, POST /api/auth/login, captive portal.
+  // Protege par jeton de session (X-Auth-Token ou ?token=) :
+  //   toute modification de configuration, reset, redemarrage, formatage,
+  //   gestion des fichiers MIDI, scan/connexion Wi-Fi, changement de mot de passe.
+  // Le WebSocket exige un {"t":"auth","token":"..."} avant toute commande.
+
   // Page principale
   _server.on("/", HTTP_GET, [this](AsyncWebServerRequest* request) {
     handleRoot(request);
   });
 
-  // API Status
+  // --- Authentification ---
+  _server.on("/api/auth/status", HTTP_GET, [this](AsyncWebServerRequest* request) {
+    handleApiAuthStatus(request);
+  });
+  _server.on("/api/auth/login", HTTP_POST,
+    [this](AsyncWebServerRequest* request) { handleApiLogin(request); },
+    NULL,
+    [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+      webAccumulateBody(request, data, len, index, total);
+    }
+  );
+  _server.on("/api/auth/password", HTTP_POST,
+    [this](AsyncWebServerRequest* request) { handleApiAuthPassword(request); },
+    NULL,
+    [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+      webAccumulateBody(request, data, len, index, total);
+    }
+  );
+  // Regeneration volontaire de la cle du hotspot (affichee sur le port serie).
+  _server.on("/api/auth/hotspot", HTTP_POST, [this](AsyncWebServerRequest* request) {
+    if (rejectIfUnauthorized(request)) return;
+    WebOp op;
+    op.type = WEBOP_REGEN_AP_PASSWORD;
+    if (!runOnLoop(op)) {
+      request->send(503, "application/json", "{\"ok\":false,\"error\":\"busy\"}");
+      return;
+    }
+    request->send(op.httpStatus, "application/json", op.json);
+  });
+
+  // API Status (informatif)
   _server.on("/api/status", HTTP_GET, [this](AsyncWebServerRequest* request) {
     handleApiStatus(request);
   });
 
-  // API Config GET
+  // API Config GET (lecture : aucun secret n'y figure)
   _server.on("/api/config", HTTP_GET, [this](AsyncWebServerRequest* request) {
     handleApiConfig(request);
   });
@@ -452,6 +1303,7 @@ void WebConfigurator::setupRoutes() {
   // API Config POST (body handler accumule, request handler traite)
   _server.on("/api/config", HTTP_POST,
     [this](AsyncWebServerRequest* request) {
+      if (rejectIfUnauthorized(request)) return;
       handleApiConfigFinalize(request);
     },
     NULL,
@@ -462,16 +1314,49 @@ void WebConfigurator::setupRoutes() {
 
   // API Config Reset
   _server.on("/api/config/reset", HTTP_POST, [this](AsyncWebServerRequest* request) {
+    if (rejectIfUnauthorized(request)) return;
     handleApiConfigReset(request);
   });
 
   // API Factory Reset (supprime le fichier config pour relancer le wizard)
   _server.on("/api/config/factory", HTTP_POST, [this](AsyncWebServerRequest* request) {
+    if (rejectIfUnauthorized(request)) return;
     handleApiFactoryReset(request);
   });
 
+  // Recovery LittleFS : formatage VOLONTAIRE uniquement. Le boot ne formate
+  // jamais automatiquement (voir ConfigStorage::beginFilesystem). La requete doit
+  // porter {"confirm":"format"} pour eviter tout declenchement accidentel.
+  _server.on("/api/fs/format", HTTP_POST,
+    [this](AsyncWebServerRequest* request) {
+      String body; bool tooLarge;
+      takeRequestBody(request, body, tooLarge);
+      if (rejectIfUnauthorized(request)) return;
+      JsonDocument doc;
+      if (tooLarge || deserializeJson(doc, body) ||
+          String((const char*)(doc["confirm"] | "")) != "format") {
+        request->send(400, "application/json",
+                      "{\"ok\":false,\"error\":\"confirmation_required\","
+                      "\"msg\":\"POST {\\\"confirm\\\":\\\"format\\\"} to erase the filesystem\"}");
+        return;
+      }
+      WebOp op;
+      op.type = WEBOP_FORMAT_FS;
+      if (!runOnLoop(op)) {
+        request->send(503, "application/json", "{\"ok\":false,\"error\":\"busy\"}");
+        return;
+      }
+      request->send(op.httpStatus, "application/json", op.json);
+    },
+    NULL,
+    [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+      webAccumulateBody(request, data, len, index, total);
+    }
+  );
+
   // API WiFi Scan (lance le scan)
   _server.on("/api/wifi/scan", HTTP_GET, [this](AsyncWebServerRequest* request) {
+    if (rejectIfUnauthorized(request)) return;
     if (_wirelessManager) {
       _wirelessManager->getWifiMidi().startWifiScan();
       request->send(200, "application/json", "{\"ok\":true,\"msg\":\"Scan lance\"}");
@@ -482,11 +1367,16 @@ void WebConfigurator::setupRoutes() {
 
   // API WiFi Scan Results
   _server.on("/api/wifi/results", HTTP_GET, [this](AsyncWebServerRequest* request) {
+    if (rejectIfUnauthorized(request)) return;
     if (_wirelessManager) {
       bool done = _wirelessManager->getWifiMidi().isScanComplete();
-      String json = "{\"done\":" + String(done ? "true" : "false");
+      // Les SSID viennent du reseau : la serialisation est faite par ArduinoJson
+      // cote WifiMidiHandler, on n'insere ici qu'un document deja echappe.
+      String json = "{\"done\":";
+      json += done ? "true" : "false";
       if (done) {
-        json += ",\"networks\":" + _wirelessManager->getWifiMidi().getScanResultsJson();
+        json += ",\"networks\":";
+        json += _wirelessManager->getWifiMidi().getScanResultsJson();
       }
       json += "}";
       request->send(200, "application/json", json);
@@ -495,11 +1385,10 @@ void WebConfigurator::setupRoutes() {
     }
   });
 
-  // API WiFi Connect (POST JSON {"ssid":"...","pass":"..."}). The response is sent
-  // once, from the request handler, using the per-request body (the old body
-  // callback both sent the response AND left the request handler to send a second).
+  // API WiFi Connect (POST JSON {"ssid":"...","pass":"..."})
   _server.on("/api/wifi/connect", HTTP_POST,
     [this](AsyncWebServerRequest* request) {
+      if (rejectIfUnauthorized(request)) return;
       handleApiWifiConnect(request);
     },
     NULL,
@@ -508,31 +1397,32 @@ void WebConfigurator::setupRoutes() {
     }
   );
 
-  // API WiFi Status
+  // API WiFi Status (informatif)
   _server.on("/api/wifi/status", HTTP_GET, [this](AsyncWebServerRequest* request) {
-    String json = "{";
+    JsonDocument doc;
     if (_wirelessManager) {
       WifiMidiHandler& wm = _wirelessManager->getWifiMidi();
-      json += "\"state\":" + String(wm.getState());
-      json += ",\"ip\":\"" + wm.getIPAddress() + "\"";
-      json += ",\"ap\":" + String(wm.isAPMode() ? "true" : "false");
-      json += ",\"ssid\":" + jsonStr(cfg.wifiSsid);
-      if (wm.getState() == WIFI_STATE_STA_CONNECTED) {
-        json += ",\"rssi\":" + String(WiFi.RSSI());
-      }
+      doc["state"] = (int)wm.getState();
+      doc["ip"] = wm.getIPAddress();
+      doc["ap"] = wm.isAPMode();
+      doc["ssid"] = cfg.wifiSsid;   // echappe par ArduinoJson
+      if (wm.getState() == WIFI_STATE_STA_CONNECTED) doc["rssi"] = WiFi.RSSI();
     }
-    json += "}";
+    String json;
+    serializeJson(doc, json);
     request->send(200, "application/json", json);
   });
 
   // MIDI file list
   _server.on("/api/midi/list", HTTP_GET, [this](AsyncWebServerRequest* request) {
+    if (rejectIfUnauthorized(request)) return;
     handleMidiList(request);
   });
 
   // MIDI file delete
   _server.on("/api/midi/delete", HTTP_POST,
     [this](AsyncWebServerRequest* request) {
+      if (rejectIfUnauthorized(request)) return;
       handleMidiDelete(request);
     },
     NULL,
@@ -544,6 +1434,7 @@ void WebConfigurator::setupRoutes() {
   // MIDI file load (select for playback)
   _server.on("/api/midi/load", HTTP_POST,
     [this](AsyncWebServerRequest* request) {
+      if (rejectIfUnauthorized(request)) return;
       handleMidiLoad(request);
     },
     NULL,
@@ -560,19 +1451,35 @@ void WebConfigurator::setupRoutes() {
     },
     [this](AsyncWebServerRequest* request, const String& filename,
            size_t index, uint8_t* data, size_t len, bool final) {
+      // L'autorisation est verifiee des le premier fragment : un client non
+      // authentifie n'ecrit jamais le moindre octet sur LittleFS.
+      if (index == 0) {
+        String token = extractToken(request);
+        if (!_auth.validate(token, millis())) {
+          if (acquireUploadLock(request)) {
+            _upload.error = true;
+            _upload.errorCode = "unauthorized";
+          }
+          return;
+        }
+      }
       handleMidiUpload(request, filename, index, data, len, final);
     }
   );
 
-  // Safe restart API
+  // Safe restart API (redemarrage controle par la tache loop()).
   _server.on("/api/restart", HTTP_POST, [this](AsyncWebServerRequest* request) {
-    if (_instrument) { _instrument->allSoundOff(); }
-    request->send(200, "application/json", "{\"ok\":true,\"msg\":\"Restarting\"}");
-    delay(50);
-    ESP.restart();
+    if (rejectIfUnauthorized(request)) return;
+    WebOp op;
+    op.type = WEBOP_RESTART;
+    if (!runOnLoop(op)) {
+      request->send(503, "application/json", "{\"ok\":false,\"error\":\"busy\"}");
+      return;
+    }
+    request->send(op.httpStatus, "application/json", op.json);
   });
 
-  // Hardware diagnostics API
+  // Hardware diagnostics API (passif, jamais de mouvement d'actionneur)
   _server.on("/api/diagnostics", HTTP_GET, [this](AsyncWebServerRequest* request) {
     handleApiDiagnostics(request);
   });
@@ -779,7 +1686,7 @@ void WebConfigurator::handleApiConfig(AsyncWebServerRequest* request) {
   json += ",\"angle_on\":" + String(cfg.angleServoEnabled ? "true" : "false");
   json += ",\"angle_ch\":" + String(cfg.angleServoPcaChannel);
   json += ",\"show_air\":" + String(cfg.showAirSystem ? "true" : "false");
-  json += ",\"res_format\":\"" + String(cfg.resFormat) + "\"";
+  json += ",\"res_format\":" + jsonStr(cfg.resFormat);
   json += ",\"midi_limit\":" + String(cfg.midiStorageLimitKb);
 
 #if MIC_ENABLED
@@ -858,7 +1765,6 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
   }
 
   {
-    RuntimeConfig previousConfig = cfg;
     JsonDocument doc;
     DeserializationError err = deserializeJson(doc, configBody);
 
@@ -867,181 +1773,195 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
       return;
     }
 
+    // TRANSACTION : on part d'une COPIE de la configuration active. Tout le JSON
+    // est applique sur ce candidat, qui est ensuite normalise, valide puis
+    // sauvegarde. La configuration active n'est remplacee qu'en cas de succes
+    // complet, en une seule affectation faite par la tache loop(). Les
+    // controleurs ne peuvent donc jamais observer un etat intermediaire.
+    // NB: le candidat est alloue sur le tas car la pile de la tache AsyncTCP est
+    // trop etroite pour un RuntimeConfig complet (notes + doigts).
+    RuntimeConfig* candidatePtr = new RuntimeConfig(cfg);
+    if (candidatePtr == nullptr) {
+      request->send(500, "application/json", "{\"ok\":false,\"error\":\"out_of_memory\"}");
+      return;
+    }
+    RuntimeConfig& candidate = *candidatePtr;
+
     // --- Instrument modulaire ---
     if (doc.containsKey("num_fingers")) {
       uint8_t nf = doc["num_fingers"];
-      if (nf >= 1 && nf <= MAX_FINGER_SERVOS) cfg.numFingers = nf;
+      if (nf >= 1 && nf <= MAX_FINGER_SERVOS) candidate.numFingers = nf;
     }
-    if (doc.containsKey("air_pca")) cfg.airflowPcaChannel = doc["air_pca"];
-    if (doc.containsKey("angle_open")) cfg.fingerAngleOpen = doc["angle_open"];
-    if (doc.containsKey("half_hole_pct")) cfg.halfHolePercent = doc["half_hole_pct"];
+    if (doc.containsKey("air_pca")) candidate.airflowPcaChannel = doc["air_pca"];
+    if (doc.containsKey("angle_open")) candidate.fingerAngleOpen = doc["angle_open"];
+    if (doc.containsKey("half_hole_pct")) candidate.halfHolePercent = doc["half_hole_pct"];
     if (doc.containsKey("embouchure")) {
-      strncpy(cfg.embouchure, doc["embouchure"] | "trav", sizeof(cfg.embouchure) - 1);
-      cfg.embouchure[sizeof(cfg.embouchure) - 1] = '\0';
+      strncpy(candidate.embouchure, doc["embouchure"] | "trav", sizeof(candidate.embouchure) - 1);
+      candidate.embouchure[sizeof(candidate.embouchure) - 1] = '\0';
     }
 
     // --- Scalaires ---
-    if (doc.containsKey("midi_ch")) cfg.midiChannel = doc["midi_ch"];
-    if (doc.containsKey("smidi_on")) cfg.serialMidiEnabled = doc["smidi_on"].as<bool>();
+    if (doc.containsKey("midi_ch")) candidate.midiChannel = doc["midi_ch"];
+    if (doc.containsKey("smidi_on")) candidate.serialMidiEnabled = doc["smidi_on"].as<bool>();
     if (doc.containsKey("smidi_rx")) {
       uint8_t pin = doc["smidi_rx"];
       // Valider que le GPIO est dans la liste autorisee
       const uint8_t validPins[] = {16,17,18,19,23,25,26,27,33,34,35,36,39};
       for (uint8_t i = 0; i < sizeof(validPins); i++) {
-        if (pin == validPins[i]) { cfg.serialMidiRxPin = pin; break; }
+        if (pin == validPins[i]) { candidate.serialMidiRxPin = pin; break; }
       }
     }
-    if (doc.containsKey("servo_delay")) cfg.servoToSolenoidDelayMs = doc["servo_delay"];
-    if (doc.containsKey("valve_interval")) cfg.minNoteIntervalForValveCloseMs = doc["valve_interval"];
-    if (doc.containsKey("min_note_dur")) cfg.minNoteDurationMs = doc["min_note_dur"];
-    if (doc.containsKey("air_off")) cfg.servoAirflowOff = doc["air_off"];
-    if (doc.containsKey("air_min")) cfg.servoAirflowMin = doc["air_min"];
-    if (doc.containsKey("air_max")) cfg.servoAirflowMax = doc["air_max"];
-    if (doc.containsKey("ang_pca")) cfg.angleServoPcaChannel = doc["ang_pca"];  // legacy migration
-    if (doc.containsKey("ang_off")) cfg.servoAngleOff = doc["ang_off"];
-    if (doc.containsKey("ang_min")) cfg.servoAngleMin = doc["ang_min"];
-    if (doc.containsKey("ang_max")) cfg.servoAngleMax = doc["ang_max"];
-    if (doc.containsKey("vib_freq")) cfg.vibratoFrequencyHz = doc["vib_freq"];
-    if (doc.containsKey("vib_amp")) cfg.vibratoMaxAmplitudeDeg = doc["vib_amp"];
-    if (doc.containsKey("cc_vol")) cfg.ccVolumeDefault = doc["cc_vol"];
-    if (doc.containsKey("cc_expr")) cfg.ccExpressionDefault = doc["cc_expr"];
-    if (doc.containsKey("cc_mod")) cfg.ccModulationDefault = doc["cc_mod"];
-    if (doc.containsKey("cc_breath")) cfg.ccBreathDefault = doc["cc_breath"];
-    if (doc.containsKey("cc_bright")) cfg.ccBrightnessDefault = doc["cc_bright"];
-    if (doc.containsKey("cc2_on")) cfg.cc2Enabled = doc["cc2_on"].as<bool>();
-    if (doc.containsKey("cc2_thr")) cfg.cc2SilenceThreshold = doc["cc2_thr"];
-    if (doc.containsKey("cc2_curve")) cfg.cc2ResponseCurve = doc["cc2_curve"];
-    if (doc.containsKey("cc2_timeout")) cfg.cc2TimeoutMs = doc["cc2_timeout"];
-    if (doc.containsKey("sol_act")) cfg.solenoidPwmActivation = doc["sol_act"];
-    if (doc.containsKey("sol_hold")) cfg.solenoidPwmHolding = doc["sol_hold"];
-    if (doc.containsKey("sol_time")) cfg.solenoidActivationTimeMs = doc["sol_time"];
-    if (doc.containsKey("time_unpower")) cfg.timeUnpower = doc["time_unpower"];
-    if (doc.containsKey("hide_calib")) cfg.hideCalibration = doc["hide_calib"].as<bool>();
-    if (doc.containsKey("hide_air")) cfg.hideAir = doc["hide_air"].as<bool>();
-    if (doc.containsKey("sol_pin")) cfg.solenoidPin = doc["sol_pin"];
-    if (doc.containsKey("kbd_mode")) cfg.kbdMode = doc["kbd_mode"];
+    if (doc.containsKey("servo_delay")) candidate.servoToSolenoidDelayMs = doc["servo_delay"];
+    if (doc.containsKey("valve_interval")) candidate.minNoteIntervalForValveCloseMs = doc["valve_interval"];
+    if (doc.containsKey("min_note_dur")) candidate.minNoteDurationMs = doc["min_note_dur"];
+    if (doc.containsKey("air_off")) candidate.servoAirflowOff = doc["air_off"];
+    if (doc.containsKey("air_min")) candidate.servoAirflowMin = doc["air_min"];
+    if (doc.containsKey("air_max")) candidate.servoAirflowMax = doc["air_max"];
+    if (doc.containsKey("ang_pca")) candidate.angleServoPcaChannel = doc["ang_pca"];  // legacy migration
+    if (doc.containsKey("ang_off")) candidate.servoAngleOff = doc["ang_off"];
+    if (doc.containsKey("ang_min")) candidate.servoAngleMin = doc["ang_min"];
+    if (doc.containsKey("ang_max")) candidate.servoAngleMax = doc["ang_max"];
+    if (doc.containsKey("vib_freq")) candidate.vibratoFrequencyHz = doc["vib_freq"];
+    if (doc.containsKey("vib_amp")) candidate.vibratoMaxAmplitudeDeg = doc["vib_amp"];
+    if (doc.containsKey("cc_vol")) candidate.ccVolumeDefault = doc["cc_vol"];
+    if (doc.containsKey("cc_expr")) candidate.ccExpressionDefault = doc["cc_expr"];
+    if (doc.containsKey("cc_mod")) candidate.ccModulationDefault = doc["cc_mod"];
+    if (doc.containsKey("cc_breath")) candidate.ccBreathDefault = doc["cc_breath"];
+    if (doc.containsKey("cc_bright")) candidate.ccBrightnessDefault = doc["cc_bright"];
+    if (doc.containsKey("cc2_on")) candidate.cc2Enabled = doc["cc2_on"].as<bool>();
+    if (doc.containsKey("cc2_thr")) candidate.cc2SilenceThreshold = doc["cc2_thr"];
+    if (doc.containsKey("cc2_curve")) candidate.cc2ResponseCurve = doc["cc2_curve"];
+    if (doc.containsKey("cc2_timeout")) candidate.cc2TimeoutMs = doc["cc2_timeout"];
+    if (doc.containsKey("sol_act")) candidate.solenoidPwmActivation = doc["sol_act"];
+    if (doc.containsKey("sol_hold")) candidate.solenoidPwmHolding = doc["sol_hold"];
+    if (doc.containsKey("sol_time")) candidate.solenoidActivationTimeMs = doc["sol_time"];
+    if (doc.containsKey("time_unpower")) candidate.timeUnpower = doc["time_unpower"];
+    if (doc.containsKey("hide_calib")) candidate.hideCalibration = doc["hide_calib"].as<bool>();
+    if (doc.containsKey("hide_air")) candidate.hideAir = doc["hide_air"].as<bool>();
+    if (doc.containsKey("sol_pin")) candidate.solenoidPin = doc["sol_pin"];
+    if (doc.containsKey("kbd_mode")) candidate.kbdMode = doc["kbd_mode"];
     if (doc.containsKey("color")) {
-      strncpy(cfg.instrumentColor, doc["color"] | "#D4B044", sizeof(cfg.instrumentColor) - 1);
-      cfg.instrumentColor[sizeof(cfg.instrumentColor) - 1] = '\0';
+      strncpy(candidate.instrumentColor, doc["color"] | "#D4B044", sizeof(candidate.instrumentColor) - 1);
+      candidate.instrumentColor[sizeof(candidate.instrumentColor) - 1] = '\0';
     }
-    if (doc.containsKey("air_atk_mode")) cfg.airAttackMode = doc["air_atk_mode"];
-    if (doc.containsKey("air_atk_off")) cfg.airAttackOffset = doc["air_atk_off"];
-    if (doc.containsKey("air_atk_ms")) cfg.airAttackMs = doc["air_atk_ms"];
-    if (doc.containsKey("air_vel_resp")) cfg.airVelocityResponse = doc["air_vel_resp"];
+    if (doc.containsKey("air_atk_mode")) candidate.airAttackMode = doc["air_atk_mode"];
+    if (doc.containsKey("air_atk_off")) candidate.airAttackOffset = doc["air_atk_off"];
+    if (doc.containsKey("air_atk_ms")) candidate.airAttackMs = doc["air_atk_ms"];
+    if (doc.containsKey("air_vel_resp")) candidate.airVelocityResponse = doc["air_vel_resp"];
 
     // Air delivery system (modulaire)
     if (doc.containsKey("air_mode")) {
       uint8_t am = doc["air_mode"];
       // Retro-compat: ancien mode 6 -> mode 5 + endstop meca
-      if (am == 6) { am = AIR_MODE_PUMP_RESERVOIR; cfg.sensorType = SENSOR_TYPE_ENDSTOP_MECH; }
-      cfg.airMode = am;
+      if (am == 6) { am = AIR_MODE_PUMP_RESERVOIR; candidate.sensorType = SENSOR_TYPE_ENDSTOP_MECH; }
+      candidate.airMode = am;
     }
-    if (doc.containsKey("valve_type")) cfg.valveType = doc["valve_type"];
+    if (doc.containsKey("valve_type")) candidate.valveType = doc["valve_type"];
     // Retro-compat: ancien champ valve_servo
     if (doc.containsKey("valve_servo") && !doc.containsKey("valve_type")) {
-      cfg.valveType = doc["valve_servo"].as<bool>() ? 1 : 0;
+      candidate.valveType = doc["valve_servo"].as<bool>() ? 1 : 0;
     }
-    if (doc.containsKey("valve_ch")) cfg.valveServoPcaChannel = doc["valve_ch"];
-    if (doc.containsKey("angle_on")) cfg.angleServoEnabled = doc["angle_on"].as<bool>();
-    if (doc.containsKey("angle_ch")) cfg.angleServoPcaChannel = doc["angle_ch"];
-    if (doc.containsKey("vlv_close")) cfg.valveServoCloseAngle = doc["vlv_close"];
-    if (doc.containsKey("vlv_open")) cfg.valveServoOpenAngle = doc["vlv_open"];
+    if (doc.containsKey("valve_ch")) candidate.valveServoPcaChannel = doc["valve_ch"];
+    if (doc.containsKey("angle_on")) candidate.angleServoEnabled = doc["angle_on"].as<bool>();
+    if (doc.containsKey("angle_ch")) candidate.angleServoPcaChannel = doc["angle_ch"];
+    if (doc.containsKey("vlv_close")) candidate.valveServoCloseAngle = doc["vlv_close"];
+    if (doc.containsKey("vlv_open")) candidate.valveServoOpenAngle = doc["vlv_open"];
     // vlv_dir is intentionally ignored; close/open angles fully define valve direction.
-    if (!doc.containsKey("valve_interval") && doc.containsKey("sol_inter")) cfg.minNoteIntervalForValveCloseMs = doc["sol_inter"];
-    cfg.solenoidInterNoteMs = cfg.minNoteIntervalForValveCloseMs;
-    if (doc.containsKey("motor_type")) cfg.motorType = doc["motor_type"];
-    if (doc.containsKey("fan_pin")) cfg.fanPin = doc["fan_pin"];
-    if (doc.containsKey("fan_min")) cfg.fanMinPwm = doc["fan_min"];
-    if (doc.containsKey("fan_max")) cfg.fanMaxPwm = doc["fan_max"];
-    if (doc.containsKey("fan_idle_pct")) cfg.fanIdlePercent = doc["fan_idle_pct"];
-    if (doc.containsKey("fan_idle_timeout")) cfg.fanIdleTimeoutMs = doc["fan_idle_timeout"];
-    if (doc.containsKey("fan_default_pct")) cfg.fanDefaultPercent = doc["fan_default_pct"];
-    if (doc.containsKey("fan_note_max_pct")) cfg.fanMaxNotePercent = doc["fan_note_max_pct"];
-    if (doc.containsKey("fan_follow_air")) cfg.fanFollowAirflow = doc["fan_follow_air"].as<bool>();
+    // Compatibilite ascendante : ancienne cle "sol_inter".
+    if (!doc.containsKey("valve_interval") && doc.containsKey("sol_inter")) candidate.minNoteIntervalForValveCloseMs = doc["sol_inter"];
+    if (doc.containsKey("motor_type")) candidate.motorType = doc["motor_type"];
+    if (doc.containsKey("fan_pin")) candidate.fanPin = doc["fan_pin"];
+    if (doc.containsKey("fan_min")) candidate.fanMinPwm = doc["fan_min"];
+    if (doc.containsKey("fan_max")) candidate.fanMaxPwm = doc["fan_max"];
+    if (doc.containsKey("fan_idle_pct")) candidate.fanIdlePercent = doc["fan_idle_pct"];
+    if (doc.containsKey("fan_idle_timeout")) candidate.fanIdleTimeoutMs = doc["fan_idle_timeout"];
+    if (doc.containsKey("fan_default_pct")) candidate.fanDefaultPercent = doc["fan_default_pct"];
+    if (doc.containsKey("fan_note_max_pct")) candidate.fanMaxNotePercent = doc["fan_note_max_pct"];
+    if (doc.containsKey("fan_follow_air")) candidate.fanFollowAirflow = doc["fan_follow_air"].as<bool>();
     if (doc.containsKey("num_pumps")) {
       uint8_t np = doc["num_pumps"];
-      if (np >= 1 && np <= MAX_PUMPS) cfg.numPumps = np;
+      if (np >= 1 && np <= MAX_PUMPS) candidate.numPumps = np;
     }
     if (doc.containsKey("pump_pins")) {
       JsonArray pp = doc["pump_pins"];
-      for (int i = 0; i < MAX_PUMPS && i < (int)pp.size(); i++) cfg.pumpPins[i] = pp[i];
+      for (int i = 0; i < MAX_PUMPS && i < (int)pp.size(); i++) candidate.pumpPins[i] = pp[i];
     }
     if (doc.containsKey("pump_mins")) {
       JsonArray pm = doc["pump_mins"];
-      for (int i = 0; i < MAX_PUMPS && i < (int)pm.size(); i++) cfg.pumpMinPwm[i] = pm[i];
+      for (int i = 0; i < MAX_PUMPS && i < (int)pm.size(); i++) candidate.pumpMinPwm[i] = pm[i];
     }
     if (doc.containsKey("pump_maxs")) {
       JsonArray px = doc["pump_maxs"];
-      for (int i = 0; i < MAX_PUMPS && i < (int)px.size(); i++) cfg.pumpMaxPwm[i] = px[i];
+      for (int i = 0; i < MAX_PUMPS && i < (int)px.size(); i++) candidate.pumpMaxPwm[i] = px[i];
     }
     // Retro-compat: ancien champ pump_pin unique
     if (doc.containsKey("pump_pin") && !doc.containsKey("pump_pins")) {
-      cfg.pumpPins[0] = doc["pump_pin"];
+      candidate.pumpPins[0] = doc["pump_pin"];
     }
     if (doc.containsKey("pump_min") && !doc.containsKey("pump_mins")) {
-      cfg.pumpMinPwm[0] = doc["pump_min"];
+      candidate.pumpMinPwm[0] = doc["pump_min"];
     }
     if (doc.containsKey("pump_max") && !doc.containsKey("pump_maxs")) {
-      cfg.pumpMaxPwm[0] = doc["pump_max"];
+      candidate.pumpMaxPwm[0] = doc["pump_max"];
     }
     if (doc.containsKey("pump_cascade")) {
       uint8_t v = doc["pump_cascade"];
-      cfg.pumpCascadeThreshold = (v <= 100) ? v : 100;
+      candidate.pumpCascadeThreshold = (v <= 100) ? v : 100;
     }
-    if (doc.containsKey("pump_stagger")) cfg.pumpStaggerMs = doc["pump_stagger"];
-    if (doc.containsKey("pump_idle_pct")) cfg.pumpDirectIdlePercent = doc["pump_idle_pct"];
-    if (doc.containsKey("pump_direct_max_pct")) cfg.pumpDirectMaxPercent = doc["pump_direct_max_pct"];
-    if (doc.containsKey("pump_follow_air")) cfg.pumpFollowAirflow = doc["pump_follow_air"].as<bool>();
-    if (doc.containsKey("res_target_pct")) cfg.reservoirTargetPercent = doc["res_target_pct"];
-    if (doc.containsKey("res_autostart")) cfg.reservoirAutoStart = doc["res_autostart"].as<bool>();
+    if (doc.containsKey("pump_stagger")) candidate.pumpStaggerMs = doc["pump_stagger"];
+    if (doc.containsKey("pump_idle_pct")) candidate.pumpDirectIdlePercent = doc["pump_idle_pct"];
+    if (doc.containsKey("pump_direct_max_pct")) candidate.pumpDirectMaxPercent = doc["pump_direct_max_pct"];
+    if (doc.containsKey("pump_follow_air")) candidate.pumpFollowAirflow = doc["pump_follow_air"].as<bool>();
+    if (doc.containsKey("res_target_pct")) candidate.reservoirTargetPercent = doc["res_target_pct"];
+    if (doc.containsKey("res_autostart")) candidate.reservoirAutoStart = doc["res_autostart"].as<bool>();
     if (doc.containsKey("bb_hyst")) {
       uint8_t v = doc["bb_hyst"];
-      cfg.bangbangHysteresis = (v <= 50) ? v : 50;
+      candidate.bangbangHysteresis = (v <= 50) ? v : 50;
     }
-    if (doc.containsKey("sens_type")) cfg.sensorType = doc["sens_type"];
-    if (doc.containsKey("sens_target")) cfg.sensorTargetMm = doc["sens_target"];
-    if (doc.containsKey("sens_min")) cfg.sensorMinMm = doc["sens_min"];
-    if (doc.containsKey("sens_max")) cfg.sensorMaxMm = doc["sens_max"];
-    if (doc.containsKey("pid_kp")) cfg.pidKp = doc["pid_kp"];
-    if (doc.containsKey("pid_ki")) cfg.pidKi = doc["pid_ki"];
-    if (doc.containsKey("endstop_pin")) cfg.endstopPin = doc["endstop_pin"];
-    if (doc.containsKey("endstop_high")) cfg.endstopActiveHigh = doc["endstop_high"].as<bool>();
-    if (doc.containsKey("endstop_pump_on")) cfg.endstopPumpOn = doc["endstop_pump_on"].as<bool>();
-    if (doc.containsKey("hall_pin")) cfg.hallPin = doc["hall_pin"];
-    if (doc.containsKey("hall_low")) cfg.hallThresholdLow = doc["hall_low"];
-    if (doc.containsKey("hall_high")) cfg.hallThresholdHigh = doc["hall_high"];
-    if (doc.containsKey("show_air")) cfg.showAirSystem = doc["show_air"].as<bool>();
+    if (doc.containsKey("sens_type")) candidate.sensorType = doc["sens_type"];
+    if (doc.containsKey("sens_target")) candidate.sensorTargetMm = doc["sens_target"];
+    if (doc.containsKey("sens_min")) candidate.sensorMinMm = doc["sens_min"];
+    if (doc.containsKey("sens_max")) candidate.sensorMaxMm = doc["sens_max"];
+    if (doc.containsKey("pid_kp")) candidate.pidKp = doc["pid_kp"];
+    if (doc.containsKey("pid_ki")) candidate.pidKi = doc["pid_ki"];
+    if (doc.containsKey("endstop_pin")) candidate.endstopPin = doc["endstop_pin"];
+    if (doc.containsKey("endstop_high")) candidate.endstopActiveHigh = doc["endstop_high"].as<bool>();
+    if (doc.containsKey("endstop_pump_on")) candidate.endstopPumpOn = doc["endstop_pump_on"].as<bool>();
+    if (doc.containsKey("hall_pin")) candidate.hallPin = doc["hall_pin"];
+    if (doc.containsKey("hall_low")) candidate.hallThresholdLow = doc["hall_low"];
+    if (doc.containsKey("hall_high")) candidate.hallThresholdHigh = doc["hall_high"];
+    if (doc.containsKey("show_air")) candidate.showAirSystem = doc["show_air"].as<bool>();
     if (doc.containsKey("res_format")) {
       const char* rf = doc["res_format"];
-      if (rf) strlcpy(cfg.resFormat, rf, sizeof(cfg.resFormat));
+      if (rf) strlcpy(candidate.resFormat, rf, sizeof(candidate.resFormat));
     }
     if (doc.containsKey("midi_limit")) {
       uint16_t ml = doc["midi_limit"];
-      if (ml >= 50 && ml <= 2000) cfg.midiStorageLimitKb = ml;
+      if (ml >= 50 && ml <= 2000) candidate.midiStorageLimitKb = ml;
     }
 
     if (doc.containsKey("device")) {
-      strncpy(cfg.deviceName, doc["device"] | cfg.deviceName, sizeof(cfg.deviceName) - 1);
-      cfg.deviceName[sizeof(cfg.deviceName) - 1] = '\0';
+      strncpy(candidate.deviceName, doc["device"] | candidate.deviceName, sizeof(candidate.deviceName) - 1);
+      candidate.deviceName[sizeof(candidate.deviceName) - 1] = '\0';
     }
     if (doc.containsKey("wifi_ssid")) {
-      strncpy(cfg.wifiSsid, doc["wifi_ssid"] | "", sizeof(cfg.wifiSsid) - 1);
-      cfg.wifiSsid[sizeof(cfg.wifiSsid) - 1] = '\0';
+      strncpy(candidate.wifiSsid, doc["wifi_ssid"] | "", sizeof(candidate.wifiSsid) - 1);
+      candidate.wifiSsid[sizeof(candidate.wifiSsid) - 1] = '\0';
     }
     if (doc.containsKey("wifi_pass")) {
-      strncpy(cfg.wifiPassword, doc["wifi_pass"] | "", sizeof(cfg.wifiPassword) - 1);
-      cfg.wifiPassword[sizeof(cfg.wifiPassword) - 1] = '\0';
+      strncpy(candidate.wifiPassword, doc["wifi_pass"] | "", sizeof(candidate.wifiPassword) - 1);
+      candidate.wifiPassword[sizeof(candidate.wifiPassword) - 1] = '\0';
     }
 
     // --- Doigts (partiel) ---
     if (doc.containsKey("fingers")) {
       JsonArray fingers = doc["fingers"];
-      for (int i = 0; i < cfg.numFingers && i < (int)fingers.size(); i++) {
-        if (fingers[i].containsKey("ch")) cfg.fingers[i].pcaChannel = fingers[i]["ch"];
-        if (fingers[i].containsKey("a")) cfg.fingers[i].closedAngle = fingers[i]["a"];
-        if (fingers[i].containsKey("d")) cfg.fingers[i].direction = fingers[i]["d"];
-        if (fingers[i].containsKey("th")) cfg.fingers[i].isThumbHole = (fingers[i]["th"].as<int>() != 0);
-        if (fingers[i].containsKey("hp")) cfg.fingers[i].halfPercent = constrain(fingers[i]["hp"].as<int>(), 0, 100);
+      for (int i = 0; i < candidate.numFingers && i < (int)fingers.size(); i++) {
+        if (fingers[i].containsKey("ch")) candidate.fingers[i].pcaChannel = fingers[i]["ch"];
+        if (fingers[i].containsKey("a")) candidate.fingers[i].closedAngle = fingers[i]["a"];
+        if (fingers[i].containsKey("d")) candidate.fingers[i].direction = fingers[i]["d"];
+        if (fingers[i].containsKey("th")) candidate.fingers[i].isThumbHole = (fingers[i]["th"].as<int>() != 0);
+        if (fingers[i].containsKey("hp")) candidate.fingers[i].halfPercent = constrain(fingers[i]["hp"].as<int>(), 0, 100);
       }
     }
 
@@ -1049,25 +1969,25 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
     if (doc.containsKey("notes")) {
       JsonArray notes = doc["notes"];
       int count = min((int)notes.size(), (int)MAX_NOTES);
-      cfg.numNotes = count;
+      candidate.numNotes = count;
       for (int i = 0; i < count; i++) {
         JsonObject n = notes[i];
-        cfg.notes[i].midiNote = n["midi"] | cfg.notes[i].midiNote;
-        cfg.notes[i].airflowMinPercent = n["amn"] | cfg.notes[i].airflowMinPercent;
-        cfg.notes[i].airflowMaxPercent = n["amx"] | cfg.notes[i].airflowMaxPercent;
+        candidate.notes[i].midiNote = n["midi"] | candidate.notes[i].midiNote;
+        candidate.notes[i].airflowMinPercent = n["amn"] | candidate.notes[i].airflowMinPercent;
+        candidate.notes[i].airflowMaxPercent = n["amx"] | candidate.notes[i].airflowMaxPercent;
         // Nominal: use the provided value, else derive it from min/max so older
         // clients (and stale values) never violate min <= nominal <= max.
         if (n.containsKey("anm")) {
-          cfg.notes[i].airflowNominalPercent = n["anm"];
+          candidate.notes[i].airflowNominalPercent = n["anm"];
         } else {
-          uint8_t mn = cfg.notes[i].airflowMinPercent, mx = cfg.notes[i].airflowMaxPercent;
-          cfg.notes[i].airflowNominalPercent = (mx >= mn) ? (uint8_t)(mn + (2 * (mx - mn)) / 5) : mn;
+          uint8_t mn = candidate.notes[i].airflowMinPercent, mx = candidate.notes[i].airflowMaxPercent;
+          candidate.notes[i].airflowNominalPercent = (mx >= mn) ? (uint8_t)(mn + (2 * (mx - mn)) / 5) : mn;
         }
-        cfg.notes[i].anglePercent = n["ang"] | cfg.notes[i].anglePercent;
+        candidate.notes[i].anglePercent = n["ang"] | candidate.notes[i].anglePercent;
         if (n.containsKey("fp")) {
           JsonArray fp = n["fp"];
           for (int f = 0; f < MAX_FINGER_SERVOS; f++) {
-            cfg.notes[i].fingerPattern[f] = (f < (int)fp.size()) ? (uint8_t)fp[f].as<int>() : 0;
+            candidate.notes[i].fingerPattern[f] = (f < (int)fp.size()) ? (uint8_t)fp[f].as<int>() : 0;
           }
         }
       }
@@ -1076,121 +1996,55 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
     // --- Notes airflow only (backward compat / step 3 save) ---
     if (doc.containsKey("notes_air")) {
       JsonArray notes = doc["notes_air"];
-      for (int i = 0; i < cfg.numNotes && i < (int)notes.size(); i++) {
-        if (notes[i].containsKey("amn")) cfg.notes[i].airflowMinPercent = notes[i]["amn"];
-        if (notes[i].containsKey("amx")) cfg.notes[i].airflowMaxPercent = notes[i]["amx"];
+      for (int i = 0; i < candidate.numNotes && i < (int)notes.size(); i++) {
+        if (notes[i].containsKey("amn")) candidate.notes[i].airflowMinPercent = notes[i]["amn"];
+        if (notes[i].containsKey("amx")) candidate.notes[i].airflowMaxPercent = notes[i]["amx"];
         if (notes[i].containsKey("anm")) {
-          cfg.notes[i].airflowNominalPercent = notes[i]["anm"];
+          candidate.notes[i].airflowNominalPercent = notes[i]["anm"];
         } else if (notes[i].containsKey("amn") || notes[i].containsKey("amx")) {
           // Recompute nominal when the range changed but no explicit nominal was sent.
-          uint8_t mn = cfg.notes[i].airflowMinPercent, mx = cfg.notes[i].airflowMaxPercent;
-          cfg.notes[i].airflowNominalPercent = (mx >= mn) ? (uint8_t)(mn + (2 * (mx - mn)) / 5) : mn;
+          uint8_t mn = candidate.notes[i].airflowMinPercent, mx = candidate.notes[i].airflowMaxPercent;
+          candidate.notes[i].airflowNominalPercent = (mx >= mn) ? (uint8_t)(mn + (2 * (mx - mn)) / 5) : mn;
         }
-        if (notes[i].containsKey("ang")) cfg.notes[i].anglePercent = notes[i]["ang"];
+        if (notes[i].containsKey("ang")) candidate.notes[i].anglePercent = notes[i]["ang"];
       }
     }
 
     // --- Notes angle only (step 3 partial save, trav) ---
     if (doc.containsKey("notes_ang")) {
       JsonArray notes = doc["notes_ang"];
-      for (int i = 0; i < cfg.numNotes && i < (int)notes.size(); i++) {
-        if (notes[i].containsKey("ang")) cfg.notes[i].anglePercent = notes[i]["ang"];
+      for (int i = 0; i < candidate.numNotes && i < (int)notes.size(); i++) {
+        if (notes[i].containsKey("ang")) candidate.notes[i].anglePercent = notes[i]["ang"];
       }
     }
 
-    ConfigValidationResult validation = validateAndNormalizeConfig(cfg, &previousConfig);
-    if (!validation.valid) {
-      cfg = previousConfig;
-      JsonDocument errDoc;
-      errDoc["ok"] = false;
-      errDoc["msg"] = "Invalid configuration";
-      errDoc["error"] = validation.error;
-      String errJson;
-      serializeJson(errDoc, errJson);
-      request->send(400, "application/json", errJson);
+    // Le commit (validation -> sauvegarde -> activation atomique) s'execute sur la
+    // tache loop(), proprietaire de `cfg` et des controleurs. Rien n'est ecrit ici.
+    WebOp op;
+    op.type = WEBOP_COMMIT_CONFIG;
+    op.candidate = candidatePtr;
+    bool done = runOnLoop(op);
+    // runOnLoop() transfere la propriete du candidat a la tache loop() des qu'elle
+    // arme l'operation (et remet op.candidate a nullptr). S'il n'a jamais pu
+    // l'armer, le candidat revient a l'appelant et doit etre libere ici.
+    if (op.candidate) { delete op.candidate; op.candidate = nullptr; }
+    if (!done) {
+      request->send(503, "application/json", "{\"ok\":false,\"error\":\"busy\"}");
       return;
     }
 
-    ConfigApplyResult applyResult{false, validation.restartRequired, "", ""};
-    if (_instrument) {
-      applyResult = _instrument->applyRuntimeConfig(previousConfig, cfg);
-    } else {
-      applyResult.applied = !validation.restartRequired;
-    }
-
-    // Persist the NEW configuration to LittleFS (it loads on the next boot).
-    bool saved = ConfigStorage::save();
-
-    // Restart-required changes (air mode, pump/fan/PCA/servo channels, pin
-    // assignments, sensor type, MIDI UART, counts) need a hardware re-init that
-    // only a reboot performs. The controllers read the global cfg live, so keeping
-    // the mutated cfg active would let a changed air mode / pin / channel start
-    // influencing behaviour before the matching hardware is reinitialised. Revert
-    // the ACTIVE config to the previous one: the device keeps running on the
-    // hardware-matching config until the user restarts, at which point the saved
-    // new config takes effect. applyRuntimeConfig() applied nothing for these
-    // changes (it returns early), so nothing dynamic is lost by reverting.
-    bool restartRequired = validation.restartRequired || applyResult.restartRequired;
-    if (restartRequired) {
-      cfg = previousConfig;
-      applyResult.applied = false;
-      // A hardware re-init is needed and only a reboot performs it. Perform a
-      // controlled restart so the persisted new config takes effect cleanly, and so
-      // a subsequent save cannot re-serialise the reverted (old) active cfg over the
-      // pending new config on disk. Only when the save actually succeeded.
-      if (saved) scheduleControlledRestart();
-    } else if (!saved) {
-      // §14: persisting a non-restart change failed (e.g. LittleFS error). Roll back
-      // the live config AND the controllers (applyRuntimeConfig re-applies the values
-      // it is given) so the device keeps running exactly on the previously persisted
-      // configuration instead of an applied-but-unsaved one.
-      RuntimeConfig failedConfig = cfg;
-      cfg = previousConfig;
-      if (_instrument) _instrument->applyRuntimeConfig(failedConfig, previousConfig);
-      applyResult.applied = false;
-    }
-
-    // General-Midi-Boop: the new configuration is validated, committed (saved) and
-    // ACTIVE. Only now may the capability revision move, the descriptor be rebuilt
-    // and block 0x11 be emitted - never for an intermediate web UI draft.
-    // A restart-required change is deliberately NOT reported here: it was reverted
-    // above and is not active. The reboot re-runs gmb::runtime::begin(), which sees
-    // the changed capability signature and advances the revision then.
-    if (saved && !restartRequired) {
-      gmb::runtime::onConfigurationActivated();
-    }
-
     if (DEBUG) {
-      Serial.println("DEBUG: WebConfigurator - Config mise a jour via web");
+      Serial.println("DEBUG: WebConfigurator - Config commit demande via web");
     }
 
-    JsonDocument respDoc;
-    respDoc["ok"] = saved;
-    respDoc["saved"] = saved;
-    respDoc["applied"] = applyResult.applied;
-    respDoc["restart_required"] = restartRequired;
-    respDoc["restarting"] = restartPending();   // device will reboot automatically
-    respDoc["corrected"] = validation.corrected;
-    JsonArray reinitialized = respDoc["reinitialized"].to<JsonArray>();
-    int start = 0;
-    while (start < (int)applyResult.reinitialized.length()) {
-      int comma = applyResult.reinitialized.indexOf(',', start);
-      if (comma < 0) comma = applyResult.reinitialized.length();
-      if (comma > start) reinitialized.add(applyResult.reinitialized.substring(start, comma));
-      start = comma + 1;
-    }
-    JsonArray warnings = respDoc["warnings"].to<JsonArray>();
-    if (validation.warnings.length() > 0) warnings.add(validation.warnings);
-    if (applyResult.warnings.length() > 0) warnings.add(applyResult.warnings);
-    String resp;
-    serializeJson(respDoc, resp);
-    request->send(saved ? 200 : 500, "application/json", resp);
+    request->send(op.httpStatus, "application/json", op.json);
   }
 }
 
 void WebConfigurator::handleApiWifiConnect(AsyncWebServerRequest* request) {
-  // Single response path (the old body callback sent a response AND left the
-  // request handler to send a second), reading this request's own body.
+  // Single response path, reading this request's own body. Les identifiants sont
+  // persistes de facon transactionnelle PUIS la bascule reseau est demandee, le
+  // tout sur la tache loop() (voir WEBOP_WIFI_CONNECT).
   String body; bool tooLarge;
   takeRequestBody(request, body, tooLarge);
   if (tooLarge) {
@@ -1203,7 +2057,7 @@ void WebConfigurator::handleApiWifiConnect(AsyncWebServerRequest* request) {
   }
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, body);
-  if (err || !doc.containsKey("ssid")) {
+  if (err || !doc["ssid"].is<const char*>()) {
     request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Invalid JSON\"}");
     return;
   }
@@ -1211,15 +2065,24 @@ void WebConfigurator::handleApiWifiConnect(AsyncWebServerRequest* request) {
     request->send(500, "application/json", "{\"ok\":false}");
     return;
   }
-  const char* ssid = doc["ssid"];
-  const char* pass = doc["pass"] | "";
-  request->send(200, "application/json", "{\"ok\":true,\"msg\":\"Connecting...\"}");
-  _wirelessManager->getWifiMidi().connectToNetwork(ssid, pass);
+  WebOp op;
+  op.type = WEBOP_WIFI_CONNECT;
+  op.strA = String((const char*)(doc["ssid"] | ""));
+  op.strB = String((const char*)(doc["pass"] | ""));
+  if (!runOnLoop(op)) {
+    request->send(503, "application/json", "{\"ok\":false,\"error\":\"busy\"}");
+    return;
+  }
+  request->send(op.httpStatus, "application/json", op.json);
 }
 
 void WebConfigurator::handleApiDiagnostics(AsyncWebServerRequest* request) {
+  // Diagnostic PUREMENT PASSIF : aucune commande ci-dessous ne fait bouger un
+  // actionneur. Un test actif se demande explicitement par les commandes
+  // WebSocket de test, qui sont soumises a la protection hardware_not_ready.
   RuntimeConfig tmp = cfg;
   ConfigValidationResult validation = validateAndNormalizeConfig(tmp, &cfg);
+
   JsonDocument doc;
   JsonArray checks = doc["checks"].to<JsonArray>();
   auto addCheck = [&checks](const char* id, const char* status, const String& message) {
@@ -1229,6 +2092,52 @@ void WebConfigurator::handleApiDiagnostics(AsyncWebServerRequest* request) {
     c["message"] = message;
   };
 
+  // --- Etat hardware REEL (plus de "probe requires device") -------------------
+  const bool ready = hardwareReady();
+  doc["hardware_ready"] = ready;
+  if (_instrument) {
+    const bool probed = _instrument->hardwareProbeDone();
+    doc["pca0_detected"] = probed ? _instrument->isPca0Detected() : false;
+    doc["pca1_detected"] = probed ? _instrument->isPca1Detected() : false;
+    doc["pca1_required"] = _instrument->isSecondBoardRequired();
+    doc["hardware_status"] = (int)_instrument->hardwareInitStatus();
+    doc["actuator_session_active"] = _instrument->isActuatorSessionActive();
+    doc["dropped_commands"] = _instrument->droppedCommandCount();
+
+    if (!probed) {
+      addCheck("pca0", "warning", "Hardware probe not run yet");
+      addCheck("pca1", "warning", "Hardware probe not run yet");
+    } else {
+      addCheck("pca0", _instrument->isPca0Detected() ? "ok" : "error",
+               _instrument->isPca0Detected() ? "PCA9685 detected at 0x40"
+                                             : "PCA9685 NOT detected at 0x40");
+      if (_instrument->isSecondBoardRequired()) {
+        addCheck("pca1", _instrument->isPca1Detected() ? "ok" : "error",
+                 _instrument->isPca1Detected()
+                     ? "Second PCA9685 detected at 0x41"
+                     : "Second PCA9685 required by configured channels but NOT detected at 0x41");
+      } else {
+        addCheck("pca1", "ok",
+                 _instrument->isPca1Detected() ? "Second PCA9685 present but not required"
+                                               : "Second PCA9685 not required");
+      }
+    }
+    addCheck("hardware", ready ? "ok" : "error",
+             ready ? "Actuators initialised and enabled"
+                   : "Actuators disabled: hardware_not_ready");
+  } else {
+    doc["pca0_detected"] = false;
+    doc["pca1_detected"] = false;
+    doc["pca1_required"] = false;
+    doc["hardware_status"] = -1;
+    doc["actuator_session_active"] = false;
+    doc["dropped_commands"] = 0;
+    addCheck("pca0", "error", "Instrument not initialised (boot configuration or filesystem unsafe)");
+    addCheck("pca1", "error", "Instrument not initialised");
+    addCheck("hardware", "error", "Actuators disabled: hardware_not_ready");
+  }
+
+  // --- Configuration ---------------------------------------------------------
   String loadMsg;
   switch (ConfigStorage::lastLoadStatus()) {
     case CONFIG_DEFAULTS: loadMsg = "defaults active"; break;
@@ -1236,24 +2145,121 @@ void WebConfigurator::handleApiDiagnostics(AsyncWebServerRequest* request) {
     case CONFIG_INVALID_FALLBACK: loadMsg = "invalid /config.json, safe defaults active: " + ConfigStorage::lastLoadError(); break;
     case CONFIG_STORAGE_ERROR: loadMsg = "storage/JSON error, safe defaults active: " + ConfigStorage::lastLoadError(); break;
   }
-  addCheck("config", validation.valid ? "ok" : "error", validation.valid ? "Runtime configuration is valid" : validation.error);
-  addCheck("boot_config", (ConfigStorage::lastLoadStatus() == CONFIG_INVALID_FALLBACK || ConfigStorage::lastLoadStatus() == CONFIG_STORAGE_ERROR) ? "error" : "ok", loadMsg);
-  addCheck("littlefs", LittleFS.totalBytes() > 0 ? "ok" : "error", String(LittleFS.usedBytes()) + "/" + String(LittleFS.totalBytes()) + " bytes used");
-  addCheck("config_file", LittleFS.exists(CONFIG_FILE_PATH) ? "ok" : "warning", LittleFS.exists(CONFIG_FILE_PATH) ? "Configuration file is present" : "Using defaults; /config.json is absent");
-  addCheck("pca0", "warning", "Runtime probe requires hardware; expected address 0x40");
-  bool needPca1 = cfg.airflowPcaChannel >= 16 || cfg.valveServoPcaChannel >= 16 || cfg.angleServoPcaChannel >= 16;
-  for (uint8_t i = 0; i < cfg.numFingers; i++) if (cfg.fingers[i].pcaChannel >= 16) needPca1 = true;
-  addCheck("pca1", needPca1 ? "warning" : "ok", needPca1 ? "Second PCA9685 is required by configured channels; hardware probe requires device" : "Second PCA9685 not required");
-#if MIC_ENABLED
-  addCheck("microphone", (_audio && _audio->isMicDetected()) ? "ok" : "warning", (_audio && _audio->isMicDetected()) ? "Microphone detected" : "Microphone not detected or not initialized");
-#else
-  addCheck("microphone", "warning", "Microphone support disabled at compile time");
-#endif
-  addCheck("restart", "ok", "Restart-required state is reported by POST /api/config responses");
-  addCheck("heap", "ok", String(ESP.getFreeHeap()) + " bytes free heap");
-  doc["ok"] = validation.valid && ConfigStorage::lastLoadStatus() != CONFIG_INVALID_FALLBACK && ConfigStorage::lastLoadStatus() != CONFIG_STORAGE_ERROR;
+  addCheck("config", validation.valid ? "ok" : "error",
+           validation.valid ? "Runtime configuration is valid" : validation.error);
+  bool bootConfigBad = ConfigStorage::lastLoadStatus() == CONFIG_INVALID_FALLBACK ||
+                       ConfigStorage::lastLoadStatus() == CONFIG_STORAGE_ERROR;
+  addCheck("boot_config", bootConfigBad ? "error" : "ok", loadMsg);
   doc["config_load_status"] = (int)ConfigStorage::lastLoadStatus();
   doc["config_load_error"] = ConfigStorage::lastLoadError();
+
+  // --- Systeme de fichiers ---------------------------------------------------
+  FilesystemStatus fsStatus = ConfigStorage::filesystemStatus();
+  bool fsOk = ConfigStorage::isFilesystemMounted();
+  doc["fs_status"] = (int)fsStatus;
+  doc["fs_mounted"] = fsOk;
+  doc["fs_error"] = ConfigStorage::filesystemError();
+  if (fsOk) {
+    addCheck("littlefs", "ok",
+             String(LittleFS.usedBytes()) + "/" + String(LittleFS.totalBytes()) + " bytes used");
+    doc["fs_used"] = (uint32_t)LittleFS.usedBytes();
+    doc["fs_total"] = (uint32_t)LittleFS.totalBytes();
+    addCheck("config_file", LittleFS.exists(CONFIG_FILE_PATH) ? "ok" : "warning",
+             LittleFS.exists(CONFIG_FILE_PATH) ? "Configuration file is present"
+                                               : "Using defaults; /config.json is absent");
+  } else {
+    // Fail-safe : on NE formate PAS automatiquement. Le mode recovery attend une
+    // action volontaire (POST /api/fs/format), donc l'etat est signale tel quel.
+    addCheck("littlefs", "error",
+             "LittleFS not mounted - recovery mode, actuators disabled, no automatic format");
+    doc["fs_used"] = 0;
+    doc["fs_total"] = 0;
+    addCheck("config_file", "error", "Filesystem unavailable");
+  }
+
+  // --- Microphone ------------------------------------------------------------
+#if MIC_ENABLED
+  bool micOk = (_audio && _audio->isMicDetected());
+  doc["microphone_detected"] = micOk;
+  doc["microphone_status"] = _audio ? _audio->getMicStatusString() : "not_init";
+  addCheck("microphone", micOk ? "ok" : "warning",
+           micOk ? "Microphone detected" : "Microphone not detected or not initialized");
+  doc["calibration_active"] = isCalibrationActive();
+#else
+  doc["microphone_detected"] = false;
+  doc["microphone_status"] = "disabled";
+  addCheck("microphone", "warning", "Microphone support disabled at compile time");
+  doc["calibration_active"] = false;
+#endif
+
+  // --- Capteur de reservoir (etats distincts) --------------------------------
+  {
+    JsonObject sensor = doc["sensor"].to<JsonObject>();
+    sensor["type"] = cfg.sensorType;
+    sensor["used"] = configurationUsesReservoirSensor(cfg);
+    if (_instrument && configurationUsesReservoirSensor(cfg)) {
+      PressureController& pc = _instrument->getPressureCtrl();
+      sensor["tof"] = pc.usesTofSensor();
+      sensor["present_on_bus"] = pc.usesTofSensor() ? pc.isSensorPresentOnBus() : true;
+      sensor["initialized"] = pc.usesTofSensor() ? pc.isSensorInitialized() : pc.isSensorDetected();
+      sensor["usable"] = pc.isSensorDetected();
+      sensor["measurement_valid"] = pc.isMeasurementValid();
+      sensor["measurement_stale"] = pc.isMeasurementStale();
+      sensor["state"] = pc.sensorStateName();
+      sensor["distance_mm"] = pc.getDistanceMm();
+      const char* status = pc.isSensorDetected()
+                               ? (pc.isMeasurementStale() ? "warning" : "ok")
+                               : "error";
+      addCheck("sensor", status, String("Reservoir sensor: ") + pc.sensorStateName());
+    } else {
+      sensor["tof"] = false;
+      sensor["present_on_bus"] = false;
+      sensor["initialized"] = false;
+      sensor["usable"] = false;
+      sensor["measurement_valid"] = false;
+      sensor["measurement_stale"] = false;
+      sensor["state"] = "not_used";
+      addCheck("sensor", "ok", "Reservoir sensor not used by the selected air mode");
+    }
+  }
+
+  // --- Transports MIDI -------------------------------------------------------
+  {
+    JsonObject midi = doc["midi"].to<JsonObject>();
+    bool wifiMode = _wirelessManager && _wirelessManager->getMode() != MODE_BLUETOOTH;
+    midi["mode"] = wifiMode ? "wifi" : "ble";
+    midi["ble"] = !wifiMode;
+    midi["rtpmidi"] = wifiMode;
+    midi["din"] = cfg.serialMidiEnabled;
+    midi["connected"] = _wirelessManager ? _wirelessManager->isMidiConnected() : false;
+    if (_wirelessManager) midi["status"] = _wirelessManager->getStatusText();
+    addCheck("midi_transports", "ok",
+             String("Active transport: ") + (wifiMode ? "rtpMIDI + web" : "BLE-MIDI") +
+                 (cfg.serialMidiEnabled ? ", MIDI DIN in" : ""));
+  }
+
+  // --- General-Midi-Boop -----------------------------------------------------
+  {
+    JsonObject g = doc["gmb"].to<JsonObject>();
+    g["revision"] = gmb::runtime::revision();
+    g["configured"] = gmb::runtime::isConfigured();
+    g["descriptor_size"] = gmb::runtime::service().descriptorSize();
+  }
+
+  // --- Divers ----------------------------------------------------------------
+  doc["heap"] = ESP.getFreeHeap();
+  doc["heap_min"] = ESP.getMinFreeHeap();
+  doc["uptime"] = millis() / 1000;
+  doc["restart_pending"] = restartPending();
+  doc["upload_active"] = (_upload.owner != nullptr);
+  doc["web_sessions"] = _auth.activeSessions(millis());
+  addCheck("heap", ESP.getFreeHeap() > 20000 ? "ok" : "warning",
+           String(ESP.getFreeHeap()) + " bytes free heap");
+  addCheck("restart", restartPending() ? "warning" : "ok",
+           restartPending() ? "Controlled restart pending" : "No restart pending");
+
+  doc["ok"] = validation.valid && !bootConfigBad && fsOk && ready;
+
   String out;
   serializeJson(doc, out);
   request->send(200, "application/json", out);
@@ -1272,20 +2278,16 @@ void WebConfigurator::handleApiConfigReset(AsyncWebServerRequest* request) {
     request->send(409, "application/json", "{\"ok\":false,\"error\":\"restart_pending\"}");
     return;
   }
-  // Safe the hardware while cfg still matches it: resetToDefaults() rewrites cfg to
-  // the defaults, and allSoundOff() reads cfg.airMode to pick which air subsystem to
-  // stop, so it must run before the config is replaced.
-  if (_instrument) _instrument->allSoundOff();
-  bool ok = ConfigStorage::resetToDefaults();
-
+  WebOp op;
+  op.type = WEBOP_RESET_CONFIG;
+  if (!runOnLoop(op)) {
+    request->send(503, "application/json", "{\"ok\":false,\"error\":\"busy\"}");
+    return;
+  }
   if (DEBUG) {
     Serial.println("DEBUG: WebConfigurator - Config reset aux defauts");
   }
-
-  request->send(ok ? 200 : 500, "application/json",
-                String("{\"ok\":") + (ok ? "true" : "false") +
-                    ",\"restart_required\":true,\"restarting\":true}");
-  if (ok) scheduleControlledRestart();
+  request->send(op.httpStatus, "application/json", op.json);
 }
 
 void WebConfigurator::handleApiFactoryReset(AsyncWebServerRequest* request) {
@@ -1296,18 +2298,16 @@ void WebConfigurator::handleApiFactoryReset(AsyncWebServerRequest* request) {
     request->send(409, "application/json", "{\"ok\":false,\"error\":\"restart_pending\"}");
     return;
   }
-  // Safe the hardware before the config is wiped (see handleApiConfigReset).
-  if (_instrument) _instrument->allSoundOff();
-  bool ok = ConfigStorage::factoryReset();
-
+  WebOp op;
+  op.type = WEBOP_FACTORY_RESET;
+  if (!runOnLoop(op)) {
+    request->send(503, "application/json", "{\"ok\":false,\"error\":\"busy\"}");
+    return;
+  }
   if (DEBUG) {
     Serial.println("DEBUG: WebConfigurator - Reset usine");
   }
-
-  request->send(ok ? 200 : 500, "application/json",
-                String("{\"ok\":") + (ok ? "true" : "false") +
-                    ",\"restart_required\":true,\"restarting\":true}");
-  if (ok) scheduleControlledRestart();
+  request->send(op.httpStatus, "application/json", op.json);
 }
 
 void WebConfigurator::handleMidiUpload(AsyncWebServerRequest* request, const String& filename,
@@ -1317,158 +2317,135 @@ void WebConfigurator::handleMidiUpload(AsyncWebServerRequest* request, const Str
       Serial.print("DEBUG: WebConfigurator - Upload MIDI: ");
       Serial.println(filename);
     }
-    _uploadSize = 0;
-    _uploadError = false;
-    // Stocker le nom original (nettoye, sans chemin)
-    _uploadFileName = filename;
-    int ls = _uploadFileName.lastIndexOf('/');
-    if (ls >= 0) _uploadFileName = _uploadFileName.substring(ls + 1);
-    int bs = _uploadFileName.lastIndexOf('\\');
-    if (bs >= 0) _uploadFileName = _uploadFileName.substring(bs + 1);
-    // Ecrire d'abord dans un fichier temp pour validation
-    _uploadFile = LittleFS.open(MIDI_FILE_PATH, "w");
-    if (!_uploadFile) {
-      if (DEBUG) {
-        Serial.println("ERREUR: WebConfigurator - Unable to create temp file");
-      }
-      _uploadError = true;
+    // Verrou EXCLUSIF : les anciens membres partages (_uploadFile, _uploadSize,
+    // _uploadFileName, _uploadError) etaient uniques pour tout le serveur, donc
+    // deux clients simultanes ecrivaient dans le MEME descripteur, melangeaient
+    // leurs octets et se volaient le nom de destination. Le slot d'upload
+    // appartient desormais a UNE requete a la fois ; un second client est refuse
+    // proprement (409 upload_busy) et ne touche jamais au transfert en cours.
+    if (!acquireUploadLock(request)) {
+      // Pas de slot : on ne touche a rien, handleMidiUploadComplete() repondra.
+      return;
+    }
+    _upload.size = 0;
+    _upload.error = false;
+    _upload.errorCode = "";
+    _upload.fileName = "";
+    _upload.tmpPath = "";
+
+    // Nom de destination assaini (pas de chemin, extension .mid/.midi imposee).
+    if (!sanitizeMidiFileName(filename, _upload.fileName)) {
+      _upload.error = true;
+      _upload.errorCode = "invalid_name";
+      return;
+    }
+
+    // Fichier temporaire UNIQUE, hors de MIDI_DIR : il n'apparait donc ni dans la
+    // liste des fichiers ni dans le calcul d'occupation.
+    _upload.tmpPath = String("/.up") + String(++_uploadSequence) + ".tmp";
+    if (LittleFS.exists(_upload.tmpPath)) LittleFS.remove(_upload.tmpPath);
+    _upload.file = LittleFS.open(_upload.tmpPath, "w");
+    if (!_upload.file) {
+      if (DEBUG) Serial.println("ERREUR: WebConfigurator - Unable to create temp file");
+      _upload.error = true;
+      _upload.errorCode = "temp_open_failed";
       return;
     }
   }
 
+  // Un client qui n'a pas le verrou ne doit rien ecrire.
+  if (_upload.owner != request || _upload.error) return;
+  _upload.lastActivity = millis();
+
   if (len > 0) {
-    _uploadSize += len;
-    if (_uploadFile && _uploadSize <= MIDI_FILE_MAX_SIZE) {
-      _uploadFile.write(data, len);
+    if (_upload.size + len > MIDI_FILE_MAX_SIZE) {
+      // Refuser des l'octet de trop : inutile d'ecrire un fichier deja rejete.
+      _upload.error = true;
+      _upload.errorCode = "too_large";
+      if (_upload.file) _upload.file.close();
+      return;
     }
+    size_t written = _upload.file ? _upload.file.write(data, len) : 0;
+    if (written != len) {
+      // Ecriture partielle = LittleFS plein ou en ereur.
+      _upload.error = true;
+      _upload.errorCode = "write_failed";
+      if (_upload.file) _upload.file.close();
+      return;
+    }
+    _upload.size += len;
   }
 
-  if (final) {
-    if (_uploadFile) {
-      _uploadFile.close();
-    }
-
+  if (final && _upload.file) {
+    _upload.file.close();
     if (DEBUG) {
       Serial.print("DEBUG: WebConfigurator - Upload termine: ");
-      Serial.print(_uploadSize);
+      Serial.print(_upload.size);
       Serial.println(" octets");
     }
   }
 }
 
 void WebConfigurator::handleMidiUploadComplete(AsyncWebServerRequest* request) {
-  // Verifier si une erreur est survenue pendant l'upload (ex: echec creation fichier temp)
-  if (_uploadError) {
-    String resp = "{\"ok\":false,\"msg\":\"Temporary file write error\"}";
-    request->send(500, "application/json", resp);
-    _ws.textAll("{\"t\":\"midi_error\",\"msg\":\"Temporary file write error\"}");
+  auto respond = [&](int status, const char* code, const char* message) {
+    JsonDocument doc;
+    doc["ok"] = false;
+    doc["error"] = code;
+    doc["msg"] = message;
+    String out;
+    serializeJson(doc, out);
+    request->send(status, "application/json", out);
+    JsonDocument ws;
+    ws["t"] = "midi_error";
+    ws["msg"] = message;
+    ws["reason"] = code;
+    String wsOut;
+    serializeJson(ws, wsOut);
+    _ws.textAll(wsOut);
+  };
+
+  if (_upload.owner != request) {
+    // Un autre transfert detenait le verrou : celui-ci n'a rien ecrit.
+    respond(409, "upload_busy", "Another upload is in progress");
     return;
   }
 
-  if (_uploadSize > MIDI_FILE_MAX_SIZE) {
-    LittleFS.remove(MIDI_FILE_PATH);
-    String resp = "{\"ok\":false,\"msg\":\"File too large (max " + String(MIDI_FILE_MAX_SIZE / 1024) + "KB)\"}";
-    request->send(400, "application/json", resp);
-    _ws.textAll("{\"t\":\"midi_error\",\"msg\":\"File too large\"}");
+  if (_upload.error) {
+    const char* code = _upload.errorCode;
+    releaseUploadLock(request);
+    if (strcmp(code, "unauthorized") == 0) respond(401, code, "Authentication required");
+    else if (strcmp(code, "too_large") == 0) respond(413, code, "File too large");
+    else if (strcmp(code, "invalid_name") == 0) respond(400, code, "Invalid file name (.mid/.midi expected)");
+    else if (strcmp(code, "write_failed") == 0) respond(507, code, "Storage write error (filesystem full?)");
+    else respond(500, code, "Temporary file write error");
     return;
   }
 
-  if (_uploadSize == 0) {
-    String resp = "{\"ok\":false,\"msg\":\"No file received\"}";
-    request->send(400, "application/json", resp);
+  if (_upload.size == 0) {
+    releaseUploadLock(request);
+    request->send(400, "application/json", "{\"ok\":false,\"error\":\"empty\",\"msg\":\"No file received\"}");
     return;
   }
 
-  // Verifier la limite de stockage total
-  size_t currentUsed = getMidiStorageUsed();
-  size_t limitBytes = (size_t)cfg.midiStorageLimitKb * 1024;
-  // Le fichier destination peut deja exister (ecrasement) - soustraire sa taille
-  String destPath = String(MIDI_DIR) + "/" + _uploadFileName;
-  size_t existingSize = 0;
-  if (LittleFS.exists(destPath)) {
-    File ef = LittleFS.open(destPath, "r");
-    if (ef) { existingSize = ef.size(); ef.close(); }
-  }
-  if (currentUsed - existingSize + _uploadSize > limitBytes) {
-    LittleFS.remove(MIDI_FILE_PATH);
-    String resp = "{\"ok\":false,\"msg\":\"MIDI storage full (" + String(currentUsed / 1024) + "/" + String(cfg.midiStorageLimitKb) + " KB)\"}";
-    request->send(400, "application/json", resp);
-    _ws.textAll("{\"t\":\"midi_error\",\"msg\":\"MIDI storage full\"}");
+  // Validation du contenu, quota et remplacement : LittleFS + lecteur MIDI, donc
+  // sur la tache loop(). Le verrou n'est relache qu'apres.
+  WebOp op;
+  op.type = WEBOP_MIDI_FINALIZE;
+  bool done = runOnLoop(op);
+  releaseUploadLock(request);
+  if (!done) {
+    request->send(503, "application/json", "{\"ok\":false,\"error\":\"busy\"}");
     return;
   }
-
-  // S'assurer que le repertoire MIDI existe
-  if (!LittleFS.exists(MIDI_DIR)) {
-    LittleFS.mkdir(MIDI_DIR);
+  if (!op.ok) {
+    JsonDocument ws;
+    ws["t"] = "midi_error";
+    ws["msg"] = "Upload rejected";
+    String wsOut;
+    serializeJson(ws, wsOut);
+    _ws.textAll(wsOut);
   }
-
-  // Deplacer le fichier temp vers sa destination finale
-  if (LittleFS.exists(destPath)) {
-    LittleFS.remove(destPath);
-  }
-  bool moved = LittleFS.rename(MIDI_FILE_PATH, destPath);
-
-  // Fallback: copie manuelle si rename echoue (certaines versions ESP32 LittleFS)
-  if (!moved) {
-    if (DEBUG) {
-      Serial.println("DEBUG: WebConfigurator - rename echoue, copie manuelle...");
-    }
-    File src = LittleFS.open(MIDI_FILE_PATH, "r");
-    File dst = LittleFS.open(destPath, "w");
-    if (src && dst) {
-      uint8_t buf[512];
-      while (src.available()) {
-        size_t n = src.read(buf, sizeof(buf));
-        dst.write(buf, n);
-      }
-      dst.close();
-      src.close();
-      LittleFS.remove(MIDI_FILE_PATH);
-      moved = true;
-    } else {
-      if (src) src.close();
-      if (dst) dst.close();
-    }
-  }
-
-  if (!moved) {
-    LittleFS.remove(MIDI_FILE_PATH);
-    String resp = "{\"ok\":false,\"msg\":\"MIDI file storage error\"}";
-    request->send(500, "application/json", resp);
-    _ws.textAll("{\"t\":\"midi_error\",\"msg\":\"File storage error\"}");
-    return;
-  }
-
-  // Charger le fichier MIDI depuis sa destination finale (pas le temp)
-  if (_player && _player->loadFile(destPath.c_str())) {
-    String resp = "{\"ok\":true";
-    resp += ",\"events\":" + String(_player->getEventCount());
-    resp += ",\"duration\":" + String(_player->getDurationMs());
-    resp += ",\"file\":\"" + _uploadFileName + "\"";
-    resp += ",\"storage_used\":" + String(getMidiStorageUsed());
-    resp += ",\"storage_limit\":" + String(limitBytes);
-    resp += "}";
-    request->send(200, "application/json", resp);
-
-    String wsMsg = "{\"t\":\"midi_loaded\"";
-    wsMsg += ",\"file\":\"" + _uploadFileName + "\"";
-    wsMsg += ",\"events\":" + String(_player->getEventCount());
-    wsMsg += ",\"duration\":" + String(_player->getDurationMs());
-    wsMsg += ",\"channels\":" + String(_player->getActiveChannels());
-    wsMsg += "}";
-    _ws.textAll(wsMsg);
-  } else {
-    LittleFS.remove(destPath);
-    const char* reason = _player ? _player->getLoadErrorCode() : "no_player";
-    String resp = "{\"ok\":false,\"msg\":\"Invalid MIDI format\",\"reason\":\"";
-    resp += reason;
-    resp += "\"}";
-    request->send(400, "application/json", resp);
-    String errMsg = "{\"t\":\"midi_error\",\"msg\":\"Invalid MIDI format\",\"reason\":\"";
-    errMsg += reason;
-    errMsg += "\"}";
-    _ws.textAll(errMsg);
-  }
+  request->send(op.httpStatus, "application/json", op.json);
 }
 
 size_t WebConfigurator::getMidiStorageUsed() {
@@ -1526,30 +2503,27 @@ void WebConfigurator::handleMidiDelete(AsyncWebServerRequest* request) {
   }
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, body);
-  if (err || !doc.containsKey("file")) {
+  if (err || !doc["file"].is<const char*>()) {
     request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Invalid JSON\"}");
     return;
   }
-  String filename = doc["file"].as<String>();
-  // Securite: extraire le nom seul (pas de path traversal)
-  int lastSlash = filename.lastIndexOf('/');
-  if (lastSlash >= 0) filename = filename.substring(lastSlash + 1);
-  if (filename.length() == 0 || filename.indexOf("..") >= 0) {
+  String filename;
+  if (!sanitizeMidiFileName(doc["file"].as<String>(), filename)) {
     request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Invalid name\"}");
     return;
   }
-  String path = String(MIDI_DIR) + "/" + filename;
-  if (!LittleFS.exists(path)) {
-    request->send(404, "application/json", "{\"ok\":false,\"msg\":\"File not found\"}");
+  WebOp op;
+  op.type = WEBOP_MIDI_DELETE;
+  op.strA = filename;
+  if (!runOnLoop(op)) {
+    request->send(503, "application/json", "{\"ok\":false,\"error\":\"busy\"}");
     return;
   }
-  LittleFS.remove(path);
-  if (DEBUG) {
+  if (DEBUG && op.ok) {
     Serial.print("DEBUG: WebConfigurator - MIDI deleted: ");
     Serial.println(filename);
   }
-  String resp = "{\"ok\":true,\"used\":" + String(getMidiStorageUsed()) + ",\"limit\":" + String((size_t)cfg.midiStorageLimitKb * 1024) + "}";
-  request->send(200, "application/json", resp);
+  request->send(op.httpStatus, "application/json", op.json);
 }
 
 void WebConfigurator::handleMidiLoad(AsyncWebServerRequest* request) {
@@ -1565,41 +2539,23 @@ void WebConfigurator::handleMidiLoad(AsyncWebServerRequest* request) {
   }
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, body);
-  if (err || !doc.containsKey("file")) {
+  if (err || !doc["file"].is<const char*>()) {
     request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Invalid JSON\"}");
     return;
   }
-  String filename = doc["file"].as<String>();
-  int ls = filename.lastIndexOf('/');
-  if (ls >= 0) filename = filename.substring(ls + 1);
-  String path = String(MIDI_DIR) + "/" + filename;
-  if (!LittleFS.exists(path)) {
-    request->send(404, "application/json", "{\"ok\":false,\"msg\":\"File not found\"}");
+  String filename;
+  if (!sanitizeMidiFileName(doc["file"].as<String>(), filename)) {
+    request->send(400, "application/json", "{\"ok\":false,\"msg\":\"Invalid name\"}");
     return;
   }
-  if (_player && _player->loadFile(path.c_str())) {
-    String resp = "{\"ok\":true";
-    resp += ",\"events\":" + String(_player->getEventCount());
-    resp += ",\"duration\":" + String(_player->getDurationMs());
-    resp += ",\"file\":\"" + _player->getFileName() + "\"";
-    resp += ",\"channels\":" + String(_player->getActiveChannels());
-    resp += "}";
-    request->send(200, "application/json", resp);
-
-    String wsMsg = "{\"t\":\"midi_loaded\"";
-    wsMsg += ",\"file\":\"" + _player->getFileName() + "\"";
-    wsMsg += ",\"events\":" + String(_player->getEventCount());
-    wsMsg += ",\"duration\":" + String(_player->getDurationMs());
-    wsMsg += ",\"channels\":" + String(_player->getActiveChannels());
-    wsMsg += "}";
-    _ws.textAll(wsMsg);
-  } else {
-    const char* reason = _player ? _player->getLoadErrorCode() : "no_player";
-    String resp = "{\"ok\":false,\"msg\":\"MIDI load failed\",\"reason\":\"";
-    resp += reason;
-    resp += "\"}";
-    request->send(400, "application/json", resp);
+  WebOp op;
+  op.type = WEBOP_MIDI_LOAD;
+  op.strA = filename;
+  if (!runOnLoop(op)) {
+    request->send(503, "application/json", "{\"ok\":false,\"error\":\"busy\"}");
+    return;
   }
+  request->send(op.httpStatus, "application/json", op.json);
 }
 
 // --- WebSocket ---
@@ -1608,6 +2564,10 @@ void WebConfigurator::onWsEvent(AsyncWebSocket* server, AsyncWebSocketClient* cl
                                  AwsEventType type, void* arg, uint8_t* data, size_t len) {
   switch (type) {
     case WS_EVT_CONNECT:
+      // Un nouveau client n'est PAS authentifie : il doit envoyer
+      // {"t":"auth","token":"..."} avant toute commande.
+      setWsAuthenticated(client->id(), false);
+      client->text("{\"t\":\"auth_required\"}");
       if (DEBUG) {
         Serial.print("DEBUG: WS client connected #");
         Serial.println(client->id());
@@ -1615,6 +2575,7 @@ void WebConfigurator::onWsEvent(AsyncWebSocket* server, AsyncWebSocketClient* cl
       break;
 
     case WS_EVT_DISCONNECT: {
+      setWsAuthenticated(client->id(), false);
       bool handled = false;
 #if MIC_ENABLED
       if (isCalibrationActive()) {
@@ -1623,8 +2584,11 @@ void WebConfigurator::onWsEvent(AsyncWebSocket* server, AsyncWebSocketClient* cl
         // (an allSoundOff would fight the calibrator), so we do nothing.
         handled = true;
         if (client->id() == _autoCalOwnerClientId) {
-          cancelActiveActuatorSession();
-          if (_instrument) { _instrument->allSoundOff(); }
+          // Deconnexion du proprietaire : la calibration doit etre annulee et le
+          // materiel remis en securite, mais depuis la tache loop() - et SANS
+          // attendre ici, car ce callback peut detenir le verrou du WebSocket.
+          WebOp op; op.type = WEBOP_AUTOCAL_CANCEL; postWebOp(op);
+          if (_instrument) _instrument->requestPanic();
         }
       }
 #endif
@@ -1657,7 +2621,6 @@ void WebConfigurator::onWsEvent(AsyncWebSocket* server, AsyncWebSocketClient* cl
 }
 
 void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* data, size_t len) {
-  if (_instrument == nullptr) return;
   if (len > 512) {
     client->text("{\"t\":\"error\",\"msg\":\"WebSocket message too large\"}");
     return;
@@ -1673,6 +2636,39 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
   const char* type = doc["t"] | "";
   auto hasInt = [&doc](const char* key) { return isJsonInteger(doc[key]); };
 
+  // --- 1. Authentification ---------------------------------------------------
+  // Le premier message d'un client doit etre {"t":"auth","token":"..."} ; tant
+  // qu'il n'est pas authentifie, aucune commande n'est acceptee.
+  if (strcmp(type, "auth") == 0) {
+    String token = String((const char*)(doc["token"] | ""));
+    bool ok = _auth.validate(token, millis());
+    setWsAuthenticated(client->id(), ok);
+    client->text(ok ? "{\"t\":\"auth\",\"ok\":true}"
+                    : "{\"t\":\"auth\",\"ok\":false,\"msg\":\"unauthorized\"}");
+    return;
+  }
+  if (!isWsAuthenticated(client->id())) {
+    client->text("{\"t\":\"error\",\"msg\":\"unauthorized\"}");
+    return;
+  }
+
+  if (_instrument == nullptr) {
+    // Instrument absent (systeme de fichiers ou configuration de boot non sure) :
+    // meme reponse explicite que pour un hardware non pret.
+    client->text("{\"t\":\"error\",\"msg\":\"hardware_not_ready\"}");
+    return;
+  }
+
+  // --- 2. Protection hardware_not_ready -------------------------------------
+  // Refus CENTRAL de toute commande physique quand l'initialisation hardware a
+  // echoue (PCA0/PCA1 absents, configuration de boot invalide). Le refus est
+  // double par InstrumentManager::applyCommand(), qui est le seul point
+  // d'application : aucun chemin ne peut activer un actionneur.
+  if (isPhysicalWsCommand(type) && !hardwareReady()) {
+    client->text("{\"t\":\"error\",\"msg\":\"hardware_not_ready\"}");
+    return;
+  }
+
 #if MIC_ENABLED
   // While a calibration owns the actuators, refuse concurrent actuator commands.
   if (actuatorCommandBlockedDuringCalibration(client, type)) return;
@@ -1686,25 +2682,29 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
     return;
   }
 
+  // --- 3. Commandes -----------------------------------------------------------
+  // Toutes les commandes qui touchent un actionneur, le bus I2C ou un GPIO sont
+  // POSTEES vers la tache loop() (voir CommandQueue.h). Ce callback s'execute sur
+  // la tache AsyncTCP et ne doit jamais piloter le materiel directement.
   if (strcmp(type, "non") == 0) {
     if (!hasInt("n")) return;
     uint8_t note = getMidi7Bit(doc, "n", 0);
     uint8_t vel = (uint8_t)constrain(doc["v"] | _webVelocity, 1, MIDI_VELOCITY_MAX);
-    _instrument->noteOn(note, vel);
+    _instrument->postCommand(ACMD_NOTE_ON, note, vel);
   } else if (strcmp(type, "nof") == 0) {
     if (!hasInt("n")) return;
-    _instrument->noteOff(getMidi7Bit(doc, "n", 0));
+    _instrument->postCommand(ACMD_NOTE_OFF, getMidi7Bit(doc, "n", 0));
   } else if (strcmp(type, "cc") == 0) {
     if (!hasInt("c") || !hasInt("v")) return;
-    _instrument->handleControlChange((uint8_t)getMidi7Bit(doc, "c", 0), getMidi7Bit(doc, "v", 0));
+    _instrument->postCommand(ACMD_CONTROL_CHANGE, getMidi7Bit(doc, "c", 0), getMidi7Bit(doc, "v", 0));
   } else if (strcmp(type, "velocity") == 0) {
     _webVelocity = (uint8_t)constrain(doc["v"] | _webVelocity, 1, MIDI_VELOCITY_MAX);
   } else if (strcmp(type, "air_live") == 0) {
-    _instrument->getAirflowCtrl().setAirflowLivePercent(getPercent(doc, "v", 0));
+    _instrument->postCommand(ACMD_AIR_LIVE_PERCENT, 0, getPercent(doc, "v", 0));
   } else if (strcmp(type, "play") == 0) {
-    if (_player) _player->play();
+    WebOp op; op.type = WEBOP_PLAYER_PLAY; postWebOp(op);
   } else if (strcmp(type, "pause") == 0) {
-    if (_player) _player->pause();
+    WebOp op; op.type = WEBOP_PLAYER_PAUSE; postWebOp(op);
   } else if (strcmp(type, "stop") == 0) {
 #if MIC_ENABLED
     // During a calibration, "stop" must cancel it cleanly (its own stop already
@@ -1713,139 +2713,95 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
       if (_autoCalOwnerClientId != 0 && client->id() != _autoCalOwnerClientId) {
         client->text("{\"t\":\"error\",\"msg\":\"not_calibration_owner\"}");
       } else {
-        cancelActiveActuatorSession();
+        WebOp op; op.type = WEBOP_AUTOCAL_CANCEL; postWebOp(op);
       }
       return;
     }
 #endif
-    if (_player) _player->stop();
-    _instrument->allSoundOff();
+    WebOp op; op.type = WEBOP_PLAYER_STOP; postWebOp(op);
+    _instrument->requestPanic();
   } else if (strcmp(type, "ch_filter") == 0) {
-    if (_player) {
-      int ch = doc["ch"] | 255;
-      _player->setChannelFilter(ch > 15 ? 255 : (uint8_t)ch);
-    }
+    WebOp op; op.type = WEBOP_PLAYER_CH_FILTER; op.intA = doc["ch"] | 255; postWebOp(op);
   } else if (strcmp(type, "panic") == 0) {
 #if MIC_ENABLED
     // Panic must always abort a running calibration and safe the hardware first.
-    cancelActiveActuatorSession();
+    { WebOp op; op.type = WEBOP_AUTOCAL_CANCEL; postWebOp(op); }
 #endif
-    endTestSession(false);   // hardware is safed just below by allSoundOff()
-    _instrument->allSoundOff();
+    endTestSession(false);   // hardware is safed just below by the panic request
+    // Le panic n'occupe pas une place de la file : il ne peut pas etre perdu et
+    // il annule toutes les commandes deja en attente.
+    _instrument->requestPanic();
   } else if (strcmp(type, "test_finger") == 0) {
     int fi = doc["i"] | -1;
     int angle = getServoAngle(doc, "a", 0);
-    if (fi >= 0 && fi < cfg.numFingers) _instrument->getFingerCtrl().testFingerAngle(fi, (uint16_t)angle);
+    if (fi >= 0 && fi < cfg.numFingers) {
+      _instrument->postCommand(ACMD_TEST_FINGER, (uint8_t)fi, 0, (uint16_t)angle);
+    }
   } else if (strcmp(type, "test_air") == 0) {
-    _instrument->getAirflowCtrl().testAirflowAngle(getServoAngle(doc, "a", 0));
+    _instrument->postCommand(ACMD_TEST_AIRFLOW_ANGLE, 0, 0, getServoAngle(doc, "a", 0));
   } else if (strcmp(type, "test_angle") == 0) {
-    _instrument->getAirflowCtrl().testAngleServoAngle(getServoAngle(doc, "a", 0));
+    _instrument->postCommand(ACMD_TEST_ANGLE_SERVO, 0, 0, getServoAngle(doc, "a", 0));
   } else if (strcmp(type, "angle_live") == 0) {
-    _instrument->getAirflowCtrl().setAngleLivePercent(getPercent(doc, "v", 0));
+    _instrument->postCommand(ACMD_ANGLE_LIVE_PERCENT, 0, getPercent(doc, "v", 0));
   } else if (strcmp(type, "test_sol") == 0) {
-    _instrument->getAirflowCtrl().testSolenoid((doc["o"] | 0) != 0);
+    _instrument->postCommand(ACMD_TEST_SOLENOID, (doc["o"] | 0) != 0 ? 1 : 0);
   } else if (strcmp(type, "test_note") == 0) {
     uint8_t note = getMidi7Bit(doc, "n", 0);
     if (_instrument->isNotePlayable(note)) {
       // Play a REAL, timed note through the sequencer: it positions the fingers,
       // opens the valve only if setAirflowForNote decides the note actually sounds,
       // and honours the minimum note duration. Schedule an automatic note-off so
-      // the preview stops on its own (previously it left the valve/airflow hanging).
-      _instrument->noteOn(note, _webVelocity);
+      // the preview stops on its own.
+      _instrument->postCommand(ACMD_NOTE_ON, note, _webVelocity);
       _testNoteMidi = note;
       _testNoteOffTime = millis() + TEST_NOTE_DURATION_MS;
     }
   } else if (strcmp(type, "pump_enable") == 0) {
-    // Keyboard pump mute toggle (v:0 mute, v:1 enable).
-    _instrument->getPressureCtrl().setEnabled((doc["v"] | 1) != 0);
+    _instrument->postCommand(ACMD_PUMP_ENABLE, (doc["v"] | 1) != 0 ? 1 : 0);
   } else if (strcmp(type, "pump_target") == 0) {
     int pumpIdx = doc["pump"] | -1;
     if (pumpIdx >= 0) {
-      // Per-pump test: drive only the requested pump, not all of them.
-      _instrument->getPressureCtrl().testSinglePump((uint8_t)pumpIdx, getPercent(doc, "v", 0));
+      _instrument->postCommand(ACMD_PUMP_SINGLE_TEST, (uint8_t)pumpIdx, getPercent(doc, "v", 0));
     } else {
-      _instrument->getPressureCtrl().setTargetPercent(getPercent(doc, "v", 0));
+      _instrument->postCommand(ACMD_PUMP_TARGET, 0, getPercent(doc, "v", 0));
     }
   } else if (strcmp(type, "pump_stop") == 0) {
     int pumpIdx = doc["pump"] | -1;
-    if (pumpIdx >= 0) _instrument->getPressureCtrl().stopSinglePumpTest();
-    else _instrument->getPressureCtrl().stop();
+    _instrument->postCommand(pumpIdx >= 0 ? ACMD_PUMP_STOP_SINGLE : ACMD_PUMP_STOP);
     endTestSession(false);
   } else if (strcmp(type, "fan_target") == 0) {
-    _instrument->getFanCtrl().setSpeed(getPercent(doc, "v", 0));
+    _instrument->postCommand(ACMD_FAN_TARGET, 0, getPercent(doc, "v", 0));
   } else if (strcmp(type, "fan_stop") == 0) {
-    _instrument->getFanCtrl().stop();
+    _instrument->postCommand(ACMD_FAN_STOP);
     endTestSession(false);
 #if MIC_ENABLED
   } else if (strcmp(type, "mic_mon") == 0) {
-    // (Blocked above while a calibration is active.)
-    _micMonitorEnabled = ((doc["on"] | 0) != 0);
-    if (_audio) _audio->setActive(_micMonitorEnabled || (_autoCal && _autoCal->isRunning()));
+    WebOp op; op.type = WEBOP_MIC_MONITOR; op.intA = ((doc["on"] | 0) != 0) ? 1 : 0;
+    postWebOp(op);
   } else if (strcmp(type, "mic_reset") == 0) {
-    // Re-probe the microphone without rebooting (blocked during calibration).
-    if (_audio) {
-      bool ok = _audio->resetMicrophone();
-      client->text(String("{\"t\":\"mic_reset\",\"ok\":") + (ok ? "true" : "false") +
-                   ",\"status\":\"" + _audio->getMicStatusString() + "\"}");
-    }
+    // Le resultat est diffuse par loop() sur le WebSocket (pas d'attente ici).
+    WebOp op; op.type = WEBOP_MIC_RESET;
+    postWebOp(op);
   } else if (strcmp(type, "auto_cal") == 0) {
     const char* mode = doc["mode"] | "";
-    bool isStart = (strcmp(mode, "air") == 0 || strcmp(mode, "range") == 0);
-    if (isStart) {
-      if (!_autoCal || !_audio || !_audio->isMicDetected()) {
-        client->text("{\"t\":\"acal_error\",\"msg\":\"no_microphone\"}");
-      } else if (_autoCal->isRunning()) {
-        // A second start attempt is refused explicitly.
-        client->text("{\"t\":\"acal_error\",\"msg\":\"calibration_busy\"}");
-      } else {
-        // Pause any running MIDI playback first: otherwise the player keeps
-        // advancing and would drive notes into the actuators the calibration is
-        // about to own. pause() also releases any held note. Position is kept so
-        // the user can resume after calibrating.
-        if (_player) _player->pause();
-        // A new start discards any pending (unapplied) range-finder result.
-        cancelActiveActuatorSession();
-        // Take ownership and snapshot the user's monitor preference.
-        _autoCalOwnerClientId = client->id();
-        _micMonitorBeforeCalibration = _micMonitorEnabled;
-        _rfDoneSent = false;
-        _audio->setActive(true);
-        // Keep the servos powered for the whole session (see D2 / managePower()).
-        if (_instrument) _instrument->setActuatorSessionActive(true);
-        _autoCal->start(strcmp(mode, "air") == 0 ? ACAL_MODE_AIRFLOW : ACAL_MODE_RANGE_FIND);
-      }
+    if (strcmp(mode, "air") == 0 || strcmp(mode, "range") == 0) {
+      WebOp op;
+      op.type = (strcmp(mode, "air") == 0) ? WEBOP_AUTOCAL_START_AIR : WEBOP_AUTOCAL_START_RANGE;
+      op.clientId = client->id();
+      postWebOp(op);
     } else if (strcmp(mode, "stop") == 0) {
-      // Only the owner may stop.
       if (_autoCal && _autoCal->isRunning() && client->id() != _autoCalOwnerClientId) {
         client->text("{\"t\":\"error\",\"msg\":\"not_calibration_owner\"}");
       } else {
-        cancelActiveActuatorSession();
+        WebOp op; op.type = WEBOP_AUTOCAL_CANCEL; postWebOp(op);
       }
     } else if (strcmp(mode, "apply_range") == 0) {
       if (_autoCal && _autoCal->isRangeFinderComplete()) {
         if (_autoCalOwnerClientId != 0 && client->id() != _autoCalOwnerClientId) {
           client->text("{\"t\":\"error\",\"msg\":\"not_calibration_owner\"}");
         } else {
-          bool hadValid = _autoCal->getRangeFinderMin() >= 0 && _autoCal->getRangeFinderMax() >= 0;
-          RangeApplyResult ra = _autoCal->applyRangeResults();
-          if (ra.applied && ra.saved) {
-            // Persisted and active: let GMB re-read the capabilities. The servo
-            // travel itself is not announced, so this only moves the revision when
-            // the new travel changes what the instrument can actually play.
-            gmb::runtime::onConfigurationActivated();
-            String rj = "{\"t\":\"rf_applied\",\"ok\":true,\"min\":" + String(ra.minAngle) +
-                        ",\"max\":" + String(ra.maxAngle) + "}";
-            _ws.textAll(rj);
-          } else {
-            // Nothing was written (invalid result or storage failure): report the
-            // failure to the requester and do NOT broadcast rf_applied.
-            String rj = "{\"t\":\"rf_applied\",\"ok\":false,\"error\":\"";
-            rj += hadValid ? "storage_failed" : "no_valid_range";
-            rj += "\"}";
-            client->text(rj);
-          }
-          // The pending result is resolved: clear the review state and ownership.
-          cancelActiveActuatorSession();
+          WebOp op; op.type = WEBOP_AUTOCAL_APPLY_RANGE;
+          postWebOp(op);
         }
       }
     }
@@ -1853,7 +2809,7 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
     if (_autoCal && _autoCal->isRunning() && client->id() != _autoCalOwnerClientId) {
       client->text("{\"t\":\"error\",\"msg\":\"not_calibration_owner\"}");
     } else {
-      cancelActiveActuatorSession();
+      WebOp op; op.type = WEBOP_AUTOCAL_CANCEL; postWebOp(op);
     }
 #endif
   } else {
@@ -1864,56 +2820,66 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
 void WebConfigurator::broadcastStatus() {
   if (_ws.count() == 0) return;
 
-  String json = "{\"t\":\"status\"";
+  // Serialise par ArduinoJson : le statut porte des valeurs runtime et, via les
+  // controleurs, des chaines issues de la configuration. La concatenation
+  // manuelle ne garantissait pas leur echappement.
+  JsonDocument doc;
+  doc["t"] = "status";
 
   if (_instrument) {
     NoteSequencer& seq = _instrument->getSequencer();
-    json += ",\"playing\":" + String(seq.isPlaying() ? "true" : "false");
-    json += ",\"state\":" + String(seq.getState());
-    json += ",\"cc7\":" + String(_instrument->getCCVolume());
-    json += ",\"cc11\":" + String(_instrument->getCCExpression());
-    json += ",\"cc1\":" + String(_instrument->getCCModulation());
-    json += ",\"cc2\":" + String(_instrument->getCCBreath());
+    doc["playing"] = seq.isPlaying();
+    doc["state"] = (int)seq.getState();
+    doc["cc7"] = _instrument->getCCVolume();
+    doc["cc11"] = _instrument->getCCExpression();
+    doc["cc1"] = _instrument->getCCModulation();
+    doc["cc2"] = _instrument->getCCBreath();
+    doc["hw_ready"] = _instrument->isHardwareReady();
+  } else {
+    doc["hw_ready"] = false;
   }
 
   if (_player) {
-    json += ",\"ps\":" + String(_player->getState());
+    doc["ps"] = (int)_player->getState();
     if (_player->isFileLoaded()) {
-      json += ",\"pp\":" + String(_player->getProgressPercent(), 1);
-      json += ",\"ppos\":" + String(_player->getPositionMs());
+      doc["pp"] = _player->getProgressPercent();
+      doc["ppos"] = _player->getPositionMs();
     }
   }
 
   // Air system live data
   if (_instrument && cfg.airMode >= AIR_MODE_PUMP_VALVE) {
     PressureController& pc = _instrument->getPressureCtrl();
-    json += ",\"pump_pwm\":" + String(pc.getPumpPwm());
-    json += ",\"res_pct\":" + String(pc.getFillPercent());
-    json += ",\"res_mm\":" + String(pc.getDistanceMm());
-    json += ",\"hall_val\":" + String(pc.getHallValue());
-    json += ",\"endstop_st\":" + String(pc.isEndstopActive() ? "true" : "false");
-    json += ",\"sens_ok\":" + String(pc.isSensorDetected() ? "true" : "false");
-    json += ",\"active_pumps\":" + String(pc.getActivePumpCount());
-    json += ",\"bb_on\":" + String(pc.isBangbangOn() ? "true" : "false");
+    doc["pump_pwm"] = pc.getPumpPwm();
+    doc["res_pct"] = pc.getFillPercent();
+    doc["res_mm"] = pc.getDistanceMm();
+    doc["hall_val"] = pc.getHallValue();
+    doc["endstop_st"] = pc.isEndstopActive();
+    doc["sens_ok"] = pc.isSensorDetected();
+    doc["sens_state"] = pc.sensorStateName();
+    doc["sens_stale"] = pc.isMeasurementStale();
+    doc["active_pumps"] = pc.getActivePumpCount();
+    doc["bb_on"] = pc.isBangbangOn();
   }
   // Fan live data
   if (_instrument && cfg.airMode == AIR_MODE_FAN_SERVO) {
     FanController& fc = _instrument->getFanCtrl();
-    json += ",\"fan_pwm\":" + String(fc.getPwm());
-    json += ",\"fan_speed\":" + String(fc.getSpeed());
-    json += ",\"fan_ready\":" + String(fc.isReady() ? "true" : "false");
-    json += ",\"fan_idle\":" + String(fc.isIdle() ? "true" : "false");
+    doc["fan_pwm"] = fc.getPwm();
+    doc["fan_speed"] = fc.getSpeed();
+    doc["fan_ready"] = fc.isReady();
+    doc["fan_idle"] = fc.isIdle();
   }
   if (_instrument) {
-    json += ",\"valve_open\":" + String(_instrument->getAirflowCtrl().isValveOpen() ? "true" : "false");
-    json += ",\"air_angle\":" + String(_instrument->getAirflowCtrl().getAirflowAngle());
+    doc["valve_open"] = _instrument->getAirflowCtrl().isValveOpen();
+    doc["air_angle"] = _instrument->getAirflowCtrl().getAirflowAngle();
     if (strcmp(cfg.embouchure, "trav") == 0) {
-      json += ",\"ang_angle\":" + String(_instrument->getAirflowCtrl().getAngleServoAngle());
+      doc["ang_angle"] = _instrument->getAirflowCtrl().getAngleServoAngle();
     }
   }
 
-  json += ",\"heap\":" + String(ESP.getFreeHeap());
-  json += "}";
+  doc["heap"] = ESP.getFreeHeap();
 
+  String json;
+  serializeJson(doc, json);
   _ws.textAll(json);
 }

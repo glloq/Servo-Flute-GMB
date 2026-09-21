@@ -2,69 +2,20 @@
 #include "ConfigStorage.h"
 #include <Wire.h>
 
-// Adresses I2C capteurs ToF
-#define VL53L0X_ADDR  0x29
-#define VL6180X_ADDR  0x29
-
-// Registres VL6180X (mode simple)
-#define VL6180X_REG_SYSTEM_FRESH_OUT_OF_RESET  0x0016
-#define VL6180X_REG_SYSRANGE_START             0x0018
-#define VL6180X_REG_RESULT_RANGE_STATUS        0x004D
-#define VL6180X_REG_RESULT_RANGE_VAL           0x0062
-#define VL6180X_REG_SYSTEM_INTERRUPT_CLEAR     0x0015
-#define VL6180X_REG_READOUT_AVERAGING_PERIOD   0x010A
-
-// Registres VL53L0X (mode simple)
-#define VL53L0X_REG_SYSRANGE_START             0x00
-#define VL53L0X_REG_RESULT_RANGE              0x1E
-
-// Helper I2C pour VL6180X (registres 16-bit)
-static void writeReg16(uint8_t addr, uint16_t reg, uint8_t val) {
-  Wire.beginTransmission(addr);
-  Wire.write((reg >> 8) & 0xFF);
-  Wire.write(reg & 0xFF);
-  Wire.write(val);
-  Wire.endTransmission();
-}
-
-static uint8_t readReg16(uint8_t addr, uint16_t reg) {
-  Wire.beginTransmission(addr);
-  Wire.write((reg >> 8) & 0xFF);
-  Wire.write(reg & 0xFF);
-  Wire.endTransmission(false);
-  Wire.requestFrom(addr, (uint8_t)1);
-  return Wire.available() ? Wire.read() : 0;
-}
-
-// Helper I2C pour VL53L0X (registres 8-bit)
-static void writeReg8(uint8_t addr, uint8_t reg, uint8_t val) {
-  Wire.beginTransmission(addr);
-  Wire.write(reg);
-  Wire.write(val);
-  Wire.endTransmission();
-}
-
-static uint16_t readReg16_16(uint8_t addr, uint8_t reg) {
-  Wire.beginTransmission(addr);
-  Wire.write(reg);
-  Wire.endTransmission(false);
-  Wire.requestFrom(addr, (uint8_t)2);
-  uint16_t val = 0;
-  if (Wire.available() >= 2) {
-    val = (Wire.read() << 8) | Wire.read();
-  }
-  return val;
-}
+// Les acces bas niveau aux capteurs ToF (VL53L0X / VL6180X) vivent desormais
+// dans TofSensor : identification du composant, initialisation complete, mesure
+// single-shot non bloquante, et distinction explicite entre "present sur le bus",
+// "initialise", "mesure valide" et "en erreur".
 
 PressureController::PressureController()
   : _sensorDetected(false), _sensorType(0),
     _distanceMm(0), _hallValue(0), _endstopActive(false), _fillPercent(0),
-    _tofRanging(false), _tofRangeStartTime(0), _measurementValid(false),
+    _tofRangeStartTime(0), _measurementValid(false),
     _lastValidReadTime(0), _tofErrorCount(0),
     _targetPercent(0), _currentPumpPwm(0),
     _enabled(true), _testPumpIndex(-1), _testPumpPercent(0),
     _activePumpCount(0), _bangbangPumpOn(false),
-    _pidIntegral(0), _pidLastError(0),
+    _pidIntegral(0),
     _lastPidTime(0), _lastReadTime(0) {
   for (uint8_t i = 0; i < MAX_PUMPS; i++) {
     _pumpActive[i] = false;
@@ -129,128 +80,77 @@ bool PressureController::begin() {
     return true;
   }
 
-  // Capteurs ToF (VL53L0X / VL6180X) : I2C
-  uint8_t addr = (_sensorType == SENSOR_TYPE_TOF_VL6180X) ? VL6180X_ADDR : VL53L0X_ADDR;
-  Wire.beginTransmission(addr);
-  uint8_t err = Wire.endTransmission();
-
-  if (err != 0) {
-    if (DEBUG) {
-      Serial.print("DEBUG: PressureController - Capteur ToF non detecte a 0x");
-      Serial.println(addr, HEX);
-    }
-    _sensorDetected = false;
-    return false;
+  // Capteurs ToF (VL53L0X / VL6180X) : identification + initialisation complete.
+  // Le simple fait qu'un composant acquitte a 0x29 ne suffit plus a declarer le
+  // capteur fonctionnel : TofSensor verifie le Model ID puis deroule la sequence
+  // d'initialisation (SPAD de reference, tuning, calibrations). Sans cela les
+  // distances lues n'ont aucune signification metrique.
+  bool initialized = _tof.begin(_sensorType == SENSOR_TYPE_TOF_VL6180X ? TOF_MODEL_VL6180X
+                                                                       : TOF_MODEL_VL53L0X);
+  _sensorDetected = initialized;
+  if (!initialized && DEBUG) {
+    Serial.print("ERREUR: PressureController - capteur ToF inutilisable (");
+    Serial.print(_tof.stateName());
+    Serial.println(") : la pompe restera coupee en mode reservoir");
   }
+  return initialized;
+}
 
-  _sensorDetected = true;
+bool PressureController::usesTofSensor() const {
+  return _sensorType == SENSOR_TYPE_TOF_VL53L0X || _sensorType == SENSOR_TYPE_TOF_VL6180X;
+}
 
-  // Initialisation VL6180X
-  if (_sensorType == SENSOR_TYPE_TOF_VL6180X) {
-    uint8_t fresh = readReg16(VL6180X_ADDR, VL6180X_REG_SYSTEM_FRESH_OUT_OF_RESET);
-    if (fresh == 1) {
-      writeReg16(VL6180X_ADDR, 0x0207, 0x01);
-      writeReg16(VL6180X_ADDR, 0x0208, 0x01);
-      writeReg16(VL6180X_ADDR, 0x0096, 0x00);
-      writeReg16(VL6180X_ADDR, 0x0097, 0xFD);
-      writeReg16(VL6180X_ADDR, 0x00E3, 0x00);
-      writeReg16(VL6180X_ADDR, 0x00E4, 0x04);
-      writeReg16(VL6180X_ADDR, 0x00E5, 0x02);
-      writeReg16(VL6180X_ADDR, 0x00E6, 0x01);
-      writeReg16(VL6180X_ADDR, 0x00E7, 0x03);
-      writeReg16(VL6180X_ADDR, 0x00F5, 0x02);
-      writeReg16(VL6180X_ADDR, 0x00D9, 0x05);
-      writeReg16(VL6180X_ADDR, 0x00DB, 0xCE);
-      writeReg16(VL6180X_ADDR, 0x00DC, 0x03);
-      writeReg16(VL6180X_ADDR, 0x00DD, 0xF8);
-      writeReg16(VL6180X_ADDR, 0x009F, 0x00);
-      writeReg16(VL6180X_ADDR, 0x00A3, 0x3C);
-      writeReg16(VL6180X_ADDR, 0x00B7, 0x00);
-      writeReg16(VL6180X_ADDR, 0x00BB, 0x3C);
-      writeReg16(VL6180X_ADDR, 0x00B2, 0x09);
-      writeReg16(VL6180X_ADDR, 0x00CA, 0x09);
-      writeReg16(VL6180X_ADDR, 0x0198, 0x01);
-      writeReg16(VL6180X_ADDR, 0x01B0, 0x17);
-      writeReg16(VL6180X_ADDR, 0x01AD, 0x00);
-      writeReg16(VL6180X_ADDR, 0x00FF, 0x05);
-      writeReg16(VL6180X_ADDR, 0x0100, 0x05);
-      writeReg16(VL6180X_ADDR, 0x0199, 0x05);
-      writeReg16(VL6180X_ADDR, 0x01A6, 0x1B);
-      writeReg16(VL6180X_ADDR, 0x01AC, 0x3E);
-      writeReg16(VL6180X_ADDR, 0x01A7, 0x1F);
-      writeReg16(VL6180X_ADDR, 0x0030, 0x00);
-      writeReg16(VL6180X_ADDR, VL6180X_REG_READOUT_AVERAGING_PERIOD, 0x30);
-      writeReg16(VL6180X_ADDR, VL6180X_REG_SYSTEM_FRESH_OUT_OF_RESET, 0x00);
-    }
-  }
-
-  if (DEBUG) {
-    Serial.print("DEBUG: PressureController - Capteur ");
-    Serial.print(_sensorType == SENSOR_TYPE_TOF_VL6180X ? "VL6180X" : "VL53L0X");
-    Serial.println(" detecte et initialise");
-  }
-
-  return true;
+bool PressureController::isMeasurementStale() const {
+  // "Perimee" = aucune mesure VALIDE depuis TOF_STALE_MS, que la derniere
+  // tentative ait echoue ou que le capteur se soit simplement fige.
+  if (!usesTofSensor()) return false;
+  return (millis() - _lastValidReadTime) >= TOF_STALE_MS;
 }
 
 bool PressureController::serviceTofMeasurement() {
-  if (!_sensorDetected) return false;
+  if (!_sensorDetected || !_tof.isInitialized()) return false;
   unsigned long now = millis();
-  bool isVl6180 = (_sensorType == SENSOR_TYPE_TOF_VL6180X);
 
-  if (!_tofRanging) {
+  if (!_tof.isRanging()) {
     // Start a new single-shot only at the configured read cadence.
     if (now - _lastReadTime < PRESSURE_READ_INTERVAL_MS) return false;
     _lastReadTime = now;
-    if (isVl6180) {
-      writeReg16(VL6180X_ADDR, VL6180X_REG_SYSTEM_INTERRUPT_CLEAR, 0x07);
-      writeReg16(VL6180X_ADDR, VL6180X_REG_SYSRANGE_START, 0x01);
-    } else {
-      writeReg8(VL53L0X_ADDR, VL53L0X_REG_SYSRANGE_START, 0x01);
-    }
-    _tofRanging = true;
+    if (!_tof.startMeasurement()) return false;
     _tofRangeStartTime = now;
     return false;
   }
 
   // Ranging in progress: poll the status register ONCE per call (no busy-wait,
   // so MIDI / WebSocket / audio / servos are not stalled up to 50 ms).
-  bool ready;
-  if (isVl6180) {
-    ready = (readReg16(VL6180X_ADDR, VL6180X_REG_RESULT_RANGE_STATUS) & 0x04) != 0;
-  } else {
-    uint8_t st = 0;
-    Wire.beginTransmission(VL53L0X_ADDR);
-    Wire.write(0x13); // RESULT_INTERRUPT_STATUS
-    Wire.endTransmission(false);
-    Wire.requestFrom((uint8_t)VL53L0X_ADDR, (uint8_t)1);
-    if (Wire.available()) st = Wire.read();
-    ready = (st & 0x07) != 0;
-  }
-
-  if (ready) {
-    if (isVl6180) {
-      _distanceMm = (uint16_t)readReg16(VL6180X_ADDR, VL6180X_REG_RESULT_RANGE_VAL);
-      writeReg16(VL6180X_ADDR, VL6180X_REG_SYSTEM_INTERRUPT_CLEAR, 0x07);
-    } else {
-      _distanceMm = readReg16_16(VL53L0X_ADDR, VL53L0X_REG_RESULT_RANGE);
-      writeReg8(VL53L0X_ADDR, 0x0B, 0x01); // clear interrupt
-    }
-    _tofRanging = false;
+  if (_tof.pollMeasurement()) {
+    _distanceMm = _tof.distanceMm();
     _measurementValid = true;
     _lastValidReadTime = now;
     _tofErrorCount = 0;
     return true;
   }
 
-  // Not ready yet: abandon the measurement only after the timeout (§20). A timeout
-  // no longer reads a bogus range register value; the reading is marked invalid and
-  // repeated failures invalidate the sensor.
-  if (now - _tofRangeStartTime >= TOF_RANGE_TIMEOUT_MS) {
-    _tofRanging = false;
+  // Pas encore prete OU mesure rendue mais rejetee par le capteur : on abandonne
+  // seulement au-dela du timeout. Un timeout ne lit jamais une valeur bidon ; la
+  // mesure est marquee invalide et les echecs repetes invalident le capteur.
+  if (!_tof.isRanging()) {
+    // Le capteur a rendu une mesure invalide (range status != 11).
     _measurementValid = false;
     if (_tofErrorCount < 0xFFFF) _tofErrorCount++;
-    if (_tofErrorCount >= TOF_MAX_CONSEC_ERRORS) _sensorDetected = false;
+    if (_tofErrorCount >= TOF_MAX_CONSEC_ERRORS) {
+      _tof.reportTimeout(1);
+      _sensorDetected = false;
+    }
+    return false;
+  }
+  if (now - _tofRangeStartTime >= TOF_RANGE_TIMEOUT_MS) {
+    _measurementValid = false;
+    if (_tofErrorCount < 0xFFFF) _tofErrorCount++;
+    _tof.abortMeasurement();
+    if (_tofErrorCount >= TOF_MAX_CONSEC_ERRORS) {
+      _tof.reportTimeout(1);
+      _sensorDetected = false;
+    }
   }
   return false;
 }
@@ -364,7 +264,6 @@ void PressureController::update() {
         if (_pidIntegral > 100.0f) _pidIntegral = 100.0f;
         if (_pidIntegral < -100.0f) _pidIntegral = -100.0f;
         float output = kp * error + ki * _pidIntegral;
-        _pidLastError = error;
         if (output <= 0) {
           setPumpPwm(0);
         } else {
@@ -392,7 +291,9 @@ void PressureController::update() {
   // Securite mesure perimee (§20): sans mesure ToF valide recente, on ne peut plus
   // reguler en securite -> couper la pompe plutot que de piloter sur une donnee
   // obsolete (un timeout lu comme distance 0 aurait sinon fait croire au reservoir plein).
-  if (!_measurementValid && (now - _lastValidReadTime) >= TOF_STALE_MS) {
+  // Le critere est l'age de la DERNIERE mesure valide : un capteur fige qui ne
+  // rend plus rien laisserait sinon la pompe reguler indefiniment sur l'avant-derniere.
+  if (isMeasurementStale()) {
     setPumpPwm(0);
     _bangbangPumpOn = false;
     return;
@@ -442,7 +343,6 @@ void PressureController::update() {
       if (_pidIntegral > 100.0f) _pidIntegral = 100.0f;
       if (_pidIntegral < -100.0f) _pidIntegral = -100.0f;
       float output = kp * error + ki * _pidIntegral;
-      _pidLastError = error;
       if (output <= 0) {
         setPumpPwm(0);
       } else {
@@ -463,7 +363,6 @@ void PressureController::stop() {
   _testPumpIndex = -1;   // a full stop also ends any single-pump test
   setPumpPwm(0);
   _pidIntegral = 0;
-  _pidLastError = 0;
   _bangbangPumpOn = false;
   for (uint8_t i = 0; i < MAX_PUMPS; i++) {
     _pumpActive[i] = false;

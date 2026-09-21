@@ -15,6 +15,7 @@
 
 #include <Arduino.h>
 #include "settings.h"
+#include "TofSensor.h"
 
 class PressureController {
 public:
@@ -48,7 +49,19 @@ public:
   uint8_t  getFillPercent() const { return _fillPercent; }
   uint8_t  getPumpPwm() const { return _currentPumpPwm; }
   bool     isPumpRunning() const { return _currentPumpPwm > 0; }
+  // Vrai uniquement si un capteur reellement UTILISABLE est disponible :
+  // - ToF : peripherique present ET initialise (pas juste un ACK a 0x29),
+  // - Hall / endstop : broche configuree.
   bool     isSensorDetected() const { return _sensorDetected; }
+  // Etats distincts exposes par les diagnostics (§9 de l'audit) :
+  //   present sur I2C / initialise / mesure valide / mesure perimee / en erreur.
+  bool     isSensorPresentOnBus() const { return _tof.isPresentOnBus(); }
+  bool     isSensorInitialized() const { return _tof.isInitialized(); }
+  const char* sensorStateName() const { return _tof.stateName(); }
+  TofSensorState sensorState() const { return _tof.state(); }
+  bool     isMeasurementValid() const { return _measurementValid; }
+  bool     isMeasurementStale() const;
+  bool     usesTofSensor() const;
   uint8_t  getTargetPercent() const { return _targetPercent; }
   bool     isEndstopActive() const { return _endstopActive; }
   uint16_t getHallValue() const { return _hallValue; }
@@ -59,6 +72,8 @@ private:
   bool _sensorDetected;
   uint8_t _sensorType;        // 0-4 (SENSOR_TYPE_*)
 
+  TofSensor _tof;             // pilote ToF (VL53L0X / VL6180X), etats separes
+
   // Etat capteur
   uint16_t _distanceMm;       // Derniere mesure distance (mm) - pour ToF
   uint16_t _hallValue;         // Derniere lecture analogique Hall
@@ -66,7 +81,6 @@ private:
   uint8_t _fillPercent;        // Pourcentage remplissage (0-100)
 
   // Non-blocking ToF state machine (single-shot: start -> poll once per update).
-  bool _tofRanging;                 // Une mesure single-shot est en cours
   unsigned long _tofRangeStartTime; // Debut de la mesure en cours (pour le timeout)
   bool _measurementValid;           // La derniere mesure ToF est valide (pas un timeout)
   unsigned long _lastValidReadTime; // Horodatage de la derniere mesure ToF valide
@@ -89,7 +103,6 @@ private:
 
   // PID state
   float _pidIntegral;
-  float _pidLastError;
   unsigned long _lastPidTime;
   unsigned long _lastReadTime;
 

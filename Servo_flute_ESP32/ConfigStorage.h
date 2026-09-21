@@ -121,8 +121,11 @@ struct RuntimeConfig {
   uint8_t valveServoPcaChannel;      // Canal PCA9685 si valve=servo
   uint8_t valveServoCloseAngle;      // Angle ferme servo valve (0-180)
   uint8_t valveServoOpenAngle;       // Angle ouvert servo valve (0-180)
-  uint8_t valveServoDir;             // 0=horaire, 1=anti-horaire
-  uint16_t solenoidInterNoteMs;      // Temps min entre notes ou valve reste ouverte (ms)
+  // NB: valveServoDir et solenoidInterNoteMs ont ete supprimes. Le premier etait
+  // redondant (les angles ferme/ouvert definissent deja le sens de course), le
+  // second n'etait qu'une copie jamais relue de minNoteIntervalForValveCloseMs.
+  // L'ancienne cle JSON "sol_inter" reste acceptee en lecture pour la
+  // compatibilite ascendante.
   uint8_t motorType;                 // 0=PWM variable, 1=On/Off
   // Ventilateur (mode 3)
   uint8_t fanPin;                    // GPIO PWM ventilateur
@@ -199,12 +202,49 @@ enum ConfigLoadStatus {
   CONFIG_STORAGE_ERROR
 };
 
+// Etat du systeme de fichiers LittleFS.
+//
+// FAIL-SAFE : le firmware ne monte JAMAIS avec formatage automatique. Un
+// LittleFS.begin(true) reformate la partition au premier echec de montage, ce
+// qui, sur un instrument autonome, detruit silencieusement /config.json et les
+// fichiers MIDI, puis redemarre sur la configuration par defaut - c'est-a-dire
+// potentiellement sur un cablage hardware different (autre mode d'air, autres
+// broches de pompe). Un montage impossible laisse donc la machine en mode
+// recovery : OE des servos desactive, actionneurs interdits, diagnostic explicite,
+// et formatage uniquement sur action volontaire de l'utilisateur.
+enum FilesystemStatus {
+  FS_NOT_MOUNTED,     // begin() pas encore appele
+  FS_MOUNTED,         // monte, utilisable
+  FS_MOUNT_FAILED,    // montage impossible (corruption / partition absente)
+  FS_FORMATTED        // formate a la demande explicite de l'utilisateur, puis monte
+};
+
 #define CONFIG_MAX_POST_BYTES 32768
 #define CONFIG_MIN_NOTE_DURATION_LIMIT_MS 0
 #define CONFIG_MAX_NOTE_DURATION_LIMIT_MS 5000
 #define CONFIG_MAX_SERVO_DELAY_MS 2000
 #define CONFIG_MAX_GPIO 39
 #define CONFIG_MAX_PWM 255
+// Bornes de validation des flottants et des temporisations. Elles existent pour
+// interdire les valeurs qui provoqueraient une division par zero, un debordement
+// ou un mouvement de servo dangereux, pas pour brider un reglage musical.
+#define CONFIG_MIN_VIBRATO_HZ 0.1f
+#define CONFIG_MAX_VIBRATO_HZ 20.0f
+#define CONFIG_MAX_VIBRATO_DEG 45.0f
+#define CONFIG_MIN_CC2_CURVE 0.1f
+#define CONFIG_MAX_CC2_CURVE 4.0f
+#define CONFIG_MAX_INTERVAL_MS 5000
+#define CONFIG_MAX_SOLENOID_PULSE_MS 5000
+#define CONFIG_MAX_CC2_TIMEOUT_MS 60000
+#define CONFIG_MIN_ATTACK_MS 10
+#define CONFIG_MAX_ATTACK_MS 1000
+#define CONFIG_MAX_FAN_IDLE_TIMEOUT_MS 60000
+#define CONFIG_MAX_PUMP_STAGGER_MS 5000
+#define CONFIG_MAX_UNPOWER_MS 60000
+#define CONFIG_MAX_SENSOR_MM 4000
+#define CONFIG_MAX_ADC_RAW 4095
+#define CONFIG_MIN_MIDI_LIMIT_KB 50
+#define CONFIG_MAX_MIDI_LIMIT_KB 2000
 
 bool modeUsesPhysicalValve(uint8_t airMode);
 bool configurationUsesSolenoidValve(const RuntimeConfig& config);
@@ -257,6 +297,19 @@ public:
 
   // Sauvegarde la config actuelle sur LittleFS
   static bool save();
+  // Sauvegarde une configuration donnee (candidat transactionnel) sans toucher
+  // a la configuration active.
+  static bool saveFrom(const RuntimeConfig& source);
+
+  // --- Systeme de fichiers (fail-safe, voir FilesystemStatus) ---------------
+  // Monte LittleFS SANS formatage automatique. Retourne true si monte.
+  static bool beginFilesystem();
+  static FilesystemStatus filesystemStatus();
+  static const String& filesystemError();
+  static bool isFilesystemMounted();
+  // Formatage VOLONTAIRE : detruit tout le contenu (config + MIDI). N'est jamais
+  // appele automatiquement ; reserve au mode recovery declenche par l'utilisateur.
+  static bool formatFilesystem();
 
   // Remet cfg aux valeurs par defaut et sauvegarde
   static bool resetToDefaults();

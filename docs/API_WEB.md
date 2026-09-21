@@ -4,23 +4,31 @@ The ESP32 exposes a REST API and a WebSocket endpoint used by the embedded web U
 
 ## REST endpoints
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/` | Main single-page web interface |
-| GET | `/api/status` | Runtime status JSON |
-| GET | `/api/config` | Full runtime configuration |
-| POST | `/api/config` | Partial configuration update |
-| POST | `/api/config/reset` | Reset configuration to defaults |
-| POST | `/api/config/factory` | Factory reset and reopen first-use wizard |
-| POST | `/api/midi` | Upload a MIDI file |
-| GET | `/api/midi/list` | List stored MIDI files |
-| POST | `/api/midi/load` | Load an existing MIDI file |
-| POST | `/api/midi/delete` | Delete a stored MIDI file |
-| GET | `/api/wifi/scan` | Start WiFi scan |
-| GET | `/api/wifi/results` | Poll WiFi scan results |
-| POST | `/api/wifi/connect` | Save WiFi credentials and connect |
-| GET | `/api/wifi/status` | Current WiFi state |
-| GET | `/gmb/descriptor.json` | General-Midi-Boop v2 capability descriptor |
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/` | public | Main single-page web interface |
+| GET | `/api/auth/status` | public | Whether the caller holds a valid session |
+| POST | `/api/auth/login` | public | Exchange the admin password for a session token |
+| POST | `/api/auth/password` | token | Change the admin password |
+| POST | `/api/auth/hotspot` | token | Regenerate the hotspot WPA2 key |
+| GET | `/api/status` | public | Runtime status JSON |
+| GET | `/api/diagnostics` | public | Passive hardware / configuration diagnostics |
+| POST | `/api/diagnostics/run` | public | Same passive report (no actuator movement) |
+| GET | `/api/config` | public | Full runtime configuration (carries no secret) |
+| POST | `/api/config` | token | Partial configuration update (transactional) |
+| POST | `/api/config/reset` | token | Reset configuration to defaults |
+| POST | `/api/config/factory` | token | Factory reset and reopen first-use wizard |
+| POST | `/api/fs/format` | token | Recovery: erase and re-create LittleFS (explicit confirmation) |
+| POST | `/api/restart` | token | Safe the hardware and restart |
+| POST | `/api/midi` | token | Upload a MIDI file |
+| GET | `/api/midi/list` | token | List stored MIDI files |
+| POST | `/api/midi/load` | token | Load an existing MIDI file |
+| POST | `/api/midi/delete` | token | Delete a stored MIDI file |
+| GET | `/api/wifi/scan` | token | Start WiFi scan |
+| GET | `/api/wifi/results` | token | Poll WiFi scan results |
+| POST | `/api/wifi/connect` | token | Save WiFi credentials and connect |
+| GET | `/api/wifi/status` | public | Current WiFi state |
+| GET | `/gmb/descriptor.json` | public | General-Midi-Boop v2 capability descriptor |
 
 ### `GET /gmb/descriptor.json`
 
@@ -176,36 +184,117 @@ REST and WebSocket payloads that include user-provided strings are serialized wi
 
 ## Post-audit API safety contract
 
-`GET /api/diagnostics` is passive and must not move hardware. Active diagnostics must be requested explicitly, bounded by firmware timeouts, cancellable, and associated with the owning client. Variable strings in JSON responses must be emitted through a JSON serializer to preserve escaping for SSIDs, filenames, device names and error text.
+`GET /api/diagnostics` and `POST /api/diagnostics/run` are passive and never move
+hardware. An active test is requested explicitly through the WebSocket test
+commands, is bounded by `TEST_SESSION_MAX_MS`, is cancellable, and belongs to the
+client that started it. Variable strings in JSON responses go through a JSON
+serializer so SSIDs, filenames, device names and error text are escaped.
 
-Configuration reset and factory reset responses must report `applied:false` and `restart_required:true` after stopping active notes and manual tests; they must not claim the defaults are already active until reboot.
+Configuration reset and factory reset report `applied:false` and
+`restart_required:true` after safing the hardware; they do not claim the defaults
+are already active until the controlled reboot has happened.
 
-## Access model and known security limitation
+### Transactional configuration write
 
-**The web API and WebSocket are unauthenticated.** There is no session token, HTTP
-authentication, or `Origin`/host check on the mutable routes or on `/ws`. In
-addition, the SoftAP is open when `AP_PASSWORD` is empty. Consequently, **anyone who
-can reach the device on the network** can, without credentials:
+`POST /api/config` never mutates the running configuration while it parses.
+It copies the active configuration into a candidate, applies the JSON to that
+candidate, normalises and fully validates it, decides whether the change needs a
+hardware re-init, persists the candidate, and only then replaces the active
+configuration in a single assignment performed by the main loop. Consequences
+visible from the API:
 
-- move the finger / airflow / angle servos and open the valve;
-- start the pump(s) and the fan, and run manual actuator tests;
-- change the configuration and Wi-Fi settings, and trigger reset / factory reset;
-- restart the ESP32;
-- upload, load and delete MIDI files.
+| Outcome | Response | Device state |
+|---|---|---|
+| Invalid candidate | `400 {"ok":false,"error":"<reason>"}` | unchanged (configuration and controllers) |
+| Save failed | `500 {"ok":false,"saved":false,"error":"storage_failed"}` | unchanged; keeps running on the previously persisted configuration |
+| Applied | `200 {"ok":true,"saved":true,"applied":true,"restart_required":false}` | new configuration active |
+| Needs a hardware re-init | `200 {"ok":true,"saved":true,"applied":false,"restart_required":true,"restarting":true}` | new configuration saved, **old one still active**, actuators safed, controlled reboot scheduled |
+| Loop busy / not answering | `503 {"ok":false,"error":"busy"}` | unchanged |
 
-This is a deliberate, documented limitation of the current firmware, which assumes a
-**trusted, isolated network** (a private SoftAP or a home LAN you control). Until an
-authentication pass is done, operate the instrument accordingly:
+A configuration change bumps the General-Midi-Boop revision only in the "applied"
+row — validated, saved *and* active. A restart-required change is announced after
+the reboot, when it really takes effect.
 
-- set a non-empty `AP_PASSWORD` (WPA2) so the SoftAP is not open;
-- do **not** expose the device to an untrusted LAN, a guest network, or the Internet
-  (no port-forwarding / reverse proxy without adding auth in front);
-- treat physical safety as network-gated: on an open network, an attacker could drive
-  the actuators. The firmware-side safeguards (calibration ownership, manual-test
-  timeout, config lock, safe-state on disconnect) bound *misuse and faults*, they do
-  **not** provide *authentication*.
+### MIDI upload
 
-Planned hardening for a future security pass (not yet implemented): a settable admin
-token required by the mutable REST routes and the WebSocket, an `Origin` check, and a
-clear split between the always-public read-only status and the authenticated hardware
-commands.
+`POST /api/midi` holds an exclusive server-side upload slot. A second concurrent
+client gets `409 {"error":"upload_busy"}` and never touches the transfer in
+flight; an abandoned transfer releases the slot after `UPLOAD_LOCK_TIMEOUT_MS`.
+Each transfer writes to its own temporary file outside `/midi`, so it is neither
+listed nor counted against the quota, and the destination file is replaced only
+**after** the upload has been fully validated (name and extension, size, storage
+quota, real MIDI parse). A rejected upload therefore never destroys the file it
+was meant to replace. Error codes: `upload_busy`, `unauthorized`, `invalid_name`,
+`too_large`, `write_failed`, `storage_full`, `invalid_midi`, `storage_error`.
+
+## Access model
+
+### Authentication
+
+Every route that changes something — configuration, reset, restart, filesystem
+recovery, MIDI files, Wi-Fi — and every WebSocket command requires a session
+token. Purely informative routes (`/`, `/api/status`, `/api/config` read,
+`/api/diagnostics`, `/api/wifi/status`, `/gmb/descriptor.json`,
+`/api/auth/status`) stay open: they expose no secret (the Wi-Fi password is
+never serialized) and are what a controller or a monitoring page needs.
+
+```
+POST /api/auth/login   {"password":"<admin password>"}
+      -> 200 {"ok":true,"token":"<32 hex chars>","ttl_ms":3600000}
+      -> 401 {"ok":false,"error":"invalid_credentials"}
+```
+
+The token is then sent on every protected call, as the `X-Auth-Token` header or
+as a `?token=` query parameter. Sessions live in RAM only (at most four, sliding
+one-hour expiry, constant-time comparison) and are dropped on reboot.
+
+The WebSocket is authenticated in-band: the server answers a new connection with
+`{"t":"auth_required"}` and refuses every command with
+`{"t":"error","msg":"unauthorized"}` until the client sends
+`{"t":"auth","token":"<token>"}`. The embedded UI does this automatically and
+shows a sign-in overlay when a 401 comes back.
+
+### Initial credentials
+
+Both secrets are generated **randomly at first boot** from the ESP32 hardware RNG
+and stored in NVS:
+
+- the hotspot WPA2 key (14 characters) — see [Wi-Fi modes](WIFI_MODES.md);
+- the web admin password (14 characters).
+
+Both are printed on the serial console at boot. The admin password can be changed
+from the UI (`POST /api/auth/password`, minimum 8 characters); a user-chosen
+password is stored only as a salted, iterated SHA-256 digest and is therefore no
+longer displayable. Changing it revokes every open session.
+
+**Recovery:** holding the BOOT button while the board powers up (5 s) regenerates
+both secrets and prints them on the serial console. This is a physical-presence
+path, so a headless instrument whose password was lost is never bricked.
+
+### What authentication does and does not cover
+
+Authentication bounds *who* may command the instrument. It does not replace
+electrical protection: keep actuator power switchable, and do not expose the
+device directly to the Internet. There is no TLS — the token travels in clear on
+the local link, so treat the network as the trust boundary it is.
+
+### `hardware_not_ready`
+
+A command that would physically move something (finger servo, airflow servo,
+angle servo, solenoid/valve, pump, fan, test note, automatic calibration, range
+finder) is refused whenever the hardware did not initialise: missing PCA9685 at
+0x40 (or 0x41 when the configuration needs it), unsafe boot configuration, or an
+unmountable filesystem.
+
+- REST: `503 {"ok":false,"error":"hardware_not_ready"}`
+- WebSocket: `{"t":"error","msg":"hardware_not_ready"}`
+
+The refusal is enforced twice: once in the web layer, so the client gets an
+explicit answer, and once in `InstrumentManager::applyCommand()`, which is the
+single point where any actuator order is applied. After a PCA failure there is
+therefore no path — web, MIDI, calibration or physical button — that can energise
+an actuator.
+
+Diagnostics, configuration read and write, reset, filesystem recovery and network
+recovery remain available in that state, on purpose: they are what you need to
+get out of it.

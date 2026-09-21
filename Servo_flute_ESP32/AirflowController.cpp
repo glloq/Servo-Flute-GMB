@@ -1,11 +1,15 @@
 #include "AirflowController.h"
 #include "ConfigStorage.h"
 #include "ServoMath.h"
+#include "VibratoMath.h"
+#include <math.h>
 
-// Lookup table pour sin() - 256 entrees pour une periode complete [0, 2pi]
-// Valeurs: -127 a +127 (represente -1.0 a +1.0)
-// Note ESP32 : PROGMEM est ignore (flash mappe en memoire) mais compile sans erreur
-const int8_t SIN_LUT[256] PROGMEM = {
+// Table sinus du vibrato : definition unique, declaree par VibratoMath.h.
+// Valeurs SIGNEES -127..+127 (represente -1.0 a +1.0) sur une periode complete.
+// Note ESP32 : PROGMEM est ignore (flash mappe en memoire) mais compile sans erreur.
+namespace VibratoMath {
+
+const int8_t SIN_LUT[SIN_LUT_SIZE] PROGMEM = {
   0, 3, 6, 9, 12, 16, 19, 22, 25, 28, 31, 34, 37, 40, 43, 46,
   49, 51, 54, 57, 60, 63, 65, 68, 71, 73, 76, 78, 81, 83, 85, 88,
   90, 92, 94, 96, 98, 100, 102, 104, 106, 107, 109, 111, 112, 113, 115, 116,
@@ -24,19 +28,26 @@ const int8_t SIN_LUT[256] PROGMEM = {
   -49, -46, -43, -40, -37, -34, -31, -28, -25, -22, -19, -16, -12, -9, -6, -3
 };
 
-// Fonction helper pour lookup rapide sin()
-// Sur ESP32, pgm_read_byte() est un simple acces memoire (pas de flash separation)
-inline float fastSin(unsigned long timeMs, float frequency) {
-  // Garde: une frequence <= 0 ou trop haute (>1000 Hz -> period 0) provoquerait
-  // un modulo par zero. Peut arriver si vibratoFrequencyHz est mal configure.
-  if (frequency <= 0.0f) return 0.0f;
+float sinLutAt(uint8_t index) {
+  // Lecture SIGNEE. pgm_read_byte() rendrait un uint8_t et transformerait la
+  // demi-periode negative en valeurs 129..255 (bug du vibrato unipolaire).
+  // Sur ESP32 la flash est mappee en memoire : l'acces direct est correct.
+  return (float)SIN_LUT[index] / SIN_LUT_SCALE;
+}
+
+float fastSin(unsigned long timeMs, float frequency) {
+  // Garde: une frequence <= 0, non finie, ou trop haute (>1000 Hz -> periode 0)
+  // provoquerait un modulo par zero. Peut arriver si vibratoFrequencyHz est mal
+  // configure ou si un NaN a traverse la configuration.
+  if (!isfinite(frequency) || frequency <= 0.0f) return 0.0f;
   unsigned long period = (unsigned long)(1000.0 / frequency);
   if (period == 0) return 0.0f;
   unsigned long phase = timeMs % period;
-  uint8_t index = (uint8_t)((phase * 256UL) / period);
-
-  return pgm_read_byte(&SIN_LUT[index]) / SIN_LUT_SCALE;
+  uint8_t index = (uint8_t)((phase * (unsigned long)SIN_LUT_SIZE) / period);
+  return sinLutAt(index);
 }
+
+}  // namespace VibratoMath
 
 AirflowController::AirflowController(PwmWriteFn writePwm)
   : _writePwm(writePwm), _solenoidOpen(false), _solenoidOpenTime(0),
@@ -424,7 +435,7 @@ void AirflowController::update() {
     float vibratoAmplitude = (_vibratoActive && _ccModulation > 0) ?
       (_ccModulation / (float)MIDI_CC_MAX) * cfg.vibratoMaxAmplitudeDeg : 0;
     float vibratoOffset = vibratoAmplitude > 0 ?
-      fastSin(millis(), cfg.vibratoFrequencyHz) * vibratoAmplitude : 0;
+      VibratoMath::fastSin(millis(), cfg.vibratoFrequencyHz) * vibratoAmplitude : 0;
 
     int16_t finalAngle = currentBase + (int16_t)(vibratoOffset + 0.5);
 

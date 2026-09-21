@@ -1,7 +1,10 @@
 #include "WifiMidiHandler.h"
 #include "InstrumentManager.h"
 #include "ConfigStorage.h"
+#include "DeviceSecrets.h"
 #include "gmb/GmbRuntime.h"
+
+#include <ArduinoJson.h>
 
 #include <WiFi.h>
 #include <ESPmDNS.h>
@@ -13,33 +16,6 @@ USING_NAMESPACE_APPLEMIDI;
 
 static const byte DNS_PORT = 53;
 
-// Echappe une chaine pour l'inserer entre guillemets dans du JSON. Les SSID sont
-// controles par les AP environnants et peuvent contenir " ou \ (ou des octets
-// de controle) qui, sans echappement, cassent la reponse du scan Wi-Fi.
-static String jsonEscape(const String& s) {
-  String out;
-  out.reserve(s.length() + 2);
-  for (size_t i = 0; i < s.length(); i++) {
-    char c = s[i];
-    switch (c) {
-      case '"':  out += "\\\""; break;
-      case '\\': out += "\\\\"; break;
-      case '\n': out += "\\n";  break;
-      case '\r': out += "\\r";  break;
-      case '\t': out += "\\t";  break;
-      default:
-        if ((uint8_t)c < 0x20) {
-          char buf[7];
-          snprintf(buf, sizeof(buf), "\\u%04x", (uint8_t)c);
-          out += buf;
-        } else {
-          out += c;
-        }
-    }
-  }
-  return out;
-}
-
 // Instance rtpMIDI globale
 APPLEMIDI_CREATE_DEFAULTSESSION_INSTANCE();
 
@@ -48,7 +24,8 @@ WifiMidiHandler* WifiMidiHandler::_instance = nullptr;
 
 WifiMidiHandler::WifiMidiHandler()
   : _instrument(nullptr), _state(WIFI_STATE_DISCONNECTED),
-    _connectStartTime(0), _sessionActive(false) {
+    _connectStartTime(0), _sessionActive(false),
+    _mdnsStarted(false), _rtpMidiStarted(false), _captiveDnsStarted(false) {
   _instance = this;
 }
 
@@ -80,29 +57,24 @@ void WifiMidiHandler::update() {
         Serial.println(WiFi.localIP());
       }
 
-      // Configurer mDNS et rtpMIDI apres connexion
-      setupMDNS();
-      setupRtpMidi();
+      // Le lien est etabli : (re)demarrer mDNS + rtpMIDI une seule fois.
+      startNetworkServices();
     } else if ((millis() - _connectStartTime) >= WIFI_CONNECT_TIMEOUT_MS) {
       // Timeout : fallback vers AP
       if (DEBUG) {
         Serial.println("DEBUG: WifiMidiHandler - Timeout connexion, fallback AP");
       }
-      WiFi.disconnect();
       startAP();
     }
   }
 
   // Surveiller la chute d'une connexion STA etablie : si le lien Wi-Fi tombe
   // (routeur/AP disparu), la session rtpMIDI meurt sans garantie de callback
-  // AppleMIDI. On coupe le son puis on retombe en mode AP.
+  // AppleMIDI. startAP() coupe le son (handleTransportLost) avant de demonter
+  // les services reseau, puis remonte le hotspot.
   if (_state == WIFI_STATE_STA_CONNECTED && WiFi.status() != WL_CONNECTED) {
     if (DEBUG) {
       Serial.println("DEBUG: WifiMidiHandler - Lien STA perdu -> panic + fallback AP");
-    }
-    _sessionActive = false;
-    if (_instrument != nullptr) {
-      _instrument->handleTransportLost();
     }
     startAP();
     return;
@@ -114,17 +86,64 @@ void WifiMidiHandler::update() {
   }
 }
 
+void WifiMidiHandler::stopNetworkServices(bool notifyTransportLost) {
+  // 1. Couper le son AVANT tout demontage. Une note tenue via rtpMIDI ne
+  //    recevra jamais son Note Off une fois la session fermee : sans ce panic,
+  //    la valve, le souffle, la pompe et le ventilateur resteraient actifs.
+  if (notifyTransportLost && _sessionActive && _instrument != nullptr) {
+    _instrument->handleTransportLost();
+  }
+  _sessionActive = false;
+
+  // 2. Demonter les services, chacun une seule fois. L'ancien code appelait
+  //    MDNS.begin() a chaque bascule sans jamais MDNS.end() : les annonces
+  //    s'empilaient et le nom d'hote pouvait rester sur l'ancienne interface.
+  if (_captiveDnsStarted) {
+    stopCaptiveDNS();
+    _captiveDnsStarted = false;
+  }
+  if (_mdnsStarted) {
+    MDNS.end();
+    _mdnsStarted = false;
+  }
+  // AppleMIDI est un objet global : on ne le detruit pas, mais ses sockets UDP
+  // sont lies a l'interface reseau qu'on vient d'arreter. Le drapeau est donc
+  // remis a zero pour que startNetworkServices() les relie EXACTEMENT UNE FOIS
+  // apres la bascule. C'est la re-initialisation multiple et incoherente qui
+  // posait probleme, pas la re-initialisation elle-meme : l'ancien code appelait
+  // setupRtpMidi() et MDNS.begin() a chaque passage sans jamais rien arreter.
+  // (WiFiUDP::begin() ferme le socket precedent avant d'en ouvrir un nouveau,
+  // donc ce second appel ne fuit pas de descripteur.)
+  _rtpMidiStarted = false;
+}
+
+void WifiMidiHandler::startNetworkServices() {
+  if (!_mdnsStarted) {
+    setupMDNS();
+    _mdnsStarted = true;
+  }
+  if (!_rtpMidiStarted) {
+    setupRtpMidi();
+    _rtpMidiStarted = true;
+  }
+  if (_state == WIFI_STATE_AP_ACTIVE && !_captiveDnsStarted) {
+    startCaptiveDNS();
+    _captiveDnsStarted = true;
+  }
+}
+
 void WifiMidiHandler::startSTA(const char* ssid, const char* password) {
   if (DEBUG) {
     Serial.print("DEBUG: WifiMidiHandler - Connexion a: ");
     Serial.println(ssid);
   }
 
-  // Arreter le DNS captive portal si on quitte le mode AP
-  if (_state == WIFI_STATE_AP_ACTIVE) {
-    stopCaptiveDNS();
-  }
+  // Demontage centralise (panic si une session pouvait etre active, arret du DNS
+  // captif et de mDNS) avant de changer de mode radio.
+  stopNetworkServices(true);
 
+  WiFi.softAPdisconnect(true);
+  WiFi.disconnect(true);
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
 
@@ -138,18 +157,19 @@ void WifiMidiHandler::startAP() {
     Serial.println(AP_SSID);
   }
 
+  // Demontage centralise (panic + arret des services) avant de basculer la radio.
+  stopNetworkServices(true);
+  WiFi.disconnect(true);
   WiFi.mode(WIFI_AP);
 
-  // Ne JAMAIS ouvrir un hotspot non chiffre : sans mot de passe configure (ou
-  // trop court pour du WPA2), on en derive un stable a partir du MAC du chip.
-  // Un client doit connaitre cette cle pour atteindre l'API/WebSocket.
+  // Ne JAMAIS ouvrir un hotspot non chiffre. La cle vient d'un VRAI secret
+  // aleatoire genere au premier demarrage et conserve en NVS (DeviceSecrets) :
+  // elle n'est derivee ni du MAC ni du BSSID, qui sont diffuses en clair dans
+  // chaque trame 802.11 et ne sont donc pas des secrets.
   String apPass = AP_PASSWORD;
   bool generated = false;
   if (apPass.length() < 8) {
-    uint32_t id = (uint32_t)(ESP.getEfuseMac() & 0xFFFFFF);
-    char buf[16];
-    snprintf(buf, sizeof(buf), "flute-%06X", id);
-    apPass = buf;
+    apPass = DeviceSecrets::apPassword();
     generated = true;
   }
   WiFi.softAP(AP_SSID, apPass.c_str(), AP_CHANNEL, false, AP_MAX_CONNECTIONS);
@@ -159,7 +179,7 @@ void WifiMidiHandler::startAP() {
   // Toujours afficher la cle (meme hors DEBUG) pour un appareil headless.
   Serial.print("WifiMidiHandler - AP WPA2 '");
   Serial.print(AP_SSID);
-  Serial.print(generated ? "' (mot de passe genere): " : "' (mot de passe configure): ");
+  Serial.print(generated ? "' (cle generee, stockee en NVS): " : "' (cle compilee): ");
   Serial.println(apPass);
 
   if (DEBUG) {
@@ -167,18 +187,13 @@ void WifiMidiHandler::startAP() {
     Serial.println(WiFi.softAPIP());
   }
 
-  // Configurer mDNS et rtpMIDI en mode AP aussi
-  setupMDNS();
-  setupRtpMidi();
-
-  // Demarrer le DNS captive portal
-  startCaptiveDNS();
+  // mDNS + rtpMIDI + DNS captif, chacun demarre une seule fois.
+  startNetworkServices();
 }
 
 void WifiMidiHandler::forceAP() {
-  if (_state == WIFI_STATE_STA_CONNECTED || _state == WIFI_STATE_CONNECTING) {
-    WiFi.disconnect();
-  }
+  // forceAP() peut arriver pendant une note (appui long sur BOOT). startAP()
+  // enchaine panic -> demontage -> remontage, donc rien ne reste bloque.
   startAP();
 }
 
@@ -349,20 +364,23 @@ bool WifiMidiHandler::isScanComplete() const {
 }
 
 String WifiMidiHandler::getScanResultsJson() const {
+  // Les SSID sont controles par les AP environnants : ils peuvent contenir des
+  // guillemets, des antislashs ou des octets de controle. La serialisation passe
+  // donc par ArduinoJson, qui echappe correctement, plutot que par une
+  // concatenation manuelle.
   int n = WiFi.scanComplete();
-  String json = "[";
-
+  JsonDocument doc;
+  JsonArray arr = doc.to<JsonArray>();
   if (n > 0) {
     for (int i = 0; i < n; i++) {
-      if (i > 0) json += ",";
-      json += "{\"ssid\":\"" + jsonEscape(WiFi.SSID(i)) + "\"";
-      json += ",\"rssi\":" + String(WiFi.RSSI(i));
-      json += ",\"enc\":" + String(WiFi.encryptionType(i) != WIFI_AUTH_OPEN ? 1 : 0);
-      json += "}";
+      JsonObject net = arr.add<JsonObject>();
+      net["ssid"] = WiFi.SSID(i);
+      net["rssi"] = WiFi.RSSI(i);
+      net["enc"] = (WiFi.encryptionType(i) != WIFI_AUTH_OPEN) ? 1 : 0;
     }
   }
-
-  json += "]";
+  String json;
+  serializeJson(doc, json);
   WiFi.scanDelete();
   return json;
 }
@@ -372,20 +390,10 @@ void WifiMidiHandler::connectToNetwork(const char* ssid, const char* password) {
     Serial.print("DEBUG: WifiMidiHandler - Connexion vers: ");
     Serial.println(ssid);
   }
-
-  // Sauvegarder dans config
-  strncpy(cfg.wifiSsid, ssid, sizeof(cfg.wifiSsid) - 1);
-  cfg.wifiSsid[sizeof(cfg.wifiSsid) - 1] = '\0';
-  strncpy(cfg.wifiPassword, password, sizeof(cfg.wifiPassword) - 1);
-  cfg.wifiPassword[sizeof(cfg.wifiPassword) - 1] = '\0';
-  ConfigStorage::save();
-
-  // Deconnecter et reconnecter en STA
-  if (_state == WIFI_STATE_AP_ACTIVE || _state == WIFI_STATE_CONNECTING) {
-    WiFi.disconnect();
-    delay(100);
-  }
-
+  // NB: la persistance des identifiants n'est PLUS faite ici. Cette methode est
+  // appelee depuis la tache loop() par le commit transactionnel de
+  // /api/wifi/connect, qui ecrit la configuration avant de demander la bascule.
+  // startSTA() effectue lui-meme le demontage centralise (panic + services).
   startSTA(ssid, password);
 }
 

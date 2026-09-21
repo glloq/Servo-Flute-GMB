@@ -51,6 +51,7 @@
 #include "StatusLed.h"
 #include "HardwareInputs.h"
 #include "WirelessManager.h"
+#include "DeviceSecrets.h"
 #include "gmb/GmbRuntime.h"
 
 // Instances globales
@@ -110,25 +111,30 @@ void setup() {
     Serial.println("========================================");
   }
 
-  // Initialiser LittleFS (pour stockage fichiers MIDI et config future)
-  if (!LittleFS.begin(true)) {  // true = formater si premier usage
-    if (DEBUG) {
-      Serial.println("ERREUR: LittleFS - Echec initialisation!");
-    }
-  } else {
-    if (DEBUG) {
+  // Monter LittleFS SANS formatage automatique (fail-safe, voir ConfigStorage.h).
+  // Un LittleFS.begin(true) reformaterait la partition au premier echec de
+  // montage : /config.json et les fichiers MIDI seraient perdus en silence et
+  // l'instrument repartirait sur une configuration par defaut qui ne correspond
+  // pas forcement au cablage reel. Un echec laisse donc le firmware en mode
+  // recovery, actionneurs interdits, jusqu'a une action volontaire.
+  bool fsMounted = ConfigStorage::beginFilesystem();
+  if (DEBUG) {
+    if (fsMounted) {
       Serial.print("DEBUG: LittleFS - OK (");
       Serial.print(LittleFS.totalBytes() / 1024);
       Serial.print("KB total, ");
       Serial.print(LittleFS.usedBytes() / 1024);
       Serial.println("KB utilise)");
+    } else {
+      Serial.println("ERREUR: LittleFS - montage impossible, MODE RECOVERY (aucun actionneur)");
     }
   }
 
   // Charger et valider la configuration depuis LittleFS avant tout mouvement servo.
   ConfigLoadStatus configStatus = ConfigStorage::loadWithStatus();
   ConfigValidationResult bootValidation = validateAndNormalizeConfig(cfg);
-  bool bootConfigSafe = configStatus != CONFIG_INVALID_FALLBACK && configStatus != CONFIG_STORAGE_ERROR && bootValidation.valid &&
+  bool bootConfigSafe = fsMounted && configStatus != CONFIG_INVALID_FALLBACK &&
+                        configStatus != CONFIG_STORAGE_ERROR && bootValidation.valid &&
                         (configStatus == CONFIG_DEFAULTS || configStatus == CONFIG_LOADED);
   if (!bootConfigSafe) {
     if (DEBUG) {
@@ -151,14 +157,40 @@ void setup() {
   // comme ports GMB et peuvent recevoir une requete des la connexion.
   gmb::runtime::begin(bootConfigSafe);
 
+  // Secrets d'acces (cle WPA2 du hotspot + mot de passe de l'interface web).
+  // Generes aleatoirement au premier demarrage et conserves en NVS : ils ne
+  // derivent ni du MAC ni du BSSID, qui ne sont pas des secrets.
+  DeviceSecrets::begin();
+
   // Initialiser les entrees hardware (bouton + switch)
   inputs.begin();
+
+  // Recuperation par presence physique : maintenir BOOT au demarrage regenere
+  // les secrets d'acces et les affiche sur le port serie. Sans cela, un appareil
+  // headless dont on a perdu le mot de passe serait definitivement inaccessible.
+  if (digitalRead(PAIRING_BUTTON_PIN) == LOW) {
+    unsigned long holdStart = millis();
+    bool held = true;
+    while (held && (millis() - holdStart) < SECRET_RESET_HOLD_MS) {
+      held = (digitalRead(PAIRING_BUTTON_PIN) == LOW);
+      delay(20);
+    }
+    if (held) {
+      DeviceSecrets::regenerateApPassword();
+      DeviceSecrets::regenerateAdminPassword();
+      Serial.println("SECURITE: secrets d'acces regeneres (appui long sur BOOT au demarrage)");
+    }
+  }
+  DeviceSecrets::printToSerial();
 
   // Initialiser la LED d'etat
   statusLed.begin();
   statusLed.setPattern(LED_BLINK_FAST);  // Demarrage en cours
 
-  // Creer l'instrument manager seulement si la configuration valide permet une initialisation sure.
+  // Creer l'instrument manager seulement si le systeme de fichiers est monte ET
+  // que la configuration chargee est valide : sinon l'OE des PCA9685 reste HAUT
+  // et aucun actionneur ne peut etre pilote, quel que soit le chemin (web, MIDI,
+  // calibration). Voir InstrumentManager::applyCommand().
   if (bootConfigSafe) {
     instrument = new InstrumentManager();
     g_actuatorsEnabled = instrument->beginSafe();

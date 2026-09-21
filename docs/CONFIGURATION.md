@@ -117,6 +117,47 @@ Software CI covers ESP32 firmware build, PlatformIO native behavior tests, pytes
 
 Configuration and API tests include special strings: device name `Flute "A"`, Wi-Fi SSID `atelier\\wifi`, and MIDI filename `étude "test".mid`.
 
+## Validated value ranges
+
+The firmware normalises or rejects every persisted value before it becomes
+active. Floating-point fields are also checked with `isfinite()`, because a NaN
+coming from a corrupted `/config.json` or a crafted REST body passes every
+comparison and would otherwise reach the servo maths.
+
+| Field | Range | Why |
+|---|---|---|
+| `vib_freq` (`vibratoFrequencyHz`) | 0.1 – 20 Hz, finite | the oscillator computes `1000 / f` then a modulo; 0, a negative value or a NaN gives a zero period (division by zero) |
+| `vib_amp` (`vibratoMaxAmplitudeDeg`) | 0 – 45°, finite | a larger swing pushes the airflow servo out of its calibrated travel |
+| `cc2_curve` (`cc2ResponseCurve`) | 0.1 – 4.0, finite | it is a `powf()` exponent; 0 makes the breath response constant at full scale |
+| `cc_vol` / `cc_expr` / `cc_mod` / `cc_breath` / `cc_bright` / `cc2_thr` | 0 – 127 | MIDI 7-bit |
+| `valve_interval`, `sol_time` | 0 – 5000 ms | absurd inter-note or coil-drive windows |
+| `cc2_timeout`, `fan_idle_timeout` | 0 – 60000 ms | |
+| `air_atk_ms` | 10 – 1000 ms | |
+| `pump_stagger` | 0 – 5000 ms | anti-inrush delay |
+| `time_unpower` | 0 – 60000 ms | |
+| `sens_target` / `sens_min` / `sens_max` | 0 – 4000 mm, with `min < target < max` | a zero span divides by zero in the fill-percent computation |
+| `hall_low` / `hall_high` | 0 – 4095, with `low < high` | ESP32 ADC range; equal thresholds divide by zero |
+| `midi_limit` | 50 – 2000 KB | |
+| `kbd_mode` | 0 – 1 | |
+| `embouchure` | `trav`, `bec`, `naf`, `end`, `oca` | anything else falls back to `trav` |
+| `res_format` | `balloon`, `bellows` | |
+| `color` | `#RRGGBB` | |
+
+Out-of-range numeric values are clamped and reported through `corrected: true`;
+inconsistent relationships (duplicate PCA channels, duplicate MIDI notes,
+`min >= max`, conflicting GPIOs) are **rejected** with HTTP 400 and leave the
+running configuration untouched.
+
+## Transactional configuration write
+
+`POST /api/config` never mutates the running configuration while it parses: it
+works on a candidate copy, validates it completely, persists it, and only then
+replaces the active configuration in a single assignment. A validation failure or
+a storage failure therefore changes nothing — neither the active configuration
+nor the controllers. A change that needs a hardware re-init is saved but stays
+inactive until the controlled reboot, so the controllers always run on a
+configuration that matches the hardware actually initialised.
+
 ## Post-audit safety notes
 
 Configuration changes are validated before application. Changes that alter GPIO assignments, PCA9685 channels, counts, air mode, reservoir sensor type, or serial MIDI RX require a restart and must be treated as pending for the next boot rather than as fully active hardware state. Legacy JSON keys are read for compatibility, but obsolete valve timing/direction fields must not be relied on for new configurations.

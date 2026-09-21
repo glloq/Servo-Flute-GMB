@@ -146,8 +146,9 @@ void WirelessManager::handleButtonEvent(ButtonEvent event) {
         }
         return;
       }
-      _instrument->powerOnServos();
-      _instrument->getFingerCtrl().openAllFingers();
+      // Passe par la file de commandes : c'est le seul chemin d'application des
+      // ordres actionneurs, et il porte la protection hardware_not_ready.
+      _instrument->postCommand(ACMD_OPEN_ALL_FINGERS);
 
       if (DEBUG) {
         Serial.println("DEBUG: WirelessManager - Double appui: ouverture tous les doigts");

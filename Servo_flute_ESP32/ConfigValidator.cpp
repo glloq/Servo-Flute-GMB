@@ -1,4 +1,5 @@
 #include "ConfigStorage.h"
+#include <math.h>
 
 static void appendIssue(String& dst, const String& msg) {
   if (dst.length() > 0) dst += "; ";
@@ -48,6 +49,51 @@ static const char* gpioHardConflict(uint8_t pin) {
   if (isStrappingGpio(pin)) return "strapping pin (boot/flash-voltage select)";
   if (isI2sMicGpio(pin)) return "used by I2S microphone";
   return "";
+}
+
+// Un float venu du reseau (ou d'un /config.json corrompu) peut etre NaN ou Inf.
+// Dans ce cas on retombe sur `fallback` : sans cela, NaN traverse toutes les
+// comparaisons (NaN < lo et NaN > hi sont faux) et finit dans un calcul d'angle
+// servo ou une periode de vibrato -> modulo par zero ou consigne aberrante.
+static bool normalizeRangeFloat(float& v, float lo, float hi, float fallback) {
+  float old = v;
+  if (!isfinite(v)) {
+    v = fallback;
+  } else {
+    if (v < lo) v = lo;
+    if (v > hi) v = hi;
+  }
+  // Comparaison via memcmp-like : NaN != NaN, donc un remplacement de NaN compte
+  // bien comme une correction.
+  return !(old == v);
+}
+
+// Reduit une chaine de configuration a un ensemble ferme de valeurs connues.
+static bool normalizeEnumString(char* value, size_t size, const char* const* allowed,
+                                size_t allowedCount, const char* fallback) {
+  for (size_t i = 0; i < allowedCount; i++) {
+    if (strncmp(value, allowed[i], size) == 0) return false;
+  }
+  strncpy(value, fallback, size - 1);
+  value[size - 1] = '\0';
+  return true;
+}
+
+// Couleur "#RRGGBB" : tout autre contenu est remplace par la valeur par defaut.
+static bool normalizeHexColor(char* value, size_t size, const char* fallback) {
+  bool ok = (value[0] == '#');
+  if (ok) {
+    size_t len = strnlen(value, size);
+    ok = (len == 7);
+    for (size_t i = 1; ok && i < 7; i++) {
+      char c = value[i];
+      ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+    }
+  }
+  if (ok) return false;
+  strncpy(value, fallback, size - 1);
+  value[size - 1] = '\0';
+  return true;
 }
 
 static bool normalizeRangeU8(uint8_t& v, uint8_t lo, uint8_t hi) {
@@ -129,8 +175,71 @@ ConfigValidationResult validateAndNormalizeConfig(RuntimeConfig& config, const R
   r.corrected |= normalizeRangeU8(config.airVelocityResponse, 0, 100);
   r.corrected |= normalizeRangeU8(config.solenoidPwmActivation, 0, 255);
   r.corrected |= normalizeRangeU8(config.solenoidPwmHolding, 0, 255);
+  r.corrected |= normalizeRangeU8(config.kbdMode, 0, 1);
+
+  // --- Valeurs par defaut des CC (7 bits MIDI) ---
+  r.corrected |= normalizeRangeU8(config.ccVolumeDefault, 0, MIDI_CC_MAX);
+  r.corrected |= normalizeRangeU8(config.ccExpressionDefault, 0, MIDI_CC_MAX);
+  r.corrected |= normalizeRangeU8(config.ccModulationDefault, 0, MIDI_CC_MAX);
+  r.corrected |= normalizeRangeU8(config.ccBreathDefault, 0, MIDI_CC_MAX);
+  r.corrected |= normalizeRangeU8(config.ccBrightnessDefault, 0, MIDI_CC_MAX);
+  r.corrected |= normalizeRangeU8(config.cc2SilenceThreshold, 0, MIDI_CC_MAX);
+
+  // --- Flottants : isfinite() + bornes musicales raisonnables ---
+  // vibratoFrequencyHz alimente fastSin(), qui calcule period = 1000/f puis un
+  // modulo : une frequence nulle, negative, NaN ou > 1000 Hz donnerait une
+  // periode nulle (division par zero) ou un vibrato inaudible.
+  r.corrected |= normalizeRangeFloat(config.vibratoFrequencyHz, CONFIG_MIN_VIBRATO_HZ,
+                                     CONFIG_MAX_VIBRATO_HZ, VIBRATO_FREQUENCY_HZ);
+  // Amplitude bornee : un vibrato de plus de CONFIG_MAX_VIBRATO_DEG degres
+  // ferait sortir le servo de souffle de sa plage calibree.
+  r.corrected |= normalizeRangeFloat(config.vibratoMaxAmplitudeDeg, 0.0f,
+                                     CONFIG_MAX_VIBRATO_DEG, VIBRATO_MAX_AMPLITUDE_DEG);
+  // cc2ResponseCurve est l'exposant d'un powf() : 0 rendrait la reponse constante
+  // (toujours 1.0 -> souffle bloque au maximum) et un NaN propagerait un angle
+  // servo invalide.
+  r.corrected |= normalizeRangeFloat(config.cc2ResponseCurve, CONFIG_MIN_CC2_CURVE,
+                                     CONFIG_MAX_CC2_CURVE, CC2_RESPONSE_CURVE);
+
+  // --- Durees / timings (uint16_t) : bornes anti-delai absurde ---
+  r.corrected |= normalizeRangeU16(config.minNoteIntervalForValveCloseMs, 0, CONFIG_MAX_INTERVAL_MS);
+  r.corrected |= normalizeRangeU16(config.solenoidActivationTimeMs, 0, CONFIG_MAX_SOLENOID_PULSE_MS);
+  r.corrected |= normalizeRangeU16(config.cc2TimeoutMs, 0, CONFIG_MAX_CC2_TIMEOUT_MS);
+  r.corrected |= normalizeRangeU16(config.airAttackMs, CONFIG_MIN_ATTACK_MS, CONFIG_MAX_ATTACK_MS);
+  r.corrected |= normalizeRangeU16(config.fanIdleTimeoutMs, 0, CONFIG_MAX_FAN_IDLE_TIMEOUT_MS);
+  r.corrected |= normalizeRangeU16(config.pumpStaggerMs, 0, CONFIG_MAX_PUMP_STAGGER_MS);
+  r.corrected |= normalizeRangeU16(config.timeUnpower, 0, CONFIG_MAX_UNPOWER_MS);
+
+  // --- Capteurs : bornes physiques + anti division par zero ---
+  r.corrected |= normalizeRangeU16(config.sensorTargetMm, 0, CONFIG_MAX_SENSOR_MM);
+  r.corrected |= normalizeRangeU16(config.sensorMinMm, 0, CONFIG_MAX_SENSOR_MM);
+  r.corrected |= normalizeRangeU16(config.sensorMaxMm, 0, CONFIG_MAX_SENSOR_MM);
+  r.corrected |= normalizeRangeU16(config.hallThresholdLow, 0, CONFIG_MAX_ADC_RAW);
+  r.corrected |= normalizeRangeU16(config.hallThresholdHigh, 0, CONFIG_MAX_ADC_RAW);
+  r.corrected |= normalizeRangeU16(config.midiStorageLimitKb, CONFIG_MIN_MIDI_LIMIT_KB, CONFIG_MAX_MIDI_LIMIT_KB);
+
+  // --- Chaines libres : ramenees a un ensemble ferme / a un format sur ---
+  {
+    static const char* kEmbouchures[] = {"trav", "bec", "naf", "end", "oca"};
+    r.corrected |= normalizeEnumString(config.embouchure, sizeof(config.embouchure),
+                                       kEmbouchures, 5, "trav");
+    static const char* kResFormats[] = {"balloon", "bellows"};
+    r.corrected |= normalizeEnumString(config.resFormat, sizeof(config.resFormat),
+                                       kResFormats, 2, "balloon");
+    r.corrected |= normalizeHexColor(config.instrumentColor, sizeof(config.instrumentColor), "#D4B044");
+  }
 
   if (config.servoAirflowMin >= config.servoAirflowMax) appendIssue(r.error, "servoAirflowMin must be < servoAirflowMax");
+  // PWM min == max sur une pompe rendrait la plage nulle : la consigne ne
+  // pourrait plus varier (toujours le minimum), ce qui n'est pas une erreur mais
+  // merite d'etre signale. Le cas min > max reste une erreur (verifie plus bas).
+  if (configurationUsesPumps(config)) {
+    for (uint8_t i = 0; i < config.numPumps && i < MAX_PUMPS; i++) {
+      if (config.pumpMinPwm[i] == config.pumpMaxPwm[i]) {
+        appendIssue(r.warnings, "pump " + String(i) + " PWM range is a single point");
+      }
+    }
+  }
   if (config.servoAngleMin >= config.servoAngleMax) appendIssue(r.error, "servoAngleMin must be < servoAngleMax");
   if (config.fanMinPwm > config.fanMaxPwm) appendIssue(r.error, "fanMinPwm must be <= fanMaxPwm");
   if (configurationUsesReservoirSensor(config) && config.sensorType == SENSOR_TYPE_HALL_KY024 &&

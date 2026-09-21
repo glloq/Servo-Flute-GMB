@@ -74,7 +74,9 @@ void NoteSequencer::handlePositioning() {
 }
 
 void NoteSequencer::handlePlaying() {
-  if (_pendingStopAfterMinDuration && (long)(millis() - (_noteSoundStartTime + cfg.minNoteDurationMs)) >= 0) {
+  // Comparaison signee 32 bits explicite : sure au rollover de millis() et
+  // identique sur l'hote des tests (ou `long` fait 64 bits) et sur l'ESP32.
+  if (_pendingStopAfterMinDuration && (int32_t)(millis() - (_noteSoundStartTime + cfg.minNoteDurationMs)) >= 0) {
     _pendingStopAfterMinDuration = false;
     stopCurrentNote();
   }
@@ -85,22 +87,30 @@ void NoteSequencer::handleStopping() {
 }
 
 void NoteSequencer::processDueEvents() {
-  while (!_eventQueue.isEmpty()) {
-    MidiEvent* event = _eventQueue.peek();
-    if (event == nullptr) return;
+  // L'epoque de la file est capturee AVANT la salve. Un clear() concurrent
+  // (panic / All Sound Off / demarrage d'une session d'actionneurs) l'incremente :
+  // on abandonne alors immediatement la salve pour qu'aucun evenement de l'ancien
+  // contexte ne soit encore execute apres le panic.
+  const uint32_t startEpoch = _eventQueue.epoch();
+  // Reference de lecture capturee AVANT tout retrait : une fois la file videe,
+  // getReferenceTime() repasse a 0 (elle ne sert qu'aux traces de timing).
+  const unsigned long queueReference = _eventQueue.getReferenceTime();
+
+  MidiEvent due;
+  uint32_t popEpoch = startEpoch;
+  // tryPopDueEvent() lit l'echeance ET retire le MEME evenement sous le MEME
+  // verrou : plus aucune fenetre entre "regarder" et "consommer".
+  while (_eventQueue.tryPopDueEvent(millis(), cfg.servoToSolenoidDelayMs, due, &popEpoch)) {
+    if (popEpoch != startEpoch) {
+      // La file a ete videe pendant la salve : l'evenement qu'on vient de retirer
+      // appartient au nouveau contexte, mais la politique de panic prime. On le
+      // laisse tomber et on sort ; le prochain update() repartira proprement.
+      return;
+    }
 
     if (_playbackStartTime == 0) {
-      _playbackStartTime = _eventQueue.getReferenceTime();
+      _playbackStartTime = (queueReference != 0) ? queueReference : due.timestamp;
     }
-
-    unsigned long dueTime = event->timestamp;
-    if (event->type == EVENT_NOTE_ON) {
-      dueTime = (event->timestamp > cfg.servoToSolenoidDelayMs) ? event->timestamp - cfg.servoToSolenoidDelayMs : 0;
-    }
-    if ((long)(millis() - dueTime) < 0) return;
-
-    MidiEvent due = *event;
-    _eventQueue.dequeue();
 
     if (due.type == EVENT_NOTE_ON) {
       // Monophonic policy: any due NOTE_ON has priority over min duration and replaces
@@ -164,14 +174,15 @@ bool NoteSequencer::shouldCloseValveBetweenNotes() {
     return true;  // Will call closeValve which is a no-op, but sets rest angle
   }
 
-  MidiEvent* nextEvent = _eventQueue.peek();
-
-  if (nextEvent == nullptr || nextEvent->type != EVENT_NOTE_ON) {
+  // Copie par valeur : l'evenement suivant peut etre retire ou evince par une
+  // autre tache juste apres cette lecture ; on ne garde donc jamais de pointeur.
+  MidiEvent nextEvent;
+  if (!_eventQueue.peekCopy(nextEvent) || nextEvent.type != EVENT_NOTE_ON) {
     return true;
   }
 
   unsigned long currentTime = millis();
-  unsigned long nextNoteTime = nextEvent->timestamp;
+  unsigned long nextNoteTime = nextEvent.timestamp;
 
   if (nextNoteTime > currentTime) {
     unsigned long interval = nextNoteTime - currentTime;
