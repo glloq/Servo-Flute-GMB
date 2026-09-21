@@ -1585,7 +1585,14 @@ void noise_capture_is_bounded() {
     audiosig::whiteNoise(buf.data(), buf.size(), 0.01f, 55u + (uint32_t)i);
     nm.accumulate(buf.data(), buf.size(), nullptr);
   }
-  assert(nm.endCapture());
+  // La capture s'est terminee D'ELLE-MEME au plafond : un appelant qui oublie
+  // endCapture() (onglet ferme, Wi-Fi coupe) ne laisse pas l'analyseur tourner
+  // indefiniment.
+  assert(!nm.isCapturing());
+  assert(nm.hasProfile(NOISE_AMBIENT));
+  assert(nm.profile(NOISE_AMBIENT).frames == MIC_NOISE_MAX_FRAMES);
+  // Un endCapture() tardif ne casse rien et ne range pas un second profil.
+  assert(!nm.endCapture());
   assert(nm.profile(NOISE_AMBIENT).frames == MIC_NOISE_MAX_FRAMES);
 
   // Accumuler hors capture ne fait rien.

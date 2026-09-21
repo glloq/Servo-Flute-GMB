@@ -287,6 +287,21 @@ void WebConfigurator::update() {
     }
     _audio->update();
 
+    // Une capture de bruit peut se terminer d'elle-meme au plafond de duree.
+    // Sans cela, un onglet ferme en pleine capture laisserait le microphone et
+    // tout le DSP tourner indefiniment.
+    if (_audio->noiseCaptureFinished()) {
+      const NoiseProfileId done = _audio->currentNoiseProfile();
+      _audio->endNoiseCapture();
+      _audio->setActive(_micMonitorEnabled || (_autoCal && _autoCal->isRunning()));
+      if (_ws.count() > 0) {
+        String nj = "{\"t\":\"noise\",\"ok\":true,\"auto_stopped\":1,\"profile\":\"";
+        nj += NoiseModel::profileName(done);
+        nj += "\"}";
+        _ws.textAll(nj);
+      }
+    }
+
     // Broadcast audio data if monitoring enabled
     if (_micMonitorEnabled && _audio->isActive() && _ws.count() > 0) {
       if (now - _lastAudioBroadcast >= AUTOCAL_AUDIO_INTERVAL_MS) {

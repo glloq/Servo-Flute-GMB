@@ -13,7 +13,8 @@ AudioAnalyzer::AudioAnalyzer()
 #if MIC_I2S_STD_DRIVER
     _rxHandle(NULL),
 #endif
-    _noiseProfileId(NOISE_AMBIENT), _rawSamplesSinceFrame(0), _clippedSinceFrame(0),
+    _noiseProfileId(NOISE_AMBIENT), _noiseCaptureFinished(false),
+    _rawSamplesSinceFrame(0), _clippedSinceFrame(0),
     _expectedMidi(0), _spectralCountdown(0),
     _lastDrain(0) {
 }
@@ -364,6 +365,10 @@ void AudioAnalyzer::analyzeFrame() {
 #else
     _noise.accumulate(_frame, MIC_ANALYSIS_FRAME_SIZE, nullptr);
 #endif
+    // La capture peut s'etre terminee d'elle-meme au plafond (voir NoiseModel).
+    // Le drapeau est releve ici pour que l'appelant puisse arreter l'analyseur
+    // plutot que de laisser tout le DSP tourner pour rien.
+    if (!_noise.isCapturing()) _noiseCaptureFinished = true;
   }
 
   // Rapport signal/bruit contre le profil de l'etat REEL de la source d'air.
@@ -380,10 +385,17 @@ void AudioAnalyzer::setAirSourceState(uint8_t airMode, uint8_t pumpPercent,
 }
 
 void AudioAnalyzer::beginNoiseCapture() {
+  _noiseCaptureFinished = false;
   _noise.beginCapture(_noiseProfileId);
 }
 
 bool AudioAnalyzer::endNoiseCapture() {
+  // Une capture qui s'est deja terminee au plafond a range son profil : on le
+  // rapporte comme un succes plutot que comme un echec trompeur.
+  if (_noiseCaptureFinished && !_noise.isCapturing()) {
+    _noiseCaptureFinished = false;
+    return _noise.hasProfile(_noiseProfileId);
+  }
   return _noise.endCapture();
 }
 

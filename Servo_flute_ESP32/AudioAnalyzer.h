@@ -120,6 +120,10 @@ public:
   void beginNoiseCapture();
   bool endNoiseCapture();
   bool isCapturingNoise() const { return _noise.isCapturing(); }
+  // Vrai lorsqu'une capture s'est terminee D'ELLE-MEME au plafond de duree,
+  // sans que personne n'ait envoye de "stop". L'appelant peut alors arreter
+  // l'analyseur plutot que de laisser tout le DSP tourner pour rien.
+  bool noiseCaptureFinished() const { return _noiseCaptureFinished; }
   const NoiseModel& getNoiseModel() const { return _noise; }
   void resetNoiseModel() { _noise.reset(); }
 
@@ -156,6 +160,7 @@ private:
   AudioFilterChain _filters;
   NoiseModel _noise;
   NoiseProfileId _noiseProfileId;
+  bool _noiseCaptureFinished;
   // Ecretage compte sur les echantillons BRUTS, avant filtrage, depuis la
   // derniere frame analysee.
   uint32_t _rawSamplesSinceFrame;

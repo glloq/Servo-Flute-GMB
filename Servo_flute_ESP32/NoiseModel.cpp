@@ -37,7 +37,6 @@ void NoiseModel::beginCapture(NoiseProfileId id) {
 
 void NoiseModel::accumulate(const float* frame, size_t n, const SpectralAnalyzer* spectral) {
   if (!_capturing || frame == nullptr || n == 0) return;
-  if (_accum.frames >= MIC_NOISE_MAX_FRAMES) return;   // borne la duree d'une capture
 
   _accum.frames++;
 
@@ -68,6 +67,13 @@ void NoiseModel::accumulate(const float* frame, size_t n, const SpectralAnalyzer
 #else
   (void)spectral;
 #endif
+
+  // Une capture se termine D'ELLE-MEME au plafond. Sans cela, un appelant qui
+  // oublie endCapture() - onglet ferme, Wi-Fi coupe - laisserait l'analyseur
+  // actif indefiniment, donc le microphone et tout le DSP en marche pour rien.
+  // Le profil est range : les frames deja accumulees sont valides, il n'y a
+  // aucune raison de les jeter.
+  if (_accum.frames >= MIC_NOISE_MAX_FRAMES) endCapture();
 }
 
 bool NoiseModel::endCapture() {

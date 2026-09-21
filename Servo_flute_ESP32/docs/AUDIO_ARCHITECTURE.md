@@ -582,6 +582,11 @@ a usable level, which is less rich but not wrong.
   forever.
 - Capturing while a note is sounding is refused (`note_playing`): it would
   measure the note, not the noise.
+- A capture **stops by itself** at `MIC_NOISE_MAX_FRAMES` and files what it
+  collected. Without that, a browser tab closed mid-capture would leave the
+  microphone and the whole DSP running indefinitely. The web layer notices and
+  returns the analyser to its previous activity state, broadcasting
+  `{"t":"noise","auto_stopped":1}`.
 
 ### Reachable, not theoretical
 
