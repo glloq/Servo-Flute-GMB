@@ -143,8 +143,11 @@ void BleMidiHandler::onDisconnected() {
 
   // Panic : une note tenue au moment de la deconnexion ne recevra jamais son
   // Note Off -> couper le son pour ne pas laisser valve/souffle/pompe actifs.
+  // ATTENTION : ce callback s'execute sur la tache hote NimBLE, pas sur loop().
+  // Le panic est donc POSTE (jamais perdu, prioritaire) et applique par
+  // InstrumentManager::update() sur la tache proprietaire des actionneurs.
   if (_instance->_instrument != nullptr) {
-    _instance->_instrument->handleTransportLost();
+    _instance->_instrument->requestPanic();
   }
 
   if (DEBUG) {

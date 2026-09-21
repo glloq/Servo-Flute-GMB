@@ -303,6 +303,23 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
 </style>
 </head>
 <body>
+<!-- Ecran de connexion : affiche des qu'une requete ou le WebSocket renvoie
+     "unauthorized". Le mot de passe initial est genere au premier demarrage et
+     affiche sur le port serie (appareil headless). -->
+<div id="loginOverlay" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(10,12,20,.94);align-items:center;justify-content:center">
+  <div style="background:#16213e;border:1px solid #2a3a5a;border-radius:12px;padding:24px;max-width:360px;width:90%;text-align:center">
+    <h2 style="margin:0 0 6px;color:#e6e6e6;font-size:18px">Servo Flute</h2>
+    <p style="margin:0 0 14px;color:#8aa;font-size:13px;line-height:1.45">
+      Administrator password required.<br>
+      The initial password is printed on the serial console at boot.
+    </p>
+    <input id="loginPass" type="password" autocomplete="current-password" placeholder="Password"
+           onkeydown="if(event.key==='Enter')doLogin()"
+           style="width:100%;box-sizing:border-box;padding:10px;border-radius:8px;border:1px solid #2a3a5a;background:#0f1729;color:#e6e6e6;font-size:15px">
+    <div id="loginErr" style="color:#e94560;font-size:12px;min-height:16px;margin:6px 0"></div>
+    <button onclick="doLogin()" style="width:100%;padding:10px;border:0;border-radius:8px;background:#e94560;color:#fff;font-size:15px;cursor:pointer">Sign in</button>
+  </div>
+</div>
 <div class="toast-container" id="toastContainer"></div>
 <div class="hdr">
   <h1 id="devName">ServoFlute<span class="unsaved-badge" id="unsavedBadge">modified</span></h1>
@@ -1133,6 +1150,87 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
 </div>
 
 <script>
+/* ---------------------------------------------------------------------------
+ * Authentification applicative (voir WebAuth.h / DeviceSecrets.h)
+ *
+ * Toutes les routes qui modifient quelque chose - configuration, reset,
+ * redemarrage, fichiers MIDI, Wi-Fi - et toutes les commandes WebSocket
+ * exigent un jeton de session. Le shim ci-dessous enveloppe fetch() et
+ * XMLHttpRequest pour l'ajouter automatiquement, et affiche un ecran de
+ * connexion des qu'une reponse 401 arrive. Le jeton vit dans sessionStorage :
+ * il disparait a la fermeture de l'onglet et n'est jamais ecrit sur le disque.
+ * ------------------------------------------------------------------------- */
+const AUTH={
+  key:'flute_token',
+  get token(){try{return sessionStorage.getItem(this.key)||''}catch(e){return this._mem||''}},
+  set token(v){try{v?sessionStorage.setItem(this.key,v):sessionStorage.removeItem(this.key)}catch(e){this._mem=v}},
+  _mem:'',
+  _prompting:false,
+  clear(){this.token=''},
+  async login(password){
+    const r=await window.__rawFetch('/api/auth/login',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({password:password})});
+    if(!r.ok)return false;
+    const d=await r.json();
+    if(!d.token)return false;
+    this.token=d.token;
+    return true;
+  },
+  requireLogin(){
+    if(this._prompting)return;
+    this._prompting=true;
+    this.clear();
+    const ov=document.getElementById('loginOverlay');
+    if(ov){ov.style.display='flex';const f=document.getElementById('loginPass');if(f){f.value='';f.focus()}}
+    else{this._prompting=false}
+  },
+  loginDone(){this._prompting=false;const ov=document.getElementById('loginOverlay');if(ov)ov.style.display='none'}
+};
+
+window.__rawFetch=window.fetch.bind(window);
+window.fetch=function(input,init){
+  init=init||{};
+  const url=(typeof input==='string')?input:(input&&input.url)||'';
+  const sameOrigin=url.startsWith('/')||url.startsWith(location.origin);
+  if(sameOrigin&&AUTH.token){
+    const h=new Headers(init.headers||(typeof input==='object'&&input.headers)||{});
+    h.set('X-Auth-Token',AUTH.token);
+    init.headers=h;
+  }
+  return window.__rawFetch(input,init).then(r=>{
+    if(r.status===401&&sameOrigin&&!url.includes('/api/auth/'))AUTH.requireLogin();
+    return r;
+  });
+};
+
+(function(){
+  const rawOpen=XMLHttpRequest.prototype.open;
+  const rawSend=XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.open=function(m,u){this.__fluteUrl=u;return rawOpen.apply(this,arguments)};
+  XMLHttpRequest.prototype.send=function(){
+    const u=this.__fluteUrl||'';
+    if(AUTH.token&&(u.startsWith('/')||u.startsWith(location.origin))){
+      try{this.setRequestHeader('X-Auth-Token',AUTH.token)}catch(e){}
+    }
+    this.addEventListener('load',()=>{if(this.status===401)AUTH.requireLogin()});
+    return rawSend.apply(this,arguments);
+  };
+})();
+
+function doLogin(){
+  const f=document.getElementById('loginPass');
+  const err=document.getElementById('loginErr');
+  if(!f)return;
+  AUTH.login(f.value).then(ok=>{
+    if(!ok){if(err)err.textContent='Incorrect password';return}
+    if(err)err.textContent='';
+    AUTH.loginDone();
+    // Re-etablir le WebSocket : il doit se reauthentifier avec le nouveau jeton.
+    try{if(ws)ws.close()}catch(e){}
+    if(typeof loadConfig==='function')loadConfig();
+  });
+}
+
 // --- Constants (mirrored from settings.h) ---
 const MIDI_CC_MAX=127,MIDI_VEL_MAX=127,MAX_FINGERS=31;
 const WEB_DEF_VEL=100,TEST_SOL_MS=2000,VU_SCALE=500,PITCH_OK_CT=15;
@@ -2928,6 +3026,9 @@ function wsConnect(){
   const p=location.protocol==='https:'?'wss:':'ws:';
   ws=new WebSocket(p+'//'+location.host+'/ws');
   ws.onopen=()=>{wsRetry=0;$('sDot').className='dot on';$('sText').textContent='Connected';addLog('WS connected');
+    // Premier message obligatoire : le serveur refuse toute commande avant.
+    if(AUTH.token)ws.send(JSON.stringify({t:'auth',token:AUTH.token}));
+    else AUTH.requireLogin();
     const si=$('airStatusInd');if(si)si.style.outline=''};
   ws.onclose=()=>{$('sDot').className='dot off';$('sText').textContent='Disconnected';
     const si=$('airStatusInd');if(si){si.style.background='#e94560';si.style.outline='2px solid rgba(233,69,96,.3)'}
@@ -2942,6 +3043,11 @@ function wsSend(o){if(ws&&ws.readyState===1){ws.send(JSON.stringify(o));return t
   const now=Date.now();if(now-_wsSendWarnT>3000){_wsSendWarnT=now;showToast('Not connected - command ignored','error')}return false}
 
 function handleWs(d){
+  if(d.t==='auth_required'){if(!AUTH.token)AUTH.requireLogin();return}
+  if(d.t==='auth'){if(d.ok)AUTH.loginDone();else AUTH.requireLogin();return}
+  if(d.t==='error'&&d.msg==='unauthorized'){AUTH.requireLogin();return}
+  if(d.t==='error'&&d.msg==='hardware_not_ready'){
+    showToast('Hardware not ready - actuator commands are disabled','error');return}
   if(d.t==='status'){
     $('monState').textContent=STATES[d.state]||'?';
     $('monState').style.color=d.playing?'#e94560':'#4ecca3';
@@ -3998,7 +4104,14 @@ function connectWifi(){const ssid=$('wifiSsid').value,pass=$('wifiPass').value;
     .catch(e=>{$('wifiMsg').textContent='Error: '+e})}
 
 // --- INIT ---
-window.addEventListener('load',()=>{$('velVal').textContent=WEB_DEF_VEL;$('velSlider').value=WEB_DEF_VEL;wsConnect();loadConfig();loadMidiList()});
+window.addEventListener('load',()=>{
+  $('velVal').textContent=WEB_DEF_VEL;$('velSlider').value=WEB_DEF_VEL;
+  // Verifier la session AVANT de lancer le WebSocket et de charger les donnees :
+  // sans jeton valide, le serveur refuse toute commande.
+  window.__rawFetch('/api/auth/status').then(r=>r.json()).then(d=>{
+    if(!d.authenticated){AUTH.requireLogin();return}
+  }).catch(()=>{}).finally(()=>{wsConnect();loadConfig();loadMidiList()});
+});
 window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue=''}});
 </script>
 </body>

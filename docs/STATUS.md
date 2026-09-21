@@ -30,11 +30,44 @@ This document centralizes the validation state and known limitations of Servo Fl
 | Pumps, reservoir, fan, and sensors | Implemented | NOT TESTED — requires hardware |
 | General-Midi-Boop v2 recognition (blocks 1 / 0x10 / 0x11) | Implemented | Software tested; recognition by a real controller over BLE / rtpMIDI requires hardware |
 | GMB announced acoustic latency (`timing.excite.latency_ms`) | Deliberately not announced | Known limitation — requires an acoustic measurement on a real flute |
-| REST/WebSocket authentication | Not implemented | Known limitation |
+| REST/WebSocket authentication | Implemented | Software tested; end-to-end check on hardware required |
+| Cross-task command queue (AsyncTCP / NimBLE → `loop()`) | Implemented | Software tested |
+| Transactional configuration commit | Implemented | Software tested |
+| `hardware_not_ready` actuator lockout | Implemented | Software tested; PCA-absent bench check required |
+| Fail-safe LittleFS mount (no automatic format) | Implemented | Software tested; corrupted-partition check required |
+| Randomly generated hotspot key and admin password (NVS) | Implemented | Software tested; first-boot check on hardware required |
+| VL53L0X full initialisation | Implemented | Software tested against a simulated device; **real sensor required** |
 
 ## Safety and reliability work completed
 
-The 2026 firmware audit introduced or reinforced:
+The 2026-09 concurrency, actuator-safety and security audit added:
+
+- an atomic `EventQueue` consumption API (`tryPopDueEvent` / `peekCopy`): reading
+  an event and removing it happen under one lock, and no pointer into the queue
+  is ever handed out, so a concurrent `clear()`, a forced Note Off on a full
+  queue or a panic can no longer make the sequencer play a stale event;
+- a cross-task `CommandQueue`: AsyncTCP and NimBLE callbacks post commands and
+  `loop()` applies them, so no web or Bluetooth callback performs an I2C/PCA
+  transaction, drives an actuator GPIO, or mutates the active configuration;
+- an undroppable panic flag that also discards commands issued before it;
+- a transactional configuration commit (candidate → validate → save → single
+  atomic activation) with no intermediate state visible to the controllers;
+- a central `hardware_not_ready` refusal applied at the single point where any
+  actuator command is executed, plus an explicit REST/WebSocket answer;
+- a fail-safe LittleFS mount: no automatic format, a recovery state with
+  actuators disabled, and formatting only on an explicit confirmed request;
+- a signed read of the vibrato sine table (the oscillation was unipolar);
+- MIDI channel-mode messages (CC 120-127) exempted from the rate limiter and
+  CC2 coalescing so a breath burst can never strand a blown note;
+- an exclusive MIDI upload slot that validates a transfer completely before it
+  replaces an existing file;
+- a real VL53L0X initialisation sequence with distinct present / initialised /
+  valid / stale / fault states;
+- centralised Wi-Fi transitions that panic before tearing a session down;
+- a randomly generated, NVS-stored hotspot key and web admin password, and
+  session-token authentication for every mutating route and the WebSocket.
+
+The earlier 2026 firmware audit introduced or reinforced:
 
 - actuator outputs disabled before configuration is loaded and validated;
 - inert behavior when required PCA9685 hardware cannot be initialized safely;
@@ -70,18 +103,21 @@ is the single seam the value goes through, and the descriptor, the capability
 signature and the block 0x11 notification already carry it end to end, so the
 announcement and the revision bump follow on their own.
 
-## Known network limitation
+## Network access model
 
-The current web API and WebSocket have no authentication. A client that can reach the ESP32 may be able to drive actuators, run tests, modify the configuration, restart the controller, and manage MIDI files.
+Every mutating REST route and every WebSocket command requires a session token.
+The admin password and the hotspot WPA2 key are generated randomly at first boot,
+stored in NVS, and printed on the serial console; holding BOOT while the board
+powers up regenerates both.
 
-Required operational mitigations:
+Remaining operational precautions (authentication does not replace them):
 
-- set a non-empty access-point password;
-- use a trusted private network;
+- there is no TLS, so the token travels in clear on the local link — treat the
+  network as the trust boundary;
 - do not expose the ESP32 directly to the Internet;
-- disconnect actuator power when unattended.
+- disconnect actuator power when the instrument is unattended.
 
-Full details: [API access model](API_WEB.md#access-model-and-known-security-limitation).
+Full details: [API access model](API_WEB.md#access-model).
 
 ## Physical validation
 
@@ -99,11 +135,17 @@ A hardware row must remain **NOT TESTED — requires hardware** until the test i
 3. Validate all fingers at low speed and check mechanical collisions.
 4. Validate the selected valve and airflow servo.
 5. Test panic, browser disconnect, and manual-test timeout.
-6. Test BLE, Wi-Fi, serial MIDI, and local MIDI playback separately.
+6. Test BLE, Wi-Fi, serial MIDI, and local MIDI playback separately, including
+   several AP ↔ STA cycles while a note is held.
 7. Add the INMP441 and validate microphone detection and placement.
 8. Run per-note airflow calibration on a real instrument.
 9. Validate fan or direct-pump modes.
-10. Validate reservoir sensors and pump shutdown on sensor loss.
+10. Validate reservoir sensors and pump shutdown on sensor loss, including a real
+    VL53L0X (the full initialisation sequence has never addressed a physical
+    sensor) and a foreign device answering at 0x29.
+11. Run the `AUD-` rows of the hardware test matrix: actuator lockout with PCA
+    absent, corrupted filesystem, restart-required configuration change, safety
+    CCs under load, vibrato symmetry, concurrent uploads, and web authentication.
 
 ## Documentation maintenance rule
 

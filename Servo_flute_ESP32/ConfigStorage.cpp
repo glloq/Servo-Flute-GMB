@@ -2,6 +2,8 @@
 
 static ConfigLoadStatus s_lastLoadStatus = CONFIG_DEFAULTS;
 static String s_lastLoadError;
+static FilesystemStatus s_fsStatus = FS_NOT_MOUNTED;
+static String s_fsError;
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 
@@ -110,8 +112,6 @@ void ConfigStorage::initDefaults() {
   cfg.valveServoPcaChannel = DEFAULT_VALVE_SERVO_CH;
   cfg.valveServoCloseAngle = 0;
   cfg.valveServoOpenAngle = 90;
-  cfg.valveServoDir = 0;
-  cfg.solenoidInterNoteMs = MIN_NOTE_INTERVAL_FOR_VALVE_CLOSE_MS;
   cfg.motorType = DEFAULT_MOTOR_TYPE;
   cfg.fanPin = DEFAULT_FAN_PIN;
   cfg.fanMinPwm = DEFAULT_FAN_MIN_PWM;
@@ -168,6 +168,63 @@ void ConfigStorage::initDefaults() {
 ConfigLoadStatus ConfigStorage::lastLoadStatus() { return s_lastLoadStatus; }
 const String& ConfigStorage::lastLoadError() { return s_lastLoadError; }
 
+/*******************************************************************************
+ * Systeme de fichiers - montage fail-safe
+ ******************************************************************************/
+
+bool ConfigStorage::beginFilesystem() {
+  // formatOnFail = false : un echec de montage ne doit JAMAIS effacer la
+  // partition. Perdre /config.json silencieusement ferait redemarrer
+  // l'instrument sur une configuration par defaut qui ne correspond pas
+  // forcement au cablage reel (mode d'air, broches de pompe, canaux PCA).
+  if (LittleFS.begin(false)) {
+    s_fsStatus = FS_MOUNTED;
+    s_fsError = "";
+    return true;
+  }
+
+  // Deuxieme tentative : un premier echec peut venir d'une initialisation de
+  // peripherique encore en cours. Toujours sans formatage.
+  if (LittleFS.begin(false)) {
+    s_fsStatus = FS_MOUNTED;
+    s_fsError = "";
+    return true;
+  }
+
+  s_fsStatus = FS_MOUNT_FAILED;
+  s_fsError = "LittleFS mount failed (no automatic format); manual recovery required";
+  if (DEBUG) {
+    Serial.println("ERREUR: LittleFS - montage impossible. Mode recovery : actionneurs desactives.");
+    Serial.println("        Formatage volontaire requis (POST /api/fs/format) pour repartir a neuf.");
+  }
+  return false;
+}
+
+FilesystemStatus ConfigStorage::filesystemStatus() { return s_fsStatus; }
+const String& ConfigStorage::filesystemError() { return s_fsError; }
+bool ConfigStorage::isFilesystemMounted() {
+  return s_fsStatus == FS_MOUNTED || s_fsStatus == FS_FORMATTED;
+}
+
+bool ConfigStorage::formatFilesystem() {
+  // Action DESTRUCTIVE et VOLONTAIRE uniquement (mode recovery). Efface la
+  // configuration et tous les fichiers MIDI.
+  if (DEBUG) Serial.println("DEBUG: LittleFS - formatage volontaire demande");
+  LittleFS.end();
+  if (!LittleFS.format()) {
+    s_fsError = "LittleFS format failed";
+    return false;
+  }
+  if (!LittleFS.begin(false)) {
+    s_fsStatus = FS_MOUNT_FAILED;
+    s_fsError = "LittleFS still unmountable after format";
+    return false;
+  }
+  s_fsStatus = FS_FORMATTED;
+  s_fsError = "";
+  return true;
+}
+
 bool ConfigStorage::load() {
   return loadWithStatus() == CONFIG_LOADED;
 }
@@ -177,6 +234,15 @@ ConfigLoadStatus ConfigStorage::loadWithStatus() {
   initDefaults();
   s_lastLoadStatus = CONFIG_DEFAULTS;
   s_lastLoadError = "";
+
+  // Systeme de fichiers non monte : on ne peut ni lire ni ecrire. On NE fait PAS
+  // semblant de tourner sur les defauts - c'est signale comme erreur de stockage
+  // pour que le boot laisse les actionneurs desactives.
+  if (!isFilesystemMounted()) {
+    s_lastLoadStatus = CONFIG_STORAGE_ERROR;
+    s_lastLoadError = filesystemError().length() ? filesystemError() : String("filesystem not mounted");
+    return s_lastLoadStatus;
+  }
 
   // Recover an interrupted atomic save (§15): a leftover temp file means save()
   // was interrupted. If the live config is gone, the crash happened after its
@@ -338,8 +404,8 @@ ConfigLoadStatus ConfigStorage::loadWithStatus() {
   cfg.valveServoCloseAngle = doc["vlv_close"] | cfg.valveServoCloseAngle;
   cfg.valveServoOpenAngle = doc["vlv_open"] | cfg.valveServoOpenAngle;
   // vlv_dir is legacy and intentionally ignored; close/open angles define movement.
+  // Compatibilite ascendante : ancienne cle "sol_inter".
   if (!doc.containsKey("valve_interval") && doc.containsKey("sol_inter")) cfg.minNoteIntervalForValveCloseMs = doc["sol_inter"] | cfg.minNoteIntervalForValveCloseMs;
-  cfg.solenoidInterNoteMs = cfg.minNoteIntervalForValveCloseMs;
   cfg.motorType = doc["motor_type"] | cfg.motorType;
   cfg.fanPin = doc["fan_pin"] | cfg.fanPin;
   cfg.fanMinPwm = doc["fan_min"] | cfg.fanMinPwm;
@@ -443,7 +509,14 @@ ConfigLoadStatus ConfigStorage::loadWithStatus() {
   return s_lastLoadStatus;
 }
 
-bool ConfigStorage::save() {
+// Persiste la configuration DONNEE (et non forcement la configuration active).
+// Le commit transactionnel de POST /api/config ecrit ainsi le candidat AVANT de
+// le rendre actif : si l'ecriture echoue, rien n'a bouge ni en RAM ni en flash.
+bool ConfigStorage::saveFrom(const RuntimeConfig& source) {
+  // Jamais d'ecriture sur un systeme de fichiers non monte : l'appelant doit voir
+  // un echec franc (et donc annuler sa transaction) plutot qu'une ecriture perdue.
+  if (!isFilesystemMounted()) return false;
+
   ConfigValidationResult validation = validateAndNormalizeConfig(cfg);
   if (!validation.valid) {
     if (DEBUG) { Serial.print("ERREUR: ConfigStorage - sauvegarde refusee: "); Serial.println(validation.error); }
@@ -453,133 +526,133 @@ bool ConfigStorage::save() {
   JsonDocument doc;
 
   // --- Instrument ---
-  doc["num_fingers"] = cfg.numFingers;
-  doc["num_notes"] = cfg.numNotes;
-  doc["air_pca"] = cfg.airflowPcaChannel;
-  doc["angle_open"] = cfg.fingerAngleOpen;
-  doc["half_hole_pct"] = cfg.halfHolePercent;
-  doc["embouchure"] = cfg.embouchure;
+  doc["num_fingers"] = source.numFingers;
+  doc["num_notes"] = source.numNotes;
+  doc["air_pca"] = source.airflowPcaChannel;
+  doc["angle_open"] = source.fingerAngleOpen;
+  doc["half_hole_pct"] = source.halfHolePercent;
+  doc["embouchure"] = source.embouchure;
 
   // --- Fingers ---
   JsonArray fingers = doc["fingers"].to<JsonArray>();
-  for (int i = 0; i < cfg.numFingers; i++) {
+  for (int i = 0; i < source.numFingers; i++) {
     JsonObject f = fingers.add<JsonObject>();
-    f["ch"] = cfg.fingers[i].pcaChannel;
-    f["a"] = cfg.fingers[i].closedAngle;
-    f["d"] = cfg.fingers[i].direction;
-    if (cfg.fingers[i].isThumbHole) {
+    f["ch"] = source.fingers[i].pcaChannel;
+    f["a"] = source.fingers[i].closedAngle;
+    f["d"] = source.fingers[i].direction;
+    if (source.fingers[i].isThumbHole) {
       f["th"] = 1;
     }
-    if (cfg.fingers[i].halfPercent > 0) {
-      f["hp"] = cfg.fingers[i].halfPercent;
+    if (source.fingers[i].halfPercent > 0) {
+      f["hp"] = source.fingers[i].halfPercent;
     }
   }
 
   // --- Notes (complete) ---
   JsonArray notes = doc["notes"].to<JsonArray>();
-  for (int i = 0; i < cfg.numNotes; i++) {
+  for (int i = 0; i < source.numNotes; i++) {
     JsonObject n = notes.add<JsonObject>();
-    n["midi"] = cfg.notes[i].midiNote;
-    n["amn"] = cfg.notes[i].airflowMinPercent;
-    n["amx"] = cfg.notes[i].airflowMaxPercent;
-    n["anm"] = cfg.notes[i].airflowNominalPercent;
-    n["ang"] = cfg.notes[i].anglePercent;
+    n["midi"] = source.notes[i].midiNote;
+    n["amn"] = source.notes[i].airflowMinPercent;
+    n["amx"] = source.notes[i].airflowMaxPercent;
+    n["anm"] = source.notes[i].airflowNominalPercent;
+    n["ang"] = source.notes[i].anglePercent;
     JsonArray fp = n["fp"].to<JsonArray>();
     for (int f = 0; f < MAX_FINGER_SERVOS; f++) {
-      fp.add((int)cfg.notes[i].fingerPattern[f]);
+      fp.add((int)source.notes[i].fingerPattern[f]);
     }
   }
 
   // --- Scalaires ---
-  doc["midi_ch"] = cfg.midiChannel;
-  doc["smidi_on"] = cfg.serialMidiEnabled ? 1 : 0;
-  doc["smidi_rx"] = cfg.serialMidiRxPin;
-  doc["servo_delay"] = cfg.servoToSolenoidDelayMs;
-  doc["valve_interval"] = cfg.minNoteIntervalForValveCloseMs;
-  doc["min_note_dur"] = cfg.minNoteDurationMs;
-  doc["air_off"] = cfg.servoAirflowOff;
-  doc["air_min"] = cfg.servoAirflowMin;
-  doc["air_max"] = cfg.servoAirflowMax;
-  doc["angle_ch"] = cfg.angleServoPcaChannel;
-  doc["ang_off"] = cfg.servoAngleOff;
-  doc["ang_min"] = cfg.servoAngleMin;
-  doc["ang_max"] = cfg.servoAngleMax;
-  doc["vib_freq"] = cfg.vibratoFrequencyHz;
-  doc["vib_amp"] = cfg.vibratoMaxAmplitudeDeg;
-  doc["cc_vol"] = cfg.ccVolumeDefault;
-  doc["cc_expr"] = cfg.ccExpressionDefault;
-  doc["cc_mod"] = cfg.ccModulationDefault;
-  doc["cc_breath"] = cfg.ccBreathDefault;
-  doc["cc_bright"] = cfg.ccBrightnessDefault;
-  doc["cc2_on"] = cfg.cc2Enabled ? 1 : 0;
-  doc["cc2_thr"] = cfg.cc2SilenceThreshold;
-  doc["cc2_curve"] = cfg.cc2ResponseCurve;
-  doc["cc2_timeout"] = cfg.cc2TimeoutMs;
-  doc["sol_act"] = cfg.solenoidPwmActivation;
-  doc["sol_hold"] = cfg.solenoidPwmHolding;
-  doc["sol_time"] = cfg.solenoidActivationTimeMs;
-  doc["time_unpower"] = cfg.timeUnpower;
-  doc["hide_calib"] = cfg.hideCalibration ? 1 : 0;
-  doc["hide_air"] = cfg.hideAir ? 1 : 0;
-  doc["sol_pin"] = cfg.solenoidPin;
-  doc["kbd_mode"] = cfg.kbdMode;
-  doc["color"] = cfg.instrumentColor;
-  doc["air_atk_mode"] = cfg.airAttackMode;
-  doc["air_atk_off"] = cfg.airAttackOffset;
-  doc["air_atk_ms"] = cfg.airAttackMs;
-  doc["air_vel_resp"] = cfg.airVelocityResponse;
+  doc["midi_ch"] = source.midiChannel;
+  doc["smidi_on"] = source.serialMidiEnabled ? 1 : 0;
+  doc["smidi_rx"] = source.serialMidiRxPin;
+  doc["servo_delay"] = source.servoToSolenoidDelayMs;
+  doc["valve_interval"] = source.minNoteIntervalForValveCloseMs;
+  doc["min_note_dur"] = source.minNoteDurationMs;
+  doc["air_off"] = source.servoAirflowOff;
+  doc["air_min"] = source.servoAirflowMin;
+  doc["air_max"] = source.servoAirflowMax;
+  doc["angle_ch"] = source.angleServoPcaChannel;
+  doc["ang_off"] = source.servoAngleOff;
+  doc["ang_min"] = source.servoAngleMin;
+  doc["ang_max"] = source.servoAngleMax;
+  doc["vib_freq"] = source.vibratoFrequencyHz;
+  doc["vib_amp"] = source.vibratoMaxAmplitudeDeg;
+  doc["cc_vol"] = source.ccVolumeDefault;
+  doc["cc_expr"] = source.ccExpressionDefault;
+  doc["cc_mod"] = source.ccModulationDefault;
+  doc["cc_breath"] = source.ccBreathDefault;
+  doc["cc_bright"] = source.ccBrightnessDefault;
+  doc["cc2_on"] = source.cc2Enabled ? 1 : 0;
+  doc["cc2_thr"] = source.cc2SilenceThreshold;
+  doc["cc2_curve"] = source.cc2ResponseCurve;
+  doc["cc2_timeout"] = source.cc2TimeoutMs;
+  doc["sol_act"] = source.solenoidPwmActivation;
+  doc["sol_hold"] = source.solenoidPwmHolding;
+  doc["sol_time"] = source.solenoidActivationTimeMs;
+  doc["time_unpower"] = source.timeUnpower;
+  doc["hide_calib"] = source.hideCalibration ? 1 : 0;
+  doc["hide_air"] = source.hideAir ? 1 : 0;
+  doc["sol_pin"] = source.solenoidPin;
+  doc["kbd_mode"] = source.kbdMode;
+  doc["color"] = source.instrumentColor;
+  doc["air_atk_mode"] = source.airAttackMode;
+  doc["air_atk_off"] = source.airAttackOffset;
+  doc["air_atk_ms"] = source.airAttackMs;
+  doc["air_vel_resp"] = source.airVelocityResponse;
   // --- Air delivery system (modulaire) ---
-  doc["air_mode"] = cfg.airMode;
-  doc["valve_type"] = cfg.valveType;
-  doc["valve_ch"] = cfg.valveServoPcaChannel;
-  doc["vlv_close"] = cfg.valveServoCloseAngle;
-  doc["vlv_open"] = cfg.valveServoOpenAngle;
-  doc["motor_type"] = cfg.motorType;
-  doc["fan_pin"] = cfg.fanPin;
-  doc["fan_min"] = cfg.fanMinPwm;
-  doc["fan_max"] = cfg.fanMaxPwm;
-  doc["fan_idle_pct"] = cfg.fanIdlePercent;
-  doc["fan_idle_timeout"] = cfg.fanIdleTimeoutMs;
-  doc["fan_default_pct"] = cfg.fanDefaultPercent;
-  doc["fan_note_max_pct"] = cfg.fanMaxNotePercent;
-  doc["fan_follow_air"] = cfg.fanFollowAirflow ? 1 : 0;
-  doc["num_pumps"] = cfg.numPumps;
+  doc["air_mode"] = source.airMode;
+  doc["valve_type"] = source.valveType;
+  doc["valve_ch"] = source.valveServoPcaChannel;
+  doc["vlv_close"] = source.valveServoCloseAngle;
+  doc["vlv_open"] = source.valveServoOpenAngle;
+  doc["motor_type"] = source.motorType;
+  doc["fan_pin"] = source.fanPin;
+  doc["fan_min"] = source.fanMinPwm;
+  doc["fan_max"] = source.fanMaxPwm;
+  doc["fan_idle_pct"] = source.fanIdlePercent;
+  doc["fan_idle_timeout"] = source.fanIdleTimeoutMs;
+  doc["fan_default_pct"] = source.fanDefaultPercent;
+  doc["fan_note_max_pct"] = source.fanMaxNotePercent;
+  doc["fan_follow_air"] = source.fanFollowAirflow ? 1 : 0;
+  doc["num_pumps"] = source.numPumps;
   JsonArray pumpPins = doc["pump_pins"].to<JsonArray>();
   JsonArray pumpMins = doc["pump_mins"].to<JsonArray>();
   JsonArray pumpMaxs = doc["pump_maxs"].to<JsonArray>();
   for (int i = 0; i < MAX_PUMPS; i++) {
-    pumpPins.add(cfg.pumpPins[i]);
-    pumpMins.add(cfg.pumpMinPwm[i]);
-    pumpMaxs.add(cfg.pumpMaxPwm[i]);
+    pumpPins.add(source.pumpPins[i]);
+    pumpMins.add(source.pumpMinPwm[i]);
+    pumpMaxs.add(source.pumpMaxPwm[i]);
   }
-  doc["pump_cascade"] = cfg.pumpCascadeThreshold;
-  doc["pump_stagger"] = cfg.pumpStaggerMs;
-  doc["pump_idle_pct"] = cfg.pumpDirectIdlePercent;
-  doc["pump_direct_max_pct"] = cfg.pumpDirectMaxPercent;
-  doc["pump_follow_air"] = cfg.pumpFollowAirflow ? 1 : 0;
-  doc["res_target_pct"] = cfg.reservoirTargetPercent;
-  doc["res_autostart"] = cfg.reservoirAutoStart ? 1 : 0;
-  doc["bb_hyst"] = cfg.bangbangHysteresis;
-  doc["sens_type"] = cfg.sensorType;
-  doc["sens_target"] = cfg.sensorTargetMm;
-  doc["sens_min"] = cfg.sensorMinMm;
-  doc["sens_max"] = cfg.sensorMaxMm;
-  doc["pid_kp"] = cfg.pidKp;
-  doc["pid_ki"] = cfg.pidKi;
-  doc["endstop_pin"] = cfg.endstopPin;
-  doc["endstop_high"] = cfg.endstopActiveHigh ? 1 : 0;
-  doc["endstop_pump_on"] = cfg.endstopPumpOn ? 1 : 0;
-  doc["hall_pin"] = cfg.hallPin;
-  doc["hall_low"] = cfg.hallThresholdLow;
-  doc["hall_high"] = cfg.hallThresholdHigh;
-  doc["angle_on"] = cfg.angleServoEnabled ? 1 : 0;
-  doc["angle_ch"] = cfg.angleServoPcaChannel;
-  doc["show_air"] = cfg.showAirSystem ? 1 : 0;
-  doc["res_format"] = cfg.resFormat;
-  doc["midi_limit"] = cfg.midiStorageLimitKb;
-  doc["wifi_ssid"] = cfg.wifiSsid;
-  doc["wifi_pass"] = cfg.wifiPassword;
-  doc["device"] = cfg.deviceName;
+  doc["pump_cascade"] = source.pumpCascadeThreshold;
+  doc["pump_stagger"] = source.pumpStaggerMs;
+  doc["pump_idle_pct"] = source.pumpDirectIdlePercent;
+  doc["pump_direct_max_pct"] = source.pumpDirectMaxPercent;
+  doc["pump_follow_air"] = source.pumpFollowAirflow ? 1 : 0;
+  doc["res_target_pct"] = source.reservoirTargetPercent;
+  doc["res_autostart"] = source.reservoirAutoStart ? 1 : 0;
+  doc["bb_hyst"] = source.bangbangHysteresis;
+  doc["sens_type"] = source.sensorType;
+  doc["sens_target"] = source.sensorTargetMm;
+  doc["sens_min"] = source.sensorMinMm;
+  doc["sens_max"] = source.sensorMaxMm;
+  doc["pid_kp"] = source.pidKp;
+  doc["pid_ki"] = source.pidKi;
+  doc["endstop_pin"] = source.endstopPin;
+  doc["endstop_high"] = source.endstopActiveHigh ? 1 : 0;
+  doc["endstop_pump_on"] = source.endstopPumpOn ? 1 : 0;
+  doc["hall_pin"] = source.hallPin;
+  doc["hall_low"] = source.hallThresholdLow;
+  doc["hall_high"] = source.hallThresholdHigh;
+  doc["angle_on"] = source.angleServoEnabled ? 1 : 0;
+  doc["angle_ch"] = source.angleServoPcaChannel;
+  doc["show_air"] = source.showAirSystem ? 1 : 0;
+  doc["res_format"] = source.resFormat;
+  doc["midi_limit"] = source.midiStorageLimitKb;
+  doc["wifi_ssid"] = source.wifiSsid;
+  doc["wifi_pass"] = source.wifiPassword;
+  doc["device"] = source.deviceName;
 
   // Atomic write (§15): serialise into a temp file, verify it re-parses, then
   // replace the live config. Truncating the real file directly would destroy a
@@ -636,6 +709,10 @@ bool ConfigStorage::save() {
   return true;
 }
 
+
+bool ConfigStorage::save() {
+  return saveFrom(cfg);
+}
 bool ConfigStorage::resetToDefaults() {
   initDefaults();
   bool ok = save();
@@ -646,6 +723,7 @@ bool ConfigStorage::resetToDefaults() {
 }
 
 bool ConfigStorage::factoryReset() {
+  if (!isFilesystemMounted()) return false;
   initDefaults();
   // Supprimer le fichier config pour que isFirstBoot() retourne true
   // Le wizard le recreera via save() apres configuration
@@ -657,5 +735,6 @@ bool ConfigStorage::factoryReset() {
 }
 
 bool ConfigStorage::isFirstBoot() {
+  if (!isFilesystemMounted()) return false;
   return !LittleFS.exists(CONFIG_FILE_PATH);
 }

@@ -15,8 +15,33 @@ int digitalRead(uint8_t pin){ return __digital_reads[pin]; }
 void analogWrite(uint8_t pin,int value){ __analog_writes[pin]=value; }
 int analogRead(uint8_t pin){ return __analog_reads[pin]; }
 
-uint8_t WireClass::endTransmission(bool){ auto it=presentMap.find(_addr); return (it!=presentMap.end() && it->second) ? 0 : 4; }
-int WireClass::available(){ auto it=presentMap.find(_addr); return (it!=presentMap.end() && it->second) ? _requestCount : 0; }
-uint8_t WireClass::read(){ auto it=readMap.find(_addr); return it==readMap.end()?0:it->second; }
+uint8_t WireClass::endTransmission(bool){
+  // Memorise le registre adresse par cette transmission, pour que la lecture qui
+  // suit rende la valeur de CE registre (et journalise les ecritures).
+  if (_tx.size() >= 1) { _lastReg8 = _tx[0]; _reg8Valid = true; }
+  if (_tx.size() >= 2) { _lastReg16 = (uint16_t)((_tx[0] << 8) | _tx[1]); }
+  if (_tx.size() == 2) writeLog.push_back({{_addr, _tx[0]}, _tx[1]});
+  auto it=presentMap.find(_addr);
+  return (it!=presentMap.end() && it->second) ? 0 : 4;
+}
+int WireClass::available(){
+  auto it=presentMap.find(_addr);
+  if (it==presentMap.end() || !it->second) return 0;
+  return (_readOffset < _requestCount) ? (_requestCount - _readOffset) : 0;
+}
+uint8_t WireClass::read(){
+  uint8_t value = 0;
+  auto def = readMap.find(_addr);
+  if (def != readMap.end()) value = def->second;
+  // Registre 16 bits (VL6180X) puis registre 8 bits (VL53L0X / PCA9685).
+  auto r16 = reg16Map.find({_addr, (uint16_t)(_lastReg16 + _readOffset)});
+  if (r16 != reg16Map.end()) value = r16->second;
+  else if (_reg8Valid) {
+    auto r8 = reg8Map.find({_addr, (uint8_t)(_lastReg8 + _readOffset)});
+    if (r8 != reg8Map.end()) value = r8->second;
+  }
+  _readOffset++;
+  return value;
+}
 int __pwm_write_count = 0;
 void Adafruit_PWMServoDriver::setPWM(uint8_t, uint16_t, uint16_t){ __pwm_write_count++; }

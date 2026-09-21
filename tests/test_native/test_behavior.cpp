@@ -112,11 +112,12 @@ static void event_queue_forced_never_drops(){
   assert(q.enqueueScheduledEventForced(EVENT_NOTE_OFF,61,0,2)); // forced succeeds
   assert(q.getCount()==2);
   // Oldest (note 60) was evicted; the note-off is now the tail-most survivor.
-  MidiEvent* head = q.peek();
-  assert(head != nullptr && head->midiNote==61 && head->type==EVENT_NOTE_ON);
+  // peekCopy() returns a COPY: no internal pointer escapes the queue lock.
+  MidiEvent head;
+  assert(q.peekCopy(head) && head.midiNote==61 && head.type==EVENT_NOTE_ON);
   q.dequeue();
-  MidiEvent* second = q.peek();
-  assert(second != nullptr && second->type==EVENT_NOTE_OFF && second->midiNote==61);
+  MidiEvent second;
+  assert(q.peekCopy(second) && second.type==EVENT_NOTE_OFF && second.midiNote==61);
 }
 static void note_sequencer_min_and_panic(){ resetCfg(); __test_millis=0; int fingerWrites=0, airWrites=0; FingerController fc([&](uint8_t,uint16_t,uint16_t){fingerWrites++;}); AirflowController ac([&](uint8_t,uint16_t,uint16_t){airWrites++;}); EventQueue q(8); NoteSequencer ns(q,fc,ac); ns.begin(); q.enqueueScheduledEvent(EVENT_NOTE_ON,60,100,0); ns.update(); assert(ns.getState()==STATE_POSITIONING && fingerWrites>0); __test_millis=10; ns.update(); assert(ns.getState()==STATE_PLAYING && ac.isValveOpen()); q.enqueueScheduledEvent(EVENT_NOTE_OFF,60,0,20); __test_millis=20; ns.update(); assert(ns.getState()==STATE_PLAYING); __test_millis=99; ns.update(); assert(ns.getState()==STATE_PLAYING); __test_millis=110; ns.update(); assert(ns.getState()==STATE_STOPPING); ns.stop(); assert(ns.getState()==STATE_IDLE && !ac.isValveOpen()); }
 
@@ -683,9 +684,24 @@ static void gpio_validation_reserved_and_conflicts(){
 // Audit P1 §19/§20. The ToF read is non-blocking: a stuck sensor (status never
 // ready) no longer busy-waits and, once measurements go stale, the pump is cut for
 // safety and repeated timeouts invalidate the sensor.
+// Helper: make the Wire stub look like a fully initialised VL53L0X.
+// Model ID 0xEE identifies the part; 0x83 must be non-zero so the SPAD-info
+// handshake completes; the interrupt status decides whether a measurement is
+// "ready" (0 = still ranging, so every single-shot times out).
+static void fakeVl53l0xPresent(bool measurementReady){
+  extern WireClass Wire;
+  Wire.setPresent(0x29, true);
+  Wire.setReg8(0x29, 0xC0, 0xEE);                        // IDENTIFICATION_MODEL_ID
+  Wire.setReg8(0x29, 0x83, 0x01);                        // SPAD info handshake
+  Wire.setReg8(0x29, 0x13, measurementReady ? 0x07 : 0x00); // RESULT_INTERRUPT_STATUS
+}
+
 static void tof_nonblocking_stale_safety(){
   resetCfg(); extern WireClass Wire; Wire.clear();
-  Wire.setPresent(0x29, true);   // VL53L0X responds at 0x29 (detected), but never "ready"
+  // Fully initialised VL53L0X that never reports a measurement as ready: the
+  // reference calibrations during begin() need "ready", so allow it there and
+  // clear it afterwards.
+  fakeVl53l0xPresent(true);
   cfg.airMode=AIR_MODE_PUMP_RESERVOIR; cfg.sensorType=SENSOR_TYPE_TOF_VL53L0X;
   cfg.numPumps=1; cfg.pumpPins[0]=25; cfg.motorType=MOTOR_TYPE_PWM;
   cfg.sensorMinMm=30; cfg.sensorTargetMm=60; cfg.sensorMaxMm=120; cfg.pidKp=50; cfg.pidKi=0;
@@ -693,11 +709,66 @@ static void tof_nonblocking_stale_safety(){
   PressureController pc;
   assert(pc.begin());
   assert(pc.isSensorDetected());
+  assert(pc.isSensorInitialized());          // really initialised, not just ACKing
+  Wire.setReg8(0x29, 0x13, 0x00);            // from now on: never "ready"
   pc.setTargetPercent(80);
   // Drive many non-blocking updates; every single-shot times out (no "ready").
   for(int i=0;i<80;i++){ __test_millis+=20; pc.update(); }
   assert(__analog_writes[25]==0);        // stale measurement -> pump cut (safety)
   assert(!pc.isSensorDetected());        // repeated timeouts invalidated the sensor
+  assert(pc.isMeasurementStale());
+}
+
+// Audit §9. A device merely ACKing at 0x29 is NOT a working VL53L0X. The old code
+// declared "sensor detected and initialised" on the bare I2C ACK and then read a
+// range register that had never been configured. Presence on the bus, successful
+// initialisation and a valid measurement are now three distinct states.
+static void tof_presence_is_not_initialisation(){
+  resetCfg(); extern WireClass Wire; Wire.clear();
+  cfg.airMode=AIR_MODE_PUMP_RESERVOIR; cfg.sensorType=SENSOR_TYPE_TOF_VL53L0X;
+  cfg.numPumps=1; cfg.pumpPins[0]=25; cfg.motorType=MOTOR_TYPE_PWM;
+  cfg.sensorMinMm=30; cfg.sensorTargetMm=60; cfg.sensorMaxMm=120;
+  __test_millis=0;
+
+  // 1. Nothing on the bus at all.
+  {
+    PressureController pc;
+    assert(!pc.begin());
+    assert(!pc.isSensorDetected() && !pc.isSensorPresentOnBus());
+    assert(pc.sensorState()==TOF_ABSENT);
+  }
+
+  // 2. Something ACKs at 0x29 but is not a VL53L0X (wrong model ID).
+  {
+    Wire.clear(); Wire.setPresent(0x29, true); Wire.setReg8(0x29, 0xC0, 0x42);
+    PressureController pc;
+    assert(!pc.begin());
+    assert(pc.isSensorPresentOnBus());       // present...
+    assert(!pc.isSensorInitialized());       // ...but never initialised
+    assert(!pc.isSensorDetected());          // so not usable
+    assert(pc.sensorState()==TOF_UNSUPPORTED);
+    // And the pump must stay off in reservoir mode without a usable sensor.
+    __analog_writes[25]=99;
+    pc.setTargetPercent(100);
+    for(int i=0;i<5;i++){ __test_millis+=60; pc.update(); }
+    assert(__analog_writes[25]==0);
+  }
+
+  // 3. A real, initialised VL53L0X reporting a valid range.
+  {
+    Wire.clear(); fakeVl53l0xPresent(true);
+    Wire.setReg8(0x29, 0x14, (uint8_t)(11 << 3));   // RESULT_RANGE_STATUS: code 11 = valid
+    Wire.setReg8(0x29, 0x1E, 0x00);                 // range high byte
+    Wire.setReg8(0x29, 0x1F, 60);                   // range low byte -> 60 mm
+    PressureController pc;
+    assert(pc.begin());
+    assert(pc.isSensorInitialized() && pc.sensorState()==TOF_READY);
+    __test_millis+=100; pc.update();
+    __test_millis+=100; pc.update();
+    assert(pc.isMeasurementValid());
+    assert(pc.getDistanceMm()==60);
+    assert(!pc.isMeasurementStale());
+  }
 }
 
 // Review #14. The global timeout scales to the largest note count instead of being
@@ -1130,5 +1201,6 @@ static void midi_unsupported_formats_rejected(){
 
 // General-Midi-Boop recognition tests (tests/test_native/test_gmb.cpp).
 void gmb_run_all_tests();
+void audit_run_all_tests();
 
-int main(){ gmb_run_all_tests(); pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); airflow_nominal_drives_angle(); autocal_frozen_source_fails(); autocal_air_supply_gate(); autocal_14_notes_no_timeout(); autocal_plus70_cents_rejected(); autocal_storage_failure_restores(); autocal_range_finder(); autocal_range_finder_stale(); autocal_range_apply_storage(); autocal_air_lost_midnote(); calair_reservoir_requires_sensor(); instrument_power_held_during_actuator_session(); instrument_ignores_midi_during_calibration(); instrument_inert_after_pca_failure(); air_pump_demand_follows_real_note(); air_fan_speed_follows_replacement(); pump_enable_and_single_pump_test(); gpio_validation_reserved_and_conflicts(); tof_nonblocking_stale_safety(); autocal_global_timeout_scales_to_max_notes(); airflow_cc2_silence_and_live_cc(); airflow_attack_cancelled_on_rest(); airflow_cc2_timeout_on_held_note(); audio_yin_pcm_core(); audio_mic_classification(); note_sequencer_short_note_still_sounds(); instrument_transport_lost_panics(); angle_servo_enable_requires_restart(); midi_tempo_map_math(); midi_type1_global_tempo(); midi_type0_tempo_change_midtrack(); midi_truncation_rejected(); midi_unsupported_formats_rejected(); std::cout << "behavior tests passed\n"; }
+int main(){ gmb_run_all_tests(); audit_run_all_tests(); pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); airflow_nominal_drives_angle(); autocal_frozen_source_fails(); autocal_air_supply_gate(); autocal_14_notes_no_timeout(); autocal_plus70_cents_rejected(); autocal_storage_failure_restores(); autocal_range_finder(); autocal_range_finder_stale(); autocal_range_apply_storage(); autocal_air_lost_midnote(); calair_reservoir_requires_sensor(); instrument_power_held_during_actuator_session(); instrument_ignores_midi_during_calibration(); instrument_inert_after_pca_failure(); air_pump_demand_follows_real_note(); air_fan_speed_follows_replacement(); pump_enable_and_single_pump_test(); gpio_validation_reserved_and_conflicts(); tof_nonblocking_stale_safety(); tof_presence_is_not_initialisation(); autocal_global_timeout_scales_to_max_notes(); airflow_cc2_silence_and_live_cc(); airflow_attack_cancelled_on_rest(); airflow_cc2_timeout_on_held_note(); audio_yin_pcm_core(); audio_mic_classification(); note_sequencer_short_note_still_sounds(); instrument_transport_lost_panics(); angle_servo_enable_requires_restart(); midi_tempo_map_math(); midi_type1_global_tempo(); midi_type0_tempo_change_midtrack(); midi_truncation_rejected(); midi_unsupported_formats_rejected(); std::cout << "behavior tests passed\n"; }

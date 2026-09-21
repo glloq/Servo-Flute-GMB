@@ -21,7 +21,7 @@ The project is in a functional state. The codebase is modular, hardware responsi
 
 | Area | Risk | Recommendation |
 |------|------|----------------|
-| JSON generation | User-provided strings can require escaping | Prefer ArduinoJson for generated responses |
+| JSON generation | User-provided strings can require escaping | Resolved: every free-form string now goes through ArduinoJson (see AUDIT_CODE.md, 2026-09) |
 | MIDI parsing | Malformed files can create edge cases | Keep EOF and chunk guards in place |
 | Heap usage | MIDI event buffer is fixed-size | Monitor heap on large configurations |
 | WiFi credentials | Stored in clear text | Document the tradeoff |
@@ -62,3 +62,13 @@ Runtime configuration is loaded from defaults, overridden from LittleFS, and sav
 4. Test MIDI upload with malformed and oversized files.
 5. Test factory reset and first-use wizard flows.
 6. Continue improving documentation for mechanical assembly.
+
+## Current state
+
+This document describes the firmware at the level of its original review. The
+concurrency, actuator-safety, storage, network and web-access findings raised by
+the 2026-09 audit — and what was changed for each — are tracked in
+[`AUDIT_CODE.md`](AUDIT_CODE.md) and
+[`../../docs/POST_AUDIT_FIX_REPORT.md`](../../docs/POST_AUDIT_FIX_REPORT.md).
+What still needs real hardware is listed in
+[`HARDWARE_TEST_MATRIX.md`](HARDWARE_TEST_MATRIX.md) (rows prefixed `AUD-`).

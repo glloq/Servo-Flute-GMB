@@ -45,9 +45,13 @@
 #include <ESPAsyncWebServer.h>
 #include <ArduinoJson.h>
 #include <LittleFS.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#include <freertos/task.h>
 #include "settings.h"
 #include "ConfigStorage.h"
 #include "MidiFilePlayer.h"
+#include "WebAuth.h"
 
 #if MIC_ENABLED
 #include "AudioAnalyzer.h"
@@ -57,6 +61,51 @@
 // Forward declarations
 class InstrumentManager;
 class WirelessManager;
+
+// Operations web qui touchent la configuration active, LittleFS, le lecteur MIDI
+// ou le calibrateur. Elles ne s'executent JAMAIS depuis la tache AsyncTCP : le
+// callback remplit une operation, la poste, puis attend (borne) que loop()
+// l'execute. La tache loop() reste ainsi l'unique proprietaire de `cfg`, des
+// actionneurs et du systeme de fichiers.
+enum WebOpType : uint8_t {
+  WEBOP_NONE = 0,
+  WEBOP_COMMIT_CONFIG,
+  WEBOP_RESET_CONFIG,
+  WEBOP_FACTORY_RESET,
+  WEBOP_RESTART,
+  WEBOP_FORMAT_FS,
+  WEBOP_WIFI_CONNECT,
+  WEBOP_MIDI_DELETE,
+  WEBOP_MIDI_LOAD,
+  WEBOP_MIDI_FINALIZE,
+  WEBOP_PLAYER_PLAY,
+  WEBOP_PLAYER_PAUSE,
+  WEBOP_PLAYER_STOP,
+  WEBOP_PLAYER_CH_FILTER,
+  WEBOP_AUTOCAL_START_AIR,
+  WEBOP_AUTOCAL_START_RANGE,
+  WEBOP_AUTOCAL_CANCEL,
+  WEBOP_AUTOCAL_APPLY_RANGE,
+  WEBOP_MIC_MONITOR,
+  WEBOP_MIC_RESET,
+  WEBOP_SET_ADMIN_PASSWORD,
+  WEBOP_REGEN_AP_PASSWORD
+};
+
+struct WebOp {
+  WebOpType type = WEBOP_NONE;
+  uint32_t seq = 0;                     // identifie CETTE operation (anti-reliquat)
+  // Entrees
+  RuntimeConfig* candidate = nullptr;   // WEBOP_COMMIT_CONFIG (alloue par l'appelant)
+  String strA;                          // nom de fichier / SSID / mot de passe
+  String strB;                          // mot de passe Wi-Fi
+  uint32_t clientId = 0;                // client WebSocket a l'origine
+  int32_t intA = 0;
+  // Sorties
+  bool ok = false;
+  int httpStatus = 200;
+  String json;                          // corps JSON complet de la reponse
+};
 
 class WebConfigurator {
 public:
@@ -85,6 +134,61 @@ private:
 
   // Setup des routes HTTP
   void setupRoutes();
+
+  // --- Hand-off AsyncTCP -> loop() -----------------------------------------
+  // Un seul emplacement, serialise par _opMutex. Le producteur (tache AsyncTCP)
+  // attend au plus WEBOP_TIMEOUT_MS que loop() execute l'operation, puis lit le
+  // resultat. La boucle principale n'attend jamais AsyncTCP : pas d'interblocage.
+  WebOp _op;
+  volatile bool _opPending;
+  volatile bool _opAbandoned;           // l'appelant a renonce : ne pas appliquer
+  volatile uint32_t _opDoneSeq;         // sequence de la derniere operation terminee
+  uint32_t _opSeqCounter;
+  SemaphoreHandle_t _opMutex;
+  SemaphoreHandle_t _opDone;
+  // Hand-off BLOQUANT, reserve aux handlers HTTP. A ne JAMAIS appeler depuis un
+  // callback WebSocket : celui-ci peut detenir le verrou interne d'AsyncWebSocket,
+  // que loop() prend a son tour pour diffuser un statut - l'attente croisee
+  // bloquerait les deux taches.
+  bool runOnLoop(WebOp& op);
+  void servicePendingOp();
+
+  // Hand-off NON bloquant, utilise par les commandes WebSocket. Le resultat
+  // eventuel est diffuse par loop() sur le WebSocket.
+  static const uint8_t kWsOpQueueSize = 6;
+  WebOp _wsOps[kWsOpQueueSize];
+  uint8_t _wsOpHead;
+  uint8_t _wsOpTail;
+  uint8_t _wsOpCount;
+  portMUX_TYPE _wsOpMux = portMUX_INITIALIZER_UNLOCKED;
+  bool postWebOp(const WebOp& op);
+  void serviceWsOps();
+  void executeWebOp(WebOp& op);
+  // Libere les ressources portees par l'operation (candidat de configuration),
+  // qu'elle ait ete appliquee ou abandonnee. Idempotent.
+  static void releaseWebOp(WebOp& op);
+
+  // --- Authentification ----------------------------------------------------
+  WebAuth _auth;
+  // Clients WebSocket authentifies (identifiants AsyncWebSocket).
+  uint32_t _wsAuthClients[WS_MAX_CLIENTS];
+  bool isWsAuthenticated(uint32_t clientId) const;
+  void setWsAuthenticated(uint32_t clientId, bool authenticated);
+  // Extrait le jeton d'une requete (en-tete X-Auth-Token ou parametre ?token=).
+  String extractToken(AsyncWebServerRequest* request) const;
+  // Renvoie true (et repond 401) si la requete n'est pas authentifiee.
+  bool rejectIfUnauthorized(AsyncWebServerRequest* request);
+  void handleApiLogin(AsyncWebServerRequest* request);
+  void handleApiAuthStatus(AsyncWebServerRequest* request);
+  void handleApiAuthPassword(AsyncWebServerRequest* request);
+
+  // --- Protection hardware_not_ready ---------------------------------------
+  // Vrai si l'instrument existe ET a termine son initialisation hardware.
+  bool hardwareReady() const;
+  // Repond 503 {"ok":false,"error":"hardware_not_ready"} et renvoie true.
+  bool rejectIfHardwareNotReady(AsyncWebServerRequest* request);
+  // Commande WebSocket qui met physiquement un actionneur en mouvement.
+  static bool isPhysicalWsCommand(const char* type);
 
   // Handlers HTTP
   void handleRoot(AsyncWebServerRequest* request);
@@ -141,11 +245,29 @@ private:
   void scheduleControlledRestart();
   bool restartPending() const { return _pendingRestartTime != 0; }
 
-  // Fichier temporaire pour upload MIDI
-  File _uploadFile;
-  size_t _uploadSize;
-  String _uploadFileName;  // Nom original du fichier uploade
-  bool _uploadError;       // Erreur pendant l'upload (ex: echec ouverture fichier temp)
+  // --- Upload MIDI -----------------------------------------------------------
+  // Un unique slot d'upload, possede par UNE requete a la fois (verrou exclusif).
+  // Les anciens membres partages du serveur (_uploadFile / _uploadSize /
+  // _uploadFileName / _uploadError) n'appartenaient a personne : deux clients
+  // simultanes ecrivaient dans le meme descripteur de fichier et se volaient le
+  // nom de destination. Un second client recoit desormais 409 upload_busy sans
+  // jamais toucher au transfert en cours ; un transfert abandonne (onglet ferme,
+  // Wi-Fi coupe) est nettoye par update() apres UPLOAD_LOCK_TIMEOUT_MS.
+  struct MidiUploadSlot {
+    AsyncWebServerRequest* owner = nullptr;
+    File file;
+    size_t size = 0;
+    String fileName;        // nom de destination assaini
+    String tmpPath;         // fichier temporaire unique de ce transfert
+    bool error = false;
+    const char* errorCode = "";
+    unsigned long lastActivity = 0;
+  };
+  MidiUploadSlot _upload;
+  uint32_t _uploadSequence;         // suffixe unique des fichiers temporaires
+  bool acquireUploadLock(AsyncWebServerRequest* request);
+  void releaseUploadLock(AsyncWebServerRequest* request);
+  void abandonStaleUpload(unsigned long now);
 
 #if MIC_ENABLED
   // Audio analyzer (INMP441 microphone)

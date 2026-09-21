@@ -270,23 +270,30 @@ The software pipeline is covered by host tests, but physical microphone and flut
 | Physical PCA9685 and servo validation | Requires hardware |
 | Pump, fan, valve, and sensor validation | Requires hardware |
 | INMP441 calibration validation | Requires hardware |
-| Network authentication | Not implemented |
+| Network authentication | Implemented (session tokens, generated admin password) |
 
 Detailed audit findings and the physical test matrix are maintained in [Project status](docs/STATUS.md).
 
-## Security limitation
+## Access and security
 
-The current REST API and WebSocket interface are unauthenticated. Anyone who can reach the ESP32 on the network may be able to move actuators, run tests, modify configuration, restart the controller, and manage MIDI files.
+The hotspot key and the web admin password are **generated randomly at first
+boot** from the ESP32 hardware RNG, stored in NVS, and printed on the serial
+console. Neither is derived from the MAC address. Every route that changes
+something — configuration, reset, restart, filesystem recovery, MIDI files,
+Wi-Fi — and every WebSocket command requires a session token obtained from
+`POST /api/auth/login`; purely informative routes stay open.
 
-Until authentication is implemented:
+Lost the password? Hold the BOOT button while the board powers up (5 s): both
+secrets are regenerated and printed on serial.
 
-- set a non-empty access-point password;
-- use a private, trusted network;
-- do not expose the ESP32 to the Internet;
-- do not use port forwarding or an unauthenticated reverse proxy;
+Authentication is not a substitute for the rest:
+
+- there is no TLS, so the token travels in clear on the local link — the network
+  is still the trust boundary;
+- do not expose the ESP32 to the Internet or use port forwarding;
 - disconnect actuator power when the system is unattended.
 
-See [Access model and known security limitation](docs/API_WEB.md#access-model-and-known-security-limitation).
+See [Access model](docs/API_WEB.md#access-model).
 
 ## Documentation
 
