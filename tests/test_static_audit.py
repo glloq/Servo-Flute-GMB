@@ -1392,3 +1392,173 @@ def test_audit2_actuator_pins_are_safed_before_the_i2c_probe():
     assert 'pinMode(cfg.solenoidPin, OUTPUT);' in body
     assert 'pinMode(cfg.fanPin, OUTPUT);' in body
     assert 'pinMode(cfg.pumpPins[i], OUTPUT);' in body
+
+
+# =============================================================================
+# Chaine acoustique (PHASES 0-4). Ces verrous portent sur des choix
+# d'ARCHITECTURE que les tests natifs ne peuvent pas exprimer : ils verifient
+# qu'une propriete structurelle ne disparait pas discretement.
+# =============================================================================
+
+def test_audio_phase1_no_partial_frame_reaches_the_analysis():
+    """A0-1 : une lecture I2S partielle ne doit plus constituer une frame."""
+    aa = code_only(read('Servo_flute_ESP32/AudioAnalyzer.cpp'))
+    ring = code_only(read('Servo_flute_ESP32/AudioRingBuffer.cpp'))
+    # L'ancienne formule fatale a disparu du chemin d'ANALYSE. Elle reste
+    # legitime dans detectMicrophone(), qui ne sonde qu'une trame de presence au
+    # demarrage et n'alimente aucune mesure.
+    assert '_validSamples' not in aa
+    analysis = (aa.split('void AudioAnalyzer::update()')[1].split('\n}\n')[0] +
+                aa.split('void AudioAnalyzer::analyzeFrame()')[1].split('\n}\n')[0])
+    assert 'bytesRead' not in analysis
+    # L'analyse passe par readFrame, qui refuse une frame incomplete.
+    upd = aa.split('void AudioAnalyzer::update()')[1].split('\n}\n')[0]
+    assert '_ring.readFrame(_frame, MIC_ANALYSIS_FRAME_SIZE, MIC_ANALYSIS_HOP_SIZE' in upd
+    assert 'return;' in upd
+    rf = ring.split('bool AudioRingBuffer::readFrame')[1].split('\n}\n')[0]
+    assert 'if (_count < frameSize)' in rf
+    assert 'bufferUnderruns++' in rf
+    # Le compteur de frames n'avance QU'APRES une lecture reussie.
+    assert upd.index('_ring.readFrame') < upd.index('_frameSeq++')
+
+
+def test_audio_phase1_drain_is_faster_than_the_dma():
+    """A0-2 : vider le DMA moins souvent qu'il ne se remplit garantit la perte."""
+    s = read('Servo_flute_ESP32/settings.h')
+    def val(name):
+        import re
+        m = re.search(r'#define\s+%s\s+([0-9]+)' % name, s)
+        assert m, name
+        return int(m.group(1))
+    dma_samples = val('MIC_DMA_BUF_COUNT') * val('MIC_DMA_BUF_LEN')
+    dma_ms = 1000.0 * dma_samples / val('MIC_SAMPLE_RATE')
+    # Marge d'au moins 2x entre la profondeur du DMA et la periode de vidage.
+    assert val('MIC_DRAIN_INTERVAL_MS') * 2 <= dma_ms
+    # L'anneau doit contenir au moins une frame, et le hop rester dans la frame.
+    assert val('MIC_RING_CAPACITY') >= val('MIC_ANALYSIS_FRAME_SIZE')
+    assert 1 <= val('MIC_ANALYSIS_HOP_SIZE') <= val('MIC_ANALYSIS_FRAME_SIZE')
+    # Capacite en puissance de deux (indexation par masquage).
+    cap = val('MIC_RING_CAPACITY')
+    assert cap & (cap - 1) == 0
+
+
+def test_audio_phase1_no_analysis_timer():
+    """La cadence doit s'auto-reguler sur le hop. Un minuteur plus lent que
+    hop/Fe ferait deborder l'anneau en permanence : la production est fixee par
+    le materiel."""
+    aa = code_only(read('Servo_flute_ESP32/AudioAnalyzer.cpp'))
+    upd = aa.split('void AudioAnalyzer::update()')[1].split('\n}\n')[0]
+    # Le seul minuteur autorise dans update() est celui du vidage du DMA.
+    assert '_lastDrain' in upd
+    assert 'MIC_DRAIN_INTERVAL_MS' in upd
+    # Aucun minuteur ne doit conditionner l'ANALYSE.
+    assert 'AUTOCAL_FRAME_SAMPLE_MS' not in upd
+    assert 'MIC_ANALYSIS_MIN_INTERVAL' not in aa
+
+
+def test_audio_phase2_yin_is_unwindowed_and_non_destructive():
+    """A0-3 : la fenetre appartient au chemin spectral, pas a YIN."""
+    pd = code_only(read('Servo_flute_ESP32/PitchDetector.cpp'))
+    pdh = code_only(read('Servo_flute_ESP32/PitchDetector.h'))
+    core = pd.split('PitchResult PitchDetector::runYin')[1].split('\n}\n')[0]
+    # Le coeur ne fenetre pas et ne modifie pas le signal.
+    assert '_hann' not in pd and '_hann' not in pdh
+    assert 'cosf' not in core
+    assert 'samples[i] *=' not in core
+    assert 'samples[i] -=' not in core
+    # La signature est const : le tampon de l'appelant est preserve, ce qui
+    # permet a l'analyse spectrale de reutiliser la meme frame sans recopie.
+    assert 'PitchResult analyse(const float* samples, size_t n) const;' in pdh
+    # Le raffinement est fractionnaire, plus parabolique sur tau entier.
+    assert 'diffAtLag' in pd
+    assert 'MIC_YIN_REFINE_ITERATIONS' in pd
+    # L'ancienne methode existe UNIQUEMENT comme reference A/B, et le test A/B
+    # doit reellement l'appeler.
+    assert 'detectWindowed' in pdh
+    t = read('tests/test_native/test_audio.cpp')
+    assert 'detectWindowed' in t
+    assert 'pitch_window_ab_comparison' in t
+    # ...et ne doit jamais etre utilisee en production.
+    assert 'detectWindowed' not in read('Servo_flute_ESP32/AudioAnalyzer.cpp')
+
+
+def test_audio_phase2_expected_note_prefers_the_shortest_lag():
+    """Prendre le creux le plus PROFOND serait faux : pour tout signal
+    periodique d(2T) et d(3T) sont naturellement profonds, et un overblow
+    passerait pour une note correcte."""
+    pd = code_only(read('Servo_flute_ESP32/PitchDetector.cpp'))
+    branch = pd.split('if (_expectedMidi > 0 && _expectedHz > 0.0f) {')[1].split('Chemin general')[0]
+    # Rapports par lag croissant : 3*f0 d'abord, f0/2 en dernier.
+    assert '3.0f, 2.0f, 1.0f, 0.5f' in branch
+    # Premier qualifiant, pas le plus profond.
+    assert 'break;' in branch
+    assert 'best' not in branch
+    # Retro-compatibilite d'IAudioSource : implementations par defaut vides.
+    ias = read('Servo_flute_ESP32/IAudioSource.h')
+    assert 'virtual void setExpectedMidiNote(int midi) { (void)midi; }' in ias
+    assert 'virtual void clearExpectedMidiNote() {}' in ias
+    # La calibration declare la note visee ET l'efface a la fin.
+    ac = code_only(read('Servo_flute_ESP32/AutoCalibrator.cpp'))
+    assert '_audio.setExpectedMidiNote(_expectedMidi);' in ac
+    assert '_audio.clearExpectedMidiNote();' in ac.split('void AutoCalibrator::safeHardware')[1]
+
+
+def test_audio_phase3_goertzel_every_frame_fft_decimated():
+    """La FFT ne doit pas tourner a chaque frame : le timbre evolue bien plus
+    lentement que le pitch, et elle coute bien plus cher que Goertzel."""
+    sa = code_only(read('Servo_flute_ESP32/SpectralAnalyzer.cpp'))
+    aa = code_only(read('Servo_flute_ESP32/AudioAnalyzer.cpp'))
+    # Goertzel : pas de fenetre (on mesure une puissance a une frequence connue).
+    g = sa.split('float SpectralAnalyzer::goertzelPower')[1].split('\n}\n')[0]
+    assert '_window' not in g and 'windowAt' not in g
+    # Au-dessus de Nyquist, refus plutot que mesure repliee.
+    assert 'sampleRate * 0.5f' in g
+    # FFT : fenetre de Hann LEGITIME ici.
+    if 'bool SpectralAnalyzer::computeSpectrum' in sa:
+        f = sa.split('bool SpectralAnalyzer::computeSpectrum')[1].split('\n}\n')[0]
+        assert 'windowAt' in f
+    # Decimation cablee dans l'analyseur.
+    spec = aa.split('void AudioAnalyzer::analyzeSpectrum')[1].split('\n}\n')[0]
+    assert 'MIC_SPECTRAL_DECIMATION' in spec
+    assert '_spectralCountdown' in spec
+    # Goertzel passe par le constructeur pur, appele a chaque frame.
+    assert 'fillSpectral' in spec
+
+
+def test_audio_phase4_features_are_measured_not_guessed():
+    """Un champ ne doit jamais porter une valeur qui n'a pas ete mesuree."""
+    af = code_only(read('Servo_flute_ESP32/AcousticFeatures.cpp'))
+    afh = read('Servo_flute_ESP32/AcousticFeatures.h')
+    # Les defauts ne suggerent aucune mesure : plancher dBFS, pas 0 dB.
+    assert 'float rmsDbFS = MIC_DBFS_FLOOR;' in afh
+    assert 'float peakDbFS = MIC_DBFS_FLOOR;' in afh
+    assert 'bool spectralValid = false;' in afh
+    # Les verdicts exigent un pitch VALIDE.
+    p = af.split('void fillPitch')[1].split('\n}\n')[0]
+    assert 'p.valid && p.expectedMatch' in p
+    assert 'p.valid && p.octaveAbove' in p
+    # Sans fondamentale fiable, les champs spectraux sont EFFACES, pas laisses.
+    sp = af.split('void fillSpectral')[1].split('\n}\n')[0]
+    assert 'f.spectralValid = false;' in sp
+    assert sp.index('f.spectralValid = false;') < sp.index('if (frame == nullptr')
+    assert 'f.spectralValid = true;' in sp
+    # Le HNR est borne : un signal purement harmonique donnerait l'infini.
+    assert 'MIC_HNR_MAX_DB' in sp
+    # L'assemblage est PUR : aucune dependance materielle.
+    for forbidden in ('i2s_', 'millis(', 'Serial.', '#include <Arduino.h>'):
+        assert forbidden not in read('Servo_flute_ESP32/AcousticFeatures.cpp'), forbidden
+
+
+def test_audio_web_never_streams_pcm():
+    """Un ESP32-WROOM ne peut pas diffuser du PCM en continu sur WebSocket, et
+    les champs spectraux non mesures doivent etre OMIS, pas repetes."""
+    web = code_only(read('Servo_flute_ESP32/WebConfigurator.cpp'))
+    block = web.split('String aj = "{\\"t\\":\\"audio\\"";')[1].split('_ws.textAll(aj);')[0]
+    # Aucun tampon brut n'est serialise.
+    for forbidden in ('_frame', 'magnitudes()', '_rawBuffer', 'AudioRingBuffer'):
+        assert forbidden not in block, forbidden
+    # Les champs spectraux sont conditionnes a leur validite.
+    assert 'af.spectralValid' in block
+    assert block.index('af.spectralValid') < block.index('af.h2Ratio')
+    # Le debit reste limite.
+    assert 'AUTOCAL_AUDIO_INTERVAL_MS' in web
