@@ -460,8 +460,15 @@ do not capture — which includes breath, but also harmonics above the fourth. A
 rigorous HNR needs the full spectrum and a noise-floor estimate. It is bounded
 at ±`MIC_HNR_MAX_DB` because a synthetic pure tone would otherwise give
 infinity. It behaves correctly in the direction that matters (adding breath
-drops it by more than 6 dB), and PHASE 5/6 will replace it with a real noise
-model.
+drops it by more than 6 dB).
+
+**Superseded in PHASE 6, and it was worse than "approximate".** Measured against
+the full spectrum, this approximation did not merely blur the distinction — it
+ranked a breathy note *above* a timbred one, because H5..H8 fall outside the
+four measured lines and were therefore counted as noise. It survives only as the
+fallback used when the FFT is compiled out of the binary, and
+`AcousticFeatures::hnrIsSpectral` says which of the two scales filled the field.
+See PHASE 6.
 
 ### Tests added
 
@@ -656,6 +663,276 @@ pitch range each make the corresponding test fail.
 
 ---
 
+## PHASE 6 — Acoustic classification and quality
+
+Components: `AcousticQuality.{h,cpp}` (pure, host-testable), driven once per
+analysed frame by `AudioAnalyzer::analyzeAcoustics()`.
+
+### What it produces
+
+| Output | Meaning |
+|---|---|
+| `AcousticClassification` | one `AcousticState` + *why it could not do better* |
+| `QualityScore` | weighted 0..1 mark over seven criteria, with `weightUsed` |
+| `BreathinessResult` | 0 = pure and timbred, 1 = essentially breath |
+| `OverblowResult` | three conjoint criteria, never one alone |
+| `SqueakResult` | retroactively confirmed, not announced on suspicion |
+
+Priority order of the classifier: clipping → silence → squeak → overblow →
+wrong note → weak → breathy → unstable → good. "Good" is last on purpose: it is
+what remains when nothing else is wrong, never a default.
+
+### The HNR changed scale, and the two scales must never mix
+
+PHASE 4 filled `harmonicToNoiseRatio` with a Goertzel approximation over four
+partials. It did not merely confuse a timbred note with a breathy one — **it
+ranked them the wrong way round**. Two notes matched to within 0.29 dB of
+level, through the full chain:
+
+| | Goertzel HNR | spectral HNR | breathiness | quality |
+|---|---|---|---|---|
+| timbred note | −0.06 dB | **+32.33 dB** | 0.139 | 0.973 |
+| breathy note | +9.30 dB | **+9.03 dB** | 0.671 | 0.575 |
+
+The four Goertzel lines captured 49 % of the timbred note's power (H5..H8
+counted as *noise*) against 69 % of the breathy one. The spectral measurement's
+harmonic windows capture 100.0 %.
+
+`SpectralAnalyzer::harmonicNoiseRatio()` measures it over the full spectrum:
+harmonic windows around each usable partial, and a noise floor taken as the
+**median** of the non-harmonic bins — not the mean, which a few strong bins drag
+upward. The median is found by bisection on the value, so it needs no sort
+buffer and no copy of the spectrum: `sizeof(SpectralAnalyzer)` is 6152 bytes
+before and after.
+
+Thresholds were recalibrated on the new scale:
+
+| Threshold | before | after | measurement that justifies it |
+|---|---|---|---|
+| `AQ_BREATH_HNR_TONE_DB` | 20.0 dB | **34.0 dB** | breath 0.010 → 34.40 dB, the point where spectral flatness also crosses its own "tone" threshold — both components declare *more breath* at the same place |
+| `AQ_QUALITY_HNR_GOOD_DB` | 20.0 dB | **34.0 dB** | at 20 dB a note carrying 5 % breath (20.55 dB) saturated the component at 1.00 — the same harmonic mark as a note with no breath at all |
+| `AQ_BREATH_HNR_NOISE_DB` | 0.0 dB | 0.0 dB | unchanged value, justification redone: on the spectral scale 0 dB is *literal* — line energy equals the floor extended over the band |
+
+**The two scales are never averaged together.** `computeBreathiness()` and
+`computeAcousticQuality()` use the HNR component only when
+`AcousticFeatures::hnrIsSpectral` is true. Without that guard the *same held
+note* would be declared "almost pure breath" on one frame in
+`MIC_SPECTRAL_DECIMATION` and "clean" on the next: the gap measured between two
+consecutive frames of an identical signal reaches 31.88 dB. This is verified by
+mutation — removing the guard makes `quality_breathiness_is_monotone` fail, and
+that is a *pre-existing* test, not one written for the occasion.
+
+### Why the spectral HNR is not held between FFT frames
+
+The FFT runs one frame in four, so the harmonic component exists at 15.6 Hz
+while the rest of the score updates at 62.5 Hz. Holding the last spectral HNR
+across the other three frames would make the component always available, at the
+price of a value up to 64 ms old presented as current.
+
+That is exactly what `fftValid` exists to forbid, and exactly the defect fixed
+in `0ab0881`, where noise capture was accumulating the stale spectrum of the
+previous note. The option was considered and rejected twice, independently.
+
+**Consequence a consumer must handle.** `QualityScore::weightUsed` alternates
+between 0.75 (spectral frame) and 0.60 (decimated frame); breathiness likewise
+drops from 1.00 to 0.30. Two scores with different `weightUsed` are **not the
+same measurement** and must not be averaged together: a naive one-second mean
+would blend 15 spectral scores with 47 partial ones and produce a number that
+means nothing. Group by `weightUsed`, or plot only the spectral frames. The
+missing-ness is published rather than hidden — the same discipline as
+`snrUsedFallback`, `missing*` and `stabilityValid` elsewhere in this chain.
+
+### What is not measured is not invented
+
+`attackQuality` stays at `AQ_ATTACK_NOT_MEASURED`. PHASE 7 measures
+milliseconds; the score wants a 0..1; and no threshold in this project says
+which attack duration is worth 1. Inventing one would dress a matter of taste
+as a measurement. The score is renormalised over the other six criteria, covers
+90 % of the specification, and `weightUsed` carries the gap.
+
+The `missing*` flags (`pitch`, `snr`, `spectrum`, `expectedNote`, `stability`,
+`squeakHistory`) exist for the same reason: a "good" reached because nothing
+could be measured is not a "good", and the interface must be able to tell.
+
+### A trap found while wiring this up: four lifecycle holes, not one
+
+`AudioAnalyzer::update()` returns on its first line when the analyser is
+inactive or uninitialised. The `MIC_FRAME_STALE_MS` ceiling therefore **never**
+applies there, and nothing expires on its own. Four paths each left the last
+verdict published as though it described the present instant:
+
+- `resetMicrophone()` — republished the state and score from *before* the reset,
+  and the brightness baseline learned before it judged the frames after. It also
+  zeroes `_frameTimestamp`, which *disarms* the staleness ceiling.
+- `end()` — same defect.
+- `begin()` — a restarting stream inherited the entire past.
+- `setActive(false)` — a pause froze the verdict for its whole duration. This
+  fourth one had been seen by nobody.
+
+`setActive()` now acts on **transitions**: several callers re-post the value it
+already holds, and acting on the value would wipe the pitch history at every
+event, so stability would never be measured at all.
+
+### Where the classification runs, and why the order matters
+
+`analyzeAcoustics()` is called from `update()` **after** `_features` carries its
+sequence number and timestamp — not from `analyzeFrame()`. `updateSqueak()`
+refuses a non-contiguous sequence, and `AcousticTiming` dates its instants on
+`timestamp`. Called one step earlier it would have seen the *previous* frame's
+identity: a history gap on every frame, and a systematic one-period offset on
+every temporal measurement.
+
+`computeBreathiness()` is deliberately **not** called separately: `classify()`
+already computes it and stores it in `out.breathiness`. It is a pure function,
+same inputs, identical result; calling it again would cost eight extra
+1024-point Goertzel passes per frame, 62.5 times a second. A static-audit
+assertion locks that choice in place.
+
+### Cost
+
+| Item | Measured |
+|---|---|
+| `SqueakDetector` | 52 B |
+| `AcousticClassification` | 72 B |
+| `QualityScore` | 24 B |
+| `AcousticFeatures::hnrIsSpectral` | **0 B** — fits existing padding next to `fftValid`; `sizeof` is 96 B before and after |
+| `HarmonicNoiseRatio` | 28 B, stack temporary |
+| CPU, per analysed frame | ≈ 12 % of one YIN pass (8 Goertzel for breathiness, overblow, brightness) |
+| CPU, per FFT frame | one `harmonicNoiseRatio()` ≈ 3.5 % of the FFT that just ran on the same frame |
+
+Zero dynamic allocation in the frame path, locked by a static-audit assertion.
+CPU figures are **operation counts, not microseconds** — nothing has run on an
+ESP32 here.
+
+### Tests added (PHASE 6)
+
+| Test | What it proves |
+|---|---|
+| `quality_hnr_scale_is_the_one_the_thresholds_describe` | prints the full measured range and locks the three thresholds onto it |
+| `quality_breathiness_rises_with_breath_on_the_spectral_scale` | six sweep points, strict growth — **fails with the old thresholds** |
+| `quality_hnr_component_is_absent_on_the_goertzel_scale` | over 16 consecutive frames, `usedHnr == hnrIsSpectral` |
+| `quality_score_ranks_a_timbred_note_above_a_breathy_one` | level-matched pair through the real chain |
+| `quality_hnr_is_absent_without_fft` (`#else` branch) | without FFT the component disappears rather than being compared to thresholds that do not describe it |
+| `features_fft_fields_never_claim_to_be_fresh` | `hnrIsSpectral` true on an FFT frame, **false again** on a decimated one |
+
+Three assertions written *before* measurement were replaced by measured ones,
+each with an **added** constraint rather than a relaxed one — including one that
+was simply wrong (`noiseOnlyDb > -MIC_HNR_MAX_DB`: on pure noise the measurement
+legitimately reaches the bound for two seeds out of three).
+
+**Validation level: simulated audio validated.** The three thresholds are
+numbers drawn from synthetic PCM. The upper reference sits only 6 dB below the
+`MIC_HNR_MAX_DB` bound: on a real microphone, room noise and pump noise will
+probably prevent a genuinely clean note from reaching 34 dB, and the component
+will then report breath that is not there. **This is the most likely
+recalibration to redo**, and the suite prints the whole table (`[hnr-calib]`
+lines) precisely so it can be compared line by line against a microphone
+capture.
+
+---
+
+## PHASE 7 — Acoustic timing
+
+Components: `AcousticTiming.{h,cpp}` (pure, host-testable), fed on the *signal*
+side by `AudioAnalyzer` and on the *order* side by the actuator chain.
+
+### What it measures
+
+| Measure | From | To |
+|---|---|---|
+| `commandToSoundLatency` | accepted MIDI order | audible sound |
+| `airToSoundLatency` | air setpoint applied | audible sound |
+| `attackTime` | sound onset | level established |
+| `pitchStabilizationTime` | sound onset | pitch stable |
+| `releaseTime` | stop order | sound gone |
+
+Every measure carries its own `valid` flag. An `attackTime` of 0 without it
+would read as an instantaneous attack — a defect this project has already made
+once, and the reason the web layer routes every duration through a single
+function that cannot emit a bare `ms`.
+
+### The safety property, and how it is guaranteed
+
+The specification says the audio engine must never disturb actuator safety and
+must never be able to hold an actuator on if it crashes. So the flow is
+**one-way**: the actuator chain *notifies*, it never *reads*.
+
+- The observer is an optional `AcousticTiming*`, `nullptr` by default.
+- All four notification helpers open with a null check.
+- Every `bool` return is discarded through an explicit `(void)` cast, so no
+  branch can depend on it. Refusals are already counted inside `AcousticTiming`
+  (`rejectedEvents()`), so a caller-side counter would be redundant.
+- The only condition present (`!_noteActive`) reads the *controller's own*
+  state, never the observer's.
+
+This is verifiable by inspection — four small functions — and it is also tested:
+a full instrument scenario (out-of-range note, nominal note, CC on a held note,
+monophonic replacement, too-short note, transport panic, calibration session,
+All Sound Off) is played **three times** — without an observer, with one, and
+with one that misbehaves (resets mid-note, invents orders, back-dates an order
+into the future so every later hook is refused) — and the complete actuator
+trace must be identical character for character.
+
+### Where the hooks sit, and the trap
+
+The instant that matters is when the order is **really accepted and acts on the
+actuator**, not when a MIDI message arrives.
+
+| Hook | Site | Why there |
+|---|---|---|
+| `noteCommanded` | `NoteSequencer::startNoteSequence()` | a refused note (missing PCA, actuator session, out of range) or one lost to a full or panic-flushed queue never reaches this line, so it never enters the latency statistics. `InstrumentManager::noteOn()` is only an enqueue — nothing is timed there |
+| `airCommanded` | `AirflowController::computeAirflow()`, onset path only | distinguishes the setpoint that *starts* the air from a periodic recomputation (CC7/CC11/CC2 on an already-sounding note) |
+| `valveOpened` | `AirflowController::openValve()`, guarded by `_noteActive` | a bench opening (`testSolenoid` from the web UI or the calibrator) belongs to no note and must not inflate `rejectedEvents()` |
+| `noteReleased` | real stop paths, including `stop()` | the *real* extinction, not the Note Off message: a note shorter than `minNoteDurationMs` is deferred and notified only when extinction is actually commanded. `stop()` covers panic, All Sound Off, lost transport and calibrator takeover — without it the state machine would stay armed to its 60 s ceiling |
+
+### The wiring, and the one real hazard
+
+`WebConfigurator` owns the `AudioAnalyzer` (`new` in `begin()`, `delete` in the
+destructor) and receives the `InstrumentManager`: it is the only place the two
+worlds meet.
+
+- `begin()`: `_instrument->setTimingObserver(&_audio->timing())`, conditioned on
+  the microphone being **detected**, not merely on the instrument existing.
+  Without a microphone nobody feeds the timing any frames, so every note would
+  open a cycle ending in `TIMING_TIMEOUT` and the interface would read "no sound
+  measured" when the truth is "nobody was listening".
+- destructor: `setTimingObserver(nullptr)` **before** `delete _audio`. The
+  observer points inside `_audio`, which `WebConfigurator` destroys, while
+  `InstrumentManager` outlives it. Without the detach, the next note would write
+  into freed memory.
+
+Known limitation, shared with `_autoCal`: a microphone plugged in after startup
+does not re-arm this wiring. In BLE mode the web server never starts, so no
+audio analysis exists at all — a pre-existing architectural fact.
+
+### Cost
+
+`AcousticTiming` 404 B (inside `AudioAnalyzer`), plus 12 B of observer pointers
+across the actuator chain. Total for PHASES 6+7 on `AudioAnalyzer`: **+552 B**,
+bringing it to 22 648 B. `AcousticTiming::update()` is O(1) over 4-to-8 element
+windows. No dynamic allocation anywhere in either path.
+
+### Tests added (PHASE 7)
+
+| Test | What it proves |
+|---|---|
+| `timing_observer_cannot_touch_actuators` | three runs, identical actuator traces — plus anti-vacuity: the observer must really have received all four orders |
+| `timing_nominal_reports_four_orders_in_order` | `commandToSound − airToSound == servoToSolenoidDelayMs`; a zero gap would mean the two hooks sit at the same place |
+| `timing_refused_note_is_never_commanded` | four refusal cases **and** the same note accepted, so the test cannot pass by everything being broken |
+| `timing_monophonic_replacement_closes_before_opening` | the old note closes as `TIMING_ABORTED` with `releaseTime` left **invalid**, never zero |
+| `timing_from_features_trusts_the_detector_verdict` | the reconstructed pitch criterion *assumed* `runYin()`'s range invariant instead of expressing it, and accepted an aliased out-of-range frequency the detector had rejected |
+
+**Validation level: unit tested + firmware compiled.** The frames in these tests
+are dB values placed by hand, not PCM. `AudioAnalyzer.cpp` itself is not in the
+host build (it depends on I2S), so the suite does not execute it; it was checked
+by a scratch execution harness that really runs `update()` on 56 frames
+(62.2 frames/s measured, FFT 13/56, zero history gap), by targeted compilation,
+and by adversarial diff review. That harness is **not in CI** — and the static
+audit verifies that a call is *present*, not that it is *reachable*: an early
+`return` inserted before it would slip past.
+
+---
+
 ## Target architecture
 
 ```
@@ -673,10 +950,19 @@ AudioCapture ──> AudioRingBuffer ──> frames (FRAME_SIZE, HOP_SIZE overla
                                          ▼
                                  AcousticFeatures
                                          │
-                            ┌────────────┼────────────┐
-                            ▼            ▼            ▼
-                       AutoCalibrator  Diagnostics  Live monitor
+                            ┌────────────┼──────────────┬───────────────┐
+                            ▼            ▼              ▼               ▼
+                       AutoCalibrator  Diagnostics  AcousticQuality  AcousticTiming
+                                                    (state, score)   (latencies)
+                                                         │               ▲
+                                                         ▼               │ order instants
+                                                    Live monitor    NoteSequencer /
+                                                                    AirflowController
 ```
+
+The arrow into `AcousticTiming` from the actuator chain is **one-way**: the
+instrument notifies, it never reads. No actuator decision depends on the
+observer's presence or on any value it returns.
 
 Ownership rule: **every DSP operation runs on the `loop()` task**, inside
 `AudioAnalyzer::update()`. No network, BLE or timer callback ever performs
@@ -694,20 +980,32 @@ analysis. This is the same ownership rule the actuator path already follows.
 | 3 | Goertzel + optional FFT | **unit tested** |
 | 4 | `AcousticFeatures` | **unit tested** |
 | 5 | Filtering + per-state noise model | **unit tested** |
-| 6+ | Classification, timing, quality, calibration | not started |
+| 6 | Classification, quality, spectral HNR + recalibration | **simulated audio validated** |
+| 7 | Acoustic timing (order side + signal side) | **unit tested** + **firmware compiled** |
+| 8+ | Persistence, learned parameters, closed-loop calibration | not started |
 
 ## Next phase recommended
 
-**PHASE 6 — acoustic classification**, now that a real SNR exists.
+**PHASE 8 — persistence of what has been learned**, and it is now the blocking
+one rather than merely the next.
 
-`AcousticState` (silence / good / weak / breathy / unstable / wrong note /
-overblow / squeak) needs exactly the three things PHASE 5 just made available:
-a level relative to a *meaningful* floor, a harmonic/noise balance, and spectral
-flatness. Breathiness in particular is the ratio of broadband noise to harmonic
-energy — it could not be computed honestly before the noise model existed.
+PHASES 5, 6 and 7 all produce state that is *measured on this machine* and lost
+on reboot: the seven noise profiles, and now the timing references of a given
+instrument. Every one of them has to be re-measured at each power-up, which
+means the quality score is not comparable between two sessions of the same
+flute. That is the gap that keeps this chain a live monitor instead of an
+instrument model.
 
-PHASE 7 (timing) is independent and could run in parallel; it needs only the
-level envelope, which has existed since PHASE 1.
+It also needs the split the specification asks for and which does not yet
+exist: firmware parameters stay in `settings.h`, instrument parameters and
+learned parameters belong in LittleFS, versioned, so a firmware update does not
+silently invalidate a calibration.
+
+**Before any of that, one measurement is worth more than any new phase: connect
+a real INMP441.** Nothing here is above "simulated audio validated", and the
+single most likely thing to be wrong is `AQ_BREATH_HNR_TONE_DB` at 34 dB, only
+6 dB below the bound (see PHASE 6). The suite prints the whole calibration table
+for exactly that comparison.
 
 ## Known limitations
 
@@ -715,10 +1013,24 @@ level envelope, which has existed since PHASE 1.
   measurement in this document comes from synthetic PCM.
 - CPU time is estimated from operation counts, never measured on the device.
   This is the largest unknown in the whole chain.
-- `harmonicToNoiseRatio` remains the PHASE 4 approximation. PHASE 5 added a
-  *separate*, properly measured `snrDb` based on the noise profiles; the two
-  coexist and measure different things. Replacing the HNR with a spectrum-based
-  one is still open.
+- `harmonicToNoiseRatio` is now measured on the full spectrum when the FFT ran
+  on that frame, and remains the PHASE 4 Goertzel approximation otherwise;
+  `hnrIsSpectral` says which. `snrDb` is a *different* quantity (level against
+  the machine's own noise floor) and the two coexist deliberately.
+- **`QualityScore::weightUsed` alternates between 0.75 and 0.60** at frame rate,
+  because the harmonic component only exists on FFT frames (15.6 Hz). Scores
+  with different `weightUsed` are not the same measurement and must not be
+  averaged together. See PHASE 6.
+- Attack quality is measured in milliseconds by PHASE 7 but does not feed the
+  PHASE 6 score: no threshold says which duration is worth 1, and inventing one
+  would dress taste as measurement.
+- The static audit checks that a call is *present*, not that it is *reachable*.
+  An early `return` inserted before it would pass. `AudioAnalyzer.cpp` is not in
+  the host build, so only that audit and an out-of-repo execution harness cover
+  it — putting it in the host build behind an I2S seam would close this gap.
+- A microphone plugged in after startup does not re-arm the timing observer or
+  the auto-calibrator. In BLE mode the web server never starts, so no audio
+  analysis exists at all.
 - Noise profiles are lost on reboot (see PHASE 5, persistence).
 - The 62.5 frames/s rate only applies while `setActive(true)` — mic monitor or
   calibration — not during ordinary MIDI playback.
