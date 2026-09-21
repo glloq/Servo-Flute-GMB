@@ -848,6 +848,8 @@ static void sha256_known_answers() {
 }
 
 
+namespace {
+
 /*******************************************************************************
  * INTEGRATION : InstrumentManager + session web + AutoCalibrator
  *
@@ -1343,6 +1345,8 @@ void vibrato_rounding_is_symmetric() {
     assert(fixed(v) == -fixed(-v));
   }
 }
+
+}  // namespace
 
 void audit_run_all_tests() {
   sha256_known_answers();
