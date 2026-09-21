@@ -92,6 +92,14 @@ void AudioAnalyzer::uninstallI2S() {
 }
 
 bool AudioAnalyzer::begin() {
+  // Un flux qui (re)demarre n'herite RIEN du precedent : ni les verdicts de la
+  // derniere frame, ni l'historique de brillance du detecteur de couac, ni
+  // l'historique de pitch. Meme raison que le `_filters.configureDefaults()`
+  // plus bas - sans quoi le premier bloc du nouveau flux serait melange a la
+  // queue de l'ancien - et place AVANT l'installation du pilote pour que les
+  // chemins d'ECHEC ci-dessous soient couverts eux aussi : un demarrage rate
+  // ne doit pas laisser publier l'etat acoustique d'avant.
+  markMeasurementInvalid();
   if (!installI2S()) {
     if (DEBUG) Serial.println("ERREUR: AudioAnalyzer - I2S install failed");
     _initialized = false;
@@ -108,11 +116,6 @@ bool AudioAnalyzer::begin() {
   _rawSamplesSinceFrame = 0;
   _clippedSinceFrame = 0;
   _lastDrain = 0;
-  // Un flux qui repart ne doit rien heriter du precedent. Les filtres viennent
-  // d'etre remis a neuf juste au-dessus, pour la meme raison ; l'historique de
-  // brillance, l'historique de pitch et les verdicts de la derniere frame sont
-  // exactement du meme ordre - ils decrivent un flux qui n'existe plus.
-  markMeasurementInvalid();
   _initialized = true;
   _micDetected = detectMicrophone();
 
@@ -311,6 +314,29 @@ const char* AudioAnalyzer::getAcousticStateName() const {
   // une mesure - "il n'y a pas de son" - alors qu'elle ne dit rien.
   if (!_classification.classified) return "unclassified";
   return AcousticQuality::stateName(_classification.state);
+}
+
+void AudioAnalyzer::setActive(bool active) {
+  // TRANSITIONS SEULEMENT. Tous les appelants posent cet etat sur EVENEMENT
+  // (bascule du moniteur, debut et fin de calibration, capture de bruit), mais
+  // plusieurs le reposent a une valeur qu'il a deja ; agir sur la valeur plutot
+  // que sur le front effacerait l'historique de pitch a chaque passage.
+  if (_active == active) return;
+
+  if (!active) {
+    // Pause : update() sort des sa premiere ligne, donc le plafond
+    // d'obsolescence ne s'appliquera JAMAIS. Sans invalidation ici, l'etat
+    // acoustique et la note de qualite de la derniere frame resteraient
+    // publies indefiniment, comme s'ils decrivaient l'instant present.
+    markMeasurementInvalid();
+  } else {
+    // Reprise : ce que le detecteur de couac et l'historique de pitch avaient
+    // appris decrit un AUTRE moment de jeu, separe par une pause de duree
+    // inconnue. On repart vierge plutot que de comparer les frames qui
+    // arrivent a une reference d'avant la pause.
+    resetAcousticTracking();
+  }
+  _active = active;
 }
 
 void AudioAnalyzer::setExpectedMidiNote(int midi) {

@@ -2029,3 +2029,77 @@ def test_audio_phase7_web_timing_measures_all_carry_their_validity():
     for field in ('outcome', 'baseline_valid', 'has_last'):
         assert '"%s"' % field in tm, (
             "a[\"timing\"] n'expose pas \"%s\", exige par le contrat d'interface." % field)
+
+
+def _analyzer_functions():
+    """Toutes les fonctions membres d'AudioAnalyzer.cpp, {nom: corps}."""
+    import re
+    aa = code_only(read('Servo_flute_ESP32/AudioAnalyzer.cpp'))
+    starts = [(m.group(1), m.start()) for m in
+              re.finditer(r'^[A-Za-z_][\w:<>*&\s]*?\bAudioAnalyzer::(\w+)\s*\(', aa, re.M)]
+    out = {}
+    for i, (name, pos) in enumerate(starts):
+        end = starts[i + 1][1] if i + 1 < len(starts) else len(aa)
+        out.setdefault(name, '')
+        out[name] += aa[pos:end]
+    return out
+
+
+def test_audio_every_path_that_stops_acquisition_invalidates_the_verdicts():
+    """update() sort des sa premiere ligne quand l'analyseur est inactif ou non
+    initialise : le plafond d'obsolescence (MIC_FRAME_STALE_MS) ne s'y applique
+    donc JAMAIS. Toute fonction qui arrete ou reinitialise l'acquisition doit
+    invalider elle-meme, sinon le dernier verdict reste publie pour toujours -
+    l'API continuerait a rendre l'etat acoustique et le score d'une note
+    d'avant l'arret comme s'ils venaient d'etre mesures."""
+    import re
+    fns = _analyzer_functions()
+
+    for name, why in (
+        ('begin', "un flux qui redemarre heriterait des verdicts et de l'historique de "
+                  "brillance du flux precedent"),
+        ('end', "l'analyseur arrete continuerait de publier le verdict de sa derniere frame"),
+        ('resetMicrophone', "apres un reset depuis l'interface web (WEBOP_MIC_RESET), l'API "
+                            "republierait l'etat acoustique et le score d'AVANT le reset, et la "
+                            "ligne de base du detecteur de couac apprise avant servirait a juger "
+                            "les frames d'apres ; de plus resetMicrophone() remet _frameTimestamp "
+                            "a zero, ce qui DESARME le plafond d'obsolescence"),
+        ('setActive', "mettre l'analyse en pause figerait le dernier verdict pour toute la duree "
+                      "de la pause"),
+    ):
+        assert name in fns, (
+            "AudioAnalyzer.cpp ne definit pas %s() : cet invariant de cycle de vie s'appuie "
+            "sur ce decoupage." % name)
+        assert 'markMeasurementInvalid();' in fns[name], (
+            "AudioAnalyzer::%s() n'invalide pas les mesures rangees : %s. Appeler "
+            "markMeasurementInvalid()." % (name, why))
+
+    # setActive() ne doit plus etre le simple drapeau qu'il etait : la
+    # declaration inline du header ne peut pas invalider.
+    h = code_only(read('Servo_flute_ESP32/AudioAnalyzer.h'))
+    assert 'void setActive(bool active) override;' in h, (
+        "setActive() doit etre declare dans AudioAnalyzer.h et defini dans le .cpp : sous sa "
+        "forme inline '{ _active = active; }' il ne peut pas invalider les verdicts a la mise "
+        "en pause.")
+    sa = fns['setActive']
+    assert 'if (_active == active) return;' in sa, (
+        "setActive() doit agir sur les TRANSITIONS. Plusieurs appelants reposent l'etat a une "
+        "valeur qu'il a deja (WebConfigurator le recalcule a chaque evenement) : agir sur la "
+        "valeur effacerait l'historique de pitch et la ligne de base de brillance a chaque "
+        "passage, et la stabilite ne serait jamais mesuree.")
+    assert 'resetAcousticTracking();' in sa, (
+        "setActive(true) doit repartir d'un historique vierge : ce que le detecteur de couac "
+        "et l'historique de pitch avaient appris decrit un autre moment de jeu, separe par une "
+        "pause de duree inconnue.")
+
+    # GARDE GENERALE : toute AUTRE fonction qui coupe l'acquisition devra en
+    # faire autant. Ce test echoue alors sur le nouveau chemin, par son nom.
+    for name, body in fns.items():
+        stops = re.search(r'_active\s*=\s*(false|active)\s*;', body) or '_initialized = false;' in body
+        if not stops:
+            continue
+        assert 'markMeasurementInvalid();' in body, (
+            "AudioAnalyzer::%s() arrete ou reinitialise l'acquisition (_active / _initialized) "
+            "sans invalider les mesures rangees. update() sortant immediatement dans cet etat, "
+            "le plafond d'obsolescence ne s'appliquera jamais : appeler "
+            "markMeasurementInvalid()." % name)
