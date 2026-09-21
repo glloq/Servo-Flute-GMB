@@ -189,25 +189,60 @@ constexpr float AQ_BREATH_HNR_TONE_DB  = 36.0f;
 // MESURE SUR PCM SYNTHETIQUE FILTRE - a reverifier sur microphone reel.
 constexpr float AQ_BREATH_HNR_NOISE_DB = 0.0f;
 
-// Bornes de la composante "platitude spectrale". Releve sur les memes signaux :
-// une note sans souffle donne moins de 0,001 ; un souffle a peine audible
-// (bruit 0,01 pour une note d'amplitude 0,4) donne deja 0,12, parce que la
-// platitude est une moyenne geometrique sur TOUS les bins et qu'un plancher de
-// bruit, meme faible, remplit les bins vides. Elle est donc tres sensible a la
-// PRESENCE de bruit et peu discriminante sur son NIVEAU : 0,10 a 0,70.
+// Bornes de la composante "platitude spectrale".
 //
-// CES DEUX BORNES SONT ENCORE CALIBREES SUR DU PCM BRUT, et elles souffrent du
-// meme defaut que les bornes de HNR ci-dessus : SpectralAnalyzer::spectralFlatness()
-// prend la moyenne geometrique sur TOUT le spectre, or la chaine de production
-// a vide 56 % de ce spectre. Mesure : la meme note a souffle 0,010 donne 0,113
-// sur PCM brut et 0,028 apres AudioFilterChain ; du bruit blanc pur donne 0,81
-// a 0,86 brut et 0,36 a 0,40 filtre, donc la borne haute 0,70 est carrement
-// INATTEIGNABLE en production. Corriger cela demande de restreindre
-// spectralFlatness() a la bande passante, ce qui deplacerait aussi les profils
-// de NoiseModel et la valeur publiee par WebConfigurator : hors du perimetre de
-// cette correction-ci, signale plutot que bricole.
-constexpr float AQ_BREATH_FLATNESS_TONE  = 0.10f;
-constexpr float AQ_BREATH_FLATNESS_NOISE = 0.70f;
+// CE QUI ETAIT FAUX, ET A QUEL POINT. Ces deux bornes etaient calibrees sur du
+// PCM BRUT, et spectralFlatness() prenait sa moyenne geometrique sur TOUT le
+// spectre alors que la chaine de production en vide 56 %. Une moyenne
+// geometrique passe par un logarithme : les bins vides y pesaient enormement
+// sans porter la moindre energie. Du bruit blanc pur - le signal le plus plat
+// qui puisse exister - lisait 0,36 a 0,40 en production. La borne haute 0,70
+// etait donc INATTEIGNABLE : la composante platitude de computeBreathiness()
+// ne pouvait jamais declarer "du bruit", et un cinquieme du critere de
+// respiration (AQ_BREATH_W_FLATNESS) etait mort sans que rien ne le signale.
+// spectralFlatness() mesure desormais dans SpectralAnalyzer::analysisBand().
+//
+// RELEVE QUI JUSTIFIE CES DEUX BORNES. fluteLike(440 Hz, amp 0,40) et bruit
+// blanc (amp 0,30), passes dans AudioFilterChain comme le fait drainI2S(),
+// cinq frames dont la derniere porte la FFT. Les DEUX colonnes decrivent le
+// MEME signal de production : seule la mesure change. AVANT = moyenne sur six
+// realisations de bruit, APRES = min..max sur les six, parce que la platitude
+// est une statistique et non une constante :
+//
+//     signal              AVANT (spectre entier)   APRES (bande d'analyse)
+//     note souffle 0        0,0001                   0,0006
+//     note souffle 0,010    0,0287                   0,0588 .. 0,0750
+//     note souffle 0,020    0,0517                   0,0999 .. 0,1286
+//     note souffle 0,200    0,2374                   0,4677 .. 0,5522
+//     note souffle 0,350    0,2883                   0,5925 .. 0,6685
+//     bruit blanc pur       0,3638 .. 0,4041         0,8204 .. 0,8754
+//
+// Les six valeurs a souffle 0,020 : 0,0999 0,1165 0,1170 0,1227 0,1286 0,1235.
+//
+// TONE = 0,09, et non 0,10. La regle n'a pas change : la platitude doit
+// s'ouvrir au MEME souffle que la composante HNR, sans quoi les deux moities
+// de la mesure declarent "plus de souffle" a deux endroits differents. Sur la
+// chaine corrigee, le premier souffle que le HNR separe est 0,020 (34,50 dB,
+// sous AQ_BREATH_HNR_TONE_DB) - 0,010 reste colle a la borne +40 dB. Il faut
+// donc une borne entre le HAUT de la plage de 0,010 (0,0750) et le BAS de
+// celle de 0,020 (0,0999) : 0,09 est au milieu de cet intervalle. A 0,10, une
+// realisation sur six laissait la platitude fermee alors que le HNR s'ouvrait.
+//
+// NOISE = 0,75, et non 0,70. La borne doit etre au-dessus de la note la plus
+// soufflee dont le pitch survive (0,350, qui monte a 0,6685) et sous la plus
+// basse realisation de bruit blanc pur (0,8204) : 0,75 est au milieu de cet
+// intervalle. 0,70 y tombait aussi, mais a 0,032 seulement au-dessus de la
+// note - moins que l'etendue de la note elle-meme (0,076) - donc une note
+// jouable saturait la composante selon la realisation du bruit.
+//
+// MESURE SUR PCM SYNTHETIQUE FILTRE - le filtrage est celui de la production,
+// le signal ne l'est pas. A reverifier sur microphone reel, d'autant que la
+// platitude ne distingue pas le souffle du bruit de machinerie : dans une
+// piece reelle, le plancher remplit les bins vides et remonte TOUTE la
+// colonne, y compris la ligne "souffle 0" qui ne vaut 0,0006 que parce qu'un
+// signal synthetique sans bruit n'existe pas ailleurs.
+constexpr float AQ_BREATH_FLATNESS_TONE  = 0.09f;
+constexpr float AQ_BREATH_FLATNESS_NOISE = 0.75f;
 
 // Bornes de la composante "energie entre les partiels", en dB (creux / raies).
 // Relevee sur la meme serie : -50 dB sans souffle, -28 dB pour un souffle deja
@@ -244,9 +279,12 @@ constexpr int AQ_BREATH_PARTIALS = 4;
 //   - l'inter-partiels est tout aussi direct, mais il depend de l'ancre fournie
 //     par l'appelant, qui peut etre la note VISEE plutot que la note jouee ;
 //   - la platitude ne distingue pas le souffle du bruit de machinerie de
-//     l'instrument, qui la fait monter sans qu'aucun souffle ne soit en cause -
-//     et, comme dit plus haut, elle est aujourd'hui mesuree sur un spectre dont
-//     la chaine a vide plus de la moitie.
+//     l'instrument, qui la fait monter sans qu'aucun souffle ne soit en cause.
+// La troisieme raison ajoutait autrefois que la platitude etait "mesuree sur un
+// spectre dont la chaine a vide plus de la moitie". Ce n'est plus vrai :
+// spectralFlatness() se limite a SpectralAnalyzer::analysisBand(). Ce qui reste
+// vrai, c'est le premier membre de phrase - la confusion souffle / machinerie -
+// et lui seul justifie encore le poids le plus faible.
 // Le classement n'a PAS ete revu a la mesure : seule sa justification l'a ete.
 // Changer les poids demanderait de comparer leurs verdicts a une reference, et
 // il n'en existe aucune tant qu'aucun microphone n'a ete branche.
@@ -254,14 +292,33 @@ constexpr float AQ_BREATH_W_HNR      = 0.50f;
 constexpr float AQ_BREATH_W_INTER    = 0.30f;
 constexpr float AQ_BREATH_W_FLATNESS = 0.20f;
 
-// Au-dela, l'etat acoustique est declare "souffle". Re-releve sur la chaine de
-// production apres le recalibrage du HNR : 0,55 y correspond a un souffle de
-// 0,300 pour une note d'amplitude 0,40, soit un HNR de 11,60 dB accompagne
-// d'une platitude de 0,284 et de creux inter-partiels a -26 dB. L'energie
-// harmonique domine encore, mais de peu. La marge est MINCE - la note la plus
-// soufflee dont le pitch survive (0,350) donne 0,588 - et elle le restera tant
-// que les composantes platitude et inter-partiels seront lues sur des bornes
-// calibrees en PCM brut (voir AQ_BREATH_FLATNESS_TONE).
+// Au-dela, l'etat acoustique est declare "souffle".
+//
+// LE SEUIL N'A PAS BOUGE ; CE QU'IL DESIGNE, SI. Le releve precedent disait que
+// 0,55 correspondait a un souffle de 0,300, avec "une platitude de 0,284" -
+// c'etait la platitude PLEINE BANDE, donc celle du filtre autant que du signal,
+// et la composante correspondante etait alors morte (voir
+// AQ_BREATH_FLATNESS_NOISE). Depuis que la platitude est mesuree dans la bande
+// et que ses deux bornes sont recalibrees, la MEME note est plus soufflee aux
+// yeux de la mesure, et le seuil se croise plus tot.
+//
+// Re-releve sur la chaine de production, fluteLike 440 Hz amp 0,40 :
+//
+//     souffle | HNR dB | platitude | inter dB | respiration
+//      0,200  | 15,12  |  0,4677   |  -28,20  |   0,522
+//      0,220  | 14,29  |  0,4897   |  -27,37  |   0,549   <- juste sous 0,55
+//      0,240  | 13,54  |  0,5096   |  -26,66  |   0,573   <- juste au-dessus
+//      0,300  | 11,60  |  0,5596   |  -24,90  |   0,632
+//      0,350  | 10,27  |  0,5925   |  -23,60  |   0,674
+//
+// 0,55 designe donc un souffle d'environ 0,22, soit 55 % de l'amplitude de la
+// fondamentale : l'energie harmonique domine encore, mais de peu. La marge
+// au-dessus n'est plus mince - la note la plus soufflee dont le pitch survive
+// (0,350) donne 0,674, contre 0,588 avant - et c'est la consequence directe du
+// retour a la vie de la composante platitude, pas d'un deplacement de seuil.
+// Un souffle de 0,400 n'est plus mesurable du tout : YIN lache, le HNR n'est
+// plus ancre et la respiration retombe a 0,531 faute de composante.
+// MESURE SUR PCM SYNTHETIQUE FILTRE - a reverifier sur microphone reel.
 constexpr float AQ_BREATHY_MAX = 0.55f;
 
 // --- Overblow ---------------------------------------------------------------

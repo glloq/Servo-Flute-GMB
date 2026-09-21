@@ -39,6 +39,12 @@
 #include "settings.h"
 #include "SpectralAnalyzer.h"
 #include "AudioFilters.h"
+// Pour AQ_BREATH_FLATNESS_TONE / AQ_BREATH_FLATNESS_NOISE. Ce fichier teste
+// l'analyseur, pas la qualite - mais la section 13 doit verifier que les
+// bornes de la respiration sont ATTEIGNABLES sur le signal que la chaine
+// presente, et les recopier ici les rendrait muettes le jour ou elles
+// bougeraient. On lit donc les vraies constantes.
+#include "AcousticQuality.h"
 #include "audio_signals.h"
 
 void spectral_hnr_run_all_tests();
@@ -197,6 +203,18 @@ struct ProductionStream {
     audiosig::fluteLike(out, n, f0, amp, breath, kFs, (size_t)index * n);
     chain.processBlock(out, n);
   }
+
+  // Meme chose pour du bruit blanc pur. Le bruit est le signal le plus PLAT
+  // qui puisse exister : c'est lui qui montre le mieux ce que la chaine fait a
+  // une mesure de FORME spectrale, et c'est lui qui sert de borne haute a
+  // AQ_BREATH_FLATNESS_NOISE.
+  void noiseFrame(float* out, size_t n, float amp, uint32_t seed, int index) {
+    chain.configureDefaults();
+    for (int i = 0; i <= index; i++) {
+      audiosig::whiteNoise(out, n, amp, seed + (uint32_t)i);
+      chain.processBlock(out, n);
+    }
+  }
 };
 
 // Nombre de frames de rodage avant la frame mesuree. Quatre frames = 128 ms a
@@ -227,6 +245,71 @@ float flatFloorHnrDb(const SpectralAnalyzer& sa, float f0) {
   if (db > MIC_HNR_MAX_DB) db = MIC_HNR_MAX_DB;
   if (db < -MIC_HNR_MAX_DB) db = -MIC_HNR_MAX_DB;
   return (float)db;
+}
+
+// L'ANCIENNE platitude et l'ANCIEN centroide : moyenne geometrique et moyenne
+// ponderee sur TOUT le spectre. Comme flatFloorHnrDb ci-dessus, ils vivent dans
+// le test et non derriere un appel au firmware, pour que la comparaison reste
+// valable APRES la correction. Ce sont les references dont on doit montrer
+// qu'elles mesurent le filtre.
+// Le plancher 1e-12 est celui de SpectralAnalyzer::spectralFlatness : la seule
+// difference entre les deux fonctions doit etre le DOMAINE.
+double wholeSpectrumFlatness(const SpectralAnalyzer& sa) {
+  const double kFloor = 1e-12;
+  double logSum = 0.0, arithSum = 0.0;
+  size_t n = 0;
+  for (size_t k = 1; k <= kLastBin; k++) {
+    double m = sa.magnitudes()[k];
+    if (m < kFloor) m = kFloor;
+    logSum += log(m);
+    arithSum += m;
+    n++;
+  }
+  if (n == 0 || arithSum <= 0.0) return 0.0;
+  double flat = exp(logSum / (double)n) / (arithSum / (double)n);
+  if (flat < 0.0) flat = 0.0;
+  if (flat > 1.0) flat = 1.0;
+  return flat;
+}
+
+double wholeSpectrumCentroid(const SpectralAnalyzer& sa) {
+  double weighted = 0.0, total = 0.0;
+  for (size_t k = 1; k <= kLastBin; k++) {
+    weighted += (double)SpectralAnalyzer::binToHz(k, kFs) * sa.magnitudes()[k];
+    total += sa.magnitudes()[k];
+  }
+  return (total > 1e-12) ? (weighted / total) : 0.0;
+}
+
+// Les memes deux mesures, restreintes A LA MAIN a des bornes de bins donnees.
+// Elles servent a verifier que spectralFlatness() / spectralCentroid() portent
+// bien sur la bande annoncee, sans relire cette bande a travers le code
+// surveille.
+double flatnessOverBins(const SpectralAnalyzer& sa, size_t lo, size_t hi) {
+  const double kFloor = 1e-12;
+  double logSum = 0.0, arithSum = 0.0;
+  size_t n = 0;
+  for (size_t k = lo; k <= hi; k++) {
+    double m = sa.magnitudes()[k];
+    if (m < kFloor) m = kFloor;
+    logSum += log(m);
+    arithSum += m;
+    n++;
+  }
+  if (n == 0 || arithSum <= 0.0) return 0.0;
+  double flat = exp(logSum / (double)n) / (arithSum / (double)n);
+  if (flat < 0.0) flat = 0.0;
+  if (flat > 1.0) flat = 1.0;
+  return flat;
+}
+
+double centroidOverBins(const SpectralAnalyzer& sa, size_t lo, size_t hi) {
+  double weighted = 0.0, total = 0.0;
+  for (size_t k = lo; k <= hi; k++) {
+    weighted += (double)SpectralAnalyzer::binToHz(k, kFs) * sa.magnitudes()[k];
+    total += sa.magnitudes()[k];
+  }
+  return (total > 1e-12) ? (weighted / total) : 0.0;
 }
 
 // ---------------------------------------------------------------------------
@@ -1073,6 +1156,240 @@ void hnr_refuses_a_non_finite_spectrum() {
   assert(!inf.valid || (!std::isnan(inf.db) && !std::isinf(inf.db)));
 }
 
+// ---------------------------------------------------------------------------
+// 13 - LES FORMES SPECTRALES MESURENT LE SIGNAL, PAS LE FILTRE
+//
+// Meme famille de defaut que la section 10, sur une autre statistique, et c'est
+// LE test de non-recidive de la platitude.
+//
+// spectralFlatness() prenait sa moyenne geometrique sur TOUT le spectre. Une
+// moyenne geometrique passe par un logarithme : un bin vide y pese
+// log(plancher), c'est-a-dire beaucoup, alors qu'il ne porte aucune energie.
+// Sur les 56 % de bins que la chaine de production vide, c'etaient donc des
+// bins SANS signal qui dominaient le vote. Consequence chiffree : du bruit
+// blanc pur - le signal le plus plat qui puisse exister - lisait 0,36 a 0,40
+// en production contre 0,81 a 0,87 sur PCM brut, si bien que
+// AQ_BREATH_FLATNESS_NOISE (0,70) etait INATTEIGNABLE et qu'un cinquieme du
+// critere de respiration etait mort sans que rien ne le signale.
+//
+// Le centroide souffrait du meme mal, plus doucement parce qu'il pondere par
+// l'energie : 8300 Hz brut contre 4636 Hz filtre sur du bruit blanc.
+//
+// Ce que ce test verrouille, et qui ECHOUE avec la mesure pleine bande :
+//   1. du bruit blanc pur, PASSE DANS LA CHAINE DE PRODUCTION, doit lire une
+//      platitude au-dessus de AQ_BREATH_FLATNESS_NOISE - sans quoi la
+//      composante ne peut jamais dire "du bruit" ;
+//   2. le filtrage ne doit presque plus deplacer ni la platitude ni le
+//      centroide, alors que la mesure pleine bande les deplace massivement ;
+//   3. les deux mesures portent exactement sur la bande annoncee, recalculee
+//      ici depuis settings.h ;
+//   4. avec les coupures a 0 - cellules transparentes - la bande EST le spectre
+//      entier et les deux estimateurs doivent se confondre EXACTEMENT. Les deux
+//      sens sont assertes, chacun dans sa configuration.
+// ---------------------------------------------------------------------------
+
+void spectral_shape_is_measured_in_the_analysis_band() {
+  SpectralAnalyzer sa;
+  std::vector<float> filtered(kFrame);
+  std::vector<float> raw(kFrame);
+  ProductionStream stream;
+
+  const SpectralAnalyzer::AnalysisBand band = SpectralAnalyzer::analysisBand(kFs);
+  const bool chainFilters = (band.count() < kLastBin);
+
+  // --- 3. Le domaine annonce est le domaine mesure --------------------------
+  // Un spectre quelconque suffit : ce point porte sur le DECOUPAGE, pas sur le
+  // signal. Les bornes sont celles recalculees dans ce fichier depuis
+  // settings.h, jamais celles que le code surveille rendrait.
+  stream.fluteFrame(filtered.data(), kFrame, 440.0f, 0.40f, 0.100f, kWarmFrames);
+  assert(sa.computeSpectrum(filtered.data(), kFrame));
+  {
+    const double refFlat = flatnessOverBins(sa, expectedBandLo(), expectedBandHi());
+    const double refCent = centroidOverBins(sa, expectedBandLo(), expectedBandHi());
+    assert(fabs((double)sa.spectralFlatness(kFs) - refFlat) < 1e-4);
+    assert(fabs((double)sa.spectralCentroid(kFs) - refCent) < 1.0);
+
+    // Et le bin 0 - le continu, deja retire par computeSpectrum - n'entre
+    // JAMAIS dans le compte, quelle que soit la bande.
+    assert(band.lo >= 1);
+  }
+
+  // --- 4. Les deux sens de la bande ----------------------------------------
+  if (chainFilters) {
+    // Coupures actives : la bande est STRICTEMENT plus etroite que le spectre,
+    // et les deux estimateurs doivent donc differer. Sans cela le test 1 ne
+    // prouverait rien - il passerait aussi avec l'ancienne mesure.
+    assert(band.count() < kLastBin);
+    assert(fabs((double)sa.spectralFlatness(kFs) - wholeSpectrumFlatness(sa)) > 0.01);
+    assert(fabs((double)sa.spectralCentroid(kFs) - wholeSpectrumCentroid(sa)) > 10.0);
+  } else {
+    // Coupures a 0 : AudioFilterChain rend les cellules transparentes, la bande
+    // redevient le spectre entier et les deux estimateurs se CONFONDENT. La
+    // correction ne doit rien deplacer quand il n'y a rien a corriger.
+    assert(band.lo == 1 && band.hi == kLastBin);
+    assert(fabs((double)sa.spectralFlatness(kFs) - wholeSpectrumFlatness(sa)) < 1e-4);
+    assert(fabs((double)sa.spectralCentroid(kFs) - wholeSpectrumCentroid(sa)) < 1e-2);
+  }
+
+  // --- 1 et 2. Le bruit blanc, brut puis passe dans la chaine ---------------
+  // Trois graines : la platitude est une STATISTIQUE, pas une constante, et un
+  // seuil justifie sur une seule realisation ne vaudrait rien.
+  const uint32_t kSeeds[] = {12345u, 99u, 7u};
+  float worstProdFlat = 1.0f;
+  float worstFlatGap = 0.0f;         // |brut - production|, mesure corrigee
+  double worstWholeGap = 0.0;        // |brut - production|, mesure pleine bande
+  float worstCentGapPct = 0.0f;
+  double worstWholeCentPct = 0.0;
+  // Ecart entre "dans la bande" et "sur tout le spectre", mesure sur les MEMES
+  // frames : c'est lui qui dit si la restriction change quelque chose.
+  double worstBandVsWholeFlat = 0.0;
+  double worstBandVsWholeCentPct = 0.0;
+
+  printf("  [flat] %-8s %8s %8s | %10s %10s | %8s %8s\n", "graine",
+         "brut", "prod", "brut(tout)", "prod(tout)", "cent brut", "cent prod");
+  for (uint32_t seed : kSeeds) {
+    // MEME frame du meme bruit, avec et sans la chaine : la seule difference
+    // est le filtrage.
+    stream.noiseFrame(filtered.data(), kFrame, 0.30f, seed, kWarmFrames);
+    audiosig::whiteNoise(raw.data(), kFrame, 0.30f, seed + (uint32_t)kWarmFrames);
+
+    assert(sa.computeSpectrum(raw.data(), kFrame));
+    const float rawFlat = sa.spectralFlatness(kFs);
+    const float rawCent = sa.spectralCentroid(kFs);
+    const double rawWhole = wholeSpectrumFlatness(sa);
+    const double rawWholeCent = wholeSpectrumCentroid(sa);
+
+    assert(sa.computeSpectrum(filtered.data(), kFrame));
+    const float prodFlat = sa.spectralFlatness(kFs);
+    const float prodCent = sa.spectralCentroid(kFs);
+    const double prodWhole = wholeSpectrumFlatness(sa);
+    const double prodWholeCent = wholeSpectrumCentroid(sa);
+
+    printf("  [flat] %-8u %8.4f %8.4f | %10.4f %10.4f | %8.0f %8.0f\n",
+           seed, (double)rawFlat, (double)prodFlat, rawWhole, prodWhole,
+           (double)rawCent, (double)prodCent);
+
+    if (prodFlat < worstProdFlat) worstProdFlat = prodFlat;
+    if (fabsf(prodFlat - rawFlat) > worstFlatGap) worstFlatGap = fabsf(prodFlat - rawFlat);
+    if (fabs(prodWhole - rawWhole) > worstWholeGap) worstWholeGap = fabs(prodWhole - rawWhole);
+    const float centPct = fabsf(prodCent - rawCent) / rawCent;
+    if (centPct > worstCentGapPct) worstCentGapPct = centPct;
+    const double wholeCentPct = fabs(prodWholeCent - rawWholeCent) / rawWholeCent;
+    if (wholeCentPct > worstWholeCentPct) worstWholeCentPct = wholeCentPct;
+
+    // Ecart entre la mesure DANS LA BANDE et la mesure pleine bande, sur les
+    // deux frames. C'est la grandeur qui doit s'annuler EXACTEMENT quand les
+    // coupures valent 0, et rester grande quand elles sont actives.
+    const double d[4] = {fabs((double)rawFlat - rawWhole), fabs((double)prodFlat - prodWhole),
+                         fabs((double)rawCent - rawWholeCent) / rawWholeCent,
+                         fabs((double)prodCent - prodWholeCent) / prodWholeCent};
+    if (d[0] > worstBandVsWholeFlat) worstBandVsWholeFlat = d[0];
+    if (d[1] > worstBandVsWholeFlat) worstBandVsWholeFlat = d[1];
+    if (d[2] > worstBandVsWholeCentPct) worstBandVsWholeCentPct = d[2];
+    if (d[3] > worstBandVsWholeCentPct) worstBandVsWholeCentPct = d[3];
+  }
+  fflush(stdout);
+
+  // 1. LE SEUIL EST ATTEIGNABLE. Du bruit blanc pur, passe dans la chaine de
+  //    production, franchit AQ_BREATH_FLATNESS_NOISE sur les TROIS graines.
+  //    Avec la mesure pleine bande il lisait 0,36 a 0,40 : cette assertion
+  //    echoue, et c'est elle qui empeche la recidive.
+  //    Le seuil est repris de AcousticQuality.h plutot que recopie : s'il
+  //    remonte un jour au-dessus de ce que du bruit pur mesure, ce test le dit.
+  printf("  [flat] platitude la plus BASSE sur du bruit blanc filtre : %.4f "
+         "(AQ_BREATH_FLATNESS_NOISE = %.2f)\n",
+         (double)worstProdFlat, (double)AQ_BREATH_FLATNESS_NOISE);
+  assert(worstProdFlat > AQ_BREATH_FLATNESS_NOISE);
+
+  // 2. La chaine ne deplace presque plus les deux formes, alors qu'elle
+  //    deplacait massivement les mesures pleine bande. Les deux moities de
+  //    l'assertion comptent : la premiere seule serait satisfaite par une
+  //    mesure devenue insensible a tout.
+  printf("  [flat] ecart brut/production - bande : %.4f (platitude) et %.1f %% "
+         "(centroide) ; spectre entier : %.4f et %.1f %%\n",
+         (double)worstFlatGap, 100.0 * (double)worstCentGapPct,
+         worstWholeGap, 100.0 * worstWholeCentPct);
+  printf("  [flat] ecart bande / spectre entier sur les MEMES frames : %.4f "
+         "(platitude) et %.2f %% (centroide)\n",
+         worstBandVsWholeFlat, 100.0 * worstBandVsWholeCentPct);
+  if (chainFilters) {
+    assert(worstFlatGap < 0.05f);              // mesure corrigee : le filtre ne se voit plus
+    assert(worstWholeGap > 0.30);              // mesure pleine bande : il se voit enormement
+    assert(worstCentGapPct < 0.10f);           // centroide : moins de 10 %
+    assert(worstWholeCentPct > 0.30);          // ... contre plus de 30 % pleine bande
+    // La restriction n'est pas cosmetique : sur les memes frames, les deux
+    // domaines ne donnent pas le meme nombre.
+    assert(worstBandVsWholeFlat > 0.30);
+    assert(worstBandVsWholeCentPct > 0.30);
+  } else {
+    // COUPURES A 0. AudioFilterChain rend les deux cellules transparentes, la
+    // bande redevient le spectre entier, et les deux estimateurs doivent alors
+    // rendre EXACTEMENT le meme nombre - a la precision du float pres, puisque
+    // c'est litteralement la meme boucle sur les memes bins. Verifie a
+    // l'envers, comme en section 10.
+    assert(worstBandVsWholeFlat < 1e-6);
+    assert(worstBandVsWholeCentPct < 1e-6);
+
+    // La chaine, elle, n'est PAS tout a fait transparente pour autant : le
+    // retrait de continu (MIC_FILTER_DC_POLE) est un etage a part, qu'une
+    // coupure a 0 ne desactive pas. Il reste donc un ecart brut/production,
+    // mais deux ordres de grandeur plus petit que celui du filtrage - et il
+    // doit etre le MEME des deux cotes, puisque c'est la meme mesure.
+    assert(worstFlatGap < 0.01f);
+    assert(worstCentGapPct < 0.01f);
+    assert(fabs(worstWholeGap - (double)worstFlatGap) < 1e-6);
+    assert(fabs(worstWholeCentPct - (double)worstCentGapPct) < 1e-6);
+  }
+
+  // --- Ce que cela donne sur une NOTE, pour memoire dans la sortie ----------
+  // C'est le tableau qui justifie AQ_BREATH_FLATNESS_TONE et
+  // AQ_BREATH_FLATNESS_NOISE : il doit rester lisible dans la sortie de la
+  // suite pour qu'on puisse le comparer, plus tard, a un releve sur microphone.
+  const float kBreath[] = {0.0f, 0.010f, 0.020f, 0.100f, 0.200f, 0.350f};
+  printf("  [flat] %-8s %8s %8s | %10s %10s\n", "souffle", "brut", "prod",
+         "brut(tout)", "prod(tout)");
+  float prev = -1.0f;
+  for (float breath : kBreath) {
+    stream.fluteFrame(filtered.data(), kFrame, 440.0f, 0.40f, breath, kWarmFrames);
+    audiosig::fluteLike(raw.data(), kFrame, 440.0f, 0.40f, breath, kFs,
+                        (size_t)kWarmFrames * kFrame);
+    assert(sa.computeSpectrum(raw.data(), kFrame));
+    const float rawFlat = sa.spectralFlatness(kFs);
+    const double rawWhole = wholeSpectrumFlatness(sa);
+    assert(sa.computeSpectrum(filtered.data(), kFrame));
+    const float prodFlat = sa.spectralFlatness(kFs);
+    const double prodWhole = wholeSpectrumFlatness(sa);
+    printf("  [flat] %-8.3f %8.4f %8.4f | %10.4f %10.4f\n", (double)breath,
+           (double)rawFlat, (double)prodFlat, rawWhole, prodWhole);
+    // La platitude croit avec le souffle - sinon les deux bornes n'ordonnent
+    // rien du tout - et elle reste bornee.
+    assert(prodFlat > prev);
+    assert(prodFlat >= 0.0f && prodFlat <= 1.0f);
+    prev = prodFlat;
+  }
+  fflush(stdout);
+
+  // Les deux bornes encadrent bien ce que la chaine presente : une note sans
+  // souffle est sous TONE, la note la plus soufflee dont le pitch survive est
+  // entre les deux, et du bruit pur est au-dessus de NOISE (deja asserte).
+  //
+  // A SAVOIR, parce que la marge n'est pas la meme partout : avec les coupures
+  // de settings.h la note a souffle 0,350 mesure 0,59, soit 0,16 sous NOISE.
+  // Avec les coupures a 0 elle monte a 0,738, soit 0,012 seulement - le
+  // filtrage fait PARTIE de ce qui separe les deux bornes, puisqu'il retire du
+  // signal une bande ou seul le souffle vit. Ce n'est pas une configuration de
+  // production, mais l'assertion y est a un cheveu, et il vaut mieux l'ecrire
+  // que de la decouvrir un jour en rouge.
+  stream.fluteFrame(filtered.data(), kFrame, 440.0f, 0.40f, 0.0f, kWarmFrames);
+  assert(sa.computeSpectrum(filtered.data(), kFrame));
+  assert(sa.spectralFlatness(kFs) < AQ_BREATH_FLATNESS_TONE);
+  stream.fluteFrame(filtered.data(), kFrame, 440.0f, 0.40f, 0.350f, kWarmFrames);
+  assert(sa.computeSpectrum(filtered.data(), kFrame));
+  const float breathiest = sa.spectralFlatness(kFs);
+  assert(breathiest > AQ_BREATH_FLATNESS_TONE);
+  assert(breathiest < AQ_BREATH_FLATNESS_NOISE);
+}
+
 #endif  // MIC_FFT_ENABLED
 
 // Sans FFT, la structure existe toujours et reste honnete : un appelant peut en
@@ -1104,6 +1421,7 @@ void spectral_hnr_run_all_tests() {
   hnr_survives_the_production_filter_chain();
   hnr_noise_sample_survives_the_whole_pitch_range();
   hnr_refuses_a_non_finite_spectrum();
+  spectral_shape_is_measured_in_the_analysis_band();
 #else
   // Sans FFT il n'y a pas de spectre complet, donc pas de HNR spectral. Le dire
   // vaut mieux qu'une suite verte qui n'a rien execute.

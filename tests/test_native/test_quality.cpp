@@ -399,6 +399,10 @@ float qualityHnrComponent(float db) {
   return clampRef((db - AQ_QUALITY_HNR_MIN_DB) /
                   (AQ_QUALITY_HNR_GOOD_DB - AQ_QUALITY_HNR_MIN_DB));
 }
+float breathFlatnessComponent(float flatness) {
+  return clampRef((flatness - AQ_BREATH_FLATNESS_TONE) /
+                  (AQ_BREATH_FLATNESS_NOISE - AQ_BREATH_FLATNESS_TONE));
+}
 
 // Analyse `frames` frames consecutives et rend la DERNIERE. `frames` est
 // choisi pour que la derniere retombe sur une frame FFT (decimation 0 modulo
@@ -895,21 +899,33 @@ void quality_score_ranks_a_timbred_note_above_a_breathy_one() {
   // de ce bloc est passe a la chaine de production.
   //
   // Il compare un CLASSEMENT - la note timbree au-dessus de la note soufflee -
-  // et ce classement tient sur les deux signaux : mesure sur la chaine de
-  // production, la paire donne respiration 0,174 / 0,481 et qualite 0,954 /
-  // 0,713, donc le meme verdict relatif, plus net encore sur la qualite.
+  // et ce classement tient sur les deux signaux.
   //
-  // Ce qui NE tient pas sur la chaine de production, c'est l'assertion absolue
-  // `bB.value > AQ_BREATHY_MAX` : 0,481 passe sous le seuil de 0,55. La cause
-  // n'est PAS le HNR - il vaut +12,58 dB sur cette note, largement du bon cote -
-  // mais les deux autres composantes de la respiration : la platitude spectrale
-  // est mesuree sur TOUT le spectre alors que la chaine en a vide 56 %, donc
-  // elle s'effondre d'un facteur 2,5, et les creux inter-partiels suivent.
-  // AQ_BREATH_FLATNESS_TONE/NOISE et AQ_BREATHY_MAX sont donc encore etalonnes
-  // en PCM brut - meme defaut que celui corrige ici pour le HNR, mais sur une
-  // mesure qui sert aussi a NoiseModel et a WebConfigurator : le corriger
-  // demande son propre chantier. Le signaler vaut mieux que deplacer ce test
-  // pour qu'il passe, ou deplacer le seuil pour qu'il tombe du bon cote.
+  // CE QUI A CHANGE DEPUIS LE RELEVE PRECEDENT. Ce bloc annoncait que
+  // `bB.value > AQ_BREATHY_MAX` ne tenait pas sur la chaine de production :
+  // 0,481 contre 0,55, "parce que la platitude s'effondre, pas parce que le
+  // HNR faiblit". Le diagnostic etait exact, et il a ete VERIFIE au chiffre
+  // pres avant correction. Depuis que spectralFlatness() mesure dans la bande
+  // d'analyse et que ses deux bornes sont re-etalonnees, la meme paire mesuree
+  // sur la chaine de production donne :
+  //
+  //     mesure               timbree   soufflee
+  //     HNR spectral (dB)     +30,98    +12,58    (inchange par la correction)
+  //     platitude              0,128     0,554    (etait 0,027 / 0,238)
+  //     respiration            0,186     0,576    (etait 0,174 / 0,481)
+  //     qualite                0,952     0,703
+  //
+  // `bB.value > AQ_BREATHY_MAX` PASSE donc maintenant sur la chaine de
+  // production, et c'est verifie par le test qui suit,
+  // quality_breathy_note_is_declared_breathy_on_the_production_chain().
+  //
+  // Une seule assertion de CE test ne survit toujours pas au filtrage :
+  // `bB.value - bT.value > 0,40` y vaut 0,390. L'ecart residuel vient du flanc
+  // a -3 dB du passe-bas, qui est DANS la bande par construction et rabote
+  // encore 3 % de la platitude, plus la composante inter-partiels qui lit du
+  // PCM filtre. Le test reste donc sur du PCM brut plutot que d'affaiblir sa
+  // marge a 0,35 pour la faire passer - et le test suivant couvre la chaine de
+  // production avec les assertions qui y sont VRAIES.
   Rig rigT, rigB;
   AcousticContext ctxT, ctxB;
   AcousticFeatures fT = sustainedRich(rigT, buf, rich, kMidi, ctxT);
@@ -978,6 +994,172 @@ void quality_score_ranks_a_timbred_note_above_a_breathy_one() {
          qualityHnrComponent(fB.harmonicToNoiseRatio) + 0.40f);
   assert(breathHnrComponent(fT.harmonicToNoiseRatio) <
          breathHnrComponent(fB.harmonicToNoiseRatio) - 0.40f);
+}
+
+// LA COMPOSANTE PLATITUDE N'EST PAS MORTE, et ce test echoue si elle le
+// redevient.
+//
+// AQ_BREATH_FLATNESS_NOISE valait 0,70 alors que du bruit blanc pur - le
+// signal le plus plat qui puisse exister - mesurait 0,36 a 0,40 sur la chaine
+// de production, parce que spectralFlatness() moyennait sur un spectre dont le
+// firmware avait lui-meme vide 56 %. La borne haute etait donc INATTEIGNABLE :
+// la composante ne pouvait jamais valoir 1, c'est-a-dire jamais declarer "du
+// bruit", et un cinquieme du poids de la respiration (AQ_BREATH_W_FLATNESS)
+// etait mort SANS QUE RIEN NE LE SIGNALE - aucune assertion ne tombait, la
+// suite restait verte.
+//
+// Le test va donc chercher le cas extreme : du bruit blanc pur passe dans la
+// chaine de production. Si la composante ne sature pas la, elle ne saturera
+// jamais.
+void quality_flatness_component_reaches_its_upper_bound() {
+  std::vector<float> buf(kFrame);
+
+  // Du bruit blanc pur, filtre comme le fait drainI2S(). Trois graines : la
+  // platitude est une statistique, une seule realisation ne prouverait rien.
+  const uint32_t kSeeds[] = {12345u, 99u, 7u};
+  float worst = 1.0f;
+  printf("  [flat-calib] platitude et composante sur du BRUIT BLANC PUR, chaine "
+         "de production (bornes %.2f .. %.2f) :\n",
+         (double)AQ_BREATH_FLATNESS_TONE, (double)AQ_BREATH_FLATNESS_NOISE);
+  for (uint32_t seed : kSeeds) {
+    productionNoiseFrame(buf, 0.30f, seed, kFramesEndingOnFft);
+    SpectralAnalyzer sa;
+    assert(sa.computeSpectrum(buf.data(), buf.size()));
+    const float flat = sa.spectralFlatness(kFs);
+
+    // La composante telle que computeBreathiness la calcule, verifiee a travers
+    // le firmware et non seulement par l'arithmetique de reference.
+    AcousticFeatures f = healthyFeatures();
+    f.spectralFlatness = flat;
+    AcousticContext ctx = plainContext();
+    const BreathinessResult b = AcousticQuality::computeBreathiness(f, ctx, 440.0f);
+    assert(b.valid && b.usedFlatness);
+
+    printf("  [flat-calib]   graine %-6u platitude %.4f -> composante %.3f\n",
+           seed, (double)flat, (double)breathFlatnessComponent(flat));
+    // Le bruit pur SATURE la composante : c'est la definition meme de la borne.
+    assert(breathFlatnessComponent(flat) >= 1.0f);
+    if (flat < worst) worst = flat;
+  }
+  fflush(stdout);
+  // Et la marge est reelle, pas arrachee a la troisieme decimale.
+  assert(worst > AQ_BREATH_FLATNESS_NOISE + 0.05f);
+
+  // L'AUTRE BOUT DE L'ECHELLE, sur le meme banc : une note sans souffle laisse
+  // la composante a zero. Sans cette moitie, une mesure bloquee a 1 passerait
+  // le test ci-dessus.
+  productionFrame(buf, 440.0f, 0.40f, 0.0f, kFramesEndingOnFft);
+  {
+    SpectralAnalyzer sa;
+    assert(sa.computeSpectrum(buf.data(), buf.size()));
+    const float clean = sa.spectralFlatness(kFs);
+    printf("  [flat-calib]   note sans souffle : platitude %.4f -> composante %.3f\n",
+           (double)clean, (double)breathFlatnessComponent(clean));
+    assert(breathFlatnessComponent(clean) == 0.0f);
+    // Les deux bornes encadrent donc strictement ce que la chaine presente.
+    assert(clean < AQ_BREATH_FLATNESS_TONE);
+  }
+
+  // ET LE POIDS EST REELLEMENT VERSE. Une composante qui saturerait sans etre
+  // comptee ne servirait a rien : `usedFlatness` et `weightUsed` le disent.
+  {
+    AcousticFeatures f = healthyFeatures();
+    f.spectralFlatness = 1.0f;
+    AcousticContext ctx = plainContext();
+    ctx.frame = nullptr;                 // ni PCM ni inter-partiels
+    f.hnrIsSpectral = false;             // ni HNR
+    const BreathinessResult only = AcousticQuality::computeBreathiness(f, ctx, 440.0f);
+    assert(only.valid && only.usedFlatness && !only.usedHnr && !only.usedInterHarmonic);
+    assert(nearly(only.weightUsed, AQ_BREATH_W_FLATNESS, 1e-5f));
+    assert(only.value == 1.0f);          // la composante seule, saturee
+  }
+}
+
+// LE CONSTAT DU RAPPORT PRECEDENT, VERIFIE PUIS CORRIGE.
+//
+// Le rapport du commit precedent annoncait que sur la chaine de production
+// `bB.value` tomberait a 0,481 contre AQ_BREATHY_MAX = 0,55, "parce que la
+// platitude s'effondre, pas parce que le HNR faiblit". Les deux moities de
+// l'affirmation ont ete verifiees au chiffre pres sur le code d'avant : 0,481
+// exactement, avec un HNR de +12,58 dB inchange.
+//
+// Ce test porte la MEME paire sur la chaine de production, et verrouille ce
+// qui y est desormais vrai. Il n'existait pas : le test de classement restait
+// sur du PCM brut, et rien ne mesurait le verdict absolu sur le signal que le
+// firmware analyse reellement.
+void quality_breathy_note_is_declared_breathy_on_the_production_chain() {
+  std::vector<float> buf(kFrame);
+  const int kMidi = 71;                                 // si4
+  const float f0 = PitchMath::midiToHz(kMidi);
+
+  const RichTone rich = timbredReference(f0);
+  RichTone airy;
+  airy.f0 = f0;
+  airy.partial[0] = 0.70f; airy.partial[1] = 0.15f; airy.partial[2] = 0.07f;
+  airy.noise = 0.30f;
+
+  // LA CHAINE DE PRODUCTION des deux cotes : le flux traverse AudioFilterChain
+  // avant l'analyse, memoire etablie sur les frames precedentes.
+  Rig rigT, rigB;
+  rigT.useProductionChain();
+  rigB.useProductionChain();
+  AcousticContext ctxT, ctxB;
+  AcousticFeatures fT = sustainedRich(rigT, buf, rich, kMidi, ctxT);
+  const float rmsT = sqrtf(SpectralAnalyzer::totalPower(buf.data(), kFrame));
+  AcousticFeatures fB = sustainedRich(rigB, buf, airy, kMidi, ctxB);
+  const float rmsB = sqrtf(SpectralAnalyzer::totalPower(buf.data(), kFrame));
+
+  // Memes conditions que le test sur PCM brut : meme niveau, meme SNR fourni,
+  // mesure spectrale des deux cotes.
+  assert(fabsf(20.0f * log10f(rmsT / rmsB)) < 1.0f);
+  assert(fT.pitchValid && fT.hnrIsSpectral);
+  assert(fB.pitchValid && fB.hnrIsSpectral);
+  fT.snrValid = true; fT.snrDb = 30.0f;
+  fB.snrValid = true; fB.snrDb = 30.0f;
+
+  const BreathinessResult bT = AcousticQuality::computeBreathiness(
+      fT, ctxT, AcousticQuality::breathinessAnchorHz(fT, ctxT));
+  const BreathinessResult bB = AcousticQuality::computeBreathiness(
+      fB, ctxB, AcousticQuality::breathinessAnchorHz(fB, ctxB));
+  const QualityScore qT =
+      AcousticQuality::computeAcousticQuality(fT, ctxT, bT, AQ_ATTACK_NOT_MEASURED);
+  const QualityScore qB =
+      AcousticQuality::computeAcousticQuality(fB, ctxB, bB, AQ_ATTACK_NOT_MEASURED);
+
+  printf("  [flat-calib] PRODUCTION - timbree / soufflee : HNR %+.2f / %+.2f dB, "
+         "platitude %.4f / %.4f, respiration %.3f / %.3f, qualite %.4f / %.4f\n",
+         (double)fT.harmonicToNoiseRatio, (double)fB.harmonicToNoiseRatio,
+         (double)fT.spectralFlatness, (double)fB.spectralFlatness,
+         (double)bT.value, (double)bB.value, (double)qT.score, (double)qB.score);
+  fflush(stdout);
+
+  assert(bT.valid && bB.valid);
+  assert(bT.usedHnr && bT.usedInterHarmonic && bT.usedFlatness);
+  assert(bB.usedHnr && bB.usedInterHarmonic && bB.usedFlatness);
+
+  // CE QUI ECHOUAIT AVANT LA CORRECTION, mesure a 0,481 : la note soufflee est
+  // declaree soufflee sur le signal que le firmware analyse reellement.
+  assert(bB.value > AQ_BREATHY_MAX);
+  // Et la note timbree reste franchement du bon cote.
+  assert(bT.value < 0.5f * AQ_BREATHY_MAX);
+  // L'ecart entre les deux est large. La marge est 0,35 et non 0,40 comme sur
+  // PCM brut : mesure, 0,390. Ce qui manque vient du flanc a -3 dB du
+  // passe-bas, qui est DANS la bande par construction. C'est une borne
+  // MESUREE, pas une tolerance choisie pour faire passer le test - le releve
+  // exact est imprime juste au-dessus.
+  assert(bB.value - bT.value > 0.35f);
+  // La qualite suit, et dans le meme sens.
+  assert(qT.valid && qB.valid && qT.harmonicMeasured && qB.harmonicMeasured);
+  assert(nearly(qT.weightUsed, qB.weightUsed, 1e-5f));
+  assert(qT.score > qB.score + 0.20f);
+
+  // POURQUOI LE VERDICT A BASCULE : c'est la platitude, pas le HNR. Le HNR de
+  // la note soufflee vaut la meme chose qu'avant la correction ; c'est la
+  // composante platitude qui est passee de 0,24 (donc 0,23 de composante,
+  // presque rien) a 0,55 (0,71 de composante). L'assertion le dit plutot que
+  // de le supposer.
+  assert(breathFlatnessComponent(fB.spectralFlatness) > 0.60f);
+  assert(breathFlatnessComponent(fT.spectralFlatness) < 0.10f);
 }
 
 #else   // !MIC_FFT_ENABLED
@@ -1794,6 +1976,8 @@ void quality_run_all_tests() {
   quality_breathiness_rises_with_breath_on_the_spectral_scale();
   quality_hnr_component_is_absent_on_the_goertzel_scale();
   quality_score_ranks_a_timbred_note_above_a_breathy_one();
+  quality_flatness_component_reaches_its_upper_bound();
+  quality_breathy_note_is_declared_breathy_on_the_production_chain();
 #else
   quality_hnr_is_absent_without_fft();
 #endif

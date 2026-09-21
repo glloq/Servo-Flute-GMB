@@ -722,9 +722,15 @@ Thresholds were recalibrated on the new scale:
 
 | Threshold | before | after | measurement that justifies it |
 |---|---|---|---|
-| `AQ_BREATH_HNR_TONE_DB` | 20.0 dB | **34.0 dB** | breath 0.010 → 34.40 dB, the point where spectral flatness also crosses its own "tone" threshold — both components declare *more breath* at the same place |
-| `AQ_QUALITY_HNR_GOOD_DB` | 20.0 dB | **34.0 dB** | at 20 dB a note carrying 5 % breath (20.55 dB) saturated the component at 1.00 — the same harmonic mark as a note with no breath at all |
-| `AQ_BREATH_HNR_NOISE_DB` | 0.0 dB | 0.0 dB | unchanged value, justification redone: on the spectral scale 0 dB is *literal* — line energy equals the floor extended over the band |
+| `AQ_BREATH_HNR_TONE_DB` | 20.0 dB | **36.0 dB** | breath 0.020 → 34.50 dB, the first breath the HNR separates at all (0.010 is pinned against the +40 dB bound), and the point where flatness crosses its own "tone" threshold — both components declare *more breath* at the same place |
+| `AQ_QUALITY_HNR_GOOD_DB` | 20.0 dB | **36.0 dB** | same point on the scale, equality locked by a test. The audit's case — breath at 12.5 % of the fundamental — now reads **+26.77 dB, component 0.744**: it no longer saturates |
+| `AQ_BREATH_HNR_NOISE_DB` | 0.0 dB | 0.0 dB | unchanged value. Still below the breathiest note whose pitch survives (0.350 → +10.27 dB) and above pure filtered noise (−5.34 dB) — but that lower margin fell from ~20 dB to ~5 dB |
+| `AQ_BREATH_FLATNESS_TONE` | 0.10 | **0.09** | at 0.10, one realisation in six left flatness shut while the HNR opened. The bound must sit between the top of breath 0.010 (0.0750) and the bottom of 0.020 (0.0999) |
+| `AQ_BREATH_FLATNESS_NOISE` | 0.70 | **0.75** | 0.70 sat only 0.032 above the breathiest playable note — less than that note's own spread (0.076), so a playable note saturated the component depending on the realisation |
+
+*These numbers were 34.0 dB in an earlier revision of this table, and the code
+had already moved to 36.0. Exactly the class of error this audit was about: a
+document describing a version of the code that no longer exists.*
 
 **The two scales are never averaged together.** `computeBreathiness()` and
 `computeAcousticQuality()` use the HNR component only when
@@ -1041,10 +1047,19 @@ worth less than one that has been read against.
 ### The common root, and the only durable fix
 
 Three of these are the same mistake: **a statistic computed over the whole
-spectrum of a signal whose chain deliberately emptied half of it**. The noise
-floor, and then spectral flatness — where `AQ_BREATH_FLATNESS_NOISE = 0.70`
-turned out to be *unreachable*, pure white noise measuring 0.39 after filtering,
-so that component could never declare noise at all.
+spectrum of a signal whose chain deliberately emptied half of it** — the noise
+floor, spectral flatness and the spectral centroid.
+
+Flatness was the starkest: `AQ_BREATH_FLATNESS_NOISE = 0.70` was *unreachable*,
+pure white noise — the flattest signal that exists — measuring 0.39 after
+filtering, so that component could never declare noise at all. Measured in the
+analysis band it reads **0.820–0.875**, and the threshold now sits at 0.75. The
+centroid was biased by **−44 %** on white noise and is down to −4 %.
+`bandEnergy()` was deliberately left alone: it is a *sum* over a band the caller
+names, where an emptied bin correctly contributes nothing. Two of `NoiseModel`'s
+bands do straddle a cutoff, so comparing two profiles stays valid (same chain)
+while reading either band as an absolute energy does not — noted, not silently
+changed.
 
 None of this was visible because `grep -c AudioFilterChain` over the HNR and
 quality tests returned **0 and 0**. The suite measured a chain that does not
@@ -1061,6 +1076,13 @@ measured frame. *That*, not the arithmetic fix, is what prevents a recurrence.
   median over one bin is not a statistic.
 - **The margin below `AQ_BREATH_HNR_NOISE_DB` shrank** from ~20 dB to ~5 dB:
   pure filtered noise now measures −5.34 dB against a 0 dB threshold.
+- **`bB.value - bT.value > 0.40`** still fails on the production chain (0.390).
+  Neither the threshold nor the margin was moved: the original test stays on raw
+  PCM and a separate test covers the production chain with the margin that is
+  actually true there.
+- **With the cutoffs set to 0**, the breathiest note reads 0.738 against
+  `AQ_BREATH_FLATNESS_NOISE = 0.75` — 0.012 of margin. Part of what separates
+  the two bounds *is* the filtering.
 - **The static audit still verifies presence, not reachability**, and the
   note-change wiring is now *external* to `AudioAnalyzer.cpp`, so the caller
   count cannot see it. Only the native tests catch its removal.

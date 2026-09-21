@@ -162,19 +162,40 @@ bool SpectralAnalyzer::computeSpectrum(const float* x, size_t n) {
 
 float SpectralAnalyzer::spectralCentroid(float sampleRate) const {
   if (!_spectrumValid) return 0.0f;
-  const size_t bins = binCount();
+  // MESURE DANS LA BANDE QUE LA CHAINE LAISSE PASSER, et pas sur tout le
+  // spectre. Le centroide est une moyenne ponderee : ou la chaine a vide le
+  // haut du spectre, elle le tire vers le bas sans qu'aucun son n'ait change.
+  // Releve : bruit blanc a 8300 Hz sur PCM brut contre 4636 Hz apres
+  // AudioFilterChain - 44 % d'ecart pour le meme signal. Dans la bande,
+  // 3582 Hz contre 3444 Hz : 4 %. Ce qui reste vient du flanc a -3 dB des
+  // cellules, qui est DANS la bande par construction.
+  const AnalysisBand band = analysisBand(sampleRate);
+  // Bande vide (frequence d'echantillonnage absurde) : aucune mesure n'est
+  // possible et 0 est le refus, comme sans spectre calcule.
+  if (band.count() == 0) return 0.0f;
   float weighted = 0.0f, total = 0.0f;
-  // Le bin 0 (continu) est exclu : il n'est pas du son et fausserait le centre.
-  for (size_t k = 1; k < bins; k++) {
+  // Le bin 0 (continu) reste exclu : band.lo vaut 1 au minimum. Il n'est pas du
+  // son et fausserait le centre.
+  for (size_t k = band.lo; k <= (size_t)band.hi; k++) {
     weighted += binToHz(k, sampleRate) * _mag[k];
     total += _mag[k];
   }
   return (total > 1e-12f) ? (weighted / total) : 0.0f;
 }
 
-float SpectralAnalyzer::spectralFlatness() const {
+float SpectralAnalyzer::spectralFlatness(float sampleRate) const {
   if (!_spectrumValid) return 0.0f;
-  const size_t bins = binCount();
+  // MEME BANDE QUE LE HNR, et pour une raison plus forte encore que la sienne.
+  // La moyenne geometrique passe par un logarithme : un bin vide y compte pour
+  // log(plancher), c'est-a-dire beaucoup, alors qu'il ne porte aucune energie.
+  // Sur les 56 % de bins que AudioAnalyzer::drainI2S() vide avant l'anneau, la
+  // platitude mesurait donc surtout la pente du filtre. Du bruit blanc pur -
+  // le signal le plus plat qui existe - lisait 0,39 en production contre 0,85
+  // sur PCM brut, si bien que AQ_BREATH_FLATNESS_NOISE (0,70) etait devenu
+  // INATTEIGNABLE : la composante platitude de computeBreathiness() ne pouvait
+  // plus jamais declarer "du bruit", et rien ne le signalait.
+  const AnalysisBand band = analysisBand(sampleRate);
+  if (band.count() == 0) return 0.0f;
   // Moyenne geometrique calculee par somme de logarithmes : le produit direct
   // de 256 amplitudes sous-deborderait immediatement en simple precision.
   // Le plancher evite log(0) sur un bin vide.
@@ -182,7 +203,7 @@ float SpectralAnalyzer::spectralFlatness() const {
   double logSum = 0.0;
   double arithSum = 0.0;
   size_t count = 0;
-  for (size_t k = 1; k < bins; k++) {
+  for (size_t k = band.lo; k <= (size_t)band.hi; k++) {
     const float m = (_mag[k] > kFloor) ? _mag[k] : kFloor;
     logSum += log((double)m);
     arithSum += (double)m;
@@ -199,6 +220,12 @@ float SpectralAnalyzer::spectralFlatness() const {
 
 float SpectralAnalyzer::bandEnergy(float loHz, float hiHz, float sampleRate) const {
   if (!_spectrumValid || hiHz <= loHz) return 0.0f;
+  // PAS de restriction a analysisBand ici, et ce n'est pas un oubli : la bande
+  // est celle que l'APPELANT nomme, et ceci est une somme, pas une moyenne. Un
+  // bin vide y ajoute zero, ce qui decrit exactement le signal recu ; rien
+  // n'est extrapole a un domaine dont on a retire le contenu. Restreindre
+  // rendrait une autre grandeur que celle demandee. Voir le commentaire de
+  // declaration pour ce que cela implique d'une bande a cheval sur une coupure.
   const size_t bins = binCount();
   float sum = 0.0f;
   for (size_t k = 1; k < bins; k++) {
