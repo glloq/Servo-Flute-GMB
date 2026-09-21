@@ -1626,29 +1626,49 @@ void features_fft_fields_never_claim_to_be_fresh() {
   a.sampleRate = kFs; a.f0 = 500.0f; a.amp = 0.5f; a.h2 = 0.25f;
   audiosig::fill(buf.data(), kFrame, a);
 
-  // Frame avec FFT : les deux champs sont mesures ET signales comme tels.
+#if MIC_FFT_ENABLED
+  // Frame avec FFT : les deux champs sont mesures ET signales comme tels. Le
+  // HNR aussi passe alors sur la MESURE spectrale, et le dit.
   AcousticFeatureBuilder::fillSpectral(f, buf.data(), kFrame, 500.0f, &sa, true);
   assert(f.spectralValid);
   assert(f.fftValid);
+  assert(f.hnrIsSpectral);
   const float measuredCentroid = f.spectralCentroid;
   const float measuredFlatness = f.spectralFlatness;
+  const float measuredHnr = f.harmonicToNoiseRatio;
   assert(measuredCentroid > 0.0f);
 
   // Frame SANS FFT (decimation) : Goertzel reste valide, mais fftValid tombe.
-  // Les valeurs restent disponibles - ce sont les dernieres reellement mesurees -
-  // et c'est justement pour cela que le drapeau est indispensable.
+  // Les valeurs de forme restent disponibles - ce sont les dernieres reellement
+  // mesurees - et c'est justement pour cela que le drapeau est indispensable.
+  // Le HNR, lui, est RECALCULE par l'approximation Goertzel : il change donc
+  // d'echelle, et `hnrIsSpectral` retombe pour le signaler.
   AcousticFeatureBuilder::fillSpectral(f, buf.data(), kFrame, 500.0f, &sa, false);
   assert(f.spectralValid);
   assert(!f.fftValid);
+  assert(!f.hnrIsSpectral);
   assert(f.spectralCentroid == measuredCentroid);
   assert(f.spectralFlatness == measuredFlatness);
+  (void)measuredHnr;
 
   // Plus rien de mesurable : les descripteurs de forme sont EFFACES. Les laisser
   // ferait decrire une note precedente a une frame qui n'en contient pas.
   AcousticFeatureBuilder::fillSpectral(f, buf.data(), kFrame, 0.0f, &sa, true);
-  assert(!f.spectralValid && !f.fftValid);
+  assert(!f.spectralValid && !f.fftValid && !f.hnrIsSpectral);
   assert(f.spectralCentroid == 0.0f);
   assert(f.spectralFlatness == 0.0f);
+#else
+  // Sans FFT dans le binaire, AUCUNE frame ne porte de champ FFT frais ni de
+  // HNR spectral - meme en demandant explicitement la FFT. Goertzel, lui,
+  // continue de remplir spectralValid : c'est tout l'interet du repli.
+  AcousticFeatureBuilder::fillSpectral(f, buf.data(), kFrame, 500.0f, &sa, true);
+  assert(f.spectralValid);
+  assert(!f.fftValid && !f.hnrIsSpectral);
+  assert(f.spectralCentroid == 0.0f && f.spectralFlatness == 0.0f);
+
+  AcousticFeatureBuilder::fillSpectral(f, buf.data(), kFrame, 0.0f, &sa, true);
+  assert(!f.spectralValid && !f.fftValid && !f.hnrIsSpectral);
+#endif
 }
 
 // Regression : le verdict du detecteur doit traverser l'assemblage.

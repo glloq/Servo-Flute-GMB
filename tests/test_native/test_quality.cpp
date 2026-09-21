@@ -68,7 +68,11 @@ struct Rig {
 
     const bool runFft = (decimation++ % MIC_SPECTRAL_DECIMATION) == 0;
     AcousticFeatureBuilder::fillSpectral(f, buf, n, p.valid ? p.hz : 0.0f, &spec, runFft);
-    fftFresh = runFft && f.spectralValid;
+    // fftValid, et non `runFft` : demander la FFT ne suffit pas a l'obtenir.
+    // Quand elle est compilee hors du binaire, la platitude vaut 0 sans avoir
+    // ete mesuree, et un `fftFresh` optimiste la ferait passer pour un spectre
+    // parfaitement tonal.
+    fftFresh = f.fftValid;
     return f;
   }
 
@@ -235,8 +239,18 @@ void quality_breathiness_is_monotone() {
     const BreathinessResult b =
         AcousticQuality::computeBreathiness(f, ctx, AcousticQuality::breathinessAnchorHz(f, ctx));
     assert(b.valid && b.value < 0.05f);
-    assert(b.usedHnr && b.usedInterHarmonic && b.usedFlatness);
+    assert(b.usedInterHarmonic);
+#if MIC_FFT_ENABLED
+    // Les trois composantes sont la : HNR spectral, inter-partiels, platitude.
+    assert(b.usedHnr && b.usedFlatness);
     assert(nearly(b.weightUsed, AQ_BREATH_W_HNR + AQ_BREATH_W_INTER + AQ_BREATH_W_FLATNESS, 1e-5f));
+#else
+    // Sans FFT il n'y a ni platitude mesuree ni HNR spectral : seule la mesure
+    // inter-partiels, faite sur le PCM, subsiste. Elle suffit a un verdict, et
+    // `weightUsed` dit exactement ce qui a servi.
+    assert(!b.usedHnr && !b.usedFlatness);
+    assert(nearly(b.weightUsed, AQ_BREATH_W_INTER, 1e-5f));
+#endif
   }
   {
     Rig rig;
@@ -550,10 +564,10 @@ void quality_hnr_scale_is_the_one_the_thresholds_describe() {
 // assez de points pour qu'un accident ne passe pas : six, pas deux.
 //
 // Ce test echoue avec les anciens seuils. Avec TONE = 20 dB, les points a
-// souffle 0,010 (HNR ~34 dB) et 0,050 (HNR ~21 dB) donnent tous deux une
+// souffle 0,010 (HNR 34,40 dB) et 0,050 (HNR 20,55 dB) donnent tous deux une
 // composante HNR nulle : la moitie du poids de la mesure ne bouge plus, et
 // l'ecart de respiration entre une note presque propre et une note franchement
-// soufflee tombe de ~0,32 a ~0,12.
+// soufflee tombe de 0,325 a 0,12. Verifie par mutation.
 void quality_breathiness_rises_with_breath_on_the_spectral_scale() {
   std::vector<float> buf(kFrame);
   const float kSweep[] = {0.0f, 0.010f, 0.020f, 0.050f, 0.100f, 0.200f};
