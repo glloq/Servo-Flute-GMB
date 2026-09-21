@@ -105,6 +105,137 @@ Set MIC_ENABLED to false if no mic is connected.
 #define MIC_FRAME_STALE_MS      250
 
 /*----------------------------------------------------------------------------
+ * Acquisition audio (PHASE 1) - anneau continu, recouvrement, niveau
+ *
+ * Ces valeurs decrivent le MATERIEL et le dimensionnement memoire. Elles ne
+ * sont pas des reglages d'instrument : voir AUDIO_ARCHITECTURE.md pour la
+ * separation firmware / instrument / appris.
+ *--------------------------------------------------------------------------*/
+
+// Taille d'une frame d'analyse. Une frame n'est produite que lorsque ce nombre
+// d'echantillons est REELLEMENT disponible : plus jamais de frame partielle.
+#define MIC_ANALYSIS_FRAME_SIZE 1024    // 32,00 ms a 32 kHz
+
+// Pas d'avancement entre deux frames. HOP < FRAME donne un recouvrement :
+// 512 = 50 %, soit une frame toutes les 16 ms au lieu de 32 ms, ce qui double
+// la resolution temporelle des mesures d'attaque sans doubler le cout DSP
+// (seul le nombre de frames augmente, pas la taille de chacune).
+#define MIC_ANALYSIS_HOP_SIZE   512
+
+// Capacite de l'anneau (PUISSANCE DE DEUX obligatoire : indexation par
+// masquage). Doit absorber la gigue d'ordonnancement entre deux passages de
+// loop() : 2048 echantillons = 64 ms, soit deux fois la profondeur du DMA.
+#define MIC_RING_CAPACITY       2048    // 8 ko de float
+
+// Taille du tampon de transfert I2S -> anneau. Petit et reutilise : il vit en
+// membre, jamais sur la pile, et n'impose pas de lire une frame entiere d'un
+// coup (c'est precisement ce qui produisait des frames partielles).
+#define MIC_I2S_CHUNK_SAMPLES   256     // 1 ko d'int32
+
+// Intervalle minimal entre deux vidages du DMA vers l'anneau. Le DMA ne
+// contient que MIC_DMA_BUF_COUNT * MIC_DMA_BUF_LEN echantillons (32 ms ici) :
+// vider plus lentement que cela garantit la perte d'echantillons. 8 ms laisse
+// une marge de 4x.
+#define MIC_DRAIN_INTERVAL_MS   8
+
+// Plancher des conversions en dBFS. Evite -inf sur un silence numerique.
+// Rappel : dBFS = relatif a la pleine echelle NUMERIQUE, jamais du dB SPL.
+#define MIC_DBFS_FLOOR          (-120.0f)
+
+// Ecretage : niveau absolu considere comme "au rail", et proportion
+// d'echantillons au rail a partir de laquelle on declare l'ecretage. Un
+// ecretage bref n'est pas un microphone sature en permanence.
+#define MIC_CLIP_THRESHOLD      0.98f
+#define MIC_CLIP_RATIO_WARN     0.005f  // 0,5 % des echantillons
+
+// --- Detection de pitch (PHASE 2) -----------------------------------------
+
+// Nombre de mesures conservees pour calculer la stabilite. A 16 ms par frame
+// (hop 512 a 32 kHz), 8 frames couvrent ~128 ms : assez pour distinguer une
+// note tenue d'une attaque, assez court pour reagir a un changement de note.
+#define MIC_PITCH_HISTORY       8
+
+// Dispersion (en cents) qui correspond a une stabilite nulle. 50 cents est un
+// demi-demi-ton : au-dela, la note n'est plus tenue, elle derive.
+#define MIC_PITCH_STABILITY_REF_CENTS 50.0f
+
+// Tolerance pour declarer qu'une note detectee EST la note attendue.
+// Strictement INFERIEURE a 50 cents, sinon le critere ne sert a rien : au-dela
+// de 50 cents la frequence arrondit deja a la note MIDI voisine, donc c'est le
+// numero de note qui differe et la comparaison en cents ne se declenche jamais.
+// A 35 cents, une note JUSTE en hauteur mais franchement fausse en justesse est
+// distinguee d'une note correcte - exactement ce que la calibration doit voir.
+#define MIC_EXPECTED_TOLERANCE_CENTS  35.0f
+
+// Iterations de la recherche ternaire qui affine le lag YIN a pas
+// fractionnaire. Chaque iteration divise l'intervalle par 1,5 et coute deux
+// evaluations de d(tau). 10 iterations ramenent l'erreur pire-cas de 47 a
+// 0,53 cent pour environ +12 % du cout YIN ; 12 iterations donnent 0,27 cent
+// pour +15 %. C'est le bouton a tourner si le temps CPU devient critique.
+#define MIC_YIN_REFINE_ITERATIONS 10
+
+// --- Analyse spectrale (PHASE 3) ------------------------------------------
+
+// FFT compilable a la demande. La mettre a 0 economise ~5 ko de RAM et tout
+// le cout de la FFT ; Goertzel, qui suffit aux mesures harmoniques quand la
+// note attendue est connue, reste disponible.
+#define MIC_FFT_ENABLED         1
+
+// Taille de FFT (puissance de deux, <= MIC_ANALYSIS_FRAME_SIZE). 512 points a
+// 32 kHz donnent une resolution de 62,5 Hz par bin : suffisant pour le centre
+// de gravite et la platitude, qui sont des mesures de FORME de spectre. Les
+// mesures fines d'harmoniques passent par Goertzel, qui est exact a la
+// frequence demandee et ne depend d'aucune resolution de bin.
+#define MIC_FFT_SIZE            512
+
+// La FFT ne tourne pas a chaque frame. Une frame sur 4 a 62,5 frames/s donne
+// une mise a jour spectrale toutes les 64 ms, ce qui correspond a la dynamique
+// reelle d'un timbre ; le pitch, lui, reste mesure toutes les 16 ms.
+#define MIC_SPECTRAL_DECIMATION 4
+
+// Borne du rapport harmonique / bruit (dB). Un signal synthetique purement
+// harmonique donnerait un rapport infini ; sur un vrai microphone, au-dela de
+// cette valeur la mesure n'est de toute facon plus significative.
+#define MIC_HNR_MAX_DB          40.0f
+
+// --- Filtrage du flux (PHASE 5.1) -----------------------------------------
+//
+// Applique sur le FLUX, avant l'anneau, jamais frame par frame : les frames
+// se recouvrent de 50 %, un filtrage par frame ferait donc passer chaque
+// echantillon deux fois dans le filtre avec des etats differents.
+//
+// Les coupures encadrent LARGEMENT la plage de detection de pitch
+// (200-4000 Hz) : un filtre qui empieterait dessus fausserait la mesure au
+// lieu de nettoyer le bruit. Un static_assert le verifie.
+// Mettre une frequence a 0 desactive l'etage correspondant.
+#define MIC_FILTER_HP_HZ        100.0f  // bruit mecanique lent, vibration chassis
+#define MIC_FILTER_LP_HZ        7000.0f // au-dessus : rien d'utile pour la flute
+// Pole du retrait de continu du premier ordre. 0 desactive l'etage ; 0,995 a
+// 32 kHz donne une coupure d'environ 25 Hz.
+#define MIC_FILTER_DC_POLE      0.995f
+
+// --- Modele de bruit (PHASE 5) --------------------------------------------
+
+// Nombre de bandes d'analyse d'un profil de bruit. Les bornes sont dans
+// NoiseModel.cpp (kBandEdges) et doivent suivre cette valeur.
+#define MIC_NOISE_BANDS         6
+
+// Frames necessaires pour qu'une capture de bruit soit declaree valide, et
+// plafond de duree. A 16 ms par frame : entre 0,5 s et 3,2 s. Une capture plus
+// courte ne decrit rien et est REJETEE plutot que rangee comme douteuse.
+#define MIC_NOISE_MIN_FRAMES    32
+#define MIC_NOISE_MAX_FRAMES    200
+
+// Seuils de regime (%) qui separent ralenti / mi-regime / plein regime pour
+// le choix du profil correspondant a l'etat reel de l'instrument.
+#define MIC_NOISE_IDLE_PERCENT  33
+#define MIC_NOISE_HIGH_PERCENT  66
+
+// Borne du rapport signal/bruit rendu (dB). Au-dela, la mesure n'est plus
+// significative sur un microphone reel.
+#define MIC_SNR_MAX_DB          60.0f
+
+/*----------------------------------------------------------------------------
  * Auto-calibration (microphone-driven per-note airflow calibration)
  *--------------------------------------------------------------------------*/
 
@@ -520,6 +651,14 @@ const uint16_t SERVO_FREQUENCY = 50;
 // executee par la tache proprietaire. Au-dela, la requete repond 503 plutot que
 // de bloquer la pile TCP. Une iteration de loop() dure normalement quelques ms.
 #define WEBOP_TIMEOUT_MS 3000
+
+// Prise des verrous internes du serveur web (file des operations WebSocket,
+// coherence de `cfg`). Ces verrous ne sont tenus que le temps d'une copie de
+// structure ou d'une construction de reponse : quelques millisecondes suffisent
+// largement, et un depassement se traduit par un refus explicite plutot que par
+// un blocage de la pile TCP ou de loop().
+#define WEBOP_QUEUE_LOCK_MS 20
+#define WEB_CONFIG_LOCK_MS 200
 
 // Verrou d'upload MIDI exclusif : libere d'office si le client disparait en
 // cours de transfert (onglet ferme, Wi-Fi coupe) pour ne pas bloquer le suivant.

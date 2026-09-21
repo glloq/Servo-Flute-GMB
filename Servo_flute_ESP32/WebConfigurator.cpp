@@ -7,6 +7,14 @@
 #include "DeviceSecrets.h"
 #include "web_content.h"
 #include "WebValueParsers.h"
+#if MIC_ENABLED
+// Verdicts deja calcules par la chaine audio et simplement RELAYES ici. Inclus
+// explicitement : ce fichier nomme AcousticClassification, QualityScore,
+// NoteTiming et TimingOutcome, il ne doit pas dependre du fait qu'un autre
+// en-tete les tire par hasard.
+#include "AcousticQuality.h"
+#include "AcousticTiming.h"
+#endif
 #include <WiFi.h>
 
 // Serialize a single string value through ArduinoJson so quotes, backslashes and
@@ -123,23 +131,40 @@ WebConfigurator::WebConfigurator(uint16_t port)
     _webVelocity(WEB_DEFAULT_VELOCITY), _lastStatusBroadcast(0), _lastWsCleanup(0),
     _opPending(false), _opAbandoned(false), _opDoneSeq(0), _opSeqCounter(0),
     _opMutex(nullptr), _opDone(nullptr),
-    _wsOpHead(0), _wsOpTail(0), _wsOpCount(0),
+    _wsOpHead(0), _wsOpTail(0), _wsOpCount(0), _wsOpMutex(nullptr),
+    _calCancelRequested(false), _cfgMutex(nullptr),
     _uploadSequence(0)
 #if MIC_ENABLED
     , _audio(nullptr), _autoCal(nullptr), _micMonitorEnabled(false), _lastAudioBroadcast(0), _lastAcalBroadcast(0)
     , _autoCalOwnerClientId(0), _micMonitorBeforeCalibration(false), _rfDoneSent(false), _rfDoneTime(0)
 #endif
 {
-  for (uint8_t i = 0; i < WS_MAX_CLIENTS; i++) _wsAuthClients[i] = 0;
+  for (uint8_t i = 0; i < WS_MAX_CLIENTS; i++) {
+    _wsSessions[i].clientId = 0;
+    _wsSessions[i].token[0] = '\0';
+  }
 }
 
 WebConfigurator::~WebConfigurator() {
 #if MIC_ENABLED
+  // Les DEUX observateurs pointent dans _audio : celui de chronometrie vise son
+  // membre timing(), celui d'audio vise l'analyseur lui-meme. Les detacher
+  // avant de detruire l'analyseur, sinon l'instrument garde un pointeur pendant
+  // et la premiere note suivante ecrit dans de la memoire liberee.
+  // WebConfigurator possede _audio ; InstrumentManager, lui, survit a sa
+  // destruction. Poses ENSEMBLE dans begin(), retires ENSEMBLE ici : la duree
+  // de vie qu'ils partagent est celle d'un seul objet.
+  if (_instrument) {
+    _instrument->setTimingObserver(nullptr);
+    _instrument->setAudioObserver(nullptr);
+  }
   delete _autoCal;
   delete _audio;
 #endif
   if (_opDone) vSemaphoreDelete(_opDone);
   if (_opMutex) vSemaphoreDelete(_opMutex);
+  if (_wsOpMutex) vSemaphoreDelete(_wsOpMutex);
+  if (_cfgMutex) vSemaphoreDelete(_cfgMutex);
 }
 
 void WebConfigurator::begin(InstrumentManager* instrument, MidiFilePlayer* player) {
@@ -151,6 +176,13 @@ void WebConfigurator::begin(InstrumentManager* instrument, MidiFilePlayer* playe
   _opMutex = xSemaphoreCreateMutex();
   _opDone = xSemaphoreCreateBinary();
   _opPending = false;
+  // File des commandes WebSocket : un MUTEX, pas un spinlock. Copier une WebOp
+  // copie ses String, donc alloue sur le tas ; faire cela dans une section
+  // critique (interruptions coupees) est interdit.
+  _wsOpMutex = xSemaphoreCreateMutex();
+  // Coherence de `cfg` entre le commit (tache loop) et les lecteurs AsyncTCP.
+  _cfgMutex = xSemaphoreCreateMutex();
+  _calCancelRequested = false;
 
   // Sessions web : jeton aleatoire tire du RNG materiel, expiration glissante.
   DeviceSecrets::begin();
@@ -189,6 +221,38 @@ void WebConfigurator::begin(InstrumentManager* instrument, MidiFilePlayer* playe
       _instrument->getAirflowCtrl(),
       *_audio,
       _instrument->getCalibrationAirSupply());
+    // PHASE 7 : la chaine d'actionneurs NOTIFIE ses instants d'ordre a la
+    // chronometrie acoustique. C'est le seul point ou les deux mondes se
+    // rencontrent, et le flux y est a SENS UNIQUE : l'instrument ecrit, il ne
+    // lit jamais. Sans cet appel tout reste nullptr et l'instrument se comporte
+    // exactement comme avant - c'est cette equivalence qui est testee
+    // nativement par timing_observer_cannot_touch_actuators.
+    //
+    // Conditionne a `micOk` DELIBEREMENT, et pas seulement a la presence de
+    // l'instrument : sans microphone, personne n'alimente la chronometrie en
+    // frames, donc chaque note ouvrirait un cycle qui finirait en
+    // TIMING_TIMEOUT. L'interface lirait "aucun son mesure" alors que la verite
+    // est "personne n'ecoutait". Un repli muet vaut mieux qu'une mesure fausse.
+    // Limite connue, partagee avec _autoCal juste au-dessus : un microphone
+    // rebranche apres le demarrage ne rearme pas ce cablage.
+    _instrument->setTimingObserver(&_audio->timing());
+    // MEME cablage, MEME sens unique, pour le CHANGEMENT DE NOTE. Sans lui,
+    // resetAcousticTracking() n'a aucun appelant sur le chemin de jeu - seule
+    // une note VISEE la declenche, et seul AutoCalibrator en declare une - donc
+    // la ligne de base de brillance et l'historique de pitch d'une note servent
+    // a juger la suivante : ACOUSTIC_SQUEAK publie sur une octave montante
+    // propre, `stability` a 0,00 avec `stabilityValid` vrai.
+    //
+    // POSE ET RETIRE AVEC L'AUTRE, toujours : les deux visent le meme _audio,
+    // que le destructeur detruit. Les desapparier laisserait un pointeur
+    // pendant.
+    //
+    // Conditionne au MEME `micOk`, mais pour une raison qui lui est propre :
+    // sans microphone, aucune frame n'arrive et il n'y a aucun suivi acoustique
+    // a remettre a zero. Poser l'observateur serait alors sans effet, jamais
+    // dangereux - c'est la symetrie de pose/retrait qui commande ici, pas la
+    // prudence.
+    _instrument->setAudioObserver(_audio);
   }
   if (DEBUG) {
     Serial.print("DEBUG: WebConfigurator - Microphone INMP441: ");
@@ -209,6 +273,19 @@ void WebConfigurator::update() {
   // lecteur MIDI ou le calibrateur.
   serviceWsOps();      // commandes WebSocket (non bloquantes)
   servicePendingOp();  // requete HTTP en attente de sa reponse
+
+#if MIC_ENABLED
+  // Annulation de calibration NON PERDABLE. Elle transitait par postWebOp(), qui
+  // echoue silencieusement quand la file est pleine : le panic coupait alors les
+  // actionneurs mais _autoCal restait "running" et reappliquait ses commandes au
+  // cycle suivant. Le drapeau, lui, ne peut pas etre perdu. Il est consomme ICI,
+  // apres les operations web (un "start" poste avant l'annulation est donc bien
+  // annule) et AVANT _autoCal->update() plus bas.
+  if (_calCancelRequested) {
+    _calCancelRequested = false;
+    cancelActiveActuatorSession();
+  }
+#endif
 
   // Liberer un slot d'upload abandonne (client disparu en plein transfert).
   abandonStaleUpload(now);
@@ -250,21 +327,195 @@ void WebConfigurator::update() {
 #if MIC_ENABLED
   // Update audio analyzer
   if (_audio && _audio->isMicDetected()) {
+    // Declarer l'etat REEL de la source d'air AVANT l'analyse : le rapport
+    // signal/bruit est calcule contre le profil de cet etat. Comparer une note
+    // jouee pompe en marche a un plancher mesure pompe arretee surestimerait sa
+    // qualite - or c'est le cas de TOUTES les notes en mode pompe.
+    if (_instrument) {
+      _audio->setAirSourceState(cfg.airMode,
+                                _instrument->getPressureCtrl().getTargetPercent(),
+                                _instrument->getFanCtrl().getSpeed());
+    }
     _audio->update();
+
+    // Une capture de bruit peut se terminer d'elle-meme au plafond de duree.
+    // Sans cela, un onglet ferme en pleine capture laisserait le microphone et
+    // tout le DSP tourner indefiniment.
+    if (_audio->noiseCaptureFinished()) {
+      const NoiseProfileId done = _audio->currentNoiseProfile();
+      _audio->endNoiseCapture();
+      _audio->setActive(_micMonitorEnabled || (_autoCal && _autoCal->isRunning()));
+      if (_ws.count() > 0) {
+        String nj = "{\"t\":\"noise\",\"ok\":true,\"auto_stopped\":1,\"profile\":\"";
+        nj += NoiseModel::profileName(done);
+        nj += "\"}";
+        _ws.textAll(nj);
+      }
+    }
 
     // Broadcast audio data if monitoring enabled
     if (_micMonitorEnabled && _audio->isActive() && _ws.count() > 0) {
       if (now - _lastAudioBroadcast >= AUTOCAL_AUDIO_INTERVAL_MS) {
+        // Descripteurs de la derniere frame analysee. Le debit reste limite par
+        // AUTOCAL_AUDIO_INTERVAL_MS : on n'envoie jamais de PCM, seulement des
+        // mesures deja reduites.
+        const AcousticFeatures& af = _audio->getFeatures();
         String aj = "{\"t\":\"audio\"";
+        // Le message se construit par une vingtaine de += successifs et part 10
+        // fois par seconde. Sans reserve, chaque poussee enchaine autant de
+        // reallocations du tas - et les verdicts ajoutes plus bas allongent
+        // encore la chaine. Une seule allocation, dimensionnee au pire cas
+        // mesure (322 octets, marge comprise), remplace la serie.
+        //
+        // BUDGET. Les deux drapeaux d'echelle et de poids ajoutes plus bas
+        // ("hnr_sp", "brw") coutent 11 octets chacun, soit +22 sur ce pire
+        // cas : 344 octets, et 370 en majorant CHAQUE champ a sa largeur
+        // maximale (dBFS a -120,0, centroide a 5 chiffres, etat "wrong_note").
+        // La reserve de 384 tient donc sans changer, et la poussee reste un
+        // releve de descripteurs - pas un flux. Tout le reste (chronometrie
+        // complete, compteurs de refus, drapeaux `missing` nommes) part
+        // UNIQUEMENT sur GET /api/diagnostics, a la demande.
+        aj.reserve(384);
         aj += ",\"rms\":" + String(_audio->getRMS(), 3);
         aj += ",\"snd\":" + String(_audio->isSoundDetected() ? 1 : 0);
+        // Niveaux en dBFS : pleine echelle NUMERIQUE, jamais du dB SPL.
+        aj += ",\"rms_dbfs\":" + String(af.rmsDbFS, 1);
+        aj += ",\"peak_dbfs\":" + String(af.peakDbFS, 1);
+        aj += ",\"clip\":" + String(af.clipping ? 1 : 0);
+        aj += ",\"clip_ratio\":" + String(af.clippingRatio, 4);
         if (_audio->getPitchHz() > 0) {
           aj += ",\"hz\":" + String(_audio->getPitchHz(), 1);
           aj += ",\"midi\":" + String(_audio->getPitchMidi());
           aj += ",\"cents\":" + String(_audio->getPitchCents(), 1);
           aj += ",\"conf\":" + String((int)(_audio->getPitchConfidence() * 100.0f + 0.5f));
+          // "valid" est le verdict du DETECTEUR DE PITCH, et rien d'autre :
+          // il ne dit RIEN de la stabilite publiee juste en dessous.
           aj += ",\"valid\":" + String(_audio->isPitchValid() ? 1 : 0);
+          // La stabilite ne part que MESUREE. Voir AcousticFeatures.h : 0
+          // signifie "pas encore mesure" AUTANT que "tres instable". Il faut
+          // MIC_PITCH_HISTORY frames d'historique (8 frames, soit 112 ms) pour
+          // que le chiffre veuille dire quelque chose, alors que cette poussee
+          // part toutes les AUTOCAL_AUDIO_INTERVAL_MS (100 ms) : la PREMIERE
+          // poussee de chaque note porterait donc presque toujours "stab":0.00,
+          // et un consommateur classerait chaque debut de note comme un defaut.
+          // Omise plutot que renvoyee nue, comme les champs spectraux non
+          // mesures plus bas : absente = pas mesuree, ce qui ne se confond avec
+          // aucune valeur. Cout : -12 octets sur les frames concernees.
+          if (af.stabilityValid) {
+            aj += ",\"stab\":" + String(af.pitchStability, 2);
+          }
         }
+        // Champs spectraux UNIQUEMENT quand ils ont ete mesures : les omettre
+        // vaut mieux que de renvoyer la valeur d'une frame anterieure.
+        // Rapport signal/bruit mesure contre le profil de l'etat REEL. Omis
+        // tant qu'aucun profil n'a ete capture ; le repli est signale pour que
+        // l'interface ne presente pas un chiffre flatteur comme une mesure.
+        if (af.snrValid) {
+          aj += ",\"snr\":" + String(af.snrDb, 1);
+          if (af.snrUsedFallback) aj += ",\"snr_fb\":1";
+        }
+        if (af.spectralValid) {
+          aj += ",\"h2\":" + String(af.h2Ratio, 3);
+          aj += ",\"h3\":" + String(af.h3Ratio, 3);
+          // DEUX ECHELLES derriere une seule cle, donc JAMAIS le chiffre nu.
+          // "hnr" est rempli soit par la mesure spectrale (FFT complete), soit
+          // par l'APPROXIMATION Goertzel a quatre raies, qui compte tout
+          // harmonique de rang > 4 comme du bruit : sur une meme note timbree
+          // tenue, la mesure spectrale rend >= +31,86 dB la ou l'approximation
+          // rend <= -0,02 dB, soit 31,88 dB d'ecart : les deux ne se comparent
+          // pas et CLASSENT LES NOTES A L'ENVERS. La FFT ne tournant qu'une
+          // frame sur MIC_SPECTRAL_DECIMATION, la cle alterne entre les deux
+          // echelles a 15,6 Hz : sans ce drapeau, tout consommateur qui la
+          // compare a un seuil voit son verdict clignoter.
+          // Meme regle que hnr_is_spectral dans /api/diagnostics, et meme
+          // exigence qu'AcousticQuality, qui refuse la composante HNR quand ce
+          // drapeau est faux. Les deux champs partent ensemble ou pas du tout.
+          // Cout : 11 octets.
+          aj += ",\"hnr\":" + String(af.harmonicToNoiseRatio, 1);
+          aj += ",\"hnr_sp\":" + String(af.hnrIsSpectral ? 1 : 0);
+          // Uniquement si la FFT a tourne sur CETTE frame. Sinon ces deux
+          // valeurs datent de la frame precedente (jusqu'a 64 ms) et les
+          // envoyer comme une mesure courante serait faux.
+          if (af.fftValid) {
+            aj += ",\"centroid\":" + String(af.spectralCentroid, 0);
+            aj += ",\"flatness\":" + String(af.spectralFlatness, 3);
+          }
+        }
+        if (af.overblowDetected) aj += ",\"overblow\":1";
+
+        // --- Classification et qualite (PHASES 6/7) : LE STRICT MINIMUM ------
+        // Tout ce qui est ajoute ICI est multiplie par 10 par seconde et par le
+        // nombre de clients (WS_MAX_CLIENTS = 4), soit 40 messages/s. Le releve
+        // de chronometrie complet et les drapeaux `missing` NOMMES pesent a eux
+        // seuls plus que la poussee entiere : les mettre la transformerait un
+        // moniteur en flux permanent, ce que l'ESP32-WROOM ne doit pas soutenir
+        // (cf. AUDIO_ARCHITECTURE.md). Ils partent donc UNIQUEMENT sur
+        // GET /api/diagnostics, a la demande. Ne restent ici que les verdicts
+        // qui changent a chaque frame et qu'un afficheur temps reel ne peut pas
+        // reconstituer autrement.
+        //
+        // Lecture sans verrou, comme af juste au-dessus : cette fonction est
+        // appelee par update(), donc par la tache loop(), qui est aussi la
+        // SEULE a ecrire ces resultats (via _audio->update() quelques lignes
+        // plus haut). Il n'y a pas d'autre ecrivain a serialiser, et aucun
+        // calcul n'est declenche : on relit des champs deja poses.
+        const AcousticClassification& cl = _audio->getClassification();
+        // Etat omis tant qu'il n'a pas ete CLASSE : absent = inconnu, alors
+        // qu'un "silence" par defaut se lirait comme une mesure.
+        if (cl.classified) {
+          aj += ",\"st\":\"" + String(_audio->getAcousticStateName()) + "\"";
+        }
+        // De QUOI la classification a ete privee, en un seul entier :
+        //   bit 0 pitch, 1 snr, 2 spectre, 3 note visee, 4 stabilite,
+        //   bit 5 historique de couac, 6 repli du SNR (compare au profil d'un
+        //   AUTRE etat machine que l'etat reel : il surestime probablement la
+        //   qualite).
+        // Le detail nomme est dans /api/diagnostics (audio.missing) ; ici les
+        // memes sept bits couteraient plus de 120 octets. Sans ce champ, un
+        // etat "good" obtenu faute d'avoir rien pu mesurer serait, a l'ecran,
+        // indiscernable d'un vrai "good". Omis quand rien ne manque.
+        uint8_t miss = 0;
+        if (cl.missingPitch)         miss |= 0x01;
+        if (cl.missingSnr)           miss |= 0x02;
+        if (cl.missingSpectrum)      miss |= 0x04;
+        if (cl.missingExpectedNote)  miss |= 0x08;
+        if (cl.missingStability)     miss |= 0x10;
+        if (cl.missingSqueakHistory) miss |= 0x20;
+        if (cl.snrUsedFallback)      miss |= 0x40;
+        if (miss) aj += ",\"miss\":" + String((int)miss);
+        // La note de qualite ne part JAMAIS sans le poids sur lequel elle a ete
+        // calculee, ici comme dans /api/diagnostics : c'est une moyenne
+        // ponderee de sept criteres dont l'attaque, qui peut ne pas avoir ete
+        // mesuree ; le score est alors renormalise sur les six autres et ne
+        // couvre que 90 % du cahier des charges. Les deux champs partent
+        // ensemble ou pas du tout - un score seul mentirait sur ce qu'il
+        // mesure.
+        const QualityScore& qs = _audio->getQualityScore();
+        if (qs.valid) {
+          aj += ",\"q\":" + String(qs.score, 2);
+          aj += ",\"qw\":" + String(qs.weightUsed, 2);
+        }
+        // MEME REGLE QUE POUR LA QUALITE, et pour une raison plus forte
+        // encore : la respiration est une moyenne ponderee de trois
+        // composantes (HNR, energie inter-harmonique, platitude) dont deux
+        // n'existent qu'une frame sur MIC_SPECTRAL_DECIMATION. weightUsed
+        // descend donc jusqu'a 0,30 - un ecart bien plus grand que celui du
+        // score de qualite, qui ne descend qu'a 0,75. Sur une note tenue
+        // immobile, "br" alterne ainsi entre une valeur pleine et 0,00 a
+        // 62,5 Hz avec valid=true dans les deux cas : c'est le poids, et lui
+        // seul, qui distingue "pas de souffle" de "presque rien de mesure".
+        // Les deux champs partent ensemble ou pas du tout. Cout : 11 octets.
+        const BreathinessResult& br = _audio->getBreathiness();
+        if (br.valid) {
+          aj += ",\"br\":" + String(br.value, 2);
+          aj += ",\"brw\":" + String(br.weightUsed, 2);
+        }
+        // Couac CONFIRME seulement. Un candidat instantane est retire
+        // retroactivement une fois sur deux : l'annoncer ferait clignoter
+        // l'interface sur des evenements qui n'ont pas eu lieu.
+        const SqueakResult& sq = _audio->getSqueak();
+        if (sq.confirmed) aj += ",\"squeak\":1";
+
         aj += "}";
         _ws.textAll(aj);
         _lastAudioBroadcast = now;
@@ -273,9 +524,14 @@ void WebConfigurator::update() {
 
     // Update auto-calibrator
     if (_autoCal && _autoCal->isRunning()) {
-      // Hold servo/PCA power for the whole measuring session so managePower() can
-      // never cut OE between settling and the last audio frame of a position.
-      if (_instrument) _instrument->setActuatorSessionActive(true);
+      // NE PAS reprendre la session ici. La prise de possession a lieu UNE fois
+      // au demarrage (WEBOP_AUTOCAL_START_*), la liberation UNE fois a la fin
+      // (cancelActiveActuatorSession). Repeter setActuatorSessionActive(true) a
+      // chaque boucle relancait son effet de bord d'entree - arret du sequenceur
+      // et purge de la file - ce qui, cote InstrumentManager, refermait la valve
+      // ouverte par le calibrateur : l'auto-calibration ne mesurait jamais aucun
+      // son. La fonction est desormais idempotente, mais l'appel repetitif reste
+      // inutile et trompeur.
       _autoCal->update();
 
       // Broadcast progress
@@ -507,32 +763,40 @@ bool WebConfigurator::runOnLoop(WebOp& op) {
   return done;
 }
 
+// Cette file etait protegee par un portMUX (spinlock + interruptions coupees).
+// Or une WebOp porte trois String : la copier ALLOUE sur le tas, et l'allocateur
+// prend lui-meme un verrou - operation interdite en section critique, qui peut
+// bloquer ou corrompre le tas. Un mutex FreeRTOS autorise l'allocation ; la
+// contention est negligeable (AsyncTCP produit, loop() consomme, la garde dure
+// le temps d'une copie).
 bool WebConfigurator::postWebOp(const WebOp& op) {
-  portENTER_CRITICAL(&_wsOpMux);
+  if (_wsOpMutex == nullptr) return false;
+  if (xSemaphoreTake(_wsOpMutex, pdMS_TO_TICKS(WEBOP_QUEUE_LOCK_MS)) != pdTRUE) return false;
   if (_wsOpCount >= kWsOpQueueSize) {
-    portEXIT_CRITICAL(&_wsOpMux);
+    xSemaphoreGive(_wsOpMutex);
     return false;
   }
   _wsOps[_wsOpHead] = op;
   _wsOpHead = (uint8_t)((_wsOpHead + 1) % kWsOpQueueSize);
   _wsOpCount++;
-  portEXIT_CRITICAL(&_wsOpMux);
+  xSemaphoreGive(_wsOpMutex);
   return true;
 }
 
 void WebConfigurator::serviceWsOps() {
+  if (_wsOpMutex == nullptr) return;
   while (true) {
     WebOp op;
-    portENTER_CRITICAL(&_wsOpMux);
+    if (xSemaphoreTake(_wsOpMutex, pdMS_TO_TICKS(WEBOP_QUEUE_LOCK_MS)) != pdTRUE) return;
     if (_wsOpCount == 0) {
-      portEXIT_CRITICAL(&_wsOpMux);
+      xSemaphoreGive(_wsOpMutex);
       return;
     }
     op = _wsOps[_wsOpTail];
     _wsOps[_wsOpTail] = WebOp();
     _wsOpTail = (uint8_t)((_wsOpTail + 1) % kWsOpQueueSize);
     _wsOpCount--;
-    portEXIT_CRITICAL(&_wsOpMux);
+    xSemaphoreGive(_wsOpMutex);
 
     executeWebOp(op);
     // Le demandeur n'attend pas : son resultat eventuel part sur le WebSocket.
@@ -557,29 +821,59 @@ void WebConfigurator::servicePendingOp() {
  * Authentification
  ******************************************************************************/
 
-bool WebConfigurator::isWsAuthenticated(uint32_t clientId) const {
+// La table ne memorisait que l'identifiant du client : une fois le "auth"
+// initial accepte, plus rien ne reinterrogeait WebAuth. Une socket laissee
+// ouverte restait donc authentifiee bien au-dela du TTL de session, et survivait
+// meme a une revocation globale des jetons. On memorise desormais le JETON, et
+// chaque commande le revalide : l'expiration s'applique, la fenetre glisse comme
+// pour HTTP, et revokeAll() coupe effectivement les WebSockets.
+bool WebConfigurator::isWsAuthenticated(uint32_t clientId) {
   if (clientId == 0) return false;
   for (uint8_t i = 0; i < WS_MAX_CLIENTS; i++) {
-    if (_wsAuthClients[i] == clientId) return true;
+    if (_wsSessions[i].clientId != clientId) continue;
+    if (_auth.validate(String(_wsSessions[i].token), millis())) return true;
+    // Jeton expire ou revoque : la socket redevient anonyme et devra se
+    // reauthentifier ({"t":"auth","token":"..."}).
+    _wsSessions[i].clientId = 0;
+    _wsSessions[i].token[0] = '\0';
+    return false;
   }
   return false;
 }
 
-void WebConfigurator::setWsAuthenticated(uint32_t clientId, bool authenticated) {
+void WebConfigurator::setWsAuthenticated(uint32_t clientId, const String& token) {
   if (clientId == 0) return;
-  if (!authenticated) {
-    for (uint8_t i = 0; i < WS_MAX_CLIENTS; i++) {
-      if (_wsAuthClients[i] == clientId) _wsAuthClients[i] = 0;
-    }
-    return;
-  }
-  if (isWsAuthenticated(clientId)) return;
+  clearWsAuthentication(clientId);
+  if (token.length() == 0 || token.length() > WEB_AUTH_TOKEN_LEN) return;
+  uint8_t slot = WS_MAX_CLIENTS;
   for (uint8_t i = 0; i < WS_MAX_CLIENTS; i++) {
-    if (_wsAuthClients[i] == 0) { _wsAuthClients[i] = clientId; return; }
+    if (_wsSessions[i].clientId == 0) { slot = i; break; }
   }
   // Table pleine : recycler la premiere entree (les clients WS sont limites a
   // WS_MAX_CLIENTS par cleanupClients()).
-  _wsAuthClients[0] = clientId;
+  if (slot >= WS_MAX_CLIENTS) slot = 0;
+  _wsSessions[slot].clientId = clientId;
+  strncpy(_wsSessions[slot].token, token.c_str(), WEB_AUTH_TOKEN_LEN);
+  _wsSessions[slot].token[WEB_AUTH_TOKEN_LEN] = '\0';
+}
+
+void WebConfigurator::clearWsAuthentication(uint32_t clientId) {
+  if (clientId == 0) return;
+  for (uint8_t i = 0; i < WS_MAX_CLIENTS; i++) {
+    if (_wsSessions[i].clientId != clientId) continue;
+    _wsSessions[i].clientId = 0;
+    _wsSessions[i].token[0] = '\0';
+  }
+}
+
+bool WebConfigurator::lockConfig(uint32_t timeoutMs) {
+  // Avant begin(), un seul contexte touche `cfg` : rien a serialiser.
+  if (_cfgMutex == nullptr) return true;
+  return xSemaphoreTake(_cfgMutex, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
+}
+
+void WebConfigurator::unlockConfig() {
+  if (_cfgMutex) xSemaphoreGive(_cfgMutex);
 }
 
 String WebConfigurator::extractToken(AsyncWebServerRequest* request) const {
@@ -740,7 +1034,18 @@ void WebConfigurator::abandonStaleUpload(unsigned long now) {
  * Execution des operations web - TACHE loop() UNIQUEMENT
  ******************************************************************************/
 
+// Adaptateurs pour ConfigCommitGuard : ConfigCommit reste pur (aucun appel
+// FreeRTOS), le verrou reel vit ici.
+bool WebConfigurator::cfgGuardLock(void* ctx) {
+  return static_cast<WebConfigurator*>(ctx)->lockConfig(WEB_CONFIG_LOCK_MS);
+}
+void WebConfigurator::cfgGuardUnlock(void* ctx) {
+  static_cast<WebConfigurator*>(ctx)->unlockConfig();
+}
+
 void WebConfigurator::executeWebOp(WebOp& op) {
+  const ConfigCommitGuard cfgGuard{ &WebConfigurator::cfgGuardLock,
+                                    &WebConfigurator::cfgGuardUnlock, this };
   switch (op.type) {
     case WEBOP_COMMIT_CONFIG: {
       // Commit TRANSACTIONNEL (voir ConfigCommit.h) : valider -> sauvegarder ->
@@ -751,7 +1056,8 @@ void WebConfigurator::executeWebOp(WebOp& op) {
         break;
       }
       ConfigCommitResult res =
-          commitCandidateConfig(cfg, *op.candidate, _instrument, &ConfigStorage::saveFrom);
+          commitCandidateConfig(cfg, *op.candidate, _instrument, &ConfigStorage::saveFrom,
+                                &cfgGuard);
 
       JsonDocument resp;
       if (!res.valid) {
@@ -861,7 +1167,8 @@ void WebConfigurator::executeWebOp(WebOp& op) {
       strncpy(candidate.wifiPassword, op.strB.c_str(), sizeof(candidate.wifiPassword) - 1);
       candidate.wifiPassword[sizeof(candidate.wifiPassword) - 1] = '\0';
       ConfigCommitResult res =
-          commitCandidateConfig(cfg, candidate, _instrument, &ConfigStorage::saveFrom);
+          commitCandidateConfig(cfg, candidate, _instrument, &ConfigStorage::saveFrom,
+                                &cfgGuard);
       JsonDocument resp;
       resp["ok"] = res.saved;
       if (!res.saved) resp["error"] = res.valid ? "storage_failed" : res.error;
@@ -1076,11 +1383,6 @@ void WebConfigurator::executeWebOp(WebOp& op) {
       break;
     }
 
-    case WEBOP_AUTOCAL_CANCEL:
-      cancelActiveActuatorSession();
-      op.ok = true;
-      break;
-
     case WEBOP_AUTOCAL_APPLY_RANGE: {
       if (!_autoCal || !_autoCal->isRangeFinderComplete()) { op.ok = false; break; }
       bool hadValid = _autoCal->getRangeFinderMin() >= 0 && _autoCal->getRangeFinderMax() >= 0;
@@ -1110,6 +1412,68 @@ void WebConfigurator::executeWebOp(WebOp& op) {
       op.ok = true;
       break;
 
+    // --- Capture d'un profil de bruit (PHASE 5) ------------------------------
+    // L'utilisateur amene d'abord l'instrument dans l'etat voulu (pompe a tel
+    // regime, ventilateur a tel autre) avec les commandes de test existantes,
+    // puis demande la capture. L'analyseur ecrit dans le profil correspondant a
+    // l'etat REEL, lu a chaque passage d'update().
+    case WEBOP_NOISE_START: {
+      JsonDocument resp;
+      resp["t"] = "noise";
+      if (!_audio || !_audio->isMicDetected()) {
+        resp["ok"] = false; resp["error"] = "no_microphone";
+        op.ok = false;
+      } else if (_instrument && _instrument->getSequencer().getState() != STATE_IDLE) {
+        // Capturer un plancher de bruit pendant qu'une note sonne mesurerait la
+        // note, pas le bruit. Le refus est explicite.
+        resp["ok"] = false; resp["error"] = "note_playing";
+        op.ok = false;
+      } else {
+        _audio->setActive(true);
+        _audio->beginNoiseCapture();
+        resp["ok"] = true;
+        resp["capturing"] = NoiseModel::profileName(_audio->currentNoiseProfile());
+        op.ok = true;
+      }
+      serializeJson(resp, op.json);
+      break;
+    }
+
+    case WEBOP_NOISE_STOP: {
+      JsonDocument resp;
+      resp["t"] = "noise";
+      const bool stored = _audio ? _audio->endNoiseCapture() : false;
+      resp["ok"] = stored;
+      if (!stored) {
+        // Une capture trop courte est rejetee plutot que rangee comme un profil
+        // de confiance douteuse.
+        resp["error"] = "too_short";
+        resp["min_frames"] = MIC_NOISE_MIN_FRAMES;
+      } else {
+        const NoiseProfileId id = _audio->currentNoiseProfile();
+        const NoiseProfile& p = _audio->getNoiseModel().profile(id);
+        resp["profile"] = NoiseModel::profileName(id);
+        resp["frames"] = p.frames;
+        resp["rms_dbfs"] = p.rmsDbFS;
+        resp["flatness"] = p.flatness;
+      }
+      if (_audio) _audio->setActive(_micMonitorEnabled || (_autoCal && _autoCal->isRunning()));
+      serializeJson(resp, op.json);
+      op.ok = stored;
+      break;
+    }
+
+    case WEBOP_NOISE_RESET: {
+      if (_audio) _audio->resetNoiseModel();
+      JsonDocument resp;
+      resp["t"] = "noise";
+      resp["ok"] = true;
+      resp["msg"] = "noise profiles cleared";
+      serializeJson(resp, op.json);
+      op.ok = true;
+      break;
+    }
+
     case WEBOP_MIC_RESET: {
       JsonDocument resp;
       resp["t"] = "mic_reset";
@@ -1134,7 +1498,10 @@ void WebConfigurator::executeWebOp(WebOp& op) {
       // invalider les jetons distribues sous l'ancien.
       if (ok) {
         _auth.revokeAll();
-        for (uint8_t i = 0; i < WS_MAX_CLIENTS; i++) _wsAuthClients[i] = 0;
+        for (uint8_t i = 0; i < WS_MAX_CLIENTS; i++) {
+          _wsSessions[i].clientId = 0;
+          _wsSessions[i].token[0] = '\0';
+        }
       }
       break;
     }
@@ -1581,6 +1948,16 @@ void WebConfigurator::handleApiStatus(AsyncWebServerRequest* request) {
 }
 
 void WebConfigurator::handleApiConfig(AsyncWebServerRequest* request) {
+  // Lecteur volumineux execute sur la tache AsyncTCP pendant que loop() peut
+  // commiter une nouvelle configuration. Sans ce verrou, la reponse pouvait
+  // melanger l'ancienne et la nouvelle config (numNotes deja mis a jour mais
+  // notes[] pas encore recopie => lecture au-dela des notes valides).
+  // Cette fonction ne fait AUCUN hand-off vers loop() : tenir le verrou ici ne
+  // peut pas provoquer d'interblocage.
+  if (!lockConfig(WEB_CONFIG_LOCK_MS)) {
+    request->send(503, "application/json", "{\"ok\":false,\"error\":\"config_busy\"}");
+    return;
+  }
   String json = "{";
 
   // Instrument info
@@ -1734,6 +2111,7 @@ void WebConfigurator::handleApiConfig(AsyncWebServerRequest* request) {
   json += "]";
 
   json += "}";
+  unlockConfig();
   request->send(200, "application/json", json);
 }
 
@@ -2076,10 +2454,45 @@ void WebConfigurator::handleApiWifiConnect(AsyncWebServerRequest* request) {
   request->send(op.httpStatus, "application/json", op.json);
 }
 
+#if MIC_ENABLED
+// Nom lisible de la facon dont le suivi d'une note s'est TERMINE. Table pure :
+// aucune mesure n'est refaite, c'est une traduction d'enum.
+static const char* webTimingOutcomeName(TimingOutcome o) {
+  switch (o) {
+    case TIMING_OUTCOME_NONE: return "none";
+    case TIMING_IN_PROGRESS:  return "in_progress";
+    case TIMING_COMPLETE:     return "complete";
+    case TIMING_NO_SOUND:     return "no_sound";
+    case TIMING_CUT_SHORT:    return "cut_short";
+    case TIMING_TIMEOUT:      return "timeout";
+    case TIMING_ABORTED:      return "aborted";
+    default:                  return "?";
+  }
+}
+
+// Une duree de chronometrie ne se rend JAMAIS nue : {"valid":bool,"ms":float}.
+// Un attackTime jamais mesure vaut 0 ms dans la structure ; publie seul, ce 0
+// se lirait comme une attaque instantanee - exactement le defaut deja survenu
+// dans ce projet. Le drapeau part donc avec la valeur, systematiquement, par
+// cette fonction unique : aucun appelant ne peut l'oublier.
+static void webAddTimingMeasure(JsonObject parent, const char* key, const TimingMeasure& m) {
+  JsonObject o = parent[key].to<JsonObject>();
+  o["valid"] = m.valid;
+  o["ms"] = (float)m.ms;
+}
+#endif  // MIC_ENABLED
+
 void WebConfigurator::handleApiDiagnostics(AsyncWebServerRequest* request) {
   // Diagnostic PUREMENT PASSIF : aucune commande ci-dessous ne fait bouger un
   // actionneur. Un test actif se demande explicitement par les commandes
   // WebSocket de test, qui sont soumises a la protection hardware_not_ready.
+  // Meme raison que pour GET /api/config : la copie et les lectures de `cfg`
+  // sont serialisees avec le commit execute par loop(). Aucun hand-off vers
+  // loop() ici non plus, donc aucun risque d'interblocage.
+  if (!lockConfig(WEB_CONFIG_LOCK_MS)) {
+    request->send(503, "application/json", "{\"ok\":false,\"error\":\"config_busy\"}");
+    return;
+  }
   RuntimeConfig tmp = cfg;
   ConfigValidationResult validation = validateAndNormalizeConfig(tmp, &cfg);
 
@@ -2184,6 +2597,234 @@ void WebConfigurator::handleApiDiagnostics(AsyncWebServerRequest* request) {
   doc["microphone_status"] = _audio ? _audio->getMicStatusString() : "not_init";
   addCheck("microphone", micOk ? "ok" : "warning",
            micOk ? "Microphone detected" : "Microphone not detected or not initialized");
+
+  // Acquisition audio : compteurs reels de l'anneau. Un microphone "detecte"
+  // qui accumule des debordements produit des mesures sans valeur, et cela doit
+  // se voir plutot que de se deviner. Niveau en dBFS (pleine echelle NUMERIQUE,
+  // jamais du dB SPL : le microphone n'est pas etalonne).
+  if (_audio) {
+    const AudioCaptureStats& cap = _audio->getCaptureStats();
+    JsonObject a = doc["audio"].to<JsonObject>();
+    a["frame_size"] = MIC_ANALYSIS_FRAME_SIZE;
+    a["hop_size"] = MIC_ANALYSIS_HOP_SIZE;
+    a["sample_rate"] = MIC_SAMPLE_RATE;
+    a["samples_received"] = cap.samplesReceived;
+    a["frames_produced"] = cap.framesProduced;
+    a["partial_reads"] = cap.partialReads;
+    a["read_errors"] = cap.readErrors;
+    a["buffer_overruns"] = cap.bufferOverruns;
+    a["buffer_underruns"] = cap.bufferUnderruns;
+    a["dropped_samples"] = cap.droppedSamples;
+    a["last_frame_ms"] = (uint32_t)cap.lastFrameTimestamp;
+    a["rms_dbfs"] = _audio->getRmsDbFS();
+    a["peak_dbfs"] = _audio->getPeakDbFS();
+    a["clipping"] = _audio->isClipping();
+    a["clipping_ratio"] = _audio->getClippingRatio();
+    a["dc_offset"] = _audio->getLevel().dcOffset;
+
+    // Modele de bruit : quels etats ont ete caracterises, et contre lequel le
+    // rapport signal/bruit courant est calcule. Un profil manquant se voit,
+    // plutot que de se deviner a un SNR trop flatteur.
+    const NoiseModel& nm = _audio->getNoiseModel();
+    JsonObject nz = a["noise"].to<JsonObject>();
+    nz["capturing"] = _audio->isCapturingNoise();
+    nz["current"] = NoiseModel::profileName(_audio->currentNoiseProfile());
+    nz["captured"] = nm.capturedCount();
+    JsonArray profs = nz["profiles"].to<JsonArray>();
+    for (uint8_t i = 0; i < NOISE_PROFILE_COUNT; i++) {
+      const NoiseProfileId id = (NoiseProfileId)i;
+      const NoiseProfile& p = nm.profile(id);
+      JsonObject o = profs.add<JsonObject>();
+      o["id"] = NoiseModel::profileName(id);
+      o["valid"] = p.valid;
+      if (p.valid) {
+        o["frames"] = p.frames;
+        o["rms_dbfs"] = p.rmsDbFS;
+        o["flatness"] = p.flatness;
+        o["peak_hz"] = p.peakHz;
+      }
+    }
+    // COPIE, pas une reference vivante. Cette fonction s'execute sur la tache
+    // AsyncTCP pendant que loop() reecrit _features toutes les 16 ms. Relire le
+    // membre champ par champ, avec des allocations ArduinoJson entre deux
+    // lectures, laissait la paire hnr_db / hnr_is_spectral venir de DEUX frames
+    // differentes : un HNR Goertzel publie avec hnr_is_spectral vrai, soit
+    // 31,88 dB d'erreur sur l'echelle meme du chiffre.
+    //
+    // CE QUE CETTE COPIE NE FAIT PAS : elle n'est pas atomique. 96 octets se
+    // copient en plusieurs instructions, et rien n'empeche loop() d'ecrire au
+    // milieu. Elle RETRECIT la fenetre de quelques millisecondes (le temps de
+    // serialiser le document) a quelques microsecondes ; elle ne la ferme pas.
+    // La fermer demanderait un verrou ou un double tampon cote AudioAnalyzer,
+    // ce qui n'est pas du ressort de la couche web - et un verrou ferait
+    // attendre l'acquisition I2S derriere une serialisation JSON.
+    const AcousticFeatures feat = _audio->getFeatures();
+    a["snr_valid"] = feat.snrValid;
+    a["snr_db"] = feat.snrDb;
+    a["snr_fallback"] = feat.snrUsedFallback;
+
+    /*------------------------------------------------------------------------
+     * Classification, note de qualite et chronometrie (PHASES 6/7)
+     *
+     * LECTURE SEULE, ET RIEN QUE DE LA LECTURE. Cette fonction s'execute sur la
+     * tache AsyncTCP : elle ne declenche aucun DSP, n'appelle aucun `compute*`
+     * et ne fait avancer aucune machine d'etat. Tous les verdicts ci-dessous
+     * ont ete produits par loop() (AudioAnalyzer::update()), unique ecrivain.
+     *
+     * On en prend une COPIE locale immediate, comme pour `feat` ci-dessus.
+     * Mais, CONTRAIREMENT au `RuntimeConfig tmp = cfg` du debut de cette
+     * fonction - qui, lui, est pris sous lockConfig() et est donc reellement
+     * coherent -, aucun verrou n'est pris ici : il n'existe pas de mutex audio,
+     * et en introduire un ferait attendre la tache loop(), donc l'acquisition
+     * I2S, derriere une serialisation JSON.
+     *
+     * Ces copies ne sont donc PAS atomiques et ne garantissent PAS la coherence
+     * des champs entre eux : loop() peut ecrire pendant la copie. Ce qu'elles
+     * apportent est mesurable et limite - la fenetre de lecture passe de la
+     * duree de serialisation du document (millisecondes) a celle d'un memcpy
+     * (microsecondes). C'est une reduction du risque, pas sa suppression, et un
+     * champ lu ici peut encore, rarement, ne pas decrire la meme frame que son
+     * voisin. Tout ce qui DOIT rester coherent - une valeur et son drapeau -
+     * est donc lu depuis la MEME copie, jamais depuis le membre vivant.
+     *-----------------------------------------------------------------------*/
+    const AcousticClassification cls = _audio->getClassification();
+    const QualityScore           qual = _audio->getQualityScore();
+    const BreathinessResult      brth = _audio->getBreathiness();
+
+    // Depuis la COPIE `cls`, et non depuis getAcousticStateName(), qui relit le
+    // membre vivant _classification : l'etat serait alors lu dans une frame
+    // differente de celle du drapeau publie juste en dessous, et un "good"
+    // pouvait partir avec classified:false. Meme regle de nommage que
+    // getAcousticStateName() - non classe se dit "unclassified", jamais
+    // "silence", qui se lirait comme un verdict.
+    a["acoustic_state"] = cls.classified ? AcousticQuality::stateName(cls.state)
+                                         : "unclassified";
+    a["acoustic_classified"] = cls.classified;
+    // quality_weight_used accompagne TOUJOURS quality_score. Le score est une
+    // moyenne ponderee de sept criteres ; l'attaque (10 % du cahier des
+    // charges) peut ne pas avoir ete mesuree, le score est alors renormalise
+    // sur les six autres. 0,82 pondere a 1,00 et 0,82 pondere a 0,90 ne
+    // decrivent pas le meme son : un score publie sans son poids ment sur ce
+    // qu'il mesure.
+    a["quality_score"] = qual.score;
+    a["quality_weight_used"] = qual.weightUsed;
+    a["quality_valid"] = qual.valid;
+    // breathiness_weight_used accompagne TOUJOURS breathiness, pour la meme
+    // raison que le couple ci-dessus, et avec un ecart PLUS GRAND : la
+    // respiration est une moyenne ponderee de trois composantes dont deux
+    // (HNR spectral, platitude) n'existent qu'une frame sur
+    // MIC_SPECTRAL_DECIMATION. weightUsed descend jusqu'a 0,30 quand celui de
+    // la qualite ne descend qu'a 0,75. Sur une note tenue immobile, la valeur
+    // alterne entre une mesure pleine et 0,00 a 62,5 Hz avec valid=true dans
+    // les deux cas : seul le poids distingue "pas de souffle" de "presque rien
+    // de mesure".
+    a["breathiness"] = brth.value;
+    a["breathiness_weight_used"] = brth.weightUsed;
+    a["breathiness_valid"] = brth.valid;
+    // Deux echelles distinctes derriere un seul champ : mesure spectrale (FFT)
+    // ou approximation Goertzel a quatre raies. Elles ne se comparent pas, donc
+    // le chiffre ne part pas sans dire laquelle il est.
+    //
+    // ET IL NE PART PAS NON PLUS SANS DIRE S'IL A ETE MESURE. Quand
+    // spectralValid est faux - aucune note en cours, ou apres tout
+    // markMeasurementInvalid() - fillSpectral() remet harmonicToNoiseRatio a
+    // 0.0f. Publie tel quel, ce "hnr_db": 0 etait INDISTINGUABLE d'une vraie
+    // mesure Goertzel autour de 0 dB - la reference documentee d'une note
+    // timbree sur cette echelle est -0,06 dB. Le drapeau dit desormais l'etat,
+    // et le chiffre n'est emis que MESURE - meme discipline que la poussee
+    // WebSocket, qui omet "hnr" dans ce cas, et que snr_valid / snr_db
+    // ci-dessus. Les deux champs partent ensemble ou pas du tout : une echelle
+    // sans valeur ne dit rien, une valeur sans echelle ment.
+    a["hnr_valid"] = feat.spectralValid;
+    if (feat.spectralValid) {
+      a["hnr_db"] = feat.harmonicToNoiseRatio;
+      a["hnr_is_spectral"] = feat.hnrIsSpectral;
+    }
+
+    // De QUOI la classification a ete privee. Un etat "good" obtenu faute
+    // d'avoir pu mesurer le pitch, le rapport signal/bruit ou le spectre n'est
+    // pas un etat "good" : sans ces drapeaux l'interface ne peut pas faire la
+    // difference entre "c'est bon" et "je n'ai rien pu evaluer".
+    // `snr_fallback` a la meme fonction : le SNR a ete compare au profil d'un
+    // AUTRE etat machine que l'etat reel, il surestime donc probablement la
+    // qualite. Il est ici sous sa forme vue par la CLASSIFICATION ; le champ
+    // de meme nom au niveau de `a` reste celui de la frame (AcousticFeatures).
+    JsonObject missing = a["missing"].to<JsonObject>();
+    missing["pitch"] = cls.missingPitch;
+    missing["snr"] = cls.missingSnr;
+    missing["spectrum"] = cls.missingSpectrum;
+    missing["expected_note"] = cls.missingExpectedNote;
+    missing["stability"] = cls.missingStability;
+    missing["squeak_history"] = cls.missingSqueakHistory;
+    missing["snr_fallback"] = cls.snrUsedFallback;
+
+    // Chronometrie de la DERNIERE note terminee (PHASE 7). Elle est ici et pas
+    // sur la poussee WebSocket : ce bloc pese a lui seul plus que la poussee
+    // entiere, qui part 10 fois par seconde vers jusqu'a WS_MAX_CLIENTS
+    // clients. Ici il ne coute que lorsqu'un humain ouvre le diagnostic.
+    //
+    // `_last` est remis a zero en meme temps que `_hasLast`, donc le lire quand
+    // has_last est faux rend des mesures toutes invalides - jamais des restes
+    // d'une note precedente.
+    const AcousticTiming& tmg = _audio->timing();
+    const bool timingHasLast = tmg.hasLast();
+    const NoteTiming note = tmg.last();
+    JsonObject tm = a["timing"].to<JsonObject>();
+    tm["has_last"] = timingHasLast;
+    tm["outcome"] = webTimingOutcomeName(note.outcome);
+    // Le plancher d'avant-note conditionne le seuil d'apparition : sans lui,
+    // toutes les durees qui en decoulent sont des suppositions.
+    tm["baseline_valid"] = note.baselineValid;
+    // CHAQUE duree porte sa validite. Un "attack":{"ms":0} sans son "valid"
+    // se lirait comme une attaque instantanee alors qu'il signifie "jamais
+    // mesuree" : c'est le defaut precis a ne pas reintroduire.
+    webAddTimingMeasure(tm, "command_to_sound", note.commandToSoundLatency);
+    webAddTimingMeasure(tm, "air_to_sound", note.airToSoundLatency);
+    webAddTimingMeasure(tm, "attack", note.attackTime);
+    webAddTimingMeasure(tm, "pitch_stabilization", note.pitchStabilizationTime);
+    webAddTimingMeasure(tm, "release", note.releaseTime);
+    // Les DEUX modes de panne de la chronometrie, sans lesquels un releve vide
+    // ou immobile ne se distingue pas d'une absence de jeu. Ils n'avaient aucun
+    // consommateur : les compter sans jamais les publier revient a ne pas les
+    // compter.
+    //   rejected_frames : frames refusees parce que leur horodatage RECULE
+    //     (le repliement de millis() n'en fait pas partie). La machine a etats
+    //     n'avance pas sur ces frames, et les durees qui en dependent ne sont
+    //     jamais mesurees.
+    //   rejected_events : ordres d'actionneur refuses parce qu'ils arrivent
+    //     hors de la fenetre ou ils ont un sens (air ou valve apres que le son
+    //     sonne, deuxieme occurrence, evenement anterieur a l'ordre MIDI, arret
+    //     sans note en cours). Un compteur qui monte ici designe un cablage
+    //     d'appels errone, pas un defaut de jeu.
+    // Compteurs cumulatifs 16 bits remis a zero par AcousticTiming::reset().
+    tm["rejected_frames"] = tmg.rejectedFrames();
+    tm["rejected_events"] = tmg.rejectedEvents();
+
+    if (nm.capturedCount() == 0) {
+      addCheck("noise_model", "warning",
+               "No noise profile captured: SNR is unavailable");
+    } else if (feat.snrUsedFallback) {
+      addCheck("noise_model", "warning",
+               String("No profile for ") + NoiseModel::profileName(_audio->currentNoiseProfile()) +
+                   "; SNR falls back to ambient and likely overstates quality");
+    } else {
+      addCheck("noise_model", "ok",
+               String((unsigned long)nm.capturedCount()) + " noise profile(s) captured");
+    }
+
+    // Des echantillons perdus signifient que loop() n'a pas suivi : les mesures
+    // portent alors sur un signal troue. C'est un avertissement, pas une panne.
+    if (cap.droppedSamples > 0) {
+      addCheck("audio_capture", "warning",
+               String("Audio capture dropped ") + String((unsigned long)cap.droppedSamples) +
+                   " samples (" + String((unsigned long)cap.bufferOverruns) + " overruns)");
+    } else if (_audio->isClipping()) {
+      addCheck("audio_capture", "warning", "Microphone input is clipping");
+    } else {
+      addCheck("audio_capture", "ok",
+               String((unsigned long)cap.framesProduced) + " frames analysed, no dropped samples");
+    }
+  }
   doc["calibration_active"] = isCalibrationActive();
 #else
   doc["microphone_detected"] = false;
@@ -2259,6 +2900,8 @@ void WebConfigurator::handleApiDiagnostics(AsyncWebServerRequest* request) {
            restartPending() ? "Controlled restart pending" : "No restart pending");
 
   doc["ok"] = validation.valid && !bootConfigBad && fsOk && ready;
+
+  unlockConfig();
 
   String out;
   serializeJson(doc, out);
@@ -2566,7 +3209,7 @@ void WebConfigurator::onWsEvent(AsyncWebSocket* server, AsyncWebSocketClient* cl
     case WS_EVT_CONNECT:
       // Un nouveau client n'est PAS authentifie : il doit envoyer
       // {"t":"auth","token":"..."} avant toute commande.
-      setWsAuthenticated(client->id(), false);
+      clearWsAuthentication(client->id());
       client->text("{\"t\":\"auth_required\"}");
       if (DEBUG) {
         Serial.print("DEBUG: WS client connected #");
@@ -2575,7 +3218,7 @@ void WebConfigurator::onWsEvent(AsyncWebSocket* server, AsyncWebSocketClient* cl
       break;
 
     case WS_EVT_DISCONNECT: {
-      setWsAuthenticated(client->id(), false);
+      clearWsAuthentication(client->id());
       bool handled = false;
 #if MIC_ENABLED
       if (isCalibrationActive()) {
@@ -2587,7 +3230,9 @@ void WebConfigurator::onWsEvent(AsyncWebSocket* server, AsyncWebSocketClient* cl
           // Deconnexion du proprietaire : la calibration doit etre annulee et le
           // materiel remis en securite, mais depuis la tache loop() - et SANS
           // attendre ici, car ce callback peut detenir le verrou du WebSocket.
-          WebOp op; op.type = WEBOP_AUTOCAL_CANCEL; postWebOp(op);
+          // Drapeau non perdable (cf. update()) plutot qu'un postWebOp() qui
+          // echouerait silencieusement sur file pleine.
+          requestCalibrationCancel();
           if (_instrument) _instrument->requestPanic();
         }
       }
@@ -2642,7 +3287,9 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
   if (strcmp(type, "auth") == 0) {
     String token = String((const char*)(doc["token"] | ""));
     bool ok = _auth.validate(token, millis());
-    setWsAuthenticated(client->id(), ok);
+    // Le jeton lui-meme est conserve : chaque commande suivante le revalidera.
+    if (ok) setWsAuthenticated(client->id(), token);
+    else    clearWsAuthentication(client->id());
     client->text(ok ? "{\"t\":\"auth\",\"ok\":true}"
                     : "{\"t\":\"auth\",\"ok\":false,\"msg\":\"unauthorized\"}");
     return;
@@ -2713,7 +3360,7 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
       if (_autoCalOwnerClientId != 0 && client->id() != _autoCalOwnerClientId) {
         client->text("{\"t\":\"error\",\"msg\":\"not_calibration_owner\"}");
       } else {
-        WebOp op; op.type = WEBOP_AUTOCAL_CANCEL; postWebOp(op);
+        requestCalibrationCancel();
       }
       return;
     }
@@ -2725,7 +3372,8 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
   } else if (strcmp(type, "panic") == 0) {
 #if MIC_ENABLED
     // Panic must always abort a running calibration and safe the hardware first.
-    { WebOp op; op.type = WEBOP_AUTOCAL_CANCEL; postWebOp(op); }
+    // Drapeau non perdable : un panic ne doit jamais laisser _autoCal "running".
+    requestCalibrationCancel();
 #endif
     endTestSession(false);   // hardware is safed just below by the panic request
     // Le panic n'occupe pas une place de la file : il ne peut pas etre perdu et
@@ -2778,6 +3426,15 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
   } else if (strcmp(type, "mic_mon") == 0) {
     WebOp op; op.type = WEBOP_MIC_MONITOR; op.intA = ((doc["on"] | 0) != 0) ? 1 : 0;
     postWebOp(op);
+  } else if (strcmp(type, "noise_cal") == 0) {
+    const char* mode = doc["mode"] | "";
+    WebOp op;
+    if (strcmp(mode, "start") == 0) op.type = WEBOP_NOISE_START;
+    else if (strcmp(mode, "stop") == 0) op.type = WEBOP_NOISE_STOP;
+    else if (strcmp(mode, "reset") == 0) op.type = WEBOP_NOISE_RESET;
+    else { client->text("{\"t\":\"error\",\"msg\":\"bad_mode\"}"); return; }
+    op.clientId = client->id();
+    postWebOp(op);
   } else if (strcmp(type, "mic_reset") == 0) {
     // Le resultat est diffuse par loop() sur le WebSocket (pas d'attente ici).
     WebOp op; op.type = WEBOP_MIC_RESET;
@@ -2793,7 +3450,7 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
       if (_autoCal && _autoCal->isRunning() && client->id() != _autoCalOwnerClientId) {
         client->text("{\"t\":\"error\",\"msg\":\"not_calibration_owner\"}");
       } else {
-        WebOp op; op.type = WEBOP_AUTOCAL_CANCEL; postWebOp(op);
+        requestCalibrationCancel();
       }
     } else if (strcmp(mode, "apply_range") == 0) {
       if (_autoCal && _autoCal->isRangeFinderComplete()) {
@@ -2809,7 +3466,7 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
     if (_autoCal && _autoCal->isRunning() && client->id() != _autoCalOwnerClientId) {
       client->text("{\"t\":\"error\",\"msg\":\"not_calibration_owner\"}");
     } else {
-      WebOp op; op.type = WEBOP_AUTOCAL_CANCEL; postWebOp(op);
+      requestCalibrationCancel();
     }
 #endif
   } else {

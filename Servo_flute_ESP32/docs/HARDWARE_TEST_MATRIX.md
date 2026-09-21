@@ -80,3 +80,29 @@ below stay **NOT TESTED — requires hardware** until executed on a real bench.
 | AUD-UP-2 | Invalid upload over an existing file | A valid `song.mid` already stored | Upload a corrupted file named `song.mid` | Upload rejected; the stored `song.mid` is still present and still plays | Not executed | NOT TESTED — requires hardware | Pre-audit the good file was deleted before validation. |
 | AUD-UP-3 | Interrupted upload | Authenticated session | Start an upload and kill the client mid-transfer | The slot is released after `UPLOAD_LOCK_TIMEOUT_MS`; a later upload succeeds; no temp file left | Not executed | NOT TESTED — requires hardware | Check LittleFS free space returns. |
 | AUD-CONC-1 | Panic during a busy queue | MIDI file playing, web sliders moving | Press panic | Everything stops immediately; no queued command is applied afterwards | Not executed | NOT TESTED — requires hardware | Watch for a late servo or pump movement after the stop. |
+
+## 2026-09 second audit pass — additional hardware rows
+
+Second pass on the post-audit firmware. Twelve confirmed findings were fixed,
+headed by a P0 that made the automatic calibration measure a silent instrument.
+The software regressions are `calibration_session_survives_repeated_ownership`,
+`actuator_session_take_is_idempotent`, `calibration_owns_the_air_source`,
+`calibration_cancel_is_never_lost`,
+`note_off_is_never_dropped_on_full_command_queue`,
+`cc2_silence_drops_air_source_and_restores`,
+`reset_all_controllers_clears_expression_runtime_state` and the
+`test_audit2_*` static checks. The rows below stay
+**NOT TESTED — requires hardware** until executed on a real bench.
+
+| ID | Configuration | Preconditions | Steps | Expected result | Actual result | Status | Comments |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| AUD2-ACAL-1 | Automatic airflow calibration, real flute | INMP441 fitted and detected, air source ready | Start `auto_cal mode=air` from the web UI and watch the valve and the airflow servo through a full note | The valve stays OPEN and the airflow servo HOLDS each swept angle for the whole SETTLE + COLLECT window; the per-note result is valid | Not executed | NOT TESTED — requires hardware | This is the P0 of the second pass: the valve used to be re-closed on every loop pass, so the microphone measured silence and every note failed with `no_sound`. |
+| AUD2-ACAL-2 | Range finder, real flute | Same as AUD2-ACAL-1 | Start `auto_cal mode=range` | The sweep visits each angle of the safe window and holds it; a min/max pair is produced | Not executed | NOT TESTED — requires hardware | Same mechanism as AUD2-ACAL-1, on the angle path. |
+| AUD2-ACAL-3 | Air source ownership during calibration | `airMode = 4` (direct pump) or `3` (fan) | Run a calibration and watch the pump/fan demand | The demand set by `CalibrationAirSupply` is held for the whole run; it is never pulled back to `pumpDirectIdlePercent` / fan idle | Not executed | NOT TESTED — requires hardware | The sequencer no longer drives the air source while a session owns the actuators. |
+| AUD2-ACAL-4 | Calibration cancel under load | Calibration running, web UI busy (sliders, status flood) | Press panic, then close the owner's browser tab on a second run | The calibration stops every time and the hardware is safed; `_autoCal` never keeps running after a panic | Not executed | NOT TESTED — requires hardware | The cancel is now a non-droppable flag; it used to travel through a queue that silently failed when full. |
+| AUD2-NOFF-1 | Note Off under a saturated command queue | Instrument playing, web UI flooding actuator commands | Flood `test_finger` / `pump_target` from a script, then release the held note | The note is released: valve closes, airflow returns to rest, pump/fan drop to idle | Not executed | NOT TESTED — requires hardware | Pre-fix the release could be refused by the full ring and the note stayed stuck. |
+| AUD2-CC2-1 | CC2 silence on a held note | Breath controller connected, `airMode = 4` or `3` | Hold a note, then drop CC2 below the silence threshold and raise it again | The pump/fan fall back to idle while silent and return to the play demand when the breath rises; the note is never re-triggered | Not executed | NOT TESTED — requires hardware | Measure the pump current: pre-fix it kept pushing at full demand against a closed valve. |
+| AUD2-GPIO-1 | I2C probe failure with pumps wired | PCA0 disconnected, pump/fan MOSFET gates wired | Power on | Pump and fan gates are driven LOW at boot, before the probe; no gate is left floating | Not executed | NOT TESTED — requires hardware | **A hardware pull-down on every MOSFET gate remains the reference protection**: the firmware cannot drive a pin before its own `setup()` runs, so the window between power-on and `initSafeState()` is only coverable electrically. |
+| AUD2-SER-1 | Secrets printed with `DEBUG = 0` | Build with `DEBUG` set to `false`, fresh NVS | Power on with a serial console attached | The hotspot key and the admin password are printed; verbose logs are absent | Not executed | NOT TESTED — requires hardware | Pre-fix `Serial.begin()` was inside `if (DEBUG)`, so a production build printed nothing and the device was unreachable. |
+| AUD2-SEC-1 | WebSocket session expiry | Authenticated UI open | Leave the socket open past `WEB_SESSION_TTL_MS` without interacting, then send a command | The command is refused with `unauthorized` and the UI re-authenticates | Not executed | NOT TESTED — requires hardware | Pre-fix an open socket stayed authenticated forever. |
+| AUD2-SEC-2 | Password change revokes sockets | Two browsers authenticated | Change the admin password from one of them | The other browser's WebSocket commands are refused immediately | Not executed | NOT TESTED — requires hardware | `revokeAll()` now also clears the WebSocket session table. |

@@ -37,6 +37,12 @@ This document centralizes the validation state and known limitations of Servo Fl
 | Fail-safe LittleFS mount (no automatic format) | Implemented | Software tested; corrupted-partition check required |
 | Randomly generated hotspot key and admin password (NVS) | Implemented | Software tested; first-boot check on hardware required |
 | VL53L0X full initialisation | Implemented | Software tested against a simulated device; **real sensor required** |
+| Actuator-session ownership during calibration | Implemented | Software tested end-to-end (InstrumentManager + web session + AutoCalibrator); **real flute required** |
+| Undroppable Note Off and calibration cancel | Implemented | Software tested |
+| Air-source demand following the real breath state (CC2) | Implemented | Software tested; pump/fan bench check required |
+| WebSocket session expiry and revocation | Implemented | Software tested; end-to-end check on hardware required |
+| Configuration reads serialised with the commit | Implemented | Software tested |
+| Actuator GPIOs driven inactive before the I2C probe | Implemented | Software tested — **a hardware gate pull-down remains the reference protection** |
 
 ## Safety and reliability work completed
 
@@ -66,6 +72,32 @@ The 2026-09 concurrency, actuator-safety and security audit added:
 - centralised Wi-Fi transitions that panic before tearing a session down;
 - a randomly generated, NVS-stored hotspot key and web admin password, and
   session-token authentication for every mutating route and the WebSocket.
+
+The second 2026-09 pass, run on the post-audit firmware, added:
+
+- an **idempotent** actuator session: taking ownership again mid-calibration no
+  longer stops the sequencer, so the valve the calibrator opened and the airflow
+  angle it set survive the whole measurement window. Ownership is now taken once
+  at the start of a calibration and released once at the end. This was a P0: the
+  automatic calibration measured a silent instrument and every note failed;
+- air-source ownership during a session: the sequencer no longer overwrites the
+  demand set by `CalibrationAirSupply`;
+- an undroppable calibration cancel (a dedicated flag, like the panic) so a
+  panic can never leave the calibrator running;
+- undroppable Note Off: a 128-note bitmap outside the command ring, so a
+  saturated queue can no longer strand a held note with the valve open;
+- an air-source demand that follows the real breath state: a CC2 silence on a
+  held note drops the pump/fan to idle instead of pushing against a closed valve;
+- WebSocket sessions that store the token and revalidate it on every command, so
+  an open socket expires with its session and a password change revokes it;
+- an unconditional `Serial.begin()`, because the serial console is the only
+  channel that carries the hotspot key and the admin password;
+- configuration reads serialised with the atomic commit, with the lock held only
+  for the assignment itself;
+- a FreeRTOS mutex instead of a spinlock on the WebOp queue (copying a `WebOp`
+  allocates, which a critical section forbids);
+- symmetric vibrato rounding, a full expression reset on CC121, and actuator
+  GPIOs driven to their inactive level before the I2C probe.
 
 The earlier 2026 firmware audit introduced or reinforced:
 

@@ -4,6 +4,26 @@ ROOT = Path(__file__).resolve().parents[1]
 def read(path):
     return (ROOT / path).read_text(encoding='utf-8')
 
+def code_only(text):
+    """Drop // comment lines: an assertion must match real code, never a comment
+    that happens to quote the same symbol."""
+    return '\n'.join(l for l in text.splitlines() if not l.strip().startswith('//'))
+
+
+def norm(text):
+    """Normalise l'espacement AUTOUR des separateurs, sans rien retirer d'autre.
+
+    Un audit statique qui echoue sur un simple reformatage - couper une
+    affectation sur deux lignes, aligner un '=' - crie au loup : on finit par
+    le contourner au lieu de l'ecouter, et il ne protege plus rien. Cette
+    normalisation ne fait perdre AUCUN mordant : elle ne change ni les jetons
+    ni leur ordre, donc aucun code different de celui qu'on exige ne passe
+    grace a elle. Les deux cotes d'une comparaison doivent y passer.
+    """
+    import re
+    t = re.sub(r'\s*([=;,()])\s*', r'\1', text)
+    return re.sub(r'[ \t]*\n[ \t]*', '\n', t)
+
 def test_validation_entry_points_present():
     assert 'validateAndNormalizeConfig(RuntimeConfig& config' in read('Servo_flute_ESP32/ConfigStorage.h')
     assert 'validateAndNormalizeConfig(RuntimeConfig& config' in read('Servo_flute_ESP32/ConfigValidator.cpp')
@@ -96,16 +116,51 @@ def test_autocal_actuator_ownership_and_locks():
     assert 'calibration_active' in web           # blocked commands + 409 config lock
     assert '409' in web                          # config POST lock status
     # Panic cancels the calibration before safing the hardware. Both now run on the
-    # loop task: the cancel is a deferred web op, the safe state a non-droppable
-    # panic request (an AsyncTCP callback must never drive actuators itself).
+    # loop task: the cancel is a NON-DROPPABLE flag (postWebOp() could fail on a
+    # full queue and leave _autoCal running after the panic), the safe state a
+    # non-droppable panic request (an AsyncTCP callback must never drive actuators).
     panic = web.split('strcmp(type, "panic")', 1)[1].split('else if', 1)[0]
-    assert 'WEBOP_AUTOCAL_CANCEL' in panic
+    assert 'requestCalibrationCancel()' in panic
     assert 'requestPanic()' in panic
-    assert panic.index('WEBOP_AUTOCAL_CANCEL') < panic.index('requestPanic()')
+    assert panic.index('requestCalibrationCancel()') < panic.index('requestPanic()')
     assert 'allSoundOff()' not in panic
+    # The cancel request can no longer travel through the droppable WebOp queue.
+    assert 'WEBOP_AUTOCAL_CANCEL' not in web and 'WEBOP_AUTOCAL_CANCEL' not in hdr
+    assert 'postWebOp(op)' not in web.split('auto_stop', 1)[1].split('#endif', 1)[0]
+    # The flag is consumed by the loop task, at the very top of update(), before
+    # _autoCal->update() can re-apply anything.
+    assert 'volatile bool _calCancelRequested;' in hdr
+    upd = code_only(web.split('void WebConfigurator::update()', 1)[1].split('\n}\n', 1)[0])
+    assert '_calCancelRequested' in upd
+    assert 'cancelActiveActuatorSession();' in upd
+    assert upd.index('_calCancelRequested') < upd.index('_autoCal->update()')
+    # P0 (2e passe): ownership is taken ONCE at the start of the calibration and
+    # released ONCE at the end. The old per-loop re-take ran _sequencer.stop() on
+    # every pass, closing the valve the calibrator had just opened.
+    assert 'setActuatorSessionActive(true)' not in upd
     # Owner-only disconnect stops the session.
     disc = web.split('WS_EVT_DISCONNECT', 1)[1].split('WS_EVT_DATA', 1)[0]
     assert '_autoCalOwnerClientId' in disc
+    assert 'requestCalibrationCancel()' in disc
+
+
+def test_audit2_actuator_session_is_idempotent():
+    # P0 (2e passe): the entry side effects of an actuator session (sequencer stop,
+    # queue purge) must run only on a real false->true transition. They closed the
+    # valve and rested the airflow servo, so repeating them mid-calibration made the
+    # auto-calibration measure a silent instrument.
+    im = code_only(read('Servo_flute_ESP32/InstrumentManager.cpp'))
+    body = im.split('void InstrumentManager::setActuatorSessionActive')[1].split('\n}\n')[0]
+    assert 'if (_actuatorSessionActive == active)' in body
+    assert body.index('if (_actuatorSessionActive == active)') < body.index('_sequencer.stop()')
+    # The transition also realigns the air-source tracking, otherwise the forced
+    # STATE_IDLE would be read as a note end and reset the pump under the calibrator.
+    assert '_prevSequencerState = STATE_IDLE;' in body
+    assert '_prevNoteSounding = false;' in body
+    # While a session owns the actuators, the sequencer no longer drives the air
+    # source: CalibrationAirSupply does.
+    upd = im.split('void InstrumentManager::update()')[1].split('\n}\n')[0]
+    assert 'if (!_actuatorSessionActive) updateAirSourceFromSequencer();' in upd
 
 
 def test_autocal_frame_freshness_contract():
@@ -427,8 +482,15 @@ def test_audit_p1_air_source_tied_to_sequencer_transitions():
     # transitions, not from raw incoming MIDI events.
     assert 'updateAirSourceFromSequencer' in im
     assert 'getCurrentVelocity' in nsh
-    assert 'STATE_POSITIONING && _prevSequencerState != STATE_POSITIONING' in im
-    assert 'STATE_IDLE && _prevSequencerState != STATE_IDLE' in im
+    # The demand now follows BOTH the sequencer state and whether the held note is
+    # really sounding: CC2 (breath) can silence a held note with no state change at
+    # all, and the pump used to keep pushing at full demand against a closed valve.
+    air = code_only(im).split('void InstrumentManager::updateAirSourceFromSequencer')[1].split('\n}\n')[0]
+    assert '_airflowCtrl.isNoteSounding()' in air
+    assert 'curState == _prevSequencerState && sounding == _prevNoteSounding' in air
+    assert '(curState == STATE_POSITIONING) ||' in air
+    assert '(curState == STATE_PLAYING && sounding)' in air
+    assert '_prevNoteSounding = sounding;' in air
     # noteOn / noteOff must no longer set the pump/fan demand themselves.
     note_on = im.split('InstrumentManager::noteOn')[1].split('InstrumentManager::noteOff')[0]
     note_off = im.split('InstrumentManager::noteOff')[1].split('InstrumentManager::isNotePlayable')[0]
@@ -1193,3 +1255,1173 @@ def test_gmb_contract_is_preserved():
     # The HTTP descriptor route still serves the cached document.
     assert 'gmb::runtime::descriptorJson()' in web
     assert 'setHttpDescriptorAvailable(true)' in web
+
+
+# =============================================================================
+# Deuxieme passe d'audit (sur fcf3559) : douze constats confirmes.
+# Chaque assertion ci-dessous ancre UNE correction precise, pour qu'elle ne
+# puisse pas regresser silencieusement.
+# =============================================================================
+
+def test_audit2_note_off_is_never_dropped():
+    """#4: un Note Off ne doit pas pouvoir etre perdu par saturation de l'anneau."""
+    cqh = code_only(read('Servo_flute_ESP32/CommandQueue.h'))
+    cqc = code_only(read('Servo_flute_ESP32/CommandQueue.cpp'))
+    im = code_only(read('Servo_flute_ESP32/InstrumentManager.cpp'))
+    # Bitmap 128 notes, hors de l'anneau.
+    assert 'uint32_t _pendingNoteOff[4];' in cqh
+    assert 'void requestNoteOff(uint8_t note);' in cqh
+    assert 'bool takePendingNoteOff(uint8_t& note);' in cqh
+    # Le bitmap est manipule sous le meme verrou que l'anneau.
+    req = cqc.split('void CommandQueue::requestNoteOff')[1].split('\n}\n')[0]
+    assert 'portENTER_CRITICAL(&_mux);' in req and 'portEXIT_CRITICAL(&_mux);' in req
+    # Un panic (et un clear) annule les relachements en attente : tout est deja coupe.
+    assert '_pendingNoteOff[i] = 0;' in cqc.split('void CommandQueue::requestPanic')[1].split('\n}\n')[0]
+    # postCommand() route ACMD_NOTE_OFF vers le bitmap au lieu de l'anneau.
+    post = im.split('bool InstrumentManager::postCommand(const ActuatorCommand& cmd)')[1].split('\n}\n')[0]
+    assert 'cmd.type == ACMD_NOTE_OFF' in post
+    assert '_commands.requestNoteOff(cmd.a);' in post
+    # processCommands() les applique APRES l'anneau, et un panic reste prioritaire.
+    proc = im.split('void InstrumentManager::processCommands()')[1].split('\n}\n')[0]
+    assert 'takePendingNoteOff(pendingNote)' in proc
+    assert proc.index('_commands.pop(cmd)') < proc.index('takePendingNoteOff(pendingNote)')
+    assert 'panicPending()' in proc.split('takePendingNoteOff(pendingNote)')[1]
+
+
+def test_audit2_websocket_sessions_expire():
+    """#6: une WebSocket ouverte ne doit pas rester authentifiee au-dela du TTL."""
+    hdr = code_only(read('Servo_flute_ESP32/WebConfigurator.h'))
+    web = code_only(read('Servo_flute_ESP32/WebConfigurator.cpp'))
+    # L'identifiant de client seul ne suffit plus : le jeton est memorise.
+    assert '_wsAuthClients' not in hdr and '_wsAuthClients' not in web
+    assert 'struct WsSession' in hdr
+    assert 'char token[WEB_AUTH_TOKEN_LEN + 1];' in hdr
+    assert 'void setWsAuthenticated(uint32_t clientId, const String& token);' in hdr
+    assert 'void clearWsAuthentication(uint32_t clientId);' in hdr
+    # isWsAuthenticated() n'est plus const : chaque commande REVALIDE le jeton,
+    # ce qui applique l'expiration et fait glisser la fenetre comme pour HTTP.
+    assert 'bool isWsAuthenticated(uint32_t clientId);' in hdr
+    chk = web.split('bool WebConfigurator::isWsAuthenticated')[1].split('\n}\n')[0]
+    assert '_auth.validate(String(_wsSessions[i].token), millis())' in chk
+    # Un jeton expire libere la place au lieu de rester authentifie.
+    assert '_wsSessions[i].clientId = 0;' in chk
+    # Un changement de mot de passe revoque AUSSI les WebSockets.
+    pwd = web.split('case WEBOP_SET_ADMIN_PASSWORD')[1].split('\n    }\n')[0]
+    assert '_auth.revokeAll();' in pwd
+    assert '_wsSessions[i].clientId = 0;' in pwd
+
+
+def test_audit2_serial_is_always_initialised():
+    """#7: les secrets d'acces sont imprimes sur le port serie, donc il doit
+    toujours etre ouvert - seuls les journaux verbeux restent lies a DEBUG."""
+    ino = read('Servo_flute_ESP32/Servo_flute_ESP32.ino')
+    setup = ino.split('void setup()')[1].split('\nvoid loop()')[0]
+    code = code_only(setup)
+    # Serial.begin() est hors de tout if (DEBUG).
+    assert '\n  Serial.begin(115200);' in code
+    idx = code.index('Serial.begin(115200);')
+    assert 'if (DEBUG)' not in code[:idx].rsplit('\n  ', 1)[-1]
+    # Et il precede l'impression des secrets.
+    secrets = read('Servo_flute_ESP32/DeviceSecrets.cpp')
+    assert 'Serial.print' in secrets
+    assert code.index('Serial.begin(115200);') < code.index('DeviceSecrets::begin();')
+
+
+def test_audit2_config_reads_are_serialised_with_the_commit():
+    """#8: `cfg = candidat` recopie ~5 Ko ; un lecteur AsyncTCP ne doit jamais voir
+    une structure a moitie remplacee."""
+    hdr = code_only(read('Servo_flute_ESP32/WebConfigurator.h'))
+    web = code_only(read('Servo_flute_ESP32/WebConfigurator.cpp'))
+    cch = code_only(read('Servo_flute_ESP32/ConfigCommit.h'))
+    ccc = code_only(read('Servo_flute_ESP32/ConfigCommit.cpp'))
+    assert 'SemaphoreHandle_t _cfgMutex;' in hdr
+    assert 'bool lockConfig(uint32_t timeoutMs = WEB_CONFIG_LOCK_MS);' in hdr
+    assert '_cfgMutex = xSemaphoreCreateMutex();' in web
+    # Le verrou du commit n'entoure QUE l'affectation atomique : ni la validation,
+    # ni l'ecriture flash (sinon un GET /api/config attendrait la flash).
+    assert 'struct ConfigCommitGuard' in cch
+    assign = ccc.split('RuntimeConfig previous = active;')[1].split('out.activated = true;')[0]
+    assert 'guard->lock(guard->ctx)' in assign
+    assert 'active = candidate;' in assign
+    assert 'guard->unlock(guard->ctx)' in assign
+    assert 'save(candidate)' not in assign
+    # Les deux gros lecteurs AsyncTCP prennent le meme verrou et refusent plutot
+    # que de bloquer la pile TCP.
+    for fn in ('void WebConfigurator::handleApiConfig(',
+               'void WebConfigurator::handleApiDiagnostics('):
+        body = web.split(fn)[1].split('\n}\n')[0]
+        assert 'lockConfig(WEB_CONFIG_LOCK_MS)' in body, fn
+        assert 'config_busy' in body, fn
+        assert 'unlockConfig();' in body, fn
+        # Aucun hand-off vers loop() sous le verrou : pas d'interblocage possible.
+        assert 'runOnLoop(' not in body, fn
+
+
+def test_audit2_webop_queue_uses_a_mutex_not_a_spinlock():
+    """#9: une WebOp porte des String ; la copier alloue sur le tas, ce qui est
+    interdit dans une section critique."""
+    hdr = code_only(read('Servo_flute_ESP32/WebConfigurator.h'))
+    web = code_only(read('Servo_flute_ESP32/WebConfigurator.cpp'))
+    assert '_wsOpMux' not in hdr and '_wsOpMux' not in web
+    assert 'SemaphoreHandle_t _wsOpMutex;' in hdr
+    for fn in ('bool WebConfigurator::postWebOp', 'void WebConfigurator::serviceWsOps'):
+        body = web.split(fn)[1].split('\n}\n')[0]
+        assert 'portENTER_CRITICAL' not in body, fn
+        assert 'xSemaphoreTake(_wsOpMutex' in body, fn
+        assert 'xSemaphoreGive(_wsOpMutex)' in body, fn
+
+
+def test_audit2_vibrato_rounding_is_symmetric():
+    """#10: (int16_t)(x + 0.5) tronque vers zero, donc biaise l'alternance negative."""
+    ac = code_only(read('Servo_flute_ESP32/AirflowController.cpp'))
+    assert 'lroundf(vibratoOffset)' in ac
+    assert '(int16_t)(vibratoOffset + 0.5)' not in ac
+
+
+def test_audit2_reset_all_controllers_clears_expression_state():
+    """#11: CC121 doit aussi remettre l'etat runtime d'expression."""
+    ach = code_only(read('Servo_flute_ESP32/AirflowController.h'))
+    ac = code_only(read('Servo_flute_ESP32/AirflowController.cpp'))
+    im = code_only(read('Servo_flute_ESP32/InstrumentManager.cpp'))
+    assert 'void resetRuntimeState();' in ach
+    body = ac.split('void AirflowController::resetRuntimeState()')[1].split('\n}\n')[0]
+    for field in ('_cc2SmoothingBuffer[i]', '_cc2BufferIndex', '_cc2BufferCount',
+                  '_cc2TimedOut', '_ccBreath', '_runtimeAttackMode',
+                  '_runtimeAttackOffset', '_attackActive'):
+        assert field in body, field
+    rac = im.split('void InstrumentManager::resetAllControllers()')[1].split('\n}\n')[0]
+    assert '_airflowCtrl.resetRuntimeState();' in rac
+    assert '_cc2Pending = false;' in rac
+
+
+def test_audit2_actuator_pins_are_safed_before_the_i2c_probe():
+    """#12: un echec de sondage I2C sortait de beginSafe() sans jamais configurer
+    les broches de pompe/ventilateur : grilles de MOSFET laissees flottantes."""
+    imh = code_only(read('Servo_flute_ESP32/InstrumentManager.h'))
+    im = code_only(read('Servo_flute_ESP32/InstrumentManager.cpp'))
+    assert 'void driveConfiguredActuatorPinsInactive();' in imh
+    begin = im.split('bool InstrumentManager::beginSafe()')[1].split('\n}\n')[0]
+    assert 'driveConfiguredActuatorPinsInactive();' in begin
+    assert begin.index('driveConfiguredActuatorPinsInactive();') < begin.index('detectPca(')
+    body = im.split('void InstrumentManager::driveConfiguredActuatorPinsInactive()')[1].split('\n}\n')[0]
+    assert 'pinMode(cfg.solenoidPin, OUTPUT);' in body
+    assert 'pinMode(cfg.fanPin, OUTPUT);' in body
+    assert 'pinMode(cfg.pumpPins[i], OUTPUT);' in body
+
+
+# =============================================================================
+# Chaine acoustique (PHASES 0-4). Ces verrous portent sur des choix
+# d'ARCHITECTURE que les tests natifs ne peuvent pas exprimer : ils verifient
+# qu'une propriete structurelle ne disparait pas discretement.
+# =============================================================================
+
+def test_audio_phase1_no_partial_frame_reaches_the_analysis():
+    """A0-1 : une lecture I2S partielle ne doit plus constituer une frame."""
+    aa = code_only(read('Servo_flute_ESP32/AudioAnalyzer.cpp'))
+    ring = code_only(read('Servo_flute_ESP32/AudioRingBuffer.cpp'))
+    # L'ancienne formule fatale a disparu du chemin d'ANALYSE. Elle reste
+    # legitime dans detectMicrophone(), qui ne sonde qu'une trame de presence au
+    # demarrage et n'alimente aucune mesure.
+    assert '_validSamples' not in aa
+    analysis = (aa.split('void AudioAnalyzer::update()')[1].split('\n}\n')[0] +
+                aa.split('void AudioAnalyzer::analyzeFrame()')[1].split('\n}\n')[0])
+    assert 'bytesRead' not in analysis
+    # L'analyse passe par readFrame, qui refuse une frame incomplete.
+    upd = aa.split('void AudioAnalyzer::update()')[1].split('\n}\n')[0]
+    assert '_ring.readFrame(_frame, MIC_ANALYSIS_FRAME_SIZE, MIC_ANALYSIS_HOP_SIZE' in upd
+    assert 'return;' in upd
+    rf = ring.split('bool AudioRingBuffer::readFrame')[1].split('\n}\n')[0]
+    assert 'if (_count < frameSize)' in rf
+    assert 'bufferUnderruns++' in rf
+    # Le compteur de frames n'avance QU'APRES une lecture reussie.
+    assert upd.index('_ring.readFrame') < upd.index('_frameSeq++')
+
+
+def test_audio_phase1_drain_is_faster_than_the_dma():
+    """A0-2 : vider le DMA moins souvent qu'il ne se remplit garantit la perte."""
+    s = read('Servo_flute_ESP32/settings.h')
+    def val(name):
+        import re
+        m = re.search(r'#define\s+%s\s+([0-9]+)' % name, s)
+        assert m, name
+        return int(m.group(1))
+    dma_samples = val('MIC_DMA_BUF_COUNT') * val('MIC_DMA_BUF_LEN')
+    dma_ms = 1000.0 * dma_samples / val('MIC_SAMPLE_RATE')
+    # Marge d'au moins 2x entre la profondeur du DMA et la periode de vidage.
+    assert val('MIC_DRAIN_INTERVAL_MS') * 2 <= dma_ms
+    # L'anneau doit contenir au moins une frame, et le hop rester dans la frame.
+    assert val('MIC_RING_CAPACITY') >= val('MIC_ANALYSIS_FRAME_SIZE')
+    assert 1 <= val('MIC_ANALYSIS_HOP_SIZE') <= val('MIC_ANALYSIS_FRAME_SIZE')
+    # Capacite en puissance de deux (indexation par masquage).
+    cap = val('MIC_RING_CAPACITY')
+    assert cap & (cap - 1) == 0
+
+
+def test_audio_phase1_no_analysis_timer():
+    """La cadence doit s'auto-reguler sur le hop. Un minuteur plus lent que
+    hop/Fe ferait deborder l'anneau en permanence : la production est fixee par
+    le materiel."""
+    aa = code_only(read('Servo_flute_ESP32/AudioAnalyzer.cpp'))
+    upd = aa.split('void AudioAnalyzer::update()')[1].split('\n}\n')[0]
+    # Le seul minuteur autorise dans update() est celui du vidage du DMA.
+    assert '_lastDrain' in upd
+    assert 'MIC_DRAIN_INTERVAL_MS' in upd
+    # Aucun minuteur ne doit conditionner l'ANALYSE.
+    assert 'AUTOCAL_FRAME_SAMPLE_MS' not in upd
+    assert 'MIC_ANALYSIS_MIN_INTERVAL' not in aa
+
+
+def test_audio_phase2_yin_is_unwindowed_and_non_destructive():
+    """A0-3 : la fenetre appartient au chemin spectral, pas a YIN."""
+    pd = code_only(read('Servo_flute_ESP32/PitchDetector.cpp'))
+    pdh = code_only(read('Servo_flute_ESP32/PitchDetector.h'))
+    core = pd.split('PitchResult PitchDetector::runYin')[1].split('\n}\n')[0]
+    # Le coeur ne fenetre pas et ne modifie pas le signal.
+    assert '_hann' not in pd and '_hann' not in pdh
+    assert 'cosf' not in core
+    assert 'samples[i] *=' not in core
+    assert 'samples[i] -=' not in core
+    # La signature est const : le tampon de l'appelant est preserve, ce qui
+    # permet a l'analyse spectrale de reutiliser la meme frame sans recopie.
+    assert 'PitchResult analyse(const float* samples, size_t n) const;' in pdh
+    # Le raffinement est fractionnaire, plus parabolique sur tau entier.
+    assert 'diffAtLag' in pd
+    assert 'MIC_YIN_REFINE_ITERATIONS' in pd
+    # L'ancienne methode existe UNIQUEMENT comme reference A/B, et le test A/B
+    # doit reellement l'appeler.
+    assert 'detectWindowed' in pdh
+    t = read('tests/test_native/test_audio.cpp')
+    assert 'detectWindowed' in t
+    assert 'pitch_window_ab_comparison' in t
+    # ...et ne doit jamais etre utilisee en production.
+    assert 'detectWindowed' not in read('Servo_flute_ESP32/AudioAnalyzer.cpp')
+
+
+def test_audio_phase2_expected_note_prefers_the_shortest_lag():
+    """Prendre le creux le plus PROFOND serait faux : pour tout signal
+    periodique d(2T) et d(3T) sont naturellement profonds, et un overblow
+    passerait pour une note correcte."""
+    pd = code_only(read('Servo_flute_ESP32/PitchDetector.cpp'))
+    branch = pd.split('if (_expectedMidi > 0 && _expectedHz > 0.0f) {')[1].split('Chemin general')[0]
+    # Rapports par lag croissant : 3*f0 d'abord, f0/2 en dernier.
+    assert '3.0f, 2.0f, 1.0f, 0.5f' in branch
+    # Premier qualifiant, pas le plus profond.
+    assert 'break;' in branch
+    assert 'best' not in branch
+    # Retro-compatibilite d'IAudioSource : implementations par defaut vides.
+    ias = read('Servo_flute_ESP32/IAudioSource.h')
+    assert 'virtual void setExpectedMidiNote(int midi) { (void)midi; }' in ias
+    assert 'virtual void clearExpectedMidiNote() {}' in ias
+    # La calibration declare la note visee ET l'efface a la fin.
+    ac = code_only(read('Servo_flute_ESP32/AutoCalibrator.cpp'))
+    assert '_audio.setExpectedMidiNote(_expectedMidi);' in ac
+    assert '_audio.clearExpectedMidiNote();' in ac.split('void AutoCalibrator::safeHardware')[1]
+
+
+def test_audio_phase3_goertzel_every_frame_fft_decimated():
+    """La FFT ne doit pas tourner a chaque frame : le timbre evolue bien plus
+    lentement que le pitch, et elle coute bien plus cher que Goertzel."""
+    sa = code_only(read('Servo_flute_ESP32/SpectralAnalyzer.cpp'))
+    aa = code_only(read('Servo_flute_ESP32/AudioAnalyzer.cpp'))
+    # Goertzel : pas de fenetre (on mesure une puissance a une frequence connue).
+    g = sa.split('float SpectralAnalyzer::goertzelPower')[1].split('\n}\n')[0]
+    assert '_window' not in g and 'windowAt' not in g
+    # Au-dessus de Nyquist, refus plutot que mesure repliee.
+    assert 'sampleRate * 0.5f' in g
+    # FFT : fenetre de Hann LEGITIME ici.
+    if 'bool SpectralAnalyzer::computeSpectrum' in sa:
+        f = sa.split('bool SpectralAnalyzer::computeSpectrum')[1].split('\n}\n')[0]
+        assert 'windowAt' in f
+    # Decimation cablee dans l'analyseur.
+    spec = aa.split('void AudioAnalyzer::analyzeSpectrum')[1].split('\n}\n')[0]
+    assert 'MIC_SPECTRAL_DECIMATION' in spec
+    assert '_spectralCountdown' in spec
+    # Goertzel passe par le constructeur pur, appele a chaque frame.
+    assert 'fillSpectral' in spec
+
+
+def test_audio_phase4_features_are_measured_not_guessed():
+    """Un champ ne doit jamais porter une valeur qui n'a pas ete mesuree."""
+    af = code_only(read('Servo_flute_ESP32/AcousticFeatures.cpp'))
+    afh = read('Servo_flute_ESP32/AcousticFeatures.h')
+    # Les defauts ne suggerent aucune mesure : plancher dBFS, pas 0 dB.
+    assert 'float rmsDbFS = MIC_DBFS_FLOOR;' in afh
+    assert 'float peakDbFS = MIC_DBFS_FLOOR;' in afh
+    assert 'bool spectralValid = false;' in afh
+    # Les verdicts exigent un pitch VALIDE.
+    p = af.split('void fillPitch')[1].split('\n}\n')[0]
+    assert 'p.valid && p.expectedMatch' in p
+    assert 'p.valid && p.octaveAbove' in p
+    # Sans fondamentale fiable, les champs spectraux sont EFFACES, pas laisses.
+    sp = af.split('void fillSpectral')[1].split('\n}\n')[0]
+    assert 'f.spectralValid = false;' in sp
+    assert sp.index('f.spectralValid = false;') < sp.index('if (frame == nullptr')
+    assert 'f.spectralValid = true;' in sp
+    # Le HNR est borne : un signal purement harmonique donnerait l'infini.
+    assert 'MIC_HNR_MAX_DB' in sp
+    # L'assemblage est PUR : aucune dependance materielle.
+    for forbidden in ('i2s_', 'millis(', 'Serial.', '#include <Arduino.h>'):
+        assert forbidden not in read('Servo_flute_ESP32/AcousticFeatures.cpp'), forbidden
+
+
+def test_audio_web_never_streams_pcm():
+    """Un ESP32-WROOM ne peut pas diffuser du PCM en continu sur WebSocket, et
+    les champs spectraux non mesures doivent etre OMIS, pas repetes."""
+    web = code_only(read('Servo_flute_ESP32/WebConfigurator.cpp'))
+    block = web.split('String aj = "{\\"t\\":\\"audio\\"";')[1].split('_ws.textAll(aj);')[0]
+    # Aucun tampon brut n'est serialise.
+    for forbidden in ('_frame', 'magnitudes()', '_rawBuffer', 'AudioRingBuffer'):
+        assert forbidden not in block, forbidden
+    # Les champs spectraux sont conditionnes a leur validite.
+    assert 'af.spectralValid' in block
+    assert block.index('af.spectralValid') < block.index('af.h2Ratio')
+    # Le debit reste limite.
+    assert 'AUTOCAL_AUDIO_INTERVAL_MS' in web
+
+
+def test_audio_phase5_filtering_runs_on_the_stream():
+    """Filtrer frame par frame ferait passer chaque echantillon deux fois dans
+    le filtre, les frames se recouvrant de 50 %."""
+    aa = code_only(read('Servo_flute_ESP32/AudioAnalyzer.cpp'))
+    drain = aa.split('void AudioAnalyzer::drainI2S()')[1].split('\n}\n')[0]
+    frame = aa.split('void AudioAnalyzer::analyzeFrame()')[1].split('\n}\n')[0]
+    # Le filtrage a lieu dans le vidage du flux, PAS dans l'analyse de frame.
+    assert '_filters.processBlock' in drain
+    assert '_filters.processBlock' not in frame
+    # ...et avant l'ecriture dans l'anneau.
+    assert drain.index('_filters.processBlock') < drain.index('_ring.write')
+    # L'ecretage est mesure AVANT le filtrage, sur le signal brut.
+    assert 'countClipped' in drain
+    assert drain.index('countClipped') < drain.index('_filters.processBlock')
+    # La memoire des filtres repart vierge quand le flux est relance.
+    assert '_filters.configureDefaults();' in aa.split('bool AudioAnalyzer::begin()')[1]
+
+
+def test_audio_phase5_filters_never_touch_the_pitch_range():
+    """Une coupure qui empieterait sur la plage de detection fausserait la
+    mesure au lieu de nettoyer le bruit."""
+    af = read('Servo_flute_ESP32/AudioFilters.cpp')
+    # Le garde est a la COMPILATION, pas seulement dans un test.
+    assert 'static_assert' in af
+    assert 'MIC_PITCH_MIN_HZ' in af and 'MIC_PITCH_MAX_HZ' in af
+    s = read('Servo_flute_ESP32/settings.h')
+    import re
+    def fval(name):
+        m = re.search(r'#define\s+%s\s+([0-9.]+)f' % name, s)
+        assert m, name
+        return float(m.group(1))
+    def ival(name):
+        m = re.search(r'#define\s+%s\s+([0-9.]+)f' % name, s)
+        assert m, name
+        return float(m.group(1))
+    assert fval('MIC_FILTER_HP_HZ') <= ival('MIC_PITCH_MIN_HZ') / 2.0
+    assert fval('MIC_FILTER_LP_HZ') >= ival('MIC_PITCH_MAX_HZ') * 1.2
+    # Une coupure absurde rend la cellule transparente, jamais instable.
+    for fn in ('void Biquad::setHighPass', 'void Biquad::setLowPass'):
+        body = code_only(af).split(fn)[1].split('\n}\n')[0]
+        assert 'setPassthrough();' in body
+        assert 'sampleRate * 0.5f' in body
+
+
+def test_audio_phase5_noise_is_per_state_and_honest():
+    """Comparer une note jouee pompe en marche a un plancher mesure pompe
+    arretee surestime sa qualite - c'est le cas de TOUTES les notes."""
+    nm = code_only(read('Servo_flute_ESP32/NoiseModel.cpp'))
+    nmh = read('Servo_flute_ESP32/NoiseModel.h')
+    # Un profil par etat, pas un plancher global.
+    for state in ('NOISE_AMBIENT', 'NOISE_PUMP_IDLE', 'NOISE_PUMP_MEDIUM',
+                  'NOISE_PUMP_HIGH', 'NOISE_FAN_IDLE', 'NOISE_FAN_MEDIUM', 'NOISE_FAN_HIGH'):
+        assert state in nmh, state
+    # Aucun PCM n'est conserve : uniquement des agregats.
+    assert 'float rms' in nmh and 'float bands[MIC_NOISE_BANDS]' in nmh
+    assert 'samples[' not in nmh and 'float pcm' not in nmh
+    # Le SNR dit quand il ne sait pas, et quand il se replie.
+    snr = nm.split('SnrResult NoiseModel::snrDb')[1].split('\n}\n')[0]
+    assert 'out.usedFallback = true;' in snr
+    assert 'return out;' in snr            # refus quand rien n'est mesure
+    assert 'MIC_SNR_MAX_DB' in snr         # borne
+    assert 'if (db < 0.0f) db = 0.0f;' in snr
+    # Une capture trop courte est REJETEE.
+    end = nm.split('bool NoiseModel::endCapture')[1].split('\n}\n')[0]
+    assert 'MIC_NOISE_MIN_FRAMES' in end
+    # Le spectre doit etre RECALCULE pour une capture de bruit. analyzeSpectrum()
+    # ne calcule rien sans fondamentale fiable, or une capture de bruit n'a par
+    # definition pas de note : reutiliser le spectre laisse par la derniere note
+    # ferait decrire cette note au profil, pas le bruit.
+    aa = code_only(read('Servo_flute_ESP32/AudioAnalyzer.cpp'))
+    frame = aa.split('void AudioAnalyzer::analyzeFrame()')[1].split('\n}\n')[0]
+    cap = frame.split('_noise.isCapturing()')[1]
+    assert '_spectral.computeSpectrum(' in cap
+    assert cap.index('_spectral.computeSpectrum(') < cap.index('_noise.accumulate(')
+    # ...et si le calcul echoue, on passe nullptr plutot qu'un spectre perime.
+    assert 'nullptr' in cap
+
+    # L'etat reel est declare par la couche qui le connait.
+    web = code_only(read('Servo_flute_ESP32/WebConfigurator.cpp'))
+    assert 'setAirSourceState(cfg.airMode' in web
+    assert 'getPressureCtrl().getTargetPercent()' in web
+    assert 'getFanCtrl().getSpeed()' in web
+    # ...avant l'analyse, sinon le SNR porterait sur l'etat precedent.
+    upd = web.split('void WebConfigurator::update()')[1].split('\n}\n')[0]
+    assert upd.index('setAirSourceState') < upd.index('_audio->update();')
+
+
+def test_audio_phase5_noise_capture_is_reachable_and_guarded():
+    """Une fonctionnalite qu'on ne peut pas declencher n'est pas livree."""
+    web = code_only(read('Servo_flute_ESP32/WebConfigurator.cpp'))
+    webh = read('Servo_flute_ESP32/WebConfigurator.h')
+    for op in ('WEBOP_NOISE_START', 'WEBOP_NOISE_STOP', 'WEBOP_NOISE_RESET'):
+        assert op in webh, op
+        assert op in web, op
+    assert '"noise_cal"' in web
+    # Capturer pendant qu'une note sonne mesurerait la note, pas le bruit.
+    start = web.split('case WEBOP_NOISE_START')[1].split('\n    }\n')[0]
+    assert 'getSequencer().getState() != STATE_IDLE' in start
+    assert 'note_playing' in start
+    assert 'no_microphone' in start
+    # Une capture rejetee le dit, avec le minimum attendu.
+    stop = web.split('case WEBOP_NOISE_STOP')[1].split('\n    }\n')[0]
+    assert 'too_short' in stop
+    assert 'MIC_NOISE_MIN_FRAMES' in stop
+    # Le diagnostic expose l'etat du modele et avertit quand il manque.
+    diag = web.split('void WebConfigurator::handleApiDiagnostics')[1].split('\n}\n')[0]
+    assert 'noise_model' in diag
+    assert 'No noise profile captured' in diag
+    assert 'overstates quality' in diag
+
+
+# ===========================================================================
+# PHASES 6 et 7 - classification, note de qualite, chronometrie
+#
+# AudioAnalyzer.cpp depend de l'I2S : il n'entre PAS dans la compilation
+# native et aucun test de tests/test_native ne l'execute. Les invariants
+# ci-dessous sont donc la seule barriere automatique sur son cablage, et ils
+# sont ecrits pour dire QUOI corriger, pas seulement que quelque chose cloche.
+# ===========================================================================
+
+def _analyzer_bodies():
+    """Corps des fonctions d'AudioAnalyzer.cpp, commentaires retires."""
+    aa = code_only(read('Servo_flute_ESP32/AudioAnalyzer.cpp'))
+    out = {}
+    for name in ('update', 'analyzeFrame', 'analyzeSpectrum', 'analyzeAcoustics',
+                 'markMeasurementInvalid', 'resetAcousticTracking', 'drainI2S'):
+        marker = 'void AudioAnalyzer::%s()' % name
+        assert marker in aa, (
+            "AudioAnalyzer.cpp ne definit plus %s() : les invariants des PHASES 6/7 "
+            "s'appuient sur ce decoupage. Si la fonction a ete renommee, mettre a jour "
+            "_analyzer_bodies() dans ce fichier." % name)
+        out[name] = aa.split(marker)[1].split('\n}\n')[0]
+    return aa, out
+
+
+def test_audio_phase6_classification_runs_once_per_analysed_frame():
+    """La classification doit tourner APRES que la frame ait recu son numero et
+    son horodatage : le detecteur de couac compte les frames par leur SEQUENCE
+    et refuse une sequence non contigue, la chronometrie date les siennes par
+    leur horodatage. Appelee trop tot, elle travaillerait sur l'identite de la
+    frame PRECEDENTE."""
+    aa, fn = _analyzer_bodies()
+    upd = fn['update']
+
+    assert 'analyzeAcoustics();' in upd, (
+        "AudioAnalyzer::update() n'appelle pas analyzeAcoustics() : la classification, "
+        "la note de qualite et la chronometrie ne tournent alors sur AUCUNE frame. "
+        "Ajouter l'appel apres _features.frameSequence / _features.timestamp.")
+    assert '_features.frameSequence = _frameSeq;' in upd
+    assert upd.index('_features.frameSequence = _frameSeq;') < upd.index('analyzeAcoustics();'), (
+        "analyzeAcoustics() est appelee AVANT '_features.frameSequence = _frameSeq'. "
+        "updateSqueak() verrait alors deux fois la meme sequence et declarerait un trou "
+        "d'historique sur chaque frame (SqueakResult::historyGap), et AcousticTiming "
+        "daterait la frame avec l'horodatage de la precedente. Deplacer l'appel apres "
+        "la mise a jour de l'identite de la frame.")
+    assert '_features.timestamp' in upd
+    assert upd.index('_features.timestamp') < upd.index('analyzeAcoustics();'), (
+        "analyzeAcoustics() est appelee avant '_features.timestamp' : AcousticTiming "
+        "daterait chaque frame avec l'horodatage de la precedente, soit un decalage "
+        "systematique d'une periode de frame sur TOUTES les mesures temporelles.")
+    # Une seule fois par frame, et nulle part ailleurs.
+    assert aa.count('analyzeAcoustics();') == 1, (
+        "analyzeAcoustics() est appelee %d fois dans AudioAnalyzer.cpp. Elle fait AVANCER "
+        "des machines a etats (couac, chronometrie) : deux appels pour une seule frame "
+        "compteraient cette frame deux fois." % aa.count('analyzeAcoustics();'))
+
+    acou = fn['analyzeAcoustics']
+    assert 'AcousticQuality::classify(_features, ctx, &_squeak)' in acou, (
+        "analyzeAcoustics() doit appeler AcousticQuality::classify(_features, ctx, &_squeak). "
+        "Passer nullptr a la place de &_squeak rendrait missingSqueakHistory vrai en "
+        "permanence : aucun couac ne serait jamais detecte.")
+    assert '_classification = ' in acou, (
+        "Le resultat de classify() n'est pas range dans _classification : getClassification() "
+        "rendrait toujours un verdict vide.")
+    assert 'computeAcousticQuality' in acou and '_quality = ' in acou, (
+        "analyzeAcoustics() doit ranger AcousticQuality::computeAcousticQuality(...) dans "
+        "_quality, sinon getQualityScore() ne rend jamais de note.")
+    # La respiration est REPRISE de la classification, qui l'a deja calculee.
+    assert '_classification.breathiness' in acou, (
+        "computeAcousticQuality() doit recevoir _classification.breathiness. classify() a "
+        "deja calcule la respiration et l'a rangee la ; la recalculer couterait huit "
+        "Goertzel de 1024 points par frame pour un resultat identique.")
+    assert 'computeBreathiness' not in acou, (
+        "analyzeAcoustics() appelle computeBreathiness() alors que classify() vient de la "
+        "calculer et de la ranger dans _classification.breathiness. C'est huit Goertzel de "
+        "1024 points (~8 % de YIN) payes deux fois par frame, 62,5 fois par seconde, pour "
+        "exactement le meme nombre : computeBreathiness est une fonction pure.")
+    # L'attaque n'est PAS inventee a partir d'une duree en millisecondes.
+    assert 'AQ_ATTACK_NOT_MEASURED' in acou, (
+        "computeAcousticQuality() doit recevoir AQ_ATTACK_NOT_MEASURED tant qu'aucune "
+        "conversion duree -> note 0..1 n'a ete definie et justifiee. Fabriquer cette "
+        "valeur ici ferait passer un reglage de gout pour une mesure ; la sentinelle "
+        "laisse la composante absente et QualityScore::weightUsed le dit.")
+
+
+def test_audio_phase6_context_is_honest_about_what_was_measured():
+    """AcousticContext est le seul endroit du firmware ou l'on peut declarer
+    fraiche une mesure qui ne l'est pas sans que rien ne le detecte."""
+    aa, fn = _analyzer_bodies()
+    acou = fn['analyzeAcoustics']
+    # norm() : ces assertions portent sur des JETONS, pas sur une mise en page.
+    # Couper une affectation sur deux lignes ne change pas ce que le code fait.
+    nacou, naa = norm(acou), norm(aa)
+
+    assert norm('ctx.fftFresh = _features.fftValid;') in nacou, (
+        "ctx.fftFresh doit valoir _features.fftValid, le drapeau que fillSpectral() pose "
+        "quand la FFT a REELLEMENT tourne sur cette frame. Toute autre source (un compteur "
+        "de decimation recopie ici, spectralValid, une constante) finirait par diverger de "
+        "ce que la chaine a fait.")
+    # L'invariant central de la PHASE 6 : jamais de fraicheur inconditionnelle.
+    import re
+    bad = [rhs.strip() for rhs in re.findall(r'fftFresh\s*=([^;]+);', aa)
+           if ' '.join(rhs.split()) != '_features.fftValid']
+    assert not bad, (
+        "AcousticContext::fftFresh est pose a '%s' dans AudioAnalyzer.cpp. Le centroide et "
+        "la platitude spectrale ne sont recalcules qu'une frame sur MIC_SPECTRAL_DECIMATION "
+        "(64 ms) et ne sont PAS effaces entre-temps : les declarer frais a chaque frame fait "
+        "juger la respiration et la brillance sur une mesure perimee. Seul "
+        "_features.fftValid dit la verite." % bad[0])
+    assert norm('ctx.fftFresh = true') not in naa and norm('ctx.fftFresh = 1') not in naa
+
+    assert norm('ctx.stabilityMeasured = _features.stabilityValid;') in nacou, (
+        "ctx.stabilityMeasured doit valoir _features.stabilityValid (propage depuis "
+        "PitchResult::stabilityValid). pitchStability vaut 0 tant que l'historique n'est pas "
+        "rempli ET 0 pour une note franchement instable : sans ce drapeau, chaque debut de "
+        "note serait classe ACOUSTIC_UNSTABLE.")
+    assert norm('stabilityMeasured = true') not in naa, (
+        "ctx.stabilityMeasured est force a vrai : la stabilite serait lue comme mesuree "
+        "alors que l'historique de pitch n'est pas encore rempli.")
+
+    assert norm('ctx.frame = _frame;') in nacou, (
+        "ctx.frame doit pointer le PCM de la frame courante. Sans lui, evaluateOverblow() "
+        "rend valid=false et l'etat ACOUSTIC_OVERBLOW devient inatteignable : son critere "
+        "spectral se mesure a la note VISEE et a son octave, alors que les harmoniques deja "
+        "rangees dans _features sont ancrees sur la frequence DETECTEE - donc sur l'octave "
+        "elle-meme pendant un overblow.")
+    assert norm('ctx.frameSize = MIC_ANALYSIS_FRAME_SIZE;') in nacou
+    assert norm('ctx.sampleRate = (float)MIC_SAMPLE_RATE;') in nacou
+    assert norm('ctx.expectedMidi = _expectedMidi;') in nacou, (
+        "ctx.expectedMidi doit venir de la note visee declaree a l'analyseur : sans elle, "
+        "ni fausse note ni overblow ne peuvent etre juges (missingExpectedNote).")
+
+
+def test_audio_phase6_a_stale_verdict_is_invalidated_not_kept():
+    """Un verdict perime n'est pas 'un peu moins vrai' : il est faux. Le laisser
+    en place ferait lire un etat acoustique d'il y a au moins
+    MIC_FRAME_STALE_MS comme s'il decrivait l'instant present."""
+    aa, fn = _analyzer_bodies()
+    stale = fn['markMeasurementInvalid']
+
+    for what, why in (
+        ('_classification = AcousticClassification();',
+         "l'etat acoustique et tous les drapeaux 'missing' resteraient ceux de la derniere "
+         "frame reussie"),
+        ('_quality = QualityScore();',
+         "getQualityScore().valid resterait vrai sur une mesure perimee"),
+        ('_squeak.reset();',
+         "l'historique de brillance se compte en FRAMES et _frameSeq n'avance que sur les "
+         "frames ANALYSEES : apres un trou de flux la sequence reste contigue alors que le "
+         "temps a saute, et le detecteur ne peut donc pas voir ce trou tout seul"),
+    ):
+        assert what in stale, (
+            "AudioAnalyzer::markMeasurementInvalid() ne fait pas '%s' : %s." % (what, why))
+
+    # La chronometrie, elle, n'est PAS effacee par un trou d'acquisition.
+    assert '_timing.reset()' not in stale, (
+        "markMeasurementInvalid() remet AcousticTiming a zero. Son cycle est pilote par les "
+        "ordres d'actionneur, pas par l'analyse, et elle possede ses propres plafonds : "
+        "l'effacer sur un simple trou d'acquisition perdrait la note en cours de mesure.")
+
+    reset = fn['resetAcousticTracking']
+    assert '_squeak.reset();' in reset and '_pitch.resetTracking();' in reset, (
+        "resetAcousticTracking() doit remettre a zero le detecteur de couac ET l'historique "
+        "de pitch (contrat d'interface) : l'historique de brillance decrit la note "
+        "PRECEDENTE et son etendue de pitch traverserait les deux notes.")
+    assert '_pitch.setExpectedMidiNote(_expectedMidi);' in reset, (
+        "resetTracking() efface aussi la note visee du detecteur : resetAcousticTracking() "
+        "doit la restaurer, sinon changer de note reviendrait a ne plus en viser aucune et "
+        "la levee d'ambiguite d'octave de YIN serait perdue.")
+    assert '_classification = AcousticClassification();' in reset and '_quality = QualityScore();' in reset, (
+        "resetAcousticTracking() doit aussi invalider les verdicts : ils portaient sur la "
+        "note precedente.")
+    assert '_timing' not in reset, (
+        "resetAcousticTracking() touche a _timing. Le contrat d'interface l'interdit : le "
+        "cycle de la chronometrie commence a noteCommanded() et se termine a noteReleased(), "
+        "tous deux emis par la chaine d'actionneurs. L'effacer depuis le chemin d'ANALYSE "
+        "perdrait la note en cours de chronometrage.")
+
+
+def test_audio_frame_path_never_allocates():
+    """Regle du projet : pas d'allocation dynamique dans le chemin audio. Une
+    allocation par frame, 62,5 fois par seconde, fragmente le tas d'un ESP32
+    jusqu'a l'echec - et l'echec arrive des heures plus tard, ailleurs."""
+    import re
+    aa, fn = _analyzer_bodies()
+    path = '\n'.join(fn[k] for k in ('update', 'analyzeFrame', 'analyzeSpectrum',
+                                     'analyzeAcoustics', 'markMeasurementInvalid',
+                                     'resetAcousticTracking', 'drainI2S'))
+    forbidden = (
+        (r'\bnew\b', "operator new"),
+        (r'\bmalloc\s*\(', "malloc()"),
+        (r'\bcalloc\s*\(', "calloc()"),
+        (r'\brealloc\s*\(', "realloc()"),
+        (r'\bstrdup\s*\(', "strdup()"),
+        (r'\bString\b', "une String Arduino (elle alloue a la construction ET a chaque "
+                        "concatenation)"),
+        (r'\bstd::vector\b', "std::vector"),
+        (r'\bstd::string\b', "std::string"),
+    )
+    for pattern, what in forbidden:
+        hit = re.search(pattern, path)
+        assert hit is None, (
+            "Le chemin d'analyse par frame d'AudioAnalyzer.cpp utilise %s. Ce code tourne "
+            "62,5 fois par seconde sur un ESP32 sans allocateur temps reel : utiliser un "
+            "membre de taille fixe (comme _frame, _chunk ou _features) a la place." % what)
+    # Les tampons de travail restent des membres dimensionnes a la compilation.
+    h = code_only(read('Servo_flute_ESP32/AudioAnalyzer.h'))
+    assert 'float _frame[MIC_ANALYSIS_FRAME_SIZE];' in h
+    assert 'SqueakDetector _squeak;' in h, (
+        "L'etat persistant de la detection de couac doit etre un MEMBRE d'AudioAnalyzer. "
+        "Une variable statique cachee dans AcousticQuality ferait interferer deux "
+        "instances - deux flutes, ou deux tests - par un etat partage invisible.")
+
+
+def test_audio_phase7_timing_is_fed_by_the_analysis_and_commanded_by_the_actuators():
+    """Le flux est a SENS UNIQUE : l'analyse alimente la chronometrie, la chaine
+    d'actionneurs lui donne les instants d'ordre, et aucune decision ne depend
+    de ce qu'elle rend."""
+    aa, fn = _analyzer_bodies()
+    acou = fn['analyzeAcoustics']
+    h = code_only(read('Servo_flute_ESP32/AudioAnalyzer.h'))
+
+    assert '_timing.update(AcousticTiming::fromFeatures(_features));' in acou, (
+        "analyzeAcoustics() doit alimenter la chronometrie une fois par frame analysee, par "
+        "_timing.update(AcousticTiming::fromFeatures(_features)). Sans ce flux, aucune "
+        "mesure temporelle n'existe : toutes les durees resteraient invalides.")
+    assert aa.count('_timing.update(') == 1, (
+        "_timing.update() est appelee %d fois : la machine a etats temporelle avancerait "
+        "plusieurs fois sur une seule frame." % aa.count('_timing.update('))
+
+    # Les accesseurs du contrat d'interface, mot pour mot.
+    for decl in ('const AcousticClassification& getClassification() const',
+                 'const QualityScore&           getQualityScore() const',
+                 'const BreathinessResult&      getBreathiness() const',
+                 'const SqueakResult&           getSqueak() const',
+                 'const char*                   getAcousticStateName() const',
+                 'void                          resetAcousticTracking()',
+                 'AcousticTiming&               timing()',
+                 'const AcousticTiming&         timing() const'):
+        assert decl in h, (
+            "AudioAnalyzer.h ne declare plus '%s'. Ces signatures sont fixees par le contrat "
+            "d'interface et appelees par la chaine d'actionneurs et par la couche web : les "
+            "changer casse la compilation de deux autres modules." % decl)
+
+    # SENS UNIQUE : l'analyse n'emet aucun ordre de chronometrie.
+    for hook in ('noteCommanded', 'airCommanded', 'valveOpened', 'noteReleased'):
+        assert hook not in aa, (
+            "AudioAnalyzer.cpp appelle %s(). Les instants d'ORDRE appartiennent a la chaine "
+            "d'actionneurs, qui seule sait QUAND l'ordre est parti ; les fabriquer depuis "
+            "l'analyse daterait l'ordre au moment ou son effet est observe, ce qui rendrait "
+            "toute latence nulle par construction." % hook)
+
+
+def test_audio_phase7_pitch_validity_has_a_single_definition():
+    """fromFeatures() reconstruisait le critere de validite du pitch parce
+    qu'AcousticFeatures ne portait pas le verdict du detecteur. Il le porte."""
+    at = code_only(read('Servo_flute_ESP32/AcousticTiming.cpp'))
+    body = at.split('TimingFrame AcousticTiming::fromFeatures')[1].split('\n}\n')[0]
+    assert 'out.pitchValid = f.pitchValid;' in body, (
+        "AcousticTiming::fromFeatures() doit propager le verdict du detecteur "
+        "(out.pitchValid = f.pitchValid). Reconstruire le critere a partir de la confiance "
+        "suppose - au lieu de l'exprimer - que pitchHz n'est renseigne que dans "
+        "[MIC_PITCH_MIN_HZ, MIC_PITCH_MAX_HZ] : une frequence repliee hors plage avec une "
+        "bonne confiance passerait pour un pitch.")
+    assert 'MIC_YIN_CONFIDENCE_MIN' not in body, (
+        "fromFeatures() compare a nouveau la confiance a MIC_YIN_CONFIDENCE_MIN : deux "
+        "definitions de 'pitch fiable' dans la meme chaine finissent toujours par diverger. "
+        "Le seul critere est AcousticFeatures::pitchValid, rempli par fillPitch() depuis "
+        "PitchResult::valid.")
+    # Et l'assemblage renseigne bien ce champ, sinon la propagation rendrait
+    # tous les pitchs invalides.
+    af = code_only(read('Servo_flute_ESP32/AcousticFeatures.cpp'))
+    fill = af.split('void fillPitch')[1].split('\n}\n')[0]
+    assert 'f.pitchValid = p.valid;' in fill, (
+        "AcousticFeatureBuilder::fillPitch() ne propage plus PitchResult::valid vers "
+        "AcousticFeatures::pitchValid : AcousticTiming::fromFeatures() declarerait alors "
+        "TOUS les pitchs invalides et pitchStabilizationTime ne serait jamais mesure.")
+
+
+def test_audio_phase6_web_status_publishes_the_weight_with_the_score():
+    """Un score de qualite publie sans son poids ment sur ce qu'il mesure : 0,82
+    pondere a 1,00 et 0,82 pondere a 0,60 ne decrivent pas le meme son."""
+    web = code_only(read('Servo_flute_ESP32/WebConfigurator.cpp'))
+    assert 'doc["audio"].to<JsonObject>()' in web, (
+        "Le JSON de statut n'expose plus d'objet 'audio' : les assertions d'exposition des "
+        "PHASES 6 et 7 s'appuient dessus.")
+    block = web.split('doc["audio"].to<JsonObject>()')[1].split('\n}\n')[0]
+
+    for field in ('acoustic_state', 'acoustic_classified', 'quality_score',
+                  'quality_weight_used', 'quality_valid', 'breathiness',
+                  'breathiness_valid', 'hnr_db', 'hnr_is_spectral'):
+        assert 'a["%s"]' % field in block, (
+            "Le JSON de statut n'expose pas a[\"%s\"], exige par le contrat d'interface "
+            "(section Exposition web)." % field)
+    assert block.index('a["quality_score"]') < block.index('a["quality_weight_used"]') , (
+        "quality_weight_used doit etre publie A COTE de quality_score, pas ailleurs dans "
+        "le document : un lecteur qui ne trouve pas le poids a l'endroit du score le croira "
+        "absent et comparera des scores incomparables.")
+
+    # De quoi la classification a ete privee.
+    assert 'a["missing"]' in block, (
+        "Les drapeaux 'missing*' doivent aller dans un sous-objet a[\"missing\"] : un etat "
+        "'good' obtenu faute d'avoir pu mesurer le pitch n'est pas un etat 'good'.")
+    missing = block.split('a["missing"]')[1]
+    for flag in ('pitch', 'snr', 'spectrum', 'expected_note', 'stability',
+                 'squeak_history', 'snr_fallback'):
+        assert '"%s"' % flag in missing, (
+            "a[\"missing\"] n'expose pas \"%s\", exige par le contrat d'interface." % flag)
+
+
+def test_audio_phase7_web_timing_measures_all_carry_their_validity():
+    """Un attack de 0 ms sans son drapeau se lit comme une attaque instantanee,
+    alors qu'il signifie 'jamais mesuree'. C'est la valeur la plus trompeuse
+    possible ici, et c'est exactement le defaut a ne pas reintroduire."""
+    import re
+    web = code_only(read('Servo_flute_ESP32/WebConfigurator.cpp'))
+    block = web.split('doc["audio"].to<JsonObject>()')[1].split('\n}\n')[0]
+
+    assert 'a["timing"]' in block, (
+        "Le JSON de statut n'expose pas a[\"timing\"] : la derniere note chronometree "
+        "(PHASE 7) reste invisible depuis l'interface.")
+    tm = block.split('a["timing"]')[1]
+
+    measures = ('command_to_sound', 'air_to_sound', 'attack', 'pitch_stabilization', 'release')
+
+    # L'emetteur d'une duree : une fonction qui prend un TimingMeasure et ecrit
+    # SES DEUX champs. Sans elle, la forme doit etre inline - mais elle doit
+    # exister sous l'une ou l'autre forme.
+    emitter = re.search(r'\b(\w+)\s*\([^)]*const\s+TimingMeasure&[^)]*\)\s*\{(.*?)\n\}',
+                        web, re.S)
+    if emitter:
+        name, body = emitter.group(1), emitter.group(2)
+        assert '"valid"' in body and '"ms"' in body, (
+            "%s() publie une duree de chronometrie sans ecrire A LA FOIS \"valid\" et \"ms\" : "
+            "une duree sans son drapeau se lit comme une mesure." % name)
+        for m in measures:
+            assert re.search(r'%s\s*\([^;]*"%s"' % (re.escape(name), m), tm), (
+                "La mesure \"%s\" n'est pas publiee par %s() : elle ne porterait donc pas sa "
+                "validite. Le contrat exige {\"valid\":bool,\"ms\":float} pour chacune des "
+                "cinq durees." % (m, name))
+    else:
+        for m in measures:
+            assert '"%s"' % m in tm, (
+                "La mesure \"%s\" n'est pas publiee dans a[\"timing\"]." % m)
+            sub = tm.split('"%s"' % m)[1][:400]
+            assert '"valid"' in sub and '"ms"' in sub, (
+                "La mesure \"%s\" est publiee sans {\"valid\":bool,\"ms\":float}." % m)
+
+    # Aucune duree publiee comme un nombre NU.
+    for m in measures:
+        assert not re.search(r'\["%s"\]\s*=' % m, tm), (
+            "La duree \"%s\" est affectee directement dans le JSON : elle part alors sans son "
+            "drapeau de validite, et un 0 ms 'jamais mesure' devient une latence nulle." % m)
+
+    # Le contexte de la note, sans lequel les durees ne se relisent pas.
+    for field in ('outcome', 'baseline_valid', 'has_last'):
+        assert '"%s"' % field in tm, (
+            "a[\"timing\"] n'expose pas \"%s\", exige par le contrat d'interface." % field)
+
+
+def _analyzer_functions():
+    """Toutes les fonctions membres d'AudioAnalyzer.cpp, {nom: corps}."""
+    import re
+    aa = code_only(read('Servo_flute_ESP32/AudioAnalyzer.cpp'))
+    starts = [(m.group(1), m.start()) for m in
+              re.finditer(r'^[A-Za-z_][\w:<>*&\s]*?\bAudioAnalyzer::(\w+)\s*\(', aa, re.M)]
+    out = {}
+    for i, (name, pos) in enumerate(starts):
+        end = starts[i + 1][1] if i + 1 < len(starts) else len(aa)
+        out.setdefault(name, '')
+        out[name] += aa[pos:end]
+    return out
+
+
+def test_audio_every_path_that_stops_acquisition_invalidates_the_verdicts():
+    """update() sort des sa premiere ligne quand l'analyseur est inactif ou non
+    initialise : le plafond d'obsolescence (MIC_FRAME_STALE_MS) ne s'y applique
+    donc JAMAIS. Toute fonction qui arrete ou reinitialise l'acquisition doit
+    invalider elle-meme, sinon le dernier verdict reste publie pour toujours -
+    l'API continuerait a rendre l'etat acoustique et le score d'une note
+    d'avant l'arret comme s'ils venaient d'etre mesures."""
+    import re
+    fns = _analyzer_functions()
+
+    for name, why in (
+        ('begin', "un flux qui redemarre heriterait des verdicts et de l'historique de "
+                  "brillance du flux precedent"),
+        ('end', "l'analyseur arrete continuerait de publier le verdict de sa derniere frame"),
+        ('resetMicrophone', "apres un reset depuis l'interface web (WEBOP_MIC_RESET), l'API "
+                            "republierait l'etat acoustique et le score d'AVANT le reset, et la "
+                            "ligne de base du detecteur de couac apprise avant servirait a juger "
+                            "les frames d'apres ; de plus resetMicrophone() remet _frameTimestamp "
+                            "a zero, ce qui DESARME le plafond d'obsolescence"),
+        ('setActive', "mettre l'analyse en pause figerait le dernier verdict pour toute la duree "
+                      "de la pause"),
+    ):
+        assert name in fns, (
+            "AudioAnalyzer.cpp ne definit pas %s() : cet invariant de cycle de vie s'appuie "
+            "sur ce decoupage." % name)
+        assert 'markMeasurementInvalid();' in fns[name], (
+            "AudioAnalyzer::%s() n'invalide pas les mesures rangees : %s. Appeler "
+            "markMeasurementInvalid()." % (name, why))
+
+    # setActive() ne doit plus etre le simple drapeau qu'il etait : la
+    # declaration inline du header ne peut pas invalider.
+    h = code_only(read('Servo_flute_ESP32/AudioAnalyzer.h'))
+    assert 'void setActive(bool active) override;' in h, (
+        "setActive() doit etre declare dans AudioAnalyzer.h et defini dans le .cpp : sous sa "
+        "forme inline '{ _active = active; }' il ne peut pas invalider les verdicts a la mise "
+        "en pause.")
+    sa = fns['setActive']
+    assert 'if (_active == active) return;' in sa, (
+        "setActive() doit agir sur les TRANSITIONS. Plusieurs appelants reposent l'etat a une "
+        "valeur qu'il a deja (WebConfigurator le recalcule a chaque evenement) : agir sur la "
+        "valeur effacerait l'historique de pitch et la ligne de base de brillance a chaque "
+        "passage, et la stabilite ne serait jamais mesuree.")
+    assert 'resetAcousticTracking();' in sa, (
+        "setActive(true) doit repartir d'un historique vierge : ce que le detecteur de couac "
+        "et l'historique de pitch avaient appris decrit un autre moment de jeu, separe par une "
+        "pause de duree inconnue.")
+
+    # GARDE GENERALE : toute AUTRE fonction qui coupe l'acquisition devra en
+    # faire autant. Ce test echoue alors sur le nouveau chemin, par son nom.
+    for name, body in fns.items():
+        stops = re.search(r'_active\s*=\s*(false|active)\s*;', body) or '_initialized = false;' in body
+        if not stops:
+            continue
+        assert 'markMeasurementInvalid();' in body, (
+            "AudioAnalyzer::%s() arrete ou reinitialise l'acquisition (_active / _initialized) "
+            "sans invalider les mesures rangees. update() sortant immediatement dans cet etat, "
+            "le plafond d'obsolescence ne s'appliquera jamais : appeler "
+            "markMeasurementInvalid()." % name)
+
+
+# ===========================================================================
+# VERROUS DE STRUCTURE - ordre, multiplicite, coexistence obligatoire
+#
+# Une assertion qui ne verifie que la PRESENCE d'un litteral detecte la
+# suppression d'une ligne, jamais sa neutralisation : un `return;` premature,
+# un `if (false)`, une affectation ecrasee plus bas la laissent toutes passer.
+# Les verrous ci-dessous encodent des invariants qu'un texte present ne peut
+# pas simuler : un ordre entre deux instructions, un nombre d'appelants, une
+# portee syntaxique partagee.
+#
+# Ils protegent deux defauts CONSTATES sur ce fichier, et reproduits :
+#   - resetAcousticTracking() n'avait qu'un seul appelant (setActive(true)),
+#     alors que trois endroits promettaient qu'un changement de note l'appelait
+#     aussi ;
+#   - markMeasurementInvalid() laissait _level et _rms intacts, donc
+#     /api/diagnostics publiait le niveau et le verdict d'ecretage de la
+#     derniere frame analysee apres end(), apres setActive(false) et apres un
+#     resetMicrophone() rate.
+# ===========================================================================
+
+def _fn_body(fns, name):
+    """Corps d'une fonction rendue par _analyzer_functions(), signature exclue."""
+    assert name in fns, (
+        "AudioAnalyzer.cpp ne definit plus %s() : ce verrou s'appuie sur ce "
+        "decoupage. Si la fonction a ete renommee, mettre a jour ce test." % name)
+    src = fns[name]
+    return src[src.index('{') + 1:].split('\n}\n')[0]
+
+
+def _braced(text, marker):
+    """Bloc { ... } qui suit `marker`, accolades APPARIEES.
+
+    Verifier que deux cles JSON partent 'sous la meme garde' demande de
+    connaitre la portee, pas de chercher une sous-chaine : deux cles peuvent se
+    suivre dans le fichier et vivre dans deux `if` differents. A n'employer que
+    sur des gardes dont le corps ne contient pas d'accolade en chaine.
+    """
+    i = text.index(marker)
+    j = text.index('{', i)
+    depth = 0
+    for k in range(j, len(text)):
+        if text[k] == '{':
+            depth += 1
+        elif text[k] == '}':
+            depth -= 1
+            if depth == 0:
+                return text[j + 1:k]
+    raise AssertionError("bloc non ferme apres %r" % marker)
+
+
+def test_audio_a_declared_note_change_resets_the_acoustic_tracking():
+    """MULTIPLICITE + ORDRE. resetAcousticTracking() n'avait qu'UN appelant -
+    setActive(true) - alors que le contrat d'interface, son propre commentaire
+    et l'en-tete promettaient qu'un changement de note l'appelait. Effet
+    reproduit sur un legato montant d'une octave : la premiere frame de la
+    nouvelle note est comparee a la ligne de base de brillance de l'ancienne,
+    le detecteur publie ACOUSTIC_SQUEAK - troisieme dans l'ordre de priorite,
+    donc il masque tout ce qui suit - pendant six frames sur une note propre.
+    """
+    import re
+    fns = _analyzer_functions()
+
+    # --- MULTIPLICITE : une fonction de remise a zero sans appelant est morte.
+    callers = sorted(n for n in fns
+                     if n != 'resetAcousticTracking'
+                     and 'resetAcousticTracking(' in _fn_body(fns, n))
+    for expected in ('setActive', 'setExpectedMidiNote', 'clearExpectedMidiNote'):
+        assert expected in callers, (
+            "AudioAnalyzer::%s() n'appelle pas resetAcousticTracking(). Appelants "
+            "trouves : %s. Declarer une note visee, la retirer, ou reprendre apres une "
+            "pause sont les trois SEULS signaux de changement de note dont cette classe "
+            "dispose ; en perdre un laisse la ligne de base de brillance et l'historique "
+            "de pitch d'une note servir a juger la suivante." % (expected, callers or 'aucun'))
+    assert len(callers) >= 3, (
+        "resetAcousticTracking() n'a plus que %d appelant(s) : %s. Le defaut d'origine "
+        "etait exactement celui-la - un seul appelant pour une fonction que trois "
+        "endroits de la documentation declaraient appelee a chaque changement de note."
+        % (len(callers), callers or 'aucun'))
+
+    # --- ORDRE : on ne detecte pas une transition apres avoir ecrase l'ancienne
+    # valeur, et on ne restaure pas la note visee avant de l'avoir posee.
+    for name in ('setExpectedMidiNote', 'clearExpectedMidiNote'):
+        body = _fn_body(fns, name)
+        read = re.search(r'(_expectedMidi\s*[!=<>]=|[!=<>]=\s*_expectedMidi)', body)
+        write = re.search(r'(?<![\w.])_expectedMidi\s*=(?!=)', body)
+        reset = re.search(r'resetAcousticTracking\s*\(', body)
+        assert write, (
+            "AudioAnalyzer::%s() n'affecte plus _expectedMidi : ce verrou s'appuie sur "
+            "cette fonction comme point de declaration de la note visee." % name)
+        assert read, (
+            "AudioAnalyzer::%s() ne compare plus rien a _expectedMidi avant de l'ecrire. "
+            "La remise a zero doit se faire sur TRANSITION : un appelant qui redeclare la "
+            "meme note a chaque passage - c'est ce que font les appelants de setActive() - "
+            "effacerait sinon l'historique de pitch a chaque tour, et la stabilite ne "
+            "serait JAMAIS mesuree (MIC_PITCH_HISTORY frames sont necessaires)." % name)
+        assert read.start() < write.start(), (
+            "AudioAnalyzer::%s() lit _expectedMidi APRES l'avoir ecrit : le test de "
+            "transition compare alors la nouvelle valeur a elle-meme et est toujours "
+            "faux, donc resetAcousticTracking() ne serait plus jamais appelee." % name)
+        assert reset and write.start() < reset.start(), (
+            "Dans AudioAnalyzer::%s(), resetAcousticTracking() est appelee AVANT que "
+            "_expectedMidi ne recoive sa nouvelle valeur. Elle restaure la note visee du "
+            "detecteur depuis ce membre : appelee trop tot, elle y remet l'ANCIENNE note "
+            "et la levee d'ambiguite d'octave de YIN vise la note precedente." % name)
+
+
+def test_audio_no_published_measurement_survives_an_invalidation():
+    """COEXISTENCE, deduite du code et non d'une liste ecrite a la main : tout
+    membre qu'analyzeFrame() renseigne a chaque frame ET qu'un accesseur publie
+    doit etre remis a zero par markMeasurementInvalid().
+
+    Sans cet invariant, _level et _rms ont survecu a end(), a setActive(false)
+    et a un resetMicrophone() rate : /api/diagnostics rendait encore rms_dbfs,
+    peak_dbfs, clipping et clipping_ratio de la derniere frame analysee, et le
+    verdict ACTIF "Microphone input is clipping" avec, pendant qu'acoustic_state
+    rendait deja "unclassified" - les deux moities du meme bloc JSON ne
+    decrivaient pas le meme instant. Le verrou s'etend tout seul au prochain
+    champ ajoute.
+    """
+    import re
+    fns = _analyzer_functions()
+    h = code_only(read('Servo_flute_ESP32/AudioAnalyzer.h'))
+    frame = _fn_body(fns, 'analyzeFrame')
+    stale = _fn_body(fns, 'markMeasurementInvalid')
+
+    assign = r'(?<![\w.])(_\w+)\s*=(?!=)'
+    written = []
+    for m in re.finditer(assign, frame):
+        if m.group(1) not in written:
+            written.append(m.group(1))
+    assert '_level' in written and '_rms' in written, (
+        "analyzeFrame() ne renseigne plus _level / _rms : ce verrou deduit du code la "
+        "liste des mesures a invalider, et cette liste vient de la.")
+
+    # Un membre est PUBLIE s'il sort par un accesseur du header.
+    published = [m for m in written if re.search(r'return\s+%s\s*[;.]' % m, h)]
+
+    # Seule exception, et elle est motivee : `_noiseCaptureFinished` ne dit pas
+    # ce que mesure la frame courante, il dit qu'une capture de bruit s'est
+    # terminee D'ELLE-MEME au plafond de duree. endNoiseCapture() s'en sert pour
+    # rapporter comme un succes un profil reellement range. L'effacer ici
+    # perdrait une capture legitimement terminee.
+    EXEMPT = {'_noiseCaptureFinished'}
+
+    for member in published:
+        if member in EXEMPT:
+            continue
+        cleared = (re.search(r'(?<![\w.])%s\s*=(?!=)' % member, stale)
+                   or ('%s.reset()' % member) in stale)
+        assert cleared, (
+            "AudioAnalyzer::analyzeFrame() renseigne %s a chaque frame et un accesseur du "
+            "header le publie, mais markMeasurementInvalid() ne le remet pas a zero. "
+            "update() sort des sa premiere ligne quand l'analyseur est inactif : le "
+            "plafond d'obsolescence ne s'appliquera donc JAMAIS, et cette mesure restera "
+            "publiee apres end(), apres setActive(false) et apres un resetMicrophone() "
+            "dont le begin() echoue, comme si elle venait d'etre prise. Ajouter sa remise "
+            "a zero dans markMeasurementInvalid(), ou - si elle doit survivre - "
+            "l'inscrire dans EXEMPT avec la raison." % member)
+
+    # ANTI-NEUTRALISATION. Ces deux fonctions sont des remises a zero
+    # inconditionnelles : elles n'ont rien a rendre. Un `return` y est, par
+    # construction, un moyen de sauter la fin de la liste - exactement la
+    # neutralisation qu'une assertion de presence ne verrait pas.
+    for name in ('markMeasurementInvalid', 'resetAcousticTracking'):
+        body = _fn_body(fns, name)
+        assert not re.search(r'\breturn\b', body), (
+            "AudioAnalyzer::%s() contient un `return`. Cette fonction remet a zero une "
+            "LISTE de champs ; un retour anticipe en laisse une partie intacte, et les "
+            "champs sautes continueront d'etre publies comme des mesures. Si une "
+            "condition est vraiment necessaire, garder l'instruction concernee, pas le "
+            "reste de la fonction." % name)
+
+    # ORDRE. resetTracking() efface aussi la note visee du detecteur : la
+    # restaurer AVANT reviendrait a ne pas la restaurer du tout.
+    for name in ('markMeasurementInvalid', 'resetAcousticTracking'):
+        body = _fn_body(fns, name)
+        wipe = body.index('_pitch.resetTracking()')
+        restore = body.index('_pitch.setExpectedMidiNote(_expectedMidi)')
+        assert wipe < restore, (
+            "Dans AudioAnalyzer::%s(), la note visee est rendue au detecteur AVANT "
+            "_pitch.resetTracking(), qui l'efface juste apres. Le detecteur repart donc "
+            "sans note visee : YIN perd la levee d'ambiguite d'octave deterministe et un "
+            "overblow cesse d'etre detecte COMME overblow." % name)
+
+
+def test_audio_ws_push_never_separates_a_value_from_its_scale_or_weight():
+    """COEXISTENCE DE PORTEE. Trois couples de la poussee WebSocket n'ont de
+    sens qu'ensemble : les separer ne degrade pas l'information, il la rend
+    fausse.
+
+    - "hnr" recouvre DEUX echelles (mesure spectrale ou approximation Goertzel
+      a quatre raies) qui different de 31,88 dB sur la MEME note et classent
+      donc les notes a l'envers ; "hnr_sp" dit laquelle. La FFT ne tournant
+      qu'une frame sur MIC_SPECTRAL_DECIMATION, la cle alterne entre les deux a
+      15,6 Hz.
+    - "br" est une moyenne ponderee dont deux composantes sur trois n'existent
+      qu'une frame sur MIC_SPECTRAL_DECIMATION : "brw" descend a 0,30, et seul
+      lui distingue "pas de souffle" de "presque rien de mesure".
+    - "stab" vaut 0 pour "pas encore mesure" AUTANT que pour "tres instable" :
+      il ne part que sous af.stabilityValid.
+    """
+    web = code_only(read('Servo_flute_ESP32/WebConfigurator.cpp'))
+    push = web.split('{\\"t\\":\\"audio\\"')[1].split('_ws.textAll(aj);')[0]
+
+    def key(k):
+        return '\\"%s\\":' % k
+
+    for guard, pair, why in (
+        ('if (af.spectralValid)', ('hnr', 'hnr_sp'),
+         "l'echelle du HNR - 31,88 dB d'ecart entre les deux - serait perdue et le "
+         "chiffre nu classerait les notes a l'envers"),
+        ('if (br.valid)', ('br', 'brw'),
+         "le poids de la respiration serait perdu, et 0,00 a poids 0,30 se lirait "
+         "comme 0,00 a poids 1,00"),
+    ):
+        scope = _braced(push, guard)
+        for k in pair:
+            assert key(k) in scope, (
+                "La poussee WebSocket n'emet pas \"%s\" sous %s : %s." % (k, guard, why))
+            assert push.count(key(k)) == 1, (
+                "\"%s\" est emis %d fois dans la poussee WebSocket. Une seule emission, "
+                "sous la garde qui la qualifie : une seconde, ailleurs, echapperait a la "
+                "garde et c'est exactement ce que ce verrou interdit."
+                % (k, push.count(key(k))))
+        assert scope.index(key(pair[0])) < scope.index(key(pair[1])), (
+            "\"%s\" doit etre emis JUSTE APRES \"%s\", pas ailleurs dans le message : un "
+            "lecteur qui ne trouve pas le qualificatif a l'endroit de la valeur le croira "
+            "absent." % (pair[1], pair[0]))
+
+    stab = _braced(push, 'if (af.stabilityValid)')
+    assert key('stab') in stab, (
+        "\"stab\" n'est plus emis sous if (af.stabilityValid). AcousticFeatures.h le dit : "
+        "0 signifie 'pas encore mesure' AUTANT que 'tres instable'. Il faut "
+        "MIC_PITCH_HISTORY frames pour que le chiffre veuille dire quelque chose, alors "
+        "que la poussee part toutes les AUTOCAL_AUDIO_INTERVAL_MS : la PREMIERE poussee "
+        "de chaque note porterait \"stab\":0.00 et chaque debut de note serait lu comme "
+        "un defaut.")
+    assert push.count(key('stab')) == 1, (
+        "\"stab\" est emis %d fois : une emission hors garde republierait la valeur non "
+        "mesuree que la garde sert a taire." % push.count(key('stab')))
+
+
+def test_audio_diagnostics_keeps_each_measure_next_to_what_qualifies_it():
+    """ORDRE + COEXISTENCE DE PORTEE dans /api/diagnostics, sur le modele de
+    quality_score / quality_weight_used.
+
+    breathiness_weight_used doit etre publie ENTRE la valeur et son drapeau :
+    l'ecart est plus grand que pour la qualite (le poids descend a 0,30 contre
+    0,75) et valid reste vrai dans les deux cas.
+
+    hnr_valid part TOUJOURS ; hnr_db et hnr_is_spectral seulement mesures. Quand
+    spectralValid est faux, fillSpectral() remet harmonicToNoiseRatio a 0.0f, et
+    ce "hnr_db": 0 etait indistinguable d'une vraie mesure Goertzel autour de
+    0 dB - la reference documentee d'une note timbree sur cette echelle vaut
+    -0,06 dB.
+    """
+    web = code_only(read('Servo_flute_ESP32/WebConfigurator.cpp'))
+    diag = web.split('void WebConfigurator::handleApiDiagnostics')[1]
+    block = diag.split('doc["audio"].to<JsonObject>()')[1].split('\n}\n')[0]
+
+    for f in ('a["breathiness"]', 'a["breathiness_weight_used"]', 'a["breathiness_valid"]'):
+        assert f in block, (
+            "/api/diagnostics n'expose plus %s dans le bloc audio." % f)
+    assert (block.index('a["breathiness"]')
+            < block.index('a["breathiness_weight_used"]')
+            < block.index('a["breathiness_valid"]')), (
+        "breathiness_weight_used doit etre publie ENTRE breathiness et "
+        "breathiness_valid, pas ailleurs dans le document. La respiration est une "
+        "moyenne ponderee de trois composantes dont deux n'existent qu'une frame sur "
+        "MIC_SPECTRAL_DECIMATION : sur une note tenue immobile la valeur alterne entre "
+        "une mesure pleine et 0,00 a 62,5 Hz avec valid=true dans les DEUX cas. Un "
+        "lecteur qui ne trouve pas le poids a l'endroit de la valeur le croira absent et "
+        "comparera des mesures incomparables.")
+
+    # hnr_valid dehors, hnr_db et hnr_is_spectral dedans : la portee EST
+    # l'invariant, la presence ne suffit pas.
+    scope = _braced(block, 'if (feat.spectralValid)')
+    assert 'a["hnr_valid"]' in block and 'a["hnr_valid"]' not in scope, (
+        "a[\"hnr_valid\"] doit etre publie INCONDITIONNELLEMENT : c'est lui qui dit que "
+        "hnr_db n'a pas ete mesure. Le mettre sous la garde le fait disparaitre "
+        "exactement quand il est necessaire, et l'absence des trois cles redevient "
+        "indistinguable d'un bloc audio tronque.")
+    for f in ('a["hnr_db"]', 'a["hnr_is_spectral"]'):
+        assert f in scope, (
+            "%s doit etre publie SOUS if (feat.spectralValid). Sans mesure spectrale, "
+            "fillSpectral() remet harmonicToNoiseRatio a 0.0f : publie tel quel, ce "
+            "\"hnr_db\": 0 est indistinguable d'une vraie mesure Goertzel autour de 0 dB, "
+            "soit la valeur de reference documentee d'une note timbree sur cette "
+            "echelle (-0,06 dB). Et une valeur sans son echelle ment de 31,88 dB." % f)
+        assert block.count(f) == 1, (
+            "%s est publie %d fois : une seconde emission hors garde republierait le 0 "
+            "que la garde sert a taire." % (f, block.count(f)))
+
+    # Les deux modes de panne de la chronometrie. Les compter sans jamais les
+    # publier revient a ne pas les compter.
+    tm = block.split('a["timing"]')[1]
+    for f in ('rejected_frames', 'rejected_events'):
+        assert 'tm["%s"]' % f in tm, (
+            "a[\"timing\"] n'expose pas \"%s\". C'est l'un des deux SEULS temoins des "
+            "modes de panne de la chronometrie : sans lui, un releve vide ou immobile ne "
+            "se distingue pas d'une absence de jeu, et un cablage d'appels errone "
+            "(rejected_events) passe pour un defaut de jeu." % f)

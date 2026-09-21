@@ -74,3 +74,52 @@ the old one active until the reboot.
 
 The rows added at the end of `HARDWARE_TEST_MATRIX.md` (prefix `AUD-`) cover this
 audit. They remain `NOT TESTED — requires hardware`.
+
+# 2026-09 second audit pass — calibration session, undroppable paths, locks
+
+Date: 2026-09-21
+Scope: a second review of the firmware **after** the audit above, focused on the
+interactions the first pass left in place. The defects below are not regressions
+of the first pass; they are faults it did not reach. One of them (row 1) made the
+automatic calibration non-functional in the field even though the calibrator's
+own unit tests were green — which is exactly why an integration test spanning
+`InstrumentManager` + the web session + `AutoCalibrator` was added.
+
+## Findings and fixes
+
+| # | Area | Severity | Finding | Correction | Tests |
+| --- | --- | --- | --- | --- | --- |
+| 1 | Auto-calibration / actuator session | **P0** | `WebConfigurator::update()` called `setActuatorSessionActive(true)` on **every loop pass** while a calibration was running. Taking ownership was not idempotent: it ran `_sequencer.stop()`, i.e. `closeSolenoid()` + `setAirflowToRest()`. The calibrator opens the valve **once** after the noise measurement and sets its angle **once** in `ST_SET`, then only listens during `ST_SETTLE` / `ST_COLLECT`. The valve was therefore closed and the airflow servo rested between positioning and measurement: every note failed with `no_sound`. | `setActuatorSessionActive()` is idempotent — an identical re-request only keeps servo power up. The per-loop call is removed: ownership is taken once at `WEBOP_AUTOCAL_START_*` and released once at the end. The transition also realigns `_prevSequencerState` / `_prevNoteSounding`. | `calibration_session_survives_repeated_ownership` (full integration, with a **negative control** that replays the old side effect and asserts the calibration then fails), `actuator_session_take_is_idempotent`, `test_audit2_actuator_session_is_idempotent` |
+| 2 | Air source during a session | P1 | `updateAirSourceFromSequencer()` kept running during a session. The forced return to `STATE_IDLE` was read as a note end, so the pump/fan demand set by `CalibrationAirSupply` was overwritten with the idle demand on the next pass. | The sequencer→air-source translation is skipped while a session owns the actuators, **and** taking a session realigns `_prevSequencerState` / `_prevNoteSounding`. The two are deliberately redundant: removing either one alone still keeps the demand (the test confirms this); removing both reproduces the overwrite. It also now runs **after** `_airflowCtrl.update()` so it reads this pass's breath state. | `calibration_owns_the_air_source` (starts the session **while a note is playing** — with the sequencer already idle there is no transition to misread and the defect does not reproduce) |
+| 3 | Calibration cancel | P1 | The cancel travelled through `postWebOp()`, which fails silently when the queue is full. A panic then cut the actuators while `_autoCal` stayed `running` and re-applied its commands on the next pass. | A dedicated `_calCancelRequested` flag, on the same principle as the panic: set by the panic handler, the owner's disconnect, `stop` and `auto_stop`; consumed at the top of `update()`, before `_autoCal->update()`. `WEBOP_AUTOCAL_CANCEL` is removed. | `calibration_cancel_is_never_lost`, `test_autocal_actuator_ownership_and_locks` |
+| 4 | `ACMD_NOTE_OFF` | P1 | The `EventQueue` already protected Note Offs (`enqueue…Forced`), but a Note Off coming from the WebSocket first crossed the `CommandQueue`, whose push fails when full. The release never reached the `EventQueue` and the note stayed stuck with the valve and the breath open. | A 128-note atomic bitmap outside the ring (`requestNoteOff()` / `takePendingNoteOff()`), applied **after** the ring is drained so it cannot overtake a Note On already queued, and cleared by `requestPanic()` / `clear()`. Safer than simply enlarging the ring. | `note_off_is_never_dropped_on_full_command_queue`, `test_audit2_note_off_is_never_dropped` |
+| 5 | CC2 silence vs air source | P1 | The demand followed sequencer state transitions only. CC2 can silence a **held** note with no transition at all, so the pump kept pushing at full demand against a valve the breath controller had just closed. | `AirflowController::isNoteSounding()`; the demand now follows the state **and** the real breath, and is restored when CC2 rises again. | `cc2_silence_drops_air_source_and_restores` |
+| 6 | WebSocket sessions | P1 | The table stored only the `clientId`. After the initial `auth`, nothing re-queried `WebAuth`: an open socket stayed authenticated past the TTL and survived `revokeAll()`. | The table stores the **token**; every command revalidates it, which applies expiry and slides the window as for HTTP. A password change clears the table. | `test_audit2_websocket_sessions_expire` |
+| 7 | Serial console | P1 | `Serial.begin(115200)` was inside `if (DEBUG)` while `DeviceSecrets::printToSerial()` runs unconditionally. With `DEBUG = 0` the hotspot key and admin password were printed nowhere and the device became unreachable. | `Serial.begin()` is unconditional; only verbose logs remain tied to `DEBUG`. | `test_audit2_serial_is_always_initialised` |
+| 8 | `cfg` coherence | P1/P2 | `cfg = candidate` copies ~5 KB and is not atomic against the other core. An HTTP response builder walking `cfg` during the commit could see a half-copied struct (`numNotes` updated, `notes[]` not yet). | An optional `ConfigCommitGuard` held **only** around the atomic assignment — never around validation or the flash write. `GET /api/config` and `GET /api/diagnostics` take the same lock and answer `503 config_busy` instead of blocking the TCP stack. Neither hands off to `loop()` under the lock, so no deadlock is possible. | `test_audit2_config_reads_are_serialised_with_the_commit` |
+| 9 | WebOp queue | P2 | The queue was protected by a `portMUX`. A `WebOp` carries three `String`s, so copying it allocates — and the allocator takes its own lock, which is forbidden with interrupts disabled. | A FreeRTOS mutex (`_wsOpMutex`) instead of the spinlock. | `test_audit2_webop_queue_uses_a_mutex_not_a_spinlock` |
+| 10 | Vibrato rounding | P2 | `(int16_t)(offset + 0.5)` truncates towards zero: `-0.6` gave `0` and `+0.6` gave `1`, a half-degree upward bias over the whole negative half — visible once the signed LUT fix landed. | `lroundf(vibratoOffset)`. | `vibrato_oscillation_is_symmetric_around_base` (production path: a held note with CC1 = 127, sampled over several vibrato periods, must swing as far below the base angle as above it), `vibrato_rounding_is_symmetric`, `test_audit2_vibrato_rounding_is_symmetric` |
+| 11 | Reset All Controllers | P2 | `resetAllControllers()` only restored the CC values held by `InstrumentManager`. The CC2 smoothing buffer, the CC2 timeout and the attack mode forced by CC73 survived the reset. | `AirflowController::resetRuntimeState()`, called by `resetAllControllers()`, which also clears `_cc2Pending`. | `reset_all_controllers_clears_expression_runtime_state`, `test_audit2_reset_all_controllers_clears_expression_state` |
+| 12 | Actuator GPIOs on probe failure | P2 | A `beginSafe()` that fails the I2C probe returns **before** `PressureController::begin()` / `FanController::begin()`, leaving the pump and fan pins in high impedance — a floating MOSFET gate. | `driveConfiguredActuatorPinsInactive()` drives the solenoid, fan and pump pins to their inactive level **before** `detectPca()`. | `test_audit2_actuator_pins_are_safed_before_the_i2c_probe` |
+
+## Why an integration test was needed
+
+`AutoCalibrator` has thorough unit tests, and they all passed while the firmware
+was shipping a non-functional calibration. They passed because they wire the
+calibrator to controllers nobody else touches, so nothing ever closed the valve
+underneath it. The new test runs the real `InstrumentManager`, the real
+`CalibrationAirSupply` over its own controllers, and a faithful model of the web
+session driver, in the real `loop()` order. Its simulated flute derives sound
+from the **actual** valve state and airflow servo angle, not from the
+calibrator's intent — so anything that closes the valve or rests the servo
+between positioning and measurement is heard as silence, exactly as on the
+bench. The negative control in the same test replays the old non-idempotent side
+effect and asserts the calibration fails, so the test cannot pass vacuously.
+
+## Remaining hardware tests
+
+The rows added at the end of `HARDWARE_TEST_MATRIX.md` (prefix `AUD2-`) cover
+this pass. They remain `NOT TESTED — requires hardware`. In particular
+`AUD2-ACAL-1` is the bench check for the P0 above, and `AUD2-GPIO-1` records
+that a hardware gate pull-down is still the reference protection: firmware
+cannot drive a pin before its own `setup()` runs.

@@ -1,11 +1,71 @@
 #include "NoteSequencer.h"
+#include "AcousticTiming.h"
+#include "IAudioSource.h"
 #include "ConfigStorage.h"
 
 NoteSequencer::NoteSequencer(EventQueue& eventQueue, FingerController& fingerCtrl, AirflowController& airflowCtrl)
   : _eventQueue(eventQueue), _fingerCtrl(fingerCtrl), _airflowCtrl(airflowCtrl),
     _currentState(STATE_IDLE), _currentNote(0), _currentVelocity(0),
     _stateStartTime(0), _eventScheduledTime(0), _playbackStartTime(0),
-    _noteSoundStartTime(0), _pendingStopAfterMinDuration(false) {
+    _noteSoundStartTime(0), _pendingStopAfterMinDuration(false),
+    _timing(nullptr), _audio(nullptr) {
+}
+
+/*----------------------------------------------------------------------------
+ * Notifications de chronometrie - PHASE 7
+ *
+ * Deux regles, et elles ne se negocient pas :
+ *   1. test de nullite systematique : l'observateur est optionnel ;
+ *   2. la valeur rendue est jetee (cast explicite en void). Ces hooks rendent
+ *      un bool qui signale un ordre HORS SEQUENCE ; AcousticTiming le compte
+ *      deja dans rejectedEvents(). Le lire ici pour en tirer une decision
+ *      d'actionneur donnerait au moteur audio un pouvoir sur la mecanique, ce
+ *      que le cahier des charges interdit.
+ *
+ * LE CHANGEMENT DE NOTE, signale a l'analyse aux deux MEMES bornes
+ * -----------------------------------------------------------------
+ * AudioAnalyzer::resetAcousticTracking() remet a zero la ligne de base de
+ * brillance du detecteur de couac et l'historique de pitch. Elle n'avait, sur
+ * le chemin de JEU, aucun appelant : seule une note VISEE la declenchait, et
+ * seul AutoCalibrator en declare une. En lecture MIDI ordinaire le suivi
+ * traversait donc les notes, et un legato montant d'une octave - musique
+ * ordinaire - faisait publier ACOUSTIC_SQUEAK pendant six frames sur une note
+ * propre (le couac est 3e dans l'ordre de priorite : il masque tout ce qui
+ * suit) et `stability` a 0,00 AVEC `stabilityValid` vrai pendant sept frames.
+ *
+ * POURQUOI LES DEUX BORNES, et pas seulement le debut :
+ *   - le DEBUT est celui qui repare le defaut : la remise a zero tombe a
+ *     l'ordre de note, donc AVANT la premiere frame sonore de la note neuve,
+ *     qui repart d'une ardoise vierge ;
+ *   - la FIN est la seule qui couvre le cas ou aucune note ne suit - fin de
+ *     phrase, panic, All Sound Off, transport perdu, prise de possession par
+ *     le calibrateur. SqueakDetector se repare tout seul dans ce cas
+ *     (forgetHeldNote() sur la premiere frame sans son), mais PAS l'historique
+ *     de pitch : PitchDetector::detect() n'y empile que les mesures FIABLES et
+ *     n'efface rien sur le silence, donc les cents de la note coupee y
+ *     resteraient jusqu'a une hypothetique note suivante. Ce qui sonnerait
+ *     entre-temps devant le moniteur serait mesure contre eux ;
+ *   - le cout est borne et a SENS UNIQUE : resetAcousticTracking() ne peut que
+ *     RETENIR un verdict (`stabilityValid` faux, `classified` faux), jamais en
+ *     fabriquer un. Ce qu'elle coute, c'est la stabilite des frames d'extinction
+ *     de la note qu'on relache - que personne ne consomme ; ce qu'elle evite,
+ *     c'est un verdict FAUX ;
+ *   - sur le remplacement monophonique les deux bornes tirent dans la meme
+ *     passe de processDueEvents(), a quelques microsecondes : "les deux bornes"
+ *     n'y coute exactement rien.
+ *
+ * Le hook rend VOID. Il n'y a donc meme pas de valeur a jeter : le sens unique
+ * est garanti par le type, pas par une convention d'appel.
+ *--------------------------------------------------------------------------*/
+
+void NoteSequencer::notifyNoteCommanded() {
+  if (_timing != nullptr) _timing->noteCommanded(millis());
+  if (_audio != nullptr) _audio->resetAcousticTracking();
+}
+
+void NoteSequencer::notifyNoteReleased() {
+  if (_timing != nullptr) (void)_timing->noteReleased(millis());
+  if (_audio != nullptr) _audio->resetAcousticTracking();
 }
 
 void NoteSequencer::begin() {
@@ -157,6 +217,14 @@ void NoteSequencer::startNoteSequence(byte note, byte velocity, unsigned long sc
   _eventScheduledTime = scheduledTime;
 
   _fingerCtrl.setFingerPatternForNote(note);
+  // ORDRE DE NOTE ACCEPTE. C'est ICI, et pas a l'arrivee du message MIDI : une
+  // note refusee (hardware en panne, calibration en cours, note hors plage) ou
+  // perdue (file pleine, file videe par un panic entre-temps) n'atteint jamais
+  // cette ligne et n'entre donc pas dans les statistiques de latence. L'instant
+  // retenu est celui ou la chaine d'actionneurs part reellement : le motif de
+  // doigte vient d'etre ecrit, l'air et la valve suivront apres la fenetre de
+  // positionnement.
+  notifyNoteCommanded();
   transitionTo(STATE_POSITIONING);
 
   if (DEBUG) {
@@ -208,6 +276,13 @@ void NoteSequencer::stopCurrentNoteForReplacement() {
   } else {
     _airflowCtrl.setAirflowVelocity(1);
   }
+
+  // Monophonie : l'ancienne note est CLOSE avant que la nouvelle ne s'ouvre.
+  // Sans cette notification, noteCommanded() de la note suivante fermerait bien
+  // la precedente (TIMING_ABORTED) mais sans jamais horodater son ordre d'arret,
+  // et les deux notes se chevaucheraient dans le releve. La notification vient
+  // APRES l'action sur l'actionneur : la mise en securite ne depend de rien.
+  notifyNoteReleased();
 }
 
 void NoteSequencer::stopCurrentNote() {
@@ -220,6 +295,12 @@ void NoteSequencer::stopCurrentNote() {
     _airflowCtrl.setAirflowVelocity(1);
   }
 
+  // ORDRE D'ARRET REEL. Pas celui du message Note Off : une note plus courte que
+  // minNoteDurationMs voit son arret DIFFERE (_pendingStopAfterMinDuration), et
+  // c'est ce passage-ci, une fois la duree minimale ecoulee, qui commande
+  // vraiment l'extinction.
+  notifyNoteReleased();
+
   transitionTo(STATE_STOPPING);
 }
 
@@ -229,12 +310,19 @@ void NoteSequencer::transitionTo(NoteState newState) {
 }
 
 void NoteSequencer::stop() {
+  const bool hadNote = (_currentState != STATE_IDLE);
   _currentNote = 0;
   _currentVelocity = 0;
   _pendingStopAfterMinDuration = false;
   _eventQueue.clear();
   _airflowCtrl.closeSolenoid();
   _airflowCtrl.setAirflowToRest();
+  // Panic / All Sound Off / transport perdu / prise de possession par le
+  // calibrateur : la note en cours est coupee pour de bon. La notifier evite de
+  // laisser la machine a etats de chronometrie armee jusqu'a son plafond de
+  // 60 s. La mise en securite ci-dessus a deja eu lieu - on ne notifie qu'apres.
+  // `hadNote` est lu sur l'etat du SEQUENCEUR, jamais sur l'observateur.
+  if (hadNote) notifyNoteReleased();
   transitionTo(STATE_IDLE);
 
   if (DEBUG) {

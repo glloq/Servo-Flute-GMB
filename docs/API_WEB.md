@@ -210,6 +210,7 @@ visible from the API:
 | Applied | `200 {"ok":true,"saved":true,"applied":true,"restart_required":false}` | new configuration active |
 | Needs a hardware re-init | `200 {"ok":true,"saved":true,"applied":false,"restart_required":true,"restarting":true}` | new configuration saved, **old one still active**, actuators safed, controlled reboot scheduled |
 | Loop busy / not answering | `503 {"ok":false,"error":"busy"}` | unchanged |
+| Configuration lock not obtained | `503 {"ok":false,"error":"config_busy"}` | unchanged — only `GET /api/config` and `GET /api/diagnostics` can answer this |
 
 A configuration change bumps the General-Midi-Boop revision only in the "applied"
 row — validated, saved *and* active. A restart-required change is announced after
@@ -253,6 +254,44 @@ The WebSocket is authenticated in-band: the server answers a new connection with
 `{"t":"error","msg":"unauthorized"}` until the client sends
 `{"t":"auth","token":"<token>"}`. The embedded UI does this automatically and
 shows a sign-in overlay when a 401 comes back.
+
+### Noise-profile capture
+
+```
+{"t":"noise_cal","mode":"start"}   -> {"t":"noise","ok":true,"capturing":"pump_high"}
+{"t":"noise_cal","mode":"stop"}    -> {"t":"noise","ok":true,"profile":"pump_high",
+                                       "frames":48,"rms_dbfs":-52.3,"flatness":0.61}
+{"t":"noise_cal","mode":"reset"}   -> {"t":"noise","ok":true}
+```
+
+The flute's machinery is part of the noise and its level depends on the
+operating point, so the SNR is measured against a profile of the **current**
+state rather than one global floor. Bring the instrument to the wanted state
+first (`pump_target`, `fan_target`), then capture: the analyser writes into the
+profile matching the state it reads.
+
+A capture is refused with `note_playing` while a note sounds — it would measure
+the note, not the noise — and with `no_microphone` when none is detected. A
+capture shorter than `MIC_NOISE_MIN_FRAMES` is rejected with `too_short` rather
+than stored as a low-confidence profile.
+
+`GET /api/diagnostics` lists every profile under `audio.noise`, says which was
+captured, and warns when the current SNR falls back to `ambient` because the
+matching profile is missing — that fallback likely overstates quality.
+
+The server stores the **token** for each authenticated socket, not just the
+connection id, and revalidates it on every command. An open socket therefore
+expires with its session exactly like an HTTP caller (and slides its window the
+same way), and a password change — which revokes all sessions — takes effect on
+the WebSocket immediately instead of leaving long-lived connections authenticated
+under the old secret. A socket whose token has expired gets
+`{"t":"error","msg":"unauthorized"}` again and must re-send `{"t":"auth",...}`.
+
+`GET /api/config` and `GET /api/diagnostics` read the whole active configuration
+(about 5 KB) from the network task while `loop()` may be committing a new one.
+Both take a short lock around the read and answer `503 config_busy` rather than
+block the TCP stack; the commit holds the same lock only for the single atomic
+assignment, never across validation or the flash write.
 
 ### Initial credentials
 

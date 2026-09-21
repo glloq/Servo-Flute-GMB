@@ -99,6 +99,10 @@ void AutoCalibrator::safeHardware() {
   _airflow.setAirflowToRest();
   _fingers.closeAllFingers();
   _airSupply.stopSafe();
+  // La note visee ne doit pas survivre a la calibration : le moniteur live doit
+  // retrouver le comportement general, sans biais vers une note qui n'est plus
+  // jouee.
+  _audio.clearExpectedMidiNote();
 }
 
 void AutoCalibrator::stop() {
@@ -243,6 +247,11 @@ void AutoCalibrator::prepareNote(unsigned long now) {
   _audioStale = false;
   _anySoundSeen = false;
   _fingers.setFingerPatternForNote(_expectedMidi);
+  // Declarer la note visee au detecteur : il evalue alors explicitement les lags
+  // de 3*f0, 2*f0, f0 et f0/2 et retient le plus aigu qui qualifie. Un overblow
+  // reste donc detecte COMME overblow (octave au-dessus), au lieu de dependre du
+  // premier creux rencontre en balayant tau.
+  _audio.setExpectedMidiNote(_expectedMidi);
   // Noise floor is measured with the valve closed and the air at rest, fingers
   // already positioned, no mechanical action in progress.
   _airflow.testSolenoid(false);

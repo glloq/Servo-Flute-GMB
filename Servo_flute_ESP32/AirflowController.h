@@ -8,6 +8,10 @@
 // Callback type pour ecriture PWM multi-PCA9685
 using PwmWriteFn = std::function<void(uint8_t channel, uint16_t on, uint16_t off)>;
 
+// PHASE 7 : observateur de chronometrie acoustique. Declaration AVANCEE - ce
+// controleur ne connait de lui qu'un pointeur eventuellement nul.
+class AcousticTiming;
+
 class AirflowController {
 public:
   AirflowController(PwmWriteFn writePwm);
@@ -30,6 +34,17 @@ public:
   // actually take effect.
   bool recomputeActiveNote();
   bool isNoteActive() const { return _noteActive; }
+  // Vrai quand une note est tenue ET que le souffle effectif la fait
+  // reellement sonner. Faux si CC2 (breath) a demande le silence : la note reste
+  // tenue mais aucun air ne doit etre produit. InstrumentManager s'en sert pour
+  // retomber la pompe / le ventilateur au ralenti, au lieu de les laisser
+  // pousser contre une valve fermee.
+  bool isNoteSounding() const { return _noteActive && _noteSounding; }
+  // Remet l'etat runtime d'expression a ses valeurs de configuration (lissage
+  // CC2, fenetre de timeout CC2, mode/offset d'attaque CC73). Utilise par
+  // Reset All Controllers, qui ne remettait auparavant que les valeurs de CC
+  // detenues par InstrumentManager.
+  void resetRuntimeState();
 
   void openValve();
   void closeValve();
@@ -69,6 +84,15 @@ public:
   // Calibration : tester solenoide open/close
   void testSolenoid(bool open);
 
+  // --- PHASE 7 : observateur de chronometrie (OPTIONNEL) --------------------
+  // Pose par InstrumentManager::setTimingObserver(), nullptr par defaut.
+  // SENS UNIQUE : ce controleur NOTIFIE l'observateur quand une consigne d'air
+  // ou une ouverture de valve est reellement appliquee POUR UNE NOTE, et ne lit
+  // jamais rien de lui. Aucun angle, aucune ouverture, aucune fermeture ne
+  // depend de sa presence ni de ce que ses hooks rendent.
+  void setTimingObserver(AcousticTiming* obs) { _timing = obs; }
+  AcousticTiming* timingObserver() const { return _timing; }
+
   // --- Angle servo (trav uniquement) ---
   void setAngleForNote(byte midiNote);
   void setAngleToRest();
@@ -104,6 +128,7 @@ private:
   byte _activeNote;
   byte _activeVelocity;
   bool _noteActive;
+  bool _noteSounding;   // derniere decision de computeAirflow() : la note sonne-t-elle ?
   // Shared implementation of setAirflowForNote()/recomputeActiveNote(): the attack
   // transition is only (re)armed at the note onset.
   bool computeAirflow(byte midiNote, byte velocity, bool isOnset);
@@ -119,6 +144,13 @@ private:
   uint8_t _runtimeAttackMode;
   uint8_t _runtimeAttackOffset;
 
+  // Notifications SORTANTES : test de nullite systematique, valeur rendue jetee
+  // (AcousticTiming compte lui-meme les ordres hors sequence dans
+  // rejectedEvents() ; la relire ici donnerait au moteur audio prise sur la
+  // mecanique).
+  void notifyAirCommanded();
+  void notifyValveOpened();
+
   void setAirflowServoAngle(uint16_t angle);
   void setSolenoidPWM(uint8_t pwmValue);
   void setValveServoAngle(bool open);
@@ -131,6 +163,9 @@ private:
   byte _ccBrightness;
   uint16_t _currentAngleServo;
   byte _lastAngleNote;  // Derniere note pour re-appliquer CC74 en temps reel
+  // Observateur de chronometrie, nullptr tant que personne n'en pose un. Declare
+  // en DERNIER pour que l'ordre d'initialisation suive la liste du constructeur.
+  AcousticTiming* _timing;
 };
 
 #endif
