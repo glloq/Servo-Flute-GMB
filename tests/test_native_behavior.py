@@ -17,6 +17,7 @@ SOURCES = [
     "Servo_flute_ESP32/Sha256.cpp",
     "Servo_flute_ESP32/PressureController.cpp",
     "Servo_flute_ESP32/TofSensor.cpp",
+    "Servo_flute_ESP32/AudioRingBuffer.cpp",
     "Servo_flute_ESP32/EventQueue.cpp",
     "Servo_flute_ESP32/CommandQueue.cpp",
     "Servo_flute_ESP32/FingerController.cpp",

@@ -2282,6 +2282,44 @@ void WebConfigurator::handleApiDiagnostics(AsyncWebServerRequest* request) {
   doc["microphone_status"] = _audio ? _audio->getMicStatusString() : "not_init";
   addCheck("microphone", micOk ? "ok" : "warning",
            micOk ? "Microphone detected" : "Microphone not detected or not initialized");
+
+  // Acquisition audio : compteurs reels de l'anneau. Un microphone "detecte"
+  // qui accumule des debordements produit des mesures sans valeur, et cela doit
+  // se voir plutot que de se deviner. Niveau en dBFS (pleine echelle NUMERIQUE,
+  // jamais du dB SPL : le microphone n'est pas etalonne).
+  if (_audio) {
+    const AudioCaptureStats& cap = _audio->getCaptureStats();
+    JsonObject a = doc["audio"].to<JsonObject>();
+    a["frame_size"] = MIC_ANALYSIS_FRAME_SIZE;
+    a["hop_size"] = MIC_ANALYSIS_HOP_SIZE;
+    a["sample_rate"] = MIC_SAMPLE_RATE;
+    a["samples_received"] = cap.samplesReceived;
+    a["frames_produced"] = cap.framesProduced;
+    a["partial_reads"] = cap.partialReads;
+    a["read_errors"] = cap.readErrors;
+    a["buffer_overruns"] = cap.bufferOverruns;
+    a["buffer_underruns"] = cap.bufferUnderruns;
+    a["dropped_samples"] = cap.droppedSamples;
+    a["last_frame_ms"] = (uint32_t)cap.lastFrameTimestamp;
+    a["rms_dbfs"] = _audio->getRmsDbFS();
+    a["peak_dbfs"] = _audio->getPeakDbFS();
+    a["clipping"] = _audio->isClipping();
+    a["clipping_ratio"] = _audio->getClippingRatio();
+    a["dc_offset"] = _audio->getLevel().dcOffset;
+
+    // Des echantillons perdus signifient que loop() n'a pas suivi : les mesures
+    // portent alors sur un signal troue. C'est un avertissement, pas une panne.
+    if (cap.droppedSamples > 0) {
+      addCheck("audio_capture", "warning",
+               String("Audio capture dropped ") + String((unsigned long)cap.droppedSamples) +
+                   " samples (" + String((unsigned long)cap.bufferOverruns) + " overruns)");
+    } else if (_audio->isClipping()) {
+      addCheck("audio_capture", "warning", "Microphone input is clipping");
+    } else {
+      addCheck("audio_capture", "ok",
+               String((unsigned long)cap.framesProduced) + " frames analysed, no dropped samples");
+    }
+  }
   doc["calibration_active"] = isCalibrationActive();
 #else
   doc["microphone_detected"] = false;

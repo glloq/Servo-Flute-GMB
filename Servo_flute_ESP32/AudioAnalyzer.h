@@ -2,6 +2,14 @@
  * AudioAnalyzer - I2S INMP441 microphone driver with real-time audio analysis
  *
  * Provides:
+ * - Acquisition continue : le DMA est vide dans un anneau (AudioRingBuffer) et
+ *   l'analyse n'extrait une frame que lorsque MIC_ANALYSIS_FRAME_SIZE
+ *   echantillons sont REELLEMENT disponibles. Une lecture I2S partielle ne
+ *   constitue plus une frame (voir AUDIO_ARCHITECTURE.md, defauts A0-1 / A0-2).
+ * - Recouvrement configurable (MIC_ANALYSIS_HOP_SIZE) entre frames successives.
+ * - Niveau complet : RMS, crete, dBFS, decalage continu, ratio d'ecretage.
+ * - Compteurs d'acquisition exposes au diagnostic (lectures partielles,
+ *   debordements, echantillons perdus).
  * - I2S DMA-based microphone input (INMP441 MEMS mic, 32-bit words, 32 kHz).
  *   Works on both the ESP-IDF 5.x "std" I2S driver and the legacy IDF 4.x driver
  *   (selected at compile time), so it builds on Arduino-ESP32 2.0.x and 3.0.x.
@@ -23,6 +31,8 @@
 #include "settings.h"
 #include "IAudioSource.h"
 #include "PitchDetector.h"
+#include "AudioRingBuffer.h"
+#include "AudioLevel.h"
 
 #if MIC_ENABLED
 
@@ -68,6 +78,15 @@ public:
   float getPitchCents() const override { return _pitchCents; }
   float getPitchConfidence() const override { return _pitchConfidence; }
   bool isPitchValid() const override { return _pitchValid; }
+
+  // --- Niveau et acquisition (PHASE 1) ---
+  const FrameLevel& getLevel() const { return _level; }
+  float getRmsDbFS() const { return _level.rmsDbFS; }
+  float getPeakDbFS() const { return _level.peakDbFS; }
+  bool isClipping() const { return _level.clippingDetected; }
+  float getClippingRatio() const { return _level.clippingRatio; }
+  const AudioCaptureStats& getCaptureStats() const { return _stats; }
+  void resetCaptureStats() { _stats.reset(); }
   bool isActive() const override { return _active; }
   void setActive(bool active) override { _active = active; }
   uint32_t getFrameSequence() const override { return _frameSeq; }
@@ -93,16 +112,27 @@ private:
 #endif
 
   PitchDetector _pitch;
-  int32_t _rawBuffer[MIC_BUFFER_SIZE];
-  float _analysisBuffer[MIC_BUFFER_SIZE];
-  size_t _validSamples;
+  FrameLevel _level;
+  AudioCaptureStats _stats;
+  AudioRingBuffer _ring;
+  // Tampon de transfert I2S -> anneau. Petit (1 ko) et reutilise : il remplace
+  // l'ancien _rawBuffer[1024] + _analysisBuffer[1024] (8 ko), car on n'a plus
+  // besoin de lire une frame entiere en une fois.
+  int32_t _chunk[MIC_I2S_CHUNK_SAMPLES];
+  float _chunkFloat[MIC_I2S_CHUNK_SAMPLES];
+  // Frame d'analyse contigue extraite de l'anneau. Toujours COMPLETE.
+  float _frame[MIC_ANALYSIS_FRAME_SIZE];
+  unsigned long _lastDrain;
   unsigned long _lastUpdate;
 
   bool installI2S();
   void uninstallI2S();
   bool detectMicrophone();       // reads a probe buffer and sets _micStatus
-  void readI2S();
-  void analyzeBuffer();
+  // Vide le DMA dans l'anneau. Appelee beaucoup plus souvent que l'analyse.
+  void drainI2S();
+  // Analyse UNE frame complete deja extraite dans _frame.
+  void analyzeFrame();
+  void markMeasurementInvalid();
 };
 
 #endif // MIC_ENABLED

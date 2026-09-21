@@ -105,6 +105,50 @@ Set MIC_ENABLED to false if no mic is connected.
 #define MIC_FRAME_STALE_MS      250
 
 /*----------------------------------------------------------------------------
+ * Acquisition audio (PHASE 1) - anneau continu, recouvrement, niveau
+ *
+ * Ces valeurs decrivent le MATERIEL et le dimensionnement memoire. Elles ne
+ * sont pas des reglages d'instrument : voir AUDIO_ARCHITECTURE.md pour la
+ * separation firmware / instrument / appris.
+ *--------------------------------------------------------------------------*/
+
+// Taille d'une frame d'analyse. Une frame n'est produite que lorsque ce nombre
+// d'echantillons est REELLEMENT disponible : plus jamais de frame partielle.
+#define MIC_ANALYSIS_FRAME_SIZE 1024    // 32,00 ms a 32 kHz
+
+// Pas d'avancement entre deux frames. HOP < FRAME donne un recouvrement :
+// 512 = 50 %, soit une frame toutes les 16 ms au lieu de 32 ms, ce qui double
+// la resolution temporelle des mesures d'attaque sans doubler le cout DSP
+// (seul le nombre de frames augmente, pas la taille de chacune).
+#define MIC_ANALYSIS_HOP_SIZE   512
+
+// Capacite de l'anneau (PUISSANCE DE DEUX obligatoire : indexation par
+// masquage). Doit absorber la gigue d'ordonnancement entre deux passages de
+// loop() : 2048 echantillons = 64 ms, soit deux fois la profondeur du DMA.
+#define MIC_RING_CAPACITY       2048    // 8 ko de float
+
+// Taille du tampon de transfert I2S -> anneau. Petit et reutilise : il vit en
+// membre, jamais sur la pile, et n'impose pas de lire une frame entiere d'un
+// coup (c'est precisement ce qui produisait des frames partielles).
+#define MIC_I2S_CHUNK_SAMPLES   256     // 1 ko d'int32
+
+// Intervalle minimal entre deux vidages du DMA vers l'anneau. Le DMA ne
+// contient que MIC_DMA_BUF_COUNT * MIC_DMA_BUF_LEN echantillons (32 ms ici) :
+// vider plus lentement que cela garantit la perte d'echantillons. 8 ms laisse
+// une marge de 4x.
+#define MIC_DRAIN_INTERVAL_MS   8
+
+// Plancher des conversions en dBFS. Evite -inf sur un silence numerique.
+// Rappel : dBFS = relatif a la pleine echelle NUMERIQUE, jamais du dB SPL.
+#define MIC_DBFS_FLOOR          (-120.0f)
+
+// Ecretage : niveau absolu considere comme "au rail", et proportion
+// d'echantillons au rail a partir de laquelle on declare l'ecretage. Un
+// ecretage bref n'est pas un microphone sature en permanence.
+#define MIC_CLIP_THRESHOLD      0.98f
+#define MIC_CLIP_RATIO_WARN     0.005f  // 0,5 % des echantillons
+
+/*----------------------------------------------------------------------------
  * Auto-calibration (microphone-driven per-note airflow calibration)
  *--------------------------------------------------------------------------*/
 

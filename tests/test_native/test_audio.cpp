@@ -18,6 +18,8 @@
 #include "settings.h"
 #include "PitchDetector.h"
 #include "PitchMath.h"
+#include "AudioRingBuffer.h"
+#include "AudioLevel.h"
 #include "audio_signals.h"
 
 namespace {
@@ -250,6 +252,299 @@ void ref_signal_generator_is_reproducible() {
   assert(audiosig::toI2sWord(-2.0f) == audiosig::toI2sWord(-1.0f));  // borne basse
 }
 
+
+// ---------------------------------------------------------------------------
+// PHASE 1.1 - Anneau audio : une frame partielle n'est JAMAIS produite
+// ---------------------------------------------------------------------------
+
+void ring_never_produces_a_partial_frame() {
+  AudioRingBuffer ring;
+  AudioCaptureStats st;
+  std::vector<float> out(MIC_ANALYSIS_FRAME_SIZE);
+  std::vector<float> in(MIC_ANALYSIS_FRAME_SIZE);
+  audiosig::pureTone(in.data(), MIC_ANALYSIS_FRAME_SIZE, 440.0f, 0.5f, kFs);
+
+  // Anneau vide : refus, et le refus est COMPTE.
+  assert(!ring.readFrame(out.data(), MIC_ANALYSIS_FRAME_SIZE, MIC_ANALYSIS_HOP_SIZE, &st));
+  assert(st.bufferUnderruns == 1);
+  assert(st.framesProduced == 0);
+
+  // C'est exactement le defaut A0-1 : l'ancienne acquisition aurait traite
+  // n'importe laquelle de ces quantites comme une frame complete.
+  for (size_t partial : {size_t(1), size_t(100), size_t(300),
+                         size_t(MIC_ANALYSIS_FRAME_SIZE - 1)}) {
+    AudioRingBuffer r;
+    AudioCaptureStats s2;
+    r.write(in.data(), partial, &s2);
+    assert(!r.readFrame(out.data(), MIC_ANALYSIS_FRAME_SIZE, MIC_ANALYSIS_HOP_SIZE, &s2));
+    assert(s2.framesProduced == 0);
+    assert(s2.samplesReceived == (uint32_t)partial);
+  }
+
+  // Exactement assez : la frame sort, complete et identique a l'entree.
+  ring.reset();
+  st.reset();
+  ring.write(in.data(), MIC_ANALYSIS_FRAME_SIZE, &st);
+  assert(ring.readFrame(out.data(), MIC_ANALYSIS_FRAME_SIZE, MIC_ANALYSIS_HOP_SIZE, &st));
+  assert(st.framesProduced == 1);
+  for (int i = 0; i < MIC_ANALYSIS_FRAME_SIZE; i++) assert(out[i] == in[i]);
+}
+
+// ---------------------------------------------------------------------------
+// PHASE 1.2 - Recouvrement : frame n+1 commence a hop, pas a frameSize
+// ---------------------------------------------------------------------------
+
+void ring_frames_overlap_by_hop() {
+  AudioRingBuffer ring;
+  AudioCaptureStats st;
+  const size_t kFrameSz = MIC_ANALYSIS_FRAME_SIZE;
+  const size_t kHop = MIC_ANALYSIS_HOP_SIZE;
+
+  // Rampe numerotee : chaque echantillon porte son index, la position d'une
+  // frame se lit donc directement dans son contenu.
+  std::vector<float> ramp(2048);
+  for (size_t i = 0; i < ramp.size(); i++) ramp[i] = (float)i;
+
+  std::vector<float> f0(kFrameSz), f1(kFrameSz), f2(kFrameSz);
+  ring.write(ramp.data(), 2048, &st);
+  assert(st.droppedSamples == 0);      // 2048 = capacite exacte, rien ne deborde
+
+  assert(ring.readFrame(f0.data(), kFrameSz, kHop, &st));
+  assert(ring.readFrame(f1.data(), kFrameSz, kHop, &st));
+  assert(ring.readFrame(f2.data(), kFrameSz, kHop, &st));
+  assert(st.framesProduced == 3);
+
+  // frame 0 : 0..1023 / frame 1 : 512..1535 / frame 2 : 1024..2047
+  assert(f0[0] == 0.0f);
+  assert(f1[0] == (float)kHop);
+  assert(f2[0] == (float)(2 * kHop));
+
+  // La seconde moitie de la frame n est la premiere moitie de la frame n+1 :
+  // c'est la definition du recouvrement de 50 %.
+  for (size_t i = 0; i < kFrameSz - kHop; i++) {
+    assert(f0[kHop + i] == f1[i]);
+    assert(f1[kHop + i] == f2[i]);
+  }
+
+  // Un hop nul ou superieur a la frame est ramene a la taille de frame : pas de
+  // boucle infinie, pas de lecture qui n'avance jamais.
+  AudioRingBuffer r2;
+  AudioCaptureStats s2;
+  r2.write(ramp.data(), 2048, &s2);
+  std::vector<float> g0(kFrameSz), g1(kFrameSz);
+  assert(r2.readFrame(g0.data(), kFrameSz, 0, &s2));
+  assert(r2.readFrame(g1.data(), kFrameSz, 99999, &s2));
+  assert(g1[0] == (float)kFrameSz);    // avance d'une frame entiere
+}
+
+// ---------------------------------------------------------------------------
+// PHASE 1.3 - Debordement : les echantillons ANCIENS sont sacrifies, et comptes
+// ---------------------------------------------------------------------------
+
+void ring_overrun_drops_oldest_and_counts() {
+  AudioRingBuffer ring;
+  AudioCaptureStats st;
+  const size_t kCap = AudioRingBuffer::capacity();
+
+  std::vector<float> ramp(kCap + 500);
+  for (size_t i = 0; i < ramp.size(); i++) ramp[i] = (float)i;
+
+  ring.write(ramp.data(), kCap, &st);
+  assert(ring.available() == kCap);
+  assert(st.bufferOverruns == 0);
+
+  // 500 echantillons de plus : les 500 PLUS ANCIENS partent.
+  const size_t dropped = ring.write(ramp.data() + kCap, 500, &st);
+  assert(dropped == 500);
+  assert(st.bufferOverruns == 1);
+  assert(st.droppedSamples == 500);
+  assert(ring.available() == kCap);
+
+  // Le plus ancien echantillon encore present est bien le 500e.
+  std::vector<float> out(MIC_ANALYSIS_FRAME_SIZE);
+  assert(ring.readFrame(out.data(), MIC_ANALYSIS_FRAME_SIZE, MIC_ANALYSIS_HOP_SIZE, &st));
+  assert(out[0] == 500.0f);
+
+  // Ecriture plus grande que l'anneau entier : seuls les DERNIERS echantillons
+  // sont conserves. Du son vieux de plusieurs frames n'a plus d'interet.
+  AudioRingBuffer r2;
+  AudioCaptureStats s2;
+  std::vector<float> big(kCap * 3);
+  for (size_t i = 0; i < big.size(); i++) big[i] = (float)i;
+  const size_t d2 = r2.write(big.data(), big.size(), &s2);
+  assert(d2 == big.size() - kCap);
+  assert(r2.available() == kCap);
+  std::vector<float> o2(MIC_ANALYSIS_FRAME_SIZE);
+  assert(r2.readFrame(o2.data(), MIC_ANALYSIS_FRAME_SIZE, MIC_ANALYSIS_HOP_SIZE, &s2));
+  assert(o2[0] == (float)(big.size() - kCap));
+}
+
+// ---------------------------------------------------------------------------
+// PHASE 1.4 - Enroulement : une frame a cheval sur la fin du tableau
+// ---------------------------------------------------------------------------
+
+void ring_wraps_without_corrupting_a_frame() {
+  AudioRingBuffer ring;
+  AudioCaptureStats st;
+  const size_t kFrameSz = MIC_ANALYSIS_FRAME_SIZE;
+  const size_t kHop = MIC_ANALYSIS_HOP_SIZE;
+  std::vector<float> out(kFrameSz);
+
+  // On fait tourner l'anneau sur plusieurs tours complets en verifiant a chaque
+  // frame que le contenu est exactement la rampe attendue - y compris quand la
+  // frame est coupee par la fin du tableau interne.
+  float next = 0.0f;
+  std::vector<float> chunk(MIC_I2S_CHUNK_SAMPLES);
+  size_t expectedStart = 0;
+  int framesChecked = 0;
+
+  for (int iter = 0; iter < 200; iter++) {
+    for (size_t i = 0; i < chunk.size(); i++) chunk[i] = next++;
+    ring.write(chunk.data(), chunk.size(), &st);
+    while (ring.frameReady(kFrameSz)) {
+      assert(ring.readFrame(out.data(), kFrameSz, kHop, &st));
+      for (size_t i = 0; i < kFrameSz; i++) {
+        assert(out[i] == (float)(expectedStart + i));
+      }
+      expectedStart += kHop;
+      framesChecked++;
+    }
+  }
+  assert(st.droppedSamples == 0);       // consommation a la cadence de production
+  assert(framesChecked > 50);           // on a bien enroule plusieurs fois
+  assert(st.framesProduced == (uint32_t)framesChecked);
+}
+
+// ---------------------------------------------------------------------------
+// PHASE 1.5 - Regime permanent : production materielle vs consommation
+// ---------------------------------------------------------------------------
+
+void ring_steady_state_does_not_drift() {
+  // Reproduit le regime reel : le DMA produit Fe echantillons par seconde, et
+  // l'analyse consomme un hop par frame. L'equilibre ne tient QUE si la cadence
+  // d'analyse suit le hop - c'est la raison pour laquelle AudioAnalyzer n'a
+  // aucun minuteur d'analyse.
+  AudioRingBuffer ring;
+  AudioCaptureStats st;
+  std::vector<float> out(MIC_ANALYSIS_FRAME_SIZE);
+  std::vector<float> chunk(MIC_I2S_CHUNK_SAMPLES);
+  audiosig::pureTone(chunk.data(), chunk.size(), 440.0f, 0.4f, kFs);
+
+  // 5 secondes simulees : 32 000 * 5 / 256 = 625 vidages de DMA.
+  for (int i = 0; i < 625; i++) {
+    ring.write(chunk.data(), chunk.size(), &st);
+    if (ring.frameReady(MIC_ANALYSIS_FRAME_SIZE)) {
+      ring.readFrame(out.data(), MIC_ANALYSIS_FRAME_SIZE, MIC_ANALYSIS_HOP_SIZE, &st);
+    }
+  }
+  // Aucun echantillon perdu, et le nombre de frames correspond au debit attendu
+  // (un hop consomme par frame).
+  assert(st.droppedSamples == 0);
+  assert(st.bufferOverruns == 0);
+  const uint32_t expectedFrames = (uint32_t)((625 * MIC_I2S_CHUNK_SAMPLES) / MIC_ANALYSIS_HOP_SIZE);
+  // Tolerance d'une frame : l'amorcage demande une frame complete.
+  assert(st.framesProduced + 3 >= expectedFrames && st.framesProduced <= expectedFrames);
+}
+
+// ---------------------------------------------------------------------------
+// PHASE 1.6 - Niveau : RMS, crete, dBFS
+// ---------------------------------------------------------------------------
+
+void level_rms_peak_and_dbfs() {
+  std::vector<float> buf(kFrame);
+
+  // Silence numerique : plancher, jamais -inf ni NaN.
+  audiosig::silence(buf.data(), kFrame);
+  {
+    FrameLevel l = AudioLevel::compute(buf.data(), kFrame);
+    assert(l.rms < 1e-6f);
+    assert(l.rmsDbFS == MIC_DBFS_FLOOR);
+    assert(l.peakDbFS == MIC_DBFS_FLOOR);
+    assert(!l.clippingDetected);
+  }
+
+  // Sinus pleine echelle : crete 1.0 = 0 dBFS, RMS = 1/sqrt(2) = -3,01 dBFS.
+  audiosig::pureTone(buf.data(), kFrame, 440.0f, 1.0f, kFs);
+  {
+    FrameLevel l = AudioLevel::compute(buf.data(), kFrame);
+    assert(fabsf(l.peak - 1.0f) < 0.01f);
+    assert(fabsf(l.peakDbFS - 0.0f) < 0.1f);
+    assert(fabsf(l.rmsDbFS - (-3.01f)) < 0.1f);
+  }
+
+  // Division par deux de l'amplitude = -6,02 dBFS exactement.
+  audiosig::pureTone(buf.data(), kFrame, 440.0f, 0.5f, kFs);
+  {
+    FrameLevel l = AudioLevel::compute(buf.data(), kFrame);
+    assert(fabsf(l.rmsDbFS - (-9.03f)) < 0.1f);
+    assert(fabsf(l.peakDbFS - (-6.02f)) < 0.1f);
+  }
+
+  // Le decalage continu est MESURE mais ne compte pas dans le niveau.
+  ToneSpec s; s.sampleRate = kFs; s.f0 = 440.0f; s.amp = 0.5f; s.dc = 0.3f;
+  audiosig::fill(buf.data(), kFrame, s);
+  {
+    FrameLevel l = AudioLevel::compute(buf.data(), kFrame);
+    assert(fabsf(l.dcOffset - 0.3f) < 0.01f);
+    assert(fabsf(l.rmsDbFS - (-9.03f)) < 0.1f);
+  }
+
+  // Conversions : aller-retour et bornes.
+  assert(fabsf(AudioLevel::toDbFS(1.0f)) < 1e-4f);
+  assert(fabsf(AudioLevel::toDbFS(0.1f) - (-20.0f)) < 1e-3f);
+  assert(AudioLevel::toDbFS(0.0f) == MIC_DBFS_FLOOR);
+  assert(AudioLevel::toDbFS(-1.0f) == MIC_DBFS_FLOOR);   // valeur absurde bornee
+  assert(fabsf(AudioLevel::fromDbFS(-20.0f) - 0.1f) < 1e-4f);
+
+  // Taille nulle / pointeur nul : valeurs par defaut, aucun acces memoire.
+  { FrameLevel l = AudioLevel::compute(nullptr, 0); assert(l.rms == 0.0f); }
+  { FrameLevel l = AudioLevel::compute(buf.data(), 0); assert(l.rmsDbFS == MIC_DBFS_FLOOR); }
+}
+
+// ---------------------------------------------------------------------------
+// PHASE 1.7 - Ecretage : transitoire vs saturation permanente
+// ---------------------------------------------------------------------------
+
+void level_clipping_detection() {
+  std::vector<float> buf(kFrame);
+
+  // Signal sain a -6 dBFS : aucun ecretage.
+  audiosig::pureTone(buf.data(), kFrame, 440.0f, 0.5f, kFs);
+  {
+    FrameLevel l = AudioLevel::compute(buf.data(), kFrame);
+    assert(l.clippingRatio == 0.0f);
+    assert(!l.clippingDetected);
+  }
+
+  // Un SEUL echantillon au rail : compte, mais ne declenche pas l'alerte. Un
+  // ecretage bref n'est pas un microphone sature.
+  buf[100] = 1.0f;
+  {
+    FrameLevel l = AudioLevel::compute(buf.data(), kFrame);
+    assert(l.clippingRatio > 0.0f);
+    assert(l.clippingRatio < MIC_CLIP_RATIO_WARN);
+    assert(!l.clippingDetected);
+  }
+
+  // Sinus fortement ecrete : une large part de la frame est au rail.
+  ToneSpec sat; sat.sampleRate = kFs; sat.f0 = 440.0f; sat.amp = 3.0f; sat.clipAt = 1.0f;
+  audiosig::fill(buf.data(), kFrame, sat);
+  {
+    FrameLevel l = AudioLevel::compute(buf.data(), kFrame);
+    assert(l.clippingDetected);
+    assert(l.clippingRatio > 0.5f);
+  }
+
+  // Juste au-dessus du seuil de proportion : l'alerte se declenche.
+  audiosig::pureTone(buf.data(), kFrame, 440.0f, 0.5f, kFs);
+  const int needed = (int)(MIC_CLIP_RATIO_WARN * kFrame) + 2;
+  for (int i = 0; i < needed; i++) buf[i] = 1.0f;
+  {
+    FrameLevel l = AudioLevel::compute(buf.data(), kFrame);
+    assert(l.clippingDetected);
+  }
+}
+
 }  // namespace
 
 void audio_run_all_tests() {
@@ -261,4 +556,11 @@ void audio_run_all_tests() {
   ref_rms_reference_values();
   ref_raw_signal_classification();
   ref_signal_generator_is_reproducible();
+  ring_never_produces_a_partial_frame();
+  ring_frames_overlap_by_hop();
+  ring_overrun_drops_oldest_and_counts();
+  ring_wraps_without_corrupting_a_frame();
+  ring_steady_state_does_not_drift();
+  level_rms_peak_and_dbfs();
+  level_clipping_detection();
 }

@@ -13,7 +13,7 @@ AudioAnalyzer::AudioAnalyzer()
 #if MIC_I2S_STD_DRIVER
     _rxHandle(NULL),
 #endif
-    _validSamples(0), _lastUpdate(0) {
+    _lastDrain(0), _lastUpdate(0) {
 }
 
 // ------------------------------------------------------------- I2S lifecycle --
@@ -96,6 +96,11 @@ bool AudioAnalyzer::begin() {
     return false;
   }
   delay(100);  // let I2S stabilise (startup only, not in the state machine)
+  _ring.reset();
+  _stats.reset();
+  _level = FrameLevel();
+  _lastDrain = 0;
+  _lastUpdate = 0;
   _initialized = true;
   _micDetected = detectMicrophone();
 
@@ -171,57 +176,100 @@ const char* AudioAnalyzer::getMicStatusString() const {
 void AudioAnalyzer::update() {
   if (!_initialized || !_active) return;
 
-  unsigned long now = millis();
-  if (now - _lastUpdate < AUTOCAL_FRAME_SAMPLE_MS) return;  // throttle analysis rate
-  _lastUpdate = now;
+  const unsigned long now = millis();
 
-  readI2S();
-  if (_validSamples > 0) {
-    analyzeBuffer();
-    _frameSeq++;
-    _frameTimestamp = now;
-  } else if (_frameTimestamp != 0 && (now - _frameTimestamp) > MIC_FRAME_STALE_MS) {
-    // No fresh I2S data for too long: never let stale pitch data look valid.
-    _pitchValid = false;
-    _pitchHz = 0;
-    _pitchMidi = 0;
-    _pitchConfidence = 0;
-    _soundDetected = false;
+  // 1. VIDER LE DMA, souvent. Le DMA ne contient que
+  //    MIC_DMA_BUF_COUNT * MIC_DMA_BUF_LEN echantillons (32 ms ici). L'ancienne
+  //    version ne le lisait que toutes les 40 ms : 8 ms etaient ecrases a chaque
+  //    cycle (defaut A0-2). On vide desormais toutes les MIC_DRAIN_INTERVAL_MS,
+  //    ce qui laisse une marge de 4x, et vers un anneau qui conserve le passe
+  //    recent meme si loop() prend du retard.
+  if (now - _lastDrain >= MIC_DRAIN_INTERVAL_MS) {
+    _lastDrain = now;
+    drainI2S();
   }
-}
 
-void AudioAnalyzer::readI2S() {
-  size_t bytesRead = 0;
-#if MIC_I2S_STD_DRIVER
-  esp_err_t err = i2s_channel_read(_rxHandle, _rawBuffer,
-                                   MIC_BUFFER_SIZE * sizeof(int32_t), &bytesRead, 0);
-#else
-  esp_err_t err = i2s_read(MIC_I2S_PORT, _rawBuffer,
-                           MIC_BUFFER_SIZE * sizeof(int32_t), &bytesRead, 0);
-#endif
-  if (err != ESP_OK || bytesRead == 0) {
-    _validSamples = 0;
+  // 2. N'ANALYSER QU'UNE FRAME COMPLETE, et UNE SEULE par passage.
+  //    Aucun minuteur ici, volontairement : le debit s'auto-regule sur le hop.
+  //    Chaque analyse avance la lecture de MIC_ANALYSIS_HOP_SIZE echantillons,
+  //    donc la cadence d'equilibre vaut exactement hop / Fe (16 ms a 32 kHz avec
+  //    un hop de 512). Un minuteur plus LENT que cela ferait deborder l'anneau en
+  //    permanence - la production etant fixee par le materiel - et un minuteur
+  //    plus rapide ne servirait a rien puisque la frame ne serait pas prete.
+  //    Une seule frame par passage borne le temps passe dans update().
+  if (!_ring.readFrame(_frame, MIC_ANALYSIS_FRAME_SIZE, MIC_ANALYSIS_HOP_SIZE, &_stats)) {
+    // Pas assez d'echantillons : c'est normal entre deux frames. On ne signale
+    // l'obsolescence que si plus rien n'arrive depuis longtemps.
+    if (_frameTimestamp != 0 && (now - _frameTimestamp) > MIC_FRAME_STALE_MS) {
+      markMeasurementInvalid();
+    }
     return;
   }
-  _validSamples = bytesRead / sizeof(int32_t);
 
-  // Normalize 24-bit-in-32-bit samples to -1..+1.
-  const float scale = 1.0f / 2147483648.0f;
-  for (size_t i = 0; i < _validSamples; i++) {
-    _analysisBuffer[i] = (float)_rawBuffer[i] * scale;
+  _lastUpdate = now;
+  analyzeFrame();
+  _frameSeq++;
+  _frameTimestamp = now;
+  _stats.lastFrameTimestamp = now;
+}
+
+void AudioAnalyzer::markMeasurementInvalid() {
+  // Aucune donnee fraiche depuis trop longtemps : ne jamais laisser une mesure
+  // ancienne passer pour valide.
+  _pitchValid = false;
+  _pitchHz = 0;
+  _pitchMidi = 0;
+  _pitchConfidence = 0;
+  _soundDetected = false;
+}
+
+void AudioAnalyzer::drainI2S() {
+  // Boucle bornee : on vide au plus la profondeur du DMA en un passage, pour ne
+  // jamais monopoliser loop() si la source produit plus vite que prevu.
+  const int kMaxChunks =
+      (MIC_DMA_BUF_COUNT * MIC_DMA_BUF_LEN + MIC_I2S_CHUNK_SAMPLES - 1) / MIC_I2S_CHUNK_SAMPLES + 1;
+  const float kScale = 1.0f / 2147483648.0f;   // 24 bits cales a gauche dans 32
+
+  for (int c = 0; c < kMaxChunks; c++) {
+    size_t bytesRead = 0;
+#if MIC_I2S_STD_DRIVER
+    esp_err_t err = i2s_channel_read(_rxHandle, _chunk,
+                                     MIC_I2S_CHUNK_SAMPLES * sizeof(int32_t), &bytesRead, 0);
+#else
+    esp_err_t err = i2s_read(MIC_I2S_PORT, _chunk,
+                             MIC_I2S_CHUNK_SAMPLES * sizeof(int32_t), &bytesRead, 0);
+#endif
+    if (err != ESP_OK) {
+      _stats.readErrors++;
+      return;
+    }
+    if (bytesRead == 0) return;   // DMA vide : normal, on a tout pris
+
+    const size_t samples = bytesRead / sizeof(int32_t);
+    // Une lecture plus courte que demandee est COMPTEE mais n'est plus un
+    // probleme : les echantillons vont dans l'anneau, et la frame sera
+    // assemblee quand il y en aura assez.
+    if (samples < MIC_I2S_CHUNK_SAMPLES) _stats.partialReads++;
+
+    for (size_t i = 0; i < samples; i++) _chunkFloat[i] = (float)_chunk[i] * kScale;
+    _ring.write(_chunkFloat, samples, &_stats);
+
+    if (samples < MIC_I2S_CHUNK_SAMPLES) return;   // DMA epuise
   }
 }
 
-void AudioAnalyzer::analyzeBuffer() {
-  // RMS on the DC-removed samples (PitchDetector::rms does not modify the buffer).
-  _rms = PitchDetector::rms(_analysisBuffer, _validSamples);
+void AudioAnalyzer::analyzeFrame() {
+  // Niveau complet : RMS lineaire (compatibilite IAudioSource), mais aussi
+  // crete, dBFS, decalage continu et ecretage.
+  _level = AudioLevel::compute(_frame, MIC_ANALYSIS_FRAME_SIZE);
+  _rms = _level.rms;
   _soundDetected = (_rms > MIC_RMS_THRESHOLD);
 
   _pitchHz = 0; _pitchMidi = 0; _pitchCents = 0; _pitchConfidence = 0; _pitchValid = false;
 
   if (_rms > MIC_RMS_ABSOLUTE_MIN) {
-    // detect() centres + windows _analysisBuffer in place (not reused afterwards).
-    PitchResult pr = _pitch.detect(_analysisBuffer, _validSamples);
+    // detect() modifie _frame en place ; il n'est pas relu ensuite.
+    PitchResult pr = _pitch.detect(_frame, MIC_ANALYSIS_FRAME_SIZE);
     if (pr.hz > 0.0f) {
       _pitchHz = pr.hz;
       _pitchConfidence = pr.confidence;

@@ -164,6 +164,97 @@ be silently lost later.
 
 ---
 
+## PHASE 1 — Robust acquisition
+
+Fixes A0-1, A0-2, A0-4, A0-5 and A0-6.
+
+### What changed
+
+`AudioAnalyzer::update()` no longer does "read whatever the DMA holds, call it a
+frame". It now does two separate things:
+
+1. **Drain** the DMA into a continuous ring buffer, every `MIC_DRAIN_INTERVAL_MS`
+   (8 ms — a 4× margin over the 32 ms the DMA can hold). A short read is counted
+   as a `partialRead` and is no longer a problem: the samples go into the ring
+   and the frame is assembled later.
+2. **Analyse** exactly one frame, and only when `MIC_ANALYSIS_FRAME_SIZE`
+   samples are genuinely available. A partial frame is never produced, so
+   `_frameSeq` can no longer advertise a fresh-but-empty measurement.
+
+### Why there is no analysis timer
+
+There is deliberately **no throttle** on the analysis step. Each analysis
+advances the ring by `MIC_ANALYSIS_HOP_SIZE`, so the equilibrium rate is exactly
+`hop / Fs` = 16 ms. A timer *slower* than that would overrun the ring forever —
+production is fixed by the hardware — and a timer *faster* would do nothing,
+because the frame would not be ready. The old 40 ms timer against a 32 ms DMA
+was precisely this mistake (A0-2). One frame per `update()` call bounds the time
+spent in the loop.
+
+### New components
+
+| File | Role | Testable natively |
+|---|---|---|
+| `AudioRingBuffer.{h,cpp}` | Continuous ring, frame assembly with hop/overlap, capture counters | yes |
+| `AudioLevel.h` | RMS / peak / dBFS / DC offset / clipping, pure functions | yes |
+
+Overlap is 50 % by default (`FRAME` 1024, `HOP` 512), so a measurement lands
+every 16 ms instead of every 40 ms.
+
+### Overrun policy
+
+When the ring is full, the **oldest** samples are dropped, never the newest: for
+a real-time analyser, audio from 100 ms ago has no value while the present does.
+Every loss is counted (`droppedSamples`, `bufferOverruns`) and surfaced in
+`/api/diagnostics`, so a saturating ring shows up as a warning instead of
+quietly degrading every measurement.
+
+### Level and clipping
+
+`rmsDbFS` / `peakDbFS` are **dBFS** — relative to digital full scale, where an
+absolute sample value of 1.0 is 0 dBFS. They are **not dB SPL**, and cannot be:
+that would need a calibrated microphone. Any display must say "dBFS".
+
+Clipping distinguishes two things that were previously conflated: the
+`clippingRatio` of the current frame, and the boolean `clippingDetected` that
+only trips above `MIC_CLIP_RATIO_WARN` (0.5 %). A few clipped samples on a
+transient is not a permanently saturated microphone.
+
+### Cost
+
+| | Before | After | Δ |
+|---|---|---|---|
+| `AudioRingBuffer` | — | 8 208 B | |
+| I2S chunk (int32 + float) | 8 192 B (`_rawBuffer` + `_analysisBuffer`) | 2 048 B | |
+| Analysis frame | — | 4 096 B | |
+| `PitchDetector` | 4 904 B | 4 904 B | |
+| `FrameLevel` + stats | — | 68 B | |
+| **Total static RAM** | **13 096 B** | **19 324 B** | **+6 228 B (+6.1 kB)** |
+
+CPU: the analysis rate rises from 25 to **62.5 frames/s**. YIN costs 81 920
+multiply-add per frame, so **5.12 M MAC/s**, which at a rough 6 cycles/MAC is
+**≈ 12.8 % of one 240 MHz core**. This is an *estimate from operation counts*,
+not a measurement — no device was available.
+
+Two things bound the impact. The analyser only runs when `setActive(true)`, i.e.
+while the mic monitor is on or a calibration is running, not during ordinary MIDI
+playback. And `MIC_ANALYSIS_HOP_SIZE` is the single knob: raising it to 768 or
+1024 trades overlap for CPU without touching anything else.
+
+### Tests added
+
+| Test | What it proves |
+|---|---|
+| `ring_never_produces_a_partial_frame` | 1, 100, 300, 1023 samples all refuse to yield a frame; the refusal is counted — **this is A0-1** |
+| `ring_frames_overlap_by_hop` | Frame *n*+1 starts at `hop`, the second half of frame *n* is the first half of frame *n*+1; a zero or oversized hop is clamped |
+| `ring_overrun_drops_oldest_and_counts` | The oldest samples go first, the count is exact, a write larger than the whole ring keeps only the newest |
+| `ring_wraps_without_corrupting_a_frame` | 200 wrap-arounds against a numbered ramp: every frame is byte-exact |
+| `ring_steady_state_does_not_drift` | 5 simulated seconds at hardware rate: zero dropped samples, frame count matches `hop` |
+| `level_rms_peak_and_dbfs` | 0 dBFS for a full-scale sine, −3.01 dBFS RMS, −6.02 dB per halving, DC measured but excluded, floor instead of −inf |
+| `level_clipping_detection` | One clipped sample is counted but does not trip the alarm; a heavily clipped sine does |
+
+---
+
 ## Target architecture
 
 ```
@@ -197,7 +288,7 @@ analysis. This is the same ownership rule the actuator path already follows.
 | Phase | Subject | Status |
 |---|---|---|
 | 0 | Audit + reference tests | **unit tested** |
-| 1 | Ring buffer, overlap, clipping, dBFS, I2S diagnostics | not started |
+| 1 | Ring buffer, overlap, clipping, dBFS, I2S diagnostics | **unit tested** |
 | 2 | YIN without window, expected-note tracking, richer result | not started |
 | 3 | Goertzel + optional FFT | not started |
 | 4 | `AcousticFeatures` | not started |
