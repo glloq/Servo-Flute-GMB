@@ -20,6 +20,8 @@
 #include "PitchMath.h"
 #include "AudioRingBuffer.h"
 #include "AudioLevel.h"
+#include "SpectralAnalyzer.h"
+#include "AcousticFeatures.h"
 #include "audio_signals.h"
 
 namespace {
@@ -799,6 +801,392 @@ void pitch_stability_tracking() {
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// PHASE 3.1 - Goertzel : energie a une frequence exacte
+// ---------------------------------------------------------------------------
+
+void spectral_goertzel_isolates_a_frequency() {
+  std::vector<float> buf(kFrame);
+
+  // Sinus pur : toute l'energie est a f0, presque rien ailleurs.
+  audiosig::pureTone(buf.data(), kFrame, 1000.0f, 0.5f, kFs);
+  const float atF0 = SpectralAnalyzer::goertzelPower(buf.data(), kFrame, 1000.0f, kFs);
+  const float atOther = SpectralAnalyzer::goertzelPower(buf.data(), kFrame, 1500.0f, kFs);
+  assert(atF0 > 0.0f);
+  assert(atF0 > 100.0f * atOther);
+
+  // La puissance mesuree correspond a celle d'un sinus d'amplitude A : A^2/4
+  // pour la convention de ce Goertzel (energie d'une seule raie complexe).
+  const float expected = 0.5f * 0.5f / 4.0f;
+  assert(fabsf(atF0 - expected) / expected < 0.05f);
+
+  // Doubler l'amplitude quadruple la puissance.
+  audiosig::pureTone(buf.data(), kFrame, 1000.0f, 1.0f, kFs);
+  const float louder = SpectralAnalyzer::goertzelPower(buf.data(), kFrame, 1000.0f, kFs);
+  assert(fabsf(louder / atF0 - 4.0f) < 0.2f);
+
+  // Un decalage continu ne cree pas d'energie : il est retire.
+  ToneSpec dc; dc.sampleRate = kFs; dc.f0 = 1000.0f; dc.amp = 0.5f; dc.dc = 0.7f;
+  audiosig::fill(buf.data(), kFrame, dc);
+  const float withDc = SpectralAnalyzer::goertzelPower(buf.data(), kFrame, 1000.0f, kFs);
+  assert(fabsf(withDc - atF0) / atF0 < 0.05f);
+
+  // Silence : aucune energie nulle part.
+  audiosig::silence(buf.data(), kFrame);
+  assert(SpectralAnalyzer::goertzelPower(buf.data(), kFrame, 1000.0f, kFs) < 1e-9f);
+
+  // Cibles absurdes : refus, jamais une mesure repliee.
+  audiosig::pureTone(buf.data(), kFrame, 1000.0f, 0.5f, kFs);
+  assert(SpectralAnalyzer::goertzelPower(buf.data(), kFrame, 0.0f, kFs) == 0.0f);
+  assert(SpectralAnalyzer::goertzelPower(buf.data(), kFrame, -100.0f, kFs) == 0.0f);
+  assert(SpectralAnalyzer::goertzelPower(buf.data(), kFrame, kFs * 0.5f, kFs) == 0.0f);
+  assert(SpectralAnalyzer::goertzelPower(buf.data(), kFrame, 20000.0f, kFs) == 0.0f);
+  assert(SpectralAnalyzer::goertzelPower(nullptr, kFrame, 1000.0f, kFs) == 0.0f);
+  assert(SpectralAnalyzer::goertzelPower(buf.data(), 0, 1000.0f, kFs) == 0.0f);
+}
+
+void spectral_harmonic_ratios() {
+  std::vector<float> buf(kFrame);
+
+  // Spectre connu : f0 = 0,50 ; h2 = 0,25 ; h3 = 0,10. Les rapports de
+  // PUISSANCE sont donc (0,25/0,50)^2 = 0,25 et (0,10/0,50)^2 = 0,04.
+  ToneSpec s2;
+  s2.sampleRate = kFs; s2.f0 = 500.0f; s2.amp = 0.50f; s2.h2 = 0.25f; s2.h3 = 0.10f;
+  audiosig::fill(buf.data(), kFrame, s2);
+
+  HarmonicEnergies h = SpectralAnalyzer::harmonics(buf.data(), kFrame, 500.0f, kFs);
+  assert(h.valid);
+  assert(h.measured == 4);
+  assert(h.fundamental > h.h2 && h.h2 > h.h3);
+  assert(fabsf(h.h2Ratio - 0.25f) < 0.02f);
+  assert(fabsf(h.h3Ratio - 0.04f) < 0.01f);
+  assert(h.h4Ratio < 0.01f);               // pas de 4e harmonique dans le signal
+  assert(h.harmonicTotal > h.fundamental);
+
+  // Sinus pur : les rapports harmoniques sont quasi nuls.
+  audiosig::pureTone(buf.data(), kFrame, 500.0f, 0.5f, kFs);
+  {
+    HarmonicEnergies p = SpectralAnalyzer::harmonics(buf.data(), kFrame, 500.0f, kFs);
+    assert(p.valid && p.h2Ratio < 0.01f && p.h3Ratio < 0.01f);
+  }
+
+  // Note AIGUE : toutes les harmoniques ne tiennent pas sous Nyquist. On doit
+  // le dire, pas mesurer une frequence repliee.
+  audiosig::pureTone(buf.data(), kFrame, 7000.0f, 0.5f, kFs);
+  {
+    HarmonicEnergies hi = SpectralAnalyzer::harmonics(buf.data(), kFrame, 7000.0f, kFs);
+    assert(hi.valid);
+    assert(hi.measured == 2);    // 7 k et 14 k passent, 21 k et 28 k non
+    assert(hi.h3 == 0.0f && hi.h4 == 0.0f);
+  }
+
+  // Entrees invalides.
+  assert(!SpectralAnalyzer::harmonics(buf.data(), kFrame, 0.0f, kFs).valid);
+  assert(!SpectralAnalyzer::harmonics(buf.data(), kFrame, -10.0f, kFs).valid);
+  assert(!SpectralAnalyzer::harmonics(nullptr, kFrame, 500.0f, kFs).valid);
+  assert(!SpectralAnalyzer::harmonics(buf.data(), kFrame, 20000.0f, kFs).valid);
+
+  // totalPower : A^2/2 pour un sinus d'amplitude A, continu exclu.
+  audiosig::pureTone(buf.data(), kFrame, 500.0f, 0.5f, kFs);
+  assert(fabsf(SpectralAnalyzer::totalPower(buf.data(), kFrame) - 0.125f) < 0.005f);
+  audiosig::dcOnly(buf.data(), kFrame, 0.9f);
+  assert(SpectralAnalyzer::totalPower(buf.data(), kFrame) < 1e-6f);
+}
+
+#if MIC_FFT_ENABLED
+// ---------------------------------------------------------------------------
+// PHASE 3.2 - FFT : la raie tombe au bon endroit, avec la bonne amplitude
+// ---------------------------------------------------------------------------
+
+void spectral_fft_places_the_peak_correctly() {
+  SpectralAnalyzer sa;
+  std::vector<float> buf(kFrame);
+
+  assert(!sa.hasSpectrum());
+  // Trop court : refus explicite.
+  assert(!sa.computeSpectrum(buf.data(), 16));
+  assert(!sa.computeSpectrum(nullptr, kFrame));
+
+  // Frequence CENTREE sur un bin : le pic doit y tomber exactement.
+  const float binHz = kFs / (float)MIC_FFT_SIZE;
+  for (int targetBin : {8, 16, 40, 100}) {
+    const float hz = (float)targetBin * binHz;
+    audiosig::pureTone(buf.data(), kFrame, hz, 0.5f, kFs);
+    assert(sa.computeSpectrum(buf.data(), kFrame));
+    assert(sa.hasSpectrum());
+
+    const float* mag = sa.magnitudes();
+    size_t peak = 1;
+    for (size_t k = 2; k < sa.binCount(); k++) if (mag[k] > mag[peak]) peak = k;
+    assert((int)peak == targetBin);
+    // Le pic domine largement le reste du spectre.
+    assert(mag[peak] > 50.0f * mag[peak + 5]);
+  }
+
+  // binToHz est l'inverse exact de l'indexation.
+  assert(fabsf(SpectralAnalyzer::binToHz(0, kFs)) < 1e-6f);
+  assert(fabsf(SpectralAnalyzer::binToHz(MIC_FFT_SIZE / 2, kFs) - kFs * 0.5f) < 1e-3f);
+  assert(sa.binCount() == MIC_FFT_SIZE / 2 + 1);
+}
+
+void spectral_centroid_and_flatness() {
+  SpectralAnalyzer sa;
+  std::vector<float> buf(kFrame);
+
+  // Un sinus grave a un centre de gravite bas, un sinus aigu un centre haut.
+  audiosig::pureTone(buf.data(), kFrame, 500.0f, 0.5f, kFs);
+  sa.computeSpectrum(buf.data(), kFrame);
+  const float lowCentroid = sa.spectralCentroid(kFs);
+  const float lowFlatness = sa.spectralFlatness();
+
+  audiosig::pureTone(buf.data(), kFrame, 5000.0f, 0.5f, kFs);
+  sa.computeSpectrum(buf.data(), kFrame);
+  const float highCentroid = sa.spectralCentroid(kFs);
+
+  assert(highCentroid > lowCentroid * 3.0f);
+  // Le centre de gravite d'un sinus pur est proche de sa frequence.
+  assert(fabsf(lowCentroid - 500.0f) < 400.0f);
+  assert(fabsf(highCentroid - 5000.0f) < 800.0f);
+
+  // Platitude : un spectre a raies est PEU plat, un bruit blanc l'est beaucoup.
+  audiosig::whiteNoise(buf.data(), kFrame, 0.4f);
+  sa.computeSpectrum(buf.data(), kFrame);
+  const float noiseFlatness = sa.spectralFlatness();
+  assert(noiseFlatness > lowFlatness * 3.0f);
+  assert(lowFlatness >= 0.0f && lowFlatness <= 1.0f);
+  assert(noiseFlatness > 0.0f && noiseFlatness <= 1.0f);
+
+  // Une note harmonique riche se situe entre les deux : plus plate qu'un sinus,
+  // bien moins qu'un bruit.
+  audiosig::fluteLike(buf.data(), kFrame, 800.0f, 0.4f, 0.01f, kFs);
+  sa.computeSpectrum(buf.data(), kFrame);
+  const float toneFlatness = sa.spectralFlatness();
+  assert(toneFlatness < noiseFlatness);
+
+  // Energie par bande : concentree autour de la raie.
+  audiosig::pureTone(buf.data(), kFrame, 2000.0f, 0.5f, kFs);
+  sa.computeSpectrum(buf.data(), kFrame);
+  const float inBand = sa.bandEnergy(1800.0f, 2200.0f, kFs);
+  const float outBand = sa.bandEnergy(4000.0f, 8000.0f, kFs);
+  assert(inBand > 100.0f * outBand);
+  assert(sa.bandEnergy(2200.0f, 1800.0f, kFs) == 0.0f);   // bande inversee
+}
+
+// Sans spectre calcule, aucun descripteur ne doit inventer de valeur.
+void spectral_accessors_are_safe_without_spectrum() {
+  SpectralAnalyzer sa;
+  assert(!sa.hasSpectrum());
+  assert(sa.spectralCentroid(kFs) == 0.0f);
+  assert(sa.spectralFlatness() == 0.0f);
+  assert(sa.bandEnergy(100.0f, 1000.0f, kFs) == 0.0f);
+}
+
+// La FFT doit rester coherente avec Goertzel : deux methodes independantes qui
+// mesurent la meme chose doivent s'accorder.
+void spectral_fft_agrees_with_goertzel() {
+  SpectralAnalyzer sa;
+  std::vector<float> buf(kFrame);
+  const float binHz = kFs / (float)MIC_FFT_SIZE;
+
+  ToneSpec s3;
+  s3.sampleRate = kFs;
+  s3.f0 = 16.0f * binHz;         // centree sur un bin : pas de fuite
+  s3.amp = 0.5f;
+  s3.h2 = 0.25f;
+  audiosig::fill(buf.data(), kFrame, s3);
+
+  assert(sa.computeSpectrum(buf.data(), kFrame));
+  const float* mag = sa.magnitudes();
+
+  // Rapport d'amplitude h2/f0 vu par la FFT : 0,25/0,50 = 0,5.
+  const float fftRatio = mag[32] / mag[16];
+  assert(fabsf(fftRatio - 0.5f) < 0.05f);
+
+  // Goertzel mesure des PUISSANCES : le rapport doit etre le carre.
+  HarmonicEnergies h = SpectralAnalyzer::harmonics(buf.data(), kFrame, s3.f0, kFs);
+  assert(fabsf(h.h2Ratio - fftRatio * fftRatio) < 0.05f);
+}
+#endif  // MIC_FFT_ENABLED
+
+
+// ---------------------------------------------------------------------------
+// PHASE 4 - Assemblage des descripteurs acoustiques
+// ---------------------------------------------------------------------------
+
+void features_defaults_are_honest() {
+  AcousticFeatures f;
+  // Tant que rien n'a ete mesure, aucun champ ne doit suggerer une mesure.
+  assert(f.frameSequence == 0 && f.timestamp == 0);
+  assert(f.rms == 0.0f);
+  assert(f.rmsDbFS == MIC_DBFS_FLOOR);      // plancher, pas 0 dBFS
+  assert(f.peakDbFS == MIC_DBFS_FLOOR);
+  assert(!f.clipping && f.clippingRatio == 0.0f);
+  assert(f.pitchHz == 0.0f && f.pitchMidi == 0);
+  assert(f.pitchConfidence == 0.0f && f.pitchStability == 0.0f);
+  assert(!f.spectralValid);
+  assert(!f.soundDetected && !f.expectedNoteDetected && !f.overblowDetected);
+
+  f.rms = 0.5f; f.spectralValid = true; f.overblowDetected = true;
+  f.reset();
+  assert(f.rms == 0.0f && !f.spectralValid && !f.overblowDetected);
+  assert(f.rmsDbFS == MIC_DBFS_FLOOR);
+}
+
+void features_level_and_pitch_assembly() {
+  std::vector<float> buf(kFrame);
+  AcousticFeatures f;
+
+  audiosig::pureTone(buf.data(), kFrame, 440.0f, 0.5f, kFs);
+  const FrameLevel lvl = AudioLevel::compute(buf.data(), kFrame);
+  AcousticFeatureBuilder::fillLevel(f, lvl);
+  assert(fabsf(f.rmsDbFS - (-9.03f)) < 0.1f);
+  assert(fabsf(f.peakDbFS - (-6.02f)) < 0.1f);
+  assert(!f.clipping);
+
+  PitchDetector det;
+  det.setExpectedMidiNote(69);
+  PitchResult p = det.analyse(buf.data(), kFrame);
+  AcousticFeatureBuilder::fillPitch(f, p, true);
+  assert(f.pitchMidi == 69);
+  assert(fabsf(f.cents) < 1.0f);
+  assert(f.soundDetected);
+  assert(f.expectedNoteDetected);
+  assert(!f.overblowDetected);
+
+  // Overblow : la note est bien signalee comme octave superieure.
+  audiosig::pureTone(buf.data(), kFrame, PitchMath::midiToHz(81), 0.5f, kFs);
+  PitchResult over = det.analyse(buf.data(), kFrame);
+  AcousticFeatureBuilder::fillPitch(f, over, true);
+  assert(f.pitchMidi == 81);
+  assert(f.overblowDetected);
+  assert(!f.expectedNoteDetected);
+
+  // Un pitch NON VALIDE ne doit produire aucun verdict : annoncer un overblow
+  // sur du bruit serait pire que ne rien annoncer.
+  PitchResult bogus;
+  bogus.valid = false;
+  bogus.midi = 81;
+  bogus.octaveAbove = true;
+  bogus.expectedMatch = true;
+  AcousticFeatureBuilder::fillPitch(f, bogus, false);
+  assert(!f.overblowDetected);
+  assert(!f.expectedNoteDetected);
+  assert(!f.soundDetected);
+}
+
+void features_spectral_assembly() {
+  std::vector<float> buf(kFrame);
+  SpectralAnalyzer sa;
+  AcousticFeatures f;
+
+  // Note harmonique connue : f0 = 0,50 ; h2 = 0,25 -> rapport de puissance 0,25.
+  ToneSpec s4;
+  s4.sampleRate = kFs; s4.f0 = 500.0f; s4.amp = 0.50f; s4.h2 = 0.25f; s4.h3 = 0.10f;
+  audiosig::fill(buf.data(), kFrame, s4);
+
+  AcousticFeatureBuilder::fillSpectral(f, buf.data(), kFrame, 500.0f, &sa, true);
+  assert(f.spectralValid);
+  assert(f.fundamentalEnergy > 0.0f);
+  assert(fabsf(f.h2Ratio - 0.25f) < 0.02f);
+  assert(fabsf(f.h3Ratio - 0.04f) < 0.01f);
+#if MIC_FFT_ENABLED
+  assert(f.spectralCentroid > 400.0f && f.spectralCentroid < 3000.0f);
+  assert(f.spectralFlatness > 0.0f && f.spectralFlatness <= 1.0f);
+#endif
+
+  // Un signal presque purement harmonique a un rapport harmonique/bruit eleve ;
+  // ajouter du souffle le fait chuter. C'est le comportement attendu, et c'est
+  // ce qui servira plus tard a mesurer la respiration.
+  const float cleanHnr = f.harmonicToNoiseRatio;
+  assert(cleanHnr > 10.0f);
+
+  ToneSpec breathy = s4;
+  breathy.noise = 0.35f;
+  audiosig::fill(buf.data(), kFrame, breathy);
+  AcousticFeatures g;
+  AcousticFeatureBuilder::fillSpectral(g, buf.data(), kFrame, 500.0f, &sa, true);
+  assert(g.spectralValid);
+  assert(g.harmonicToNoiseRatio < cleanHnr - 6.0f);
+
+  // Le rapport est BORNE : un signal synthetique parfait donnerait un infini.
+  ToneSpec pure;
+  pure.sampleRate = kFs; pure.f0 = 500.0f; pure.amp = 0.5f;
+  audiosig::fill(buf.data(), kFrame, pure);
+  AcousticFeatures h;
+  AcousticFeatureBuilder::fillSpectral(h, buf.data(), kFrame, 500.0f, &sa, true);
+  assert(h.harmonicToNoiseRatio <= MIC_HNR_MAX_DB);
+  assert(h.harmonicToNoiseRatio >= -MIC_HNR_MAX_DB);
+
+  // Sans fondamentale fiable, RIEN n'est renseigne et spectralValid reste faux.
+  AcousticFeatures none;
+  none.h2Ratio = 9.0f; none.spectralValid = true;      // valeurs a effacer
+  AcousticFeatureBuilder::fillSpectral(none, buf.data(), kFrame, 0.0f, &sa, true);
+  assert(!none.spectralValid);
+  assert(none.h2Ratio == 0.0f && none.fundamentalEnergy == 0.0f);
+  assert(none.harmonicToNoiseRatio == 0.0f);
+
+  AcousticFeatureBuilder::fillSpectral(none, nullptr, 0, 500.0f, &sa, true);
+  assert(!none.spectralValid);
+
+  // Sans analyseur FFT, Goertzel fonctionne quand meme : la FFT est optionnelle.
+  AcousticFeatures goertzelOnly;
+  audiosig::fill(buf.data(), kFrame, s4);
+  AcousticFeatureBuilder::fillSpectral(goertzelOnly, buf.data(), kFrame, 500.0f, nullptr, false);
+  assert(goertzelOnly.spectralValid);
+  assert(fabsf(goertzelOnly.h2Ratio - 0.25f) < 0.02f);
+  assert(goertzelOnly.spectralCentroid == 0.0f);   // non mesure, donc non invente
+}
+
+// Chaine complete sur une frame : acquisition -> niveau -> pitch -> spectre.
+// C'est le scenario que le firmware execute reellement, avec les memes
+// composants, a l'I2S pres.
+void features_end_to_end_on_one_frame() {
+  AudioRingBuffer ring;
+  AudioCaptureStats st;
+  SpectralAnalyzer sa;
+  PitchDetector det;
+  AcousticFeatures f;
+
+  // Une note de flute plausible a 587,33 Hz (re5), avec un peu de souffle.
+  std::vector<float> chunk(MIC_I2S_CHUNK_SAMPLES);
+  std::vector<float> frame(MIC_ANALYSIS_FRAME_SIZE);
+  det.setExpectedMidiNote(74);
+
+  size_t produced = 0;
+  bool got = false;
+  for (int i = 0; i < 20 && !got; i++) {
+    audiosig::fluteLike(chunk.data(), chunk.size(), 587.33f, 0.35f, 0.01f, kFs, produced);
+    produced += chunk.size();
+    ring.write(chunk.data(), chunk.size(), &st);
+    got = ring.readFrame(frame.data(), MIC_ANALYSIS_FRAME_SIZE, MIC_ANALYSIS_HOP_SIZE, &st);
+  }
+  assert(got);
+  assert(st.droppedSamples == 0);
+
+  const FrameLevel lvl = AudioLevel::compute(frame.data(), MIC_ANALYSIS_FRAME_SIZE);
+  PitchResult p = det.detect(frame.data(), MIC_ANALYSIS_FRAME_SIZE);
+  AcousticFeatureBuilder::fillLevel(f, lvl);
+  AcousticFeatureBuilder::fillPitch(f, p, lvl.rms > MIC_RMS_THRESHOLD);
+  AcousticFeatureBuilder::fillSpectral(f, frame.data(), MIC_ANALYSIS_FRAME_SIZE,
+                                       p.hz, &sa, true);
+
+  // La note est identifiee, juste, et reconnue comme celle attendue.
+  assert(f.pitchMidi == 74);
+  assert(fabsf(f.cents) < 5.0f);
+  assert(f.expectedNoteDetected);
+  assert(!f.overblowDetected);
+  assert(f.soundDetected);
+  assert(!f.clipping);
+  // Niveau coherent : ni silence ni saturation.
+  assert(f.rmsDbFS > -30.0f && f.rmsDbFS < 0.0f);
+  // Le spectre reflete bien le modele : H2 a 30 % d'AMPLITUDE, donc ~9 % de
+  // PUISSANCE, et un rapport harmonique/bruit franchement positif.
+  assert(f.spectralValid);
+  assert(f.h2Ratio > 0.03f && f.h2Ratio < 0.20f);
+  assert(f.harmonicToNoiseRatio > 5.0f);
+}
+
 }  // namespace
 
 void audio_run_all_tests() {
@@ -822,4 +1210,16 @@ void audio_run_all_tests() {
   pitch_expected_note_resolves_octave();
   pitch_expected_note_helps_on_dominant_h2();
   pitch_stability_tracking();
+  spectral_goertzel_isolates_a_frequency();
+  spectral_harmonic_ratios();
+#if MIC_FFT_ENABLED
+  spectral_fft_places_the_peak_correctly();
+  spectral_centroid_and_flatness();
+  spectral_accessors_are_safe_without_spectrum();
+  spectral_fft_agrees_with_goertzel();
+#endif
+  features_defaults_are_honest();
+  features_level_and_pitch_assembly();
+  features_spectral_assembly();
+  features_end_to_end_on_one_frame();
 }

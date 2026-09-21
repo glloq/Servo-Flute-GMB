@@ -281,16 +281,38 @@ void WebConfigurator::update() {
     // Broadcast audio data if monitoring enabled
     if (_micMonitorEnabled && _audio->isActive() && _ws.count() > 0) {
       if (now - _lastAudioBroadcast >= AUTOCAL_AUDIO_INTERVAL_MS) {
+        // Descripteurs de la derniere frame analysee. Le debit reste limite par
+        // AUTOCAL_AUDIO_INTERVAL_MS : on n'envoie jamais de PCM, seulement des
+        // mesures deja reduites.
+        const AcousticFeatures& af = _audio->getFeatures();
         String aj = "{\"t\":\"audio\"";
         aj += ",\"rms\":" + String(_audio->getRMS(), 3);
         aj += ",\"snd\":" + String(_audio->isSoundDetected() ? 1 : 0);
+        // Niveaux en dBFS : pleine echelle NUMERIQUE, jamais du dB SPL.
+        aj += ",\"rms_dbfs\":" + String(af.rmsDbFS, 1);
+        aj += ",\"peak_dbfs\":" + String(af.peakDbFS, 1);
+        aj += ",\"clip\":" + String(af.clipping ? 1 : 0);
+        aj += ",\"clip_ratio\":" + String(af.clippingRatio, 4);
         if (_audio->getPitchHz() > 0) {
           aj += ",\"hz\":" + String(_audio->getPitchHz(), 1);
           aj += ",\"midi\":" + String(_audio->getPitchMidi());
           aj += ",\"cents\":" + String(_audio->getPitchCents(), 1);
           aj += ",\"conf\":" + String((int)(_audio->getPitchConfidence() * 100.0f + 0.5f));
           aj += ",\"valid\":" + String(_audio->isPitchValid() ? 1 : 0);
+          aj += ",\"stab\":" + String(af.pitchStability, 2);
         }
+        // Champs spectraux UNIQUEMENT quand ils ont ete mesures : les omettre
+        // vaut mieux que de renvoyer la valeur d'une frame anterieure.
+        if (af.spectralValid) {
+          aj += ",\"h2\":" + String(af.h2Ratio, 3);
+          aj += ",\"h3\":" + String(af.h3Ratio, 3);
+          aj += ",\"hnr\":" + String(af.harmonicToNoiseRatio, 1);
+          if (af.spectralCentroid > 0.0f) {
+            aj += ",\"centroid\":" + String(af.spectralCentroid, 0);
+            aj += ",\"flatness\":" + String(af.spectralFlatness, 3);
+          }
+        }
+        if (af.overblowDetected) aj += ",\"overblow\":1";
         aj += "}";
         _ws.textAll(aj);
         _lastAudioBroadcast = now;

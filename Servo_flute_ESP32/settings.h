@@ -174,6 +174,30 @@ Set MIC_ENABLED to false if no mic is connected.
 // pour +15 %. C'est le bouton a tourner si le temps CPU devient critique.
 #define MIC_YIN_REFINE_ITERATIONS 10
 
+// --- Analyse spectrale (PHASE 3) ------------------------------------------
+
+// FFT compilable a la demande. La mettre a 0 economise ~5 ko de RAM et tout
+// le cout de la FFT ; Goertzel, qui suffit aux mesures harmoniques quand la
+// note attendue est connue, reste disponible.
+#define MIC_FFT_ENABLED         1
+
+// Taille de FFT (puissance de deux, <= MIC_ANALYSIS_FRAME_SIZE). 512 points a
+// 32 kHz donnent une resolution de 62,5 Hz par bin : suffisant pour le centre
+// de gravite et la platitude, qui sont des mesures de FORME de spectre. Les
+// mesures fines d'harmoniques passent par Goertzel, qui est exact a la
+// frequence demandee et ne depend d'aucune resolution de bin.
+#define MIC_FFT_SIZE            512
+
+// La FFT ne tourne pas a chaque frame. Une frame sur 4 a 62,5 frames/s donne
+// une mise a jour spectrale toutes les 64 ms, ce qui correspond a la dynamique
+// reelle d'un timbre ; le pitch, lui, reste mesure toutes les 16 ms.
+#define MIC_SPECTRAL_DECIMATION 4
+
+// Borne du rapport harmonique / bruit (dB). Un signal synthetique purement
+// harmonique donnerait un rapport infini ; sur un vrai microphone, au-dela de
+// cette valeur la mesure n'est de toute facon plus significative.
+#define MIC_HNR_MAX_DB          40.0f
+
 /*----------------------------------------------------------------------------
  * Auto-calibration (microphone-driven per-note airflow calibration)
  *--------------------------------------------------------------------------*/

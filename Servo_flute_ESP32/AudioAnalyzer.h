@@ -33,6 +33,8 @@
 #include "PitchDetector.h"
 #include "AudioRingBuffer.h"
 #include "AudioLevel.h"
+#include "SpectralAnalyzer.h"
+#include "AcousticFeatures.h"
 
 #if MIC_ENABLED
 
@@ -93,8 +95,16 @@ public:
   float getPitchStability() const { return _lastPitch.stability; }
   // Note visee : permet au detecteur de lever l'ambiguite d'octave de facon
   // deterministe (f0/2, f0, 2*f0, 3*f0). Pose par l'auto-calibration.
-  void setExpectedMidiNote(int midi) override { _pitch.setExpectedMidiNote(midi); }
-  void clearExpectedMidiNote() override { _pitch.clearExpectedMidiNote(); }
+  void setExpectedMidiNote(int midi) override;
+  void clearExpectedMidiNote() override;
+
+  // --- Descripteurs acoustiques (PHASE 4) ---
+  // Etat complet de la DERNIERE frame analysee. Les champs spectraux ne sont
+  // renseignes qu'une frame sur MIC_SPECTRAL_DECIMATION : verifier
+  // `spectralValid` avant de les lire.
+  const AcousticFeatures& getFeatures() const { return _features; }
+  float getSNR() const { return _features.harmonicToNoiseRatio; }
+  const SpectralAnalyzer& getSpectral() const { return _spectral; }
   bool isActive() const override { return _active; }
   void setActive(bool active) override { _active = active; }
   uint32_t getFrameSequence() const override { return _frameSeq; }
@@ -121,6 +131,10 @@ private:
 
   PitchDetector _pitch;
   PitchResult _lastPitch;
+  SpectralAnalyzer _spectral;
+  AcousticFeatures _features;
+  int _expectedMidi;          // 0 = aucune note visee declaree
+  uint8_t _spectralCountdown; // decimation de l'analyse spectrale
   FrameLevel _level;
   AudioCaptureStats _stats;
   AudioRingBuffer _ring;
@@ -141,6 +155,9 @@ private:
   void drainI2S();
   // Analyse UNE frame complete deja extraite dans _frame.
   void analyzeFrame();
+  // Descripteurs spectraux : Goertzel a chaque frame ou la fondamentale est
+  // connue, FFT une frame sur MIC_SPECTRAL_DECIMATION.
+  void analyzeSpectrum();
   void markMeasurementInvalid();
 };
 

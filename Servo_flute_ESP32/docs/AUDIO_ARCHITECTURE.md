@@ -377,6 +377,125 @@ from operation counts — **no device was available to measure them**.
 
 ---
 
+## PHASE 3 — Spectral analysis
+
+Fixes A0-7. New file: `SpectralAnalyzer.{h,cpp}` — hardware-free, natively
+tested.
+
+### Two paths, two jobs
+
+**Goertzel** answers "how much energy is there at *exactly* this frequency?".
+When the expected note is known, that is all that is needed for f0, 2f0, 3f0,
+4f0. It costs *n* operations per target — about **4 % of YIN** for four
+harmonics — and is exact at the requested frequency, with no dependence on bin
+resolution. It runs on **every** frame.
+
+**FFT** answers "what does the whole spectrum look like?" — centroid, flatness,
+band energy. It costs far more and the timbre moves far more slowly than the
+pitch, so it runs on one frame in `MIC_SPECTRAL_DECIMATION` (4 → every 64 ms).
+
+### Windowing, again
+
+Here the Hann window **is** legitimate and necessary: it limits leakage between
+bins for a signal that is not periodic over the window. This is exactly the
+distinction PHASE 0 got wrong — windowing belongs to the frequency domain, not
+to a time-domain period estimator.
+
+Goertzel is applied **without** a window: it measures power at a known
+frequency, not a spectrum, and a window would only attenuate the result by an
+alignment-dependent factor.
+
+### Why not ESP-DSP
+
+ESP-DSP would give a faster FFT but would make this class uncompilable on the
+host, so untestable. A 512-point radix-2 FFT is ~4 600 butterflies, modest next
+to YIN's 92 160 operations. If a measurement on hardware ever shows the FFT
+dominating, it can be swapped in behind this same interface without touching
+callers or tests.
+
+Twiddle factors use the stable Numerical Recipes recurrence: **2 trig calls per
+stage** (18 total for 512 points) instead of the naive 2 304.
+
+`MIC_FFT_ENABLED` compiles the FFT out entirely, saving ~6 kB; Goertzel remains.
+
+### Tests added
+
+| Test | What it proves |
+|---|---|
+| `spectral_goertzel_isolates_a_frequency` | 100× rejection off-target, A²/4 power law, ×4 on doubled amplitude, DC rejected, absurd targets refused instead of aliased |
+| `spectral_harmonic_ratios` | Known H2/H3 ratios recovered to 2 %, high notes report how many harmonics actually fit under Nyquist, `totalPower` = A²/2 |
+| `spectral_fft_places_the_peak_correctly` | Bin-centred tones peak in exactly the right bin, 50× above neighbours |
+| `spectral_centroid_and_flatness` | Centroid tracks the tone within ~15 %, flatness orders noise > harmonic tone > pure sine, band energy is 100× in-band |
+| `spectral_accessors_are_safe_without_spectrum` | No descriptor invents a value before a spectrum exists |
+| `spectral_fft_agrees_with_goertzel` | **Two independent methods agree**: the FFT amplitude ratio squared equals the Goertzel power ratio |
+
+---
+
+## PHASE 4 — Acoustic features
+
+New files: `AcousticFeatures.{h,cpp}`.
+
+`AcousticFeatures` is the meeting point between the measurement chain and every
+consumer. Two design rules:
+
+**Everything is measured, nothing is guessed.** A field holds its default until
+the corresponding measurement has been made. Spectral fields are only filled on
+one frame in `MIC_SPECTRAL_DECIMATION`, and `spectralValid` says which — a
+consumer that reads `spectralCentroid` without checking would be reading an
+older frame.
+
+**The assembly logic is pure.** `AudioAnalyzer` depends on I2S and cannot be
+built on the host, so the logic that decides *which* fields get filled and *how*
+they are derived lives in `AcousticFeatureBuilder`, which is pure and fully
+tested. `AudioAnalyzer` only wires it up.
+
+`fillPitch` refuses to derive `overblowDetected` or `expectedNoteDetected` from
+an invalid pitch: announcing an overblow on noise is worse than announcing
+nothing.
+
+### HNR is an approximation, and is labelled as one
+
+`harmonicToNoiseRatio` treats "noise" as everything the four measured partials
+do not capture — which includes breath, but also harmonics above the fourth. A
+rigorous HNR needs the full spectrum and a noise-floor estimate. It is bounded
+at ±`MIC_HNR_MAX_DB` because a synthetic pure tone would otherwise give
+infinity. It behaves correctly in the direction that matters (adding breath
+drops it by more than 6 dB), and PHASE 5/6 will replace it with a real noise
+model.
+
+### Tests added
+
+| Test | What it proves |
+|---|---|
+| `features_defaults_are_honest` | No field suggests a measurement before one is made; `reset()` restores the dBFS floor, not 0 dBFS |
+| `features_level_and_pitch_assembly` | dBFS, expected-note and overblow verdicts; **an invalid pitch produces no verdict at all** even when its flags are set |
+| `features_spectral_assembly` | Known ratios, HNR drops >6 dB on added breath, bounded, nothing filled without a reliable f0, works with the FFT absent |
+| `features_end_to_end_on_one_frame` | Ring → frame → level → pitch → spectrum on a flute-like note: right note, <5 cents, expected-note match, no clipping, plausible level and H2 |
+
+### Exposure
+
+`/api/diagnostics` gained an `audio` block (capture counters, dBFS, clipping,
+DC offset) and the `{"t":"audio"}` WebSocket message now carries dBFS, clipping,
+stability, H2/H3, HNR, centroid and flatness. Spectral fields are **omitted**
+when not measured on this frame rather than repeated from an older one. No PCM
+is ever streamed.
+
+### Cumulative cost
+
+| | PHASE 0 | PHASE 1 | PHASE 2 | PHASE 4 |
+|---|---|---|---|---|
+| Static RAM | 13 096 B | 19 324 B | 15 300 B | **21 532 B** |
+| — without FFT | | | | 15 388 B |
+| Operations/frame | 81 920 | 81 920 | 92 160 | 99 712 |
+| Frames/s | 25 | 62.5 | 62.5 | 62.5 |
+| Estimated core load | ~5 % | ~12.8 % | ~14.4 % | **~15.6 %** |
+
+Net RAM over the original baseline: **+8.2 kB** (+2.2 kB with the FFT compiled
+out). All core-load figures are **estimates from operation counts** — no device
+was available to measure them, and that remains the single largest unknown.
+
+---
+
 ## Target architecture
 
 ```
@@ -412,14 +531,20 @@ analysis. This is the same ownership rule the actuator path already follows.
 | 0 | Audit + reference tests | **unit tested** |
 | 1 | Ring buffer, overlap, clipping, dBFS, I2S diagnostics | **unit tested** |
 | 2 | YIN without window, expected-note tracking, richer result | **unit tested** |
-| 3 | Goertzel + optional FFT | not started |
-| 4 | `AcousticFeatures` | not started |
+| 3 | Goertzel + optional FFT | **unit tested** |
+| 4 | `AcousticFeatures` | **unit tested** |
 | 5+ | Noise model, classification, timing, quality, calibration | not started |
 
 ## Known limitations
 
-- Nothing has been validated against a real microphone or a real flute.
+- Nothing has been validated against a real microphone or a real flute. Every
+  measurement in this document comes from synthetic PCM.
 - CPU time is estimated from operation counts, never measured on the device.
+  This is the largest unknown in the whole chain.
+- `harmonicToNoiseRatio` is an approximation (see PHASE 4) until the noise model
+  of PHASE 5 exists.
+- The 62.5 frames/s rate only applies while `setActive(true)` — mic monitor or
+  calibration — not during ordinary MIDI playback.
 - Pitch accuracy on synthetic pure tones is now < 1 cent (was ±47). This has
   never been checked against a real microphone, where noise, room response and
   the flute's own spectrum all apply.

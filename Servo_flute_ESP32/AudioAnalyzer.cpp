@@ -13,6 +13,7 @@ AudioAnalyzer::AudioAnalyzer()
 #if MIC_I2S_STD_DRIVER
     _rxHandle(NULL),
 #endif
+    _expectedMidi(0), _spectralCountdown(0),
     _lastDrain(0), _lastUpdate(0) {
 }
 
@@ -223,6 +224,20 @@ void AudioAnalyzer::markMeasurementInvalid() {
   _soundDetected = false;
   _lastPitch = PitchResult();
   _pitch.resetTracking();
+  // resetTracking() efface aussi la note visee : on la restaure, car une source
+  // momentanement muette ne signifie pas que la calibration a change de note.
+  if (_expectedMidi > 0) _pitch.setExpectedMidiNote(_expectedMidi);
+  _features.reset();
+}
+
+void AudioAnalyzer::setExpectedMidiNote(int midi) {
+  _expectedMidi = (midi > 0 && midi <= 127) ? midi : 0;
+  _pitch.setExpectedMidiNote(midi);
+}
+
+void AudioAnalyzer::clearExpectedMidiNote() {
+  _expectedMidi = 0;
+  _pitch.clearExpectedMidiNote();
 }
 
 void AudioAnalyzer::drainI2S() {
@@ -271,7 +286,7 @@ void AudioAnalyzer::analyzeFrame() {
 
   if (_rms > MIC_RMS_ABSOLUTE_MIN) {
     // detect() ne modifie PAS _frame : la meme frame reste disponible pour
-    // l'analyse spectrale (PHASE 3), sans recopie.
+    // l'analyse spectrale, sans recopie.
     _lastPitch = _pitch.detect(_frame, MIC_ANALYSIS_FRAME_SIZE);
     if (_lastPitch.hz > 0.0f) {
       _pitchHz = _lastPitch.hz;
@@ -285,7 +300,42 @@ void AudioAnalyzer::analyzeFrame() {
     // pour qu'une note ulterieure ne herite pas de la stabilite d'une autre.
     _lastPitch = PitchResult();
     _pitch.resetTracking();
+    if (_expectedMidi > 0) _pitch.setExpectedMidiNote(_expectedMidi);
   }
+
+  analyzeSpectrum();
+
+  // --- Assemblage des descripteurs (PHASE 4) --------------------------------
+  // L'assemblage lui-meme vit dans AcousticFeatureBuilder, qui est pur et donc
+  // testable sur hote ; cette classe, elle, depend de l'I2S.
+  _features.frameSequence = _frameSeq + 1;   // _frameSeq est incremente apres
+  _features.timestamp = (uint32_t)millis();
+  AcousticFeatureBuilder::fillLevel(_features, _level);
+  AcousticFeatureBuilder::fillPitch(_features, _lastPitch, _soundDetected);
+}
+
+void AudioAnalyzer::analyzeSpectrum() {
+  if (!_lastPitch.valid || _lastPitch.hz <= 0.0f) {
+    // Sans fondamentale fiable il n'y a pas d'harmoniques a mesurer.
+    AcousticFeatureBuilder::fillSpectral(_features, nullptr, 0, 0.0f);
+    _spectralCountdown = 0;   // repartir a neuf des qu'une note revient
+    return;
+  }
+
+  // Goertzel a CHAQUE frame (il coute environ 4 % de YIN pour quatre
+  // harmoniques), FFT une frame sur MIC_SPECTRAL_DECIMATION : le timbre evolue
+  // bien plus lentement que le pitch et la FFT coute bien plus cher.
+  bool runFft = false;
+#if MIC_FFT_ENABLED
+  if (_spectralCountdown == 0) {
+    runFft = true;
+    _spectralCountdown = MIC_SPECTRAL_DECIMATION;
+  }
+  _spectralCountdown--;
+#endif
+
+  AcousticFeatureBuilder::fillSpectral(_features, _frame, MIC_ANALYSIS_FRAME_SIZE,
+                                       _lastPitch.hz, &_spectral, runFft);
 }
 
 #endif // MIC_ENABLED
