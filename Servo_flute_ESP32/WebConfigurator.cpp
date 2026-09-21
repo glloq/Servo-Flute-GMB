@@ -147,6 +147,11 @@ WebConfigurator::WebConfigurator(uint16_t port)
 
 WebConfigurator::~WebConfigurator() {
 #if MIC_ENABLED
+  // L'observateur de chronometrie pointe DANS _audio. Le detacher avant de
+  // detruire l'analyseur, sinon l'instrument garde un pointeur pendant et la
+  // premiere note suivante ecrit dans de la memoire liberee. WebConfigurator
+  // possede _audio ; InstrumentManager, lui, survit a sa destruction.
+  if (_instrument) _instrument->setTimingObserver(nullptr);
   delete _autoCal;
   delete _audio;
 #endif
@@ -210,6 +215,21 @@ void WebConfigurator::begin(InstrumentManager* instrument, MidiFilePlayer* playe
       _instrument->getAirflowCtrl(),
       *_audio,
       _instrument->getCalibrationAirSupply());
+    // PHASE 7 : la chaine d'actionneurs NOTIFIE ses instants d'ordre a la
+    // chronometrie acoustique. C'est le seul point ou les deux mondes se
+    // rencontrent, et le flux y est a SENS UNIQUE : l'instrument ecrit, il ne
+    // lit jamais. Sans cet appel tout reste nullptr et l'instrument se comporte
+    // exactement comme avant - c'est cette equivalence qui est testee
+    // nativement par timing_observer_cannot_touch_actuators.
+    //
+    // Conditionne a `micOk` DELIBEREMENT, et pas seulement a la presence de
+    // l'instrument : sans microphone, personne n'alimente la chronometrie en
+    // frames, donc chaque note ouvrirait un cycle qui finirait en
+    // TIMING_TIMEOUT. L'interface lirait "aucun son mesure" alors que la verite
+    // est "personne n'ecoutait". Un repli muet vaut mieux qu'une mesure fausse.
+    // Limite connue, partagee avec _autoCal juste au-dessus : un microphone
+    // rebranche apres le demarrage ne rearme pas ce cablage.
+    _instrument->setTimingObserver(&_audio->timing());
   }
   if (DEBUG) {
     Serial.print("DEBUG: WebConfigurator - Microphone INMP441: ");
