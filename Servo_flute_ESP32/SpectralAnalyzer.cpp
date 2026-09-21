@@ -243,6 +243,35 @@ struct HarmonicGrid {
 
 }  // namespace
 
+SpectralAnalyzer::AnalysisBand SpectralAnalyzer::analysisBand(float sampleRate) {
+  AnalysisBand band;
+  const uint16_t lastBin = (uint16_t)(MIC_FFT_SIZE / 2);
+  band.lo = 1;            // le bin 0 est le continu, deja retire par computeSpectrum
+  band.hi = lastBin;
+  if (!(sampleRate > 0.0f)) {
+    band.hi = 0;          // bande vide : le refus est laisse a l'appelant
+    return band;
+  }
+
+  // Passe-haut : premier bin dont le CENTRE atteint la coupure. Un bin dont le
+  // centre est sous la coupure porte surtout l'attenuation du filtre.
+  if (MIC_FILTER_HP_HZ > 0.0f) {
+    const float b = hzToBin(MIC_FILTER_HP_HZ, sampleRate);
+    if (b > (float)band.lo) {
+      const float up = ceilf(b);
+      band.lo = (up >= (float)lastBin) ? lastBin : (uint16_t)up;
+    }
+  }
+  // Passe-bas : dernier bin dont le centre reste sous la coupure. Une coupure
+  // au-dela de Nyquist ne retire rien, la borne reste le dernier bin.
+  if (MIC_FILTER_LP_HZ > 0.0f) {
+    const float b = hzToBin(MIC_FILTER_LP_HZ, sampleRate);
+    const float down = floorf(b);
+    if (down < (float)band.hi) band.hi = (down < 0.0f) ? 0u : (uint16_t)down;
+  }
+  return band;
+}
+
 uint8_t SpectralAnalyzer::usablePartials(float f0, float sampleRate) {
   if (f0 <= 0.0f || sampleRate <= 0.0f) return 0;
   const float f0Bins = hzToBin(f0, sampleRate);
@@ -264,15 +293,14 @@ bool SpectralAnalyzer::isHarmonicBin(size_t bin, float f0, float sampleRate) {
   return HarmonicGrid(hzToBin(f0, sampleRate), partials).contains(bin);
 }
 
-float SpectralAnalyzer::medianNoisePower(float f0Bins, uint8_t partials,
-                                         uint16_t noiseBins, float minNoise,
-                                         float maxNoise) const {
+float SpectralAnalyzer::medianNoisePower(const AnalysisBand& band, float f0Bins,
+                                         uint8_t partials, uint16_t noiseBins,
+                                         float minNoise, float maxNoise) const {
   if (noiseBins == 0) return 0.0f;
   if (maxNoise <= SpectralHnr::kPowerFloor) return SpectralHnr::kPowerFloor;
   if (minNoise < SpectralHnr::kPowerFloor) minNoise = SpectralHnr::kPowerFloor;
 
   const HarmonicGrid grid(f0Bins, partials);
-  const size_t bins = binCount();
   // Rang de la mediane basse, en numerotation 1.
   const uint16_t target = (uint16_t)((noiseBins + 1u) / 2u);
 
@@ -292,7 +320,10 @@ float SpectralAnalyzer::medianNoisePower(float f0Bins, uint8_t partials,
     const float mid = 0.5f * (lo + hi);
     const float threshold = expf(mid);
     uint16_t count = 0;
-    for (size_t k = 1; k < bins; k++) {
+    // MEME parcours que le comptage de `noiseBins` dans harmonicNoiseRatio :
+    // meme bande, meme grille. Un parcours plus large ferait chercher un rang
+    // dans un echantillon qui n'est pas celui qu'on a compte.
+    for (size_t k = band.lo; k <= (size_t)band.hi; k++) {
       if (grid.contains(k)) continue;
       if (_mag[k] * _mag[k] <= threshold) count++;
     }
@@ -312,14 +343,19 @@ HarmonicNoiseRatio SpectralAnalyzer::harmonicNoiseRatio(float f0,
   if (partials == 0) return out;   // f0 absente, trop grave, ou hors Nyquist
 
   const HarmonicGrid grid(hzToBin(f0, sampleRate), partials);
-  const size_t bins = binCount();
+  // TOUT ce qui suit se compte dans la seule bande que la chaine laisse
+  // passer : raies, bruit et plancher. Comparer une energie de raies prise sur
+  // tout le spectre a un plancher mesure dans la bande utile - ou l'inverse -
+  // rapporterait deux grandeurs qui ne decrivent pas la meme partie du signal.
+  const AnalysisBand band = analysisBand(sampleRate);
+  if (band.count() == 0) return out;
 
   float harmonicEnergy = 0.0f;
   float maxNoise = 0.0f;
   float minNoise = 0.0f;
   uint16_t harmonicBins = 0;
   uint16_t noiseBins = 0;
-  for (size_t k = 1; k < bins; k++) {
+  for (size_t k = band.lo; k <= (size_t)band.hi; k++) {
     const float p = _mag[k] * _mag[k];
     if (grid.contains(k)) {
       harmonicEnergy += p;
@@ -336,6 +372,16 @@ HarmonicNoiseRatio SpectralAnalyzer::harmonicNoiseRatio(float f0,
   out.noiseBins = noiseBins;
   out.harmonicEnergy = harmonicEnergy;
 
+  // Un NaN venu du PCM contamine TOUT le spectre - chaque papillon melange tous
+  // les echantillons - et traverse ensuite `< 0.0f`, `<= kPowerFloor` et
+  // `> MIC_HNR_MAX_DB` sans en declencher aucun : sans ce refus la fonction
+  // rendrait `valid = true, db = NaN`, ce que l'en-tete de HarmonicNoiseRatio
+  // interdit explicitement. Le refus est TARDIF a dessein : les compteurs
+  // ci-dessus restent renseignes, ils disent pourquoi.
+  // Non atteignable depuis l'I2S, qui livre des entiers ; c'est un contrat, pas
+  // un cas de terrain.
+  if (!(harmonicEnergy >= 0.0f)) return out;
+
   // Silence numerique : ni raie ni bruit. Le rapport de deux riens n'existe
   // pas, et -40 dB serait un verdict sur une note qui n'a pas ete jouee.
   if (harmonicEnergy <= SpectralHnr::kPowerFloor &&
@@ -347,14 +393,22 @@ HarmonicNoiseRatio SpectralAnalyzer::harmonicNoiseRatio(float f0,
   if (noiseBins < SpectralHnr::kMinNoiseBins) return out;
 
   float floorPerBin =
-      medianNoisePower(grid.f0Bins, partials, noiseBins, minNoise, maxNoise) *
+      medianNoisePower(band, grid.f0Bins, partials, noiseBins, minNoise, maxNoise) *
       SpectralHnr::kMedianToMeanPower;
   if (floorPerBin < SpectralHnr::kPowerFloor) floorPerBin = SpectralHnr::kPowerFloor;
   out.noiseFloorPerBin = floorPerBin;
 
-  // Le bruit occupe TOUT le spectre, y compris sous les raies : l'energie de
-  // bruit de la frame est le plancher etendu a l'ensemble des bins analyses, et
-  // non aux seuls bins ou on a pu le mesurer.
+  // Le bruit occupe toute la BANDE ANALYSEE, y compris sous les raies, qui le
+  // masquent sans le supprimer : l'energie de bruit de la frame est le plancher
+  // etendu a tous les bins de cette bande, et non aux seuls bins ou on a pu le
+  // mesurer.
+  //
+  // L'extrapolation s'arrete LA. Au-dela de MIC_FILTER_LP_HZ et sous
+  // MIC_FILTER_HP_HZ il n'y a pas de bruit a compter : le firmware l'a retire
+  // lui-meme, et pretendre l'y retrouver reviendrait a mesurer son propre
+  // filtre. Le HNR rendu est donc un rapport DANS LA BANDE UTILE - ce que les
+  // harmoniques hors bande auraient apporte n'est compte d'aucun des deux
+  // cotes, ce qui laisse le rapport interpretable.
   out.noiseEnergy = floorPerBin * (float)(harmonicBins + noiseBins);
 
   // Les bins d'une raie contiennent eux aussi du bruit. Le retirer evite de le

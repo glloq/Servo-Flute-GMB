@@ -26,6 +26,7 @@
 #include "PitchDetector.h"
 #include "PitchMath.h"
 #include "SpectralAnalyzer.h"
+#include "AudioFilters.h"
 #include "AcousticFeatures.h"
 #include "AcousticQuality.h"
 #include "NoiseModel.h"
@@ -52,6 +53,34 @@ struct Rig {
   int decimation = 0;
   int validPitches = 0;
   bool fftFresh = false;
+
+  // LA CHAINE DE FILTRAGE DE PRODUCTION.
+  //
+  // AudioAnalyzer::drainI2S() filtre le FLUX (MIC_FILTER_HP_HZ..LP_HZ) avant
+  // l'anneau : aucune frame analysee n'est du PCM brut. Les tests qui
+  // ETALONNENT une mesure doivent donc l'activer, sans quoi ils calibrent des
+  // seuils sur un signal que la production ne presente jamais - c'est
+  // exactement ce qui avait laisse passer l'extrapolation de plancher a tout le
+  // spectre.
+  //
+  // Elle est INACTIVE par defaut, et c'est delibere : les tests de priorite de
+  // classement et de refus construisent des signaux limites (silence, ecretage,
+  // bruit pur) ou des features a la main, et y ajouter un filtre deplacerait ce
+  // qu'ils cherchent a piquer sans rien prouver de plus. Ce qui est etalonne
+  // passe par la chaine ; ce qui est classe garde son signal.
+  AudioFilterChain filters;
+  bool filterStream = false;
+
+  // A appeler sur CHAQUE bloc, dans l'ordre du flux et avant analyse() : le
+  // filtre est un IIR, sa memoire doit s'etablir sur les frames precedentes.
+  void stream(float* buf, size_t n) {
+    if (filterStream) filters.processBlock(buf, n);
+  }
+
+  void useProductionChain() {
+    filterStream = true;
+    filters.configureDefaults();   // configure() remet aussi la memoire a zero
+  }
 
   AcousticFeatures analyse(const float* buf, size_t n, int expectedMidi) {
     AcousticFeatures f;
@@ -347,6 +376,15 @@ void quality_breathiness_refuses_what_it_cannot_measure() {
 // tout : `hnrIsSpectral` ne devient jamais vrai, la composante HNR est
 // absente partout, et il n'y a plus rien a calibrer. Le dire vaut mieux qu'une
 // suite verte qui n'a rien execute.
+//
+// IL EXIGE AUSSI LA CHAINE DE FILTRAGE DECRITE PAR settings.h. Un etalonnage
+// decrit un signal, et le signal analyse depend de MIC_FILTER_HP_HZ et
+// MIC_FILTER_LP_HZ : c'est tout le defaut que ce bloc corrige. Si ces coupures
+// changent - ou passent a 0 - ces tests echouent, et c'est le comportement
+// VOULU : les trois seuils sont alors a re-mesurer, pas a reporter tels quels.
+// Ce qui doit rester vrai dans toutes les configurations, c'est la MESURE
+// elle-meme ; c'est verifie dans test_spectral_hnr.cpp, qui ne depend d'aucun
+// seuil d'instrument.
 // ===========================================================================
 #if MIC_FFT_ENABLED
 
@@ -373,10 +411,56 @@ AcousticFeatures sustainedNote(Rig& rig, std::vector<float>& buf, float f0, floa
   AcousticFeatures f;
   for (int i = 0; i < kFramesEndingOnFft; i++) {
     audiosig::fluteLike(buf.data(), buf.size(), f0, 0.4f, breath, kFs, (size_t)i * buf.size());
+    // Le flux passe dans la chaine AVANT l'analyse, comme dans drainI2S(), et
+    // les quatre frames precedentes suffisent a etablir la memoire du filtre :
+    // 128 ms, soit vingt fois la constante de temps du retrait de continu.
+    rig.stream(buf.data(), buf.size());
     f = rig.analyse(buf.data(), buf.size(), midi);
     ctxOut = rig.context(buf.data(), buf.size(), midi);
   }
   return f;
+}
+
+// Meme note tenue, mais sur la chaine de PRODUCTION. C'est elle qui sert a
+// etalonner les seuils : ils doivent decrire le signal que le firmware analyse
+// reellement.
+AcousticFeatures sustainedProductionNote(Rig& rig, std::vector<float>& buf, float f0,
+                                         float breath, int midi, AcousticContext& ctxOut) {
+  rig.useProductionChain();
+  return sustainedNote(rig, buf, f0, breath, midi, ctxOut);
+}
+
+// La meme frame, filtree par une chaine dont la memoire est etablie : sert aux
+// releves faits directement sur SpectralAnalyzer, hors du banc complet.
+void productionFrame(std::vector<float>& buf, float f0, float amp, float breath, int index) {
+  AudioFilterChain chain;
+  chain.configureDefaults();
+  for (int i = 0; i < index; i++) {
+    audiosig::fluteLike(buf.data(), buf.size(), f0, amp, breath, kFs, (size_t)i * buf.size());
+    chain.processBlock(buf.data(), buf.size());
+  }
+  audiosig::fluteLike(buf.data(), buf.size(), f0, amp, breath, kFs, (size_t)index * buf.size());
+  chain.processBlock(buf.data(), buf.size());
+}
+
+// Releve direct sur l'analyseur, f0 IMPOSEE : sert a comparer deux signaux sans
+// passer par le detecteur de pitch, qui ne survit pas aux memes niveaux de
+// souffle selon que le flux a ete filtre ou non.
+float directHnrDb(const std::vector<float>& frame, float f0) {
+  SpectralAnalyzer sa;
+  if (!sa.computeSpectrum(frame.data(), frame.size())) return 0.0f;
+  const HarmonicNoiseRatio h = sa.harmonicNoiseRatio(f0, kFs);
+  assert(h.valid);
+  return h.db;
+}
+
+void productionNoiseFrame(std::vector<float>& buf, float amp, uint32_t seed, int frames) {
+  AudioFilterChain chain;
+  chain.configureDefaults();
+  for (int i = 0; i < frames; i++) {
+    audiosig::whiteNoise(buf.data(), buf.size(), amp, seed + (uint32_t)i);
+    chain.processBlock(buf.data(), buf.size());
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -432,6 +516,9 @@ AcousticFeatures sustainedRich(Rig& rig, std::vector<float>& buf, const RichTone
   AcousticFeatures f;
   for (int i = 0; i < 2 * MIC_SPECTRAL_DECIMATION + 1; i++) {
     fillRich(buf.data(), buf.size(), t, (size_t)i * buf.size());
+    // Comme drainI2S() : le flux traverse la chaine avant d'etre analyse. Les
+    // huit frames precedentes etablissent la memoire du filtre.
+    rig.stream(buf.data(), buf.size());
     f = rig.analyse(buf.data(), buf.size(), midi);
     ctxOut = rig.context(buf.data(), buf.size(), midi);
   }
@@ -457,48 +544,78 @@ RichTone timbredReference(float f0) {
 // tard, a un releve sur microphone.
 void quality_hnr_scale_is_the_one_the_thresholds_describe() {
   std::vector<float> buf(kFrame);
+  std::vector<float> raw(kFrame);
 
-  printf("  [hnr-calib] plage du HNR SPECTRAL sur PCM synthetique "
-         "(fluteLike 440 Hz, amp 0,40 ; %d frames, la derniere avec FFT)\n",
+  printf("  [hnr-calib] plage du HNR SPECTRAL sur la CHAINE DE PRODUCTION - PCM\n"
+         "  [hnr-calib] synthetique passe dans AudioFilterChain comme le fait\n"
+         "  [hnr-calib] drainI2S() (fluteLike 440 Hz, amp 0,40 ; %d frames, la\n"
+         "  [hnr-calib] derniere avec FFT ; memoire de filtre etablie).\n",
          kFramesEndingOnFft);
-  printf("  [hnr-calib] %-26s %9s %9s %9s %9s\n",
-         "signal", "HNR (dB)", "breath", "compo_br", "compo_q");
+  printf("  [hnr-calib] %-26s %9s %9s %9s %9s %9s\n",
+         "signal", "HNR (dB)", "PCM brut", "breath", "compo_br", "compo_q");
 
   // Sinus pur : rien a mesurer comme bruit, la mesure est bornee.
   {
     Rig rig;
+    rig.useProductionChain();
     AcousticFeatures f;
     AcousticContext ctx;
     for (int i = 0; i < kFramesEndingOnFft; i++) {
       audiosig::pureTone(buf.data(), kFrame, 440.0f, 0.4f, kFs, (size_t)i * kFrame);
+      rig.stream(buf.data(), kFrame);
       f = rig.analyse(buf.data(), kFrame, kMidiA4);
       ctx = rig.context(buf.data(), kFrame, kMidiA4);
     }
     assert(f.hnrIsSpectral);
     assert(f.harmonicToNoiseRatio == MIC_HNR_MAX_DB);
-    printf("  [hnr-calib] %-26s %9.2f %9s %9.3f %9.3f\n", "sinus pur",
-           (double)f.harmonicToNoiseRatio, "-",
+    printf("  [hnr-calib] %-26s %9.2f %9s %9s %9.3f %9.3f\n", "sinus pur",
+           (double)f.harmonicToNoiseRatio, "-", "-",
            (double)breathHnrComponent(f.harmonicToNoiseRatio),
            (double)qualityHnrComponent(f.harmonicToNoiseRatio));
   }
 
-  // Balayage du souffle sur une note harmonique.
-  const float kSweep[] = {0.0f, 0.010f, 0.020f, 0.050f, 0.100f, 0.200f};
-  float measured[sizeof(kSweep) / sizeof(kSweep[0])] = {};
-  for (size_t i = 0; i < sizeof(kSweep) / sizeof(kSweep[0]); i++) {
+  // Balayage du souffle sur une note harmonique. Le point a 0,350 remplace
+  // l'ancien haut de balayage a 0,200 : sur la chaine de production le pitch
+  // survit plus loin - le filtrage aide aussi YIN - et la calibration doit
+  // aller jusqu'ou la mesure existe encore.
+  const float kSweep[] = {0.0f, 0.010f, 0.020f, 0.050f, 0.100f, 0.200f, 0.350f};
+  constexpr size_t kPoints = sizeof(kSweep) / sizeof(kSweep[0]);
+  float measured[kPoints] = {};
+  float rawMeasured[kPoints] = {};
+  float worstChainGap = 0.0f;
+  for (size_t i = 0; i < kPoints; i++) {
     Rig rig;
     AcousticContext ctx;
-    const AcousticFeatures f = sustainedNote(rig, buf, 440.0f, kSweep[i], kMidiA4, ctx);
+    const AcousticFeatures f =
+        sustainedProductionNote(rig, buf, 440.0f, kSweep[i], kMidiA4, ctx);
     // Chaque point DOIT porter la mesure spectrale : un seuil calibre sur une
     // echelle ne se verifie pas sur des points mesures sur l'autre.
     assert(f.pitchValid && f.spectralValid && f.hnrIsSpectral);
     measured[i] = f.harmonicToNoiseRatio;
+
+    // LE MEME signal avec et sans la chaine, mesure directement par
+    // l'analyseur a f0 imposee. Les deux colonnes doivent rester proches :
+    // c'est la preuve que le plancher n'est plus extrapole a une bande que le
+    // firmware a videe. Avant correction l'ecart atteignait +12,5 dB ici.
+    // La mesure est prise a f0 imposee, et non a travers le banc complet,
+    // parce que le detecteur de pitch ne survit pas aux memes niveaux de
+    // souffle selon que le flux a ete filtre ou non : on comparerait alors deux
+    // notes differentes.
+    const int kLastFrame = kFramesEndingOnFft - 1;
+    productionFrame(buf, 440.0f, 0.4f, kSweep[i], kLastFrame);
+    const float prodDirect = directHnrDb(buf, 440.0f);
+    audiosig::fluteLike(raw.data(), kFrame, 440.0f, 0.4f, kSweep[i], kFs,
+                        (size_t)kLastFrame * kFrame);
+    rawMeasured[i] = directHnrDb(raw, 440.0f);
+    const float gap = fabsf(prodDirect - rawMeasured[i]);
+    if (gap > worstChainGap) worstChainGap = gap;
+
     const BreathinessResult b =
         AcousticQuality::computeBreathiness(f, ctx, AcousticQuality::breathinessAnchorHz(f, ctx));
     char label[32];
     snprintf(label, sizeof(label), "fluteLike souffle=%.3f", (double)kSweep[i]);
-    printf("  [hnr-calib] %-26s %9.2f %9.3f %9.3f %9.3f\n", label, (double)measured[i],
-           (double)b.value, (double)breathHnrComponent(measured[i]),
+    printf("  [hnr-calib] %-26s %9.2f %9.2f %9.3f %9.3f %9.3f\n", label, (double)measured[i],
+           (double)rawMeasured[i], (double)b.value, (double)breathHnrComponent(measured[i]),
            (double)qualityHnrComponent(measured[i]));
   }
 
@@ -511,49 +628,88 @@ void quality_hnr_scale_is_the_one_the_thresholds_describe() {
   {
     SpectralAnalyzer sa;
     for (uint32_t seed : {99u, 12345u, 7u}) {
-      audiosig::whiteNoise(buf.data(), kFrame, 0.4f, seed);
+      productionNoiseFrame(buf, 0.4f, seed, kFramesEndingOnFft);
       assert(sa.computeSpectrum(buf.data(), kFrame));
       const HarmonicNoiseRatio h = sa.harmonicNoiseRatio(440.0f, kFs);
       assert(h.valid);
       if (h.db > noiseOnlyDb) noiseOnlyDb = h.db;
       char label[32];
       snprintf(label, sizeof(label), "bruit blanc (graine %u)", seed);
-      printf("  [hnr-calib] %-26s %9.2f %9s %9.3f %9.3f\n", label, (double)h.db, "-",
+      printf("  [hnr-calib] %-26s %9.2f %9s %9s %9.3f %9.3f\n", label, (double)h.db, "-", "-",
              (double)breathHnrComponent(h.db), (double)qualityHnrComponent(h.db));
       assert(h.db >= -MIC_HNR_MAX_DB);
     }
 
     // Et la chaine complete, elle, ne rend RIEN plutot qu'un chiffre plausible.
     Rig rig;
-    audiosig::whiteNoise(buf.data(), kFrame, 0.4f, 99u);
+    rig.useProductionChain();
+    productionNoiseFrame(buf, 0.4f, 99u, 1);
     const AcousticFeatures f = rig.analyse(buf.data(), kFrame, kMidiA4);
     assert(!f.spectralValid && !f.hnrIsSpectral && f.harmonicToNoiseRatio == 0.0f);
   }
+  printf("  [hnr-calib] ecart max production / PCM brut sur le balayage : %.2f dB\n",
+         (double)worstChainGap);
   fflush(stdout);   // le tableau doit survivre a l'echec d'une assertion ci-dessous
 
   // --- Ce que ce tableau impose aux trois seuils ---------------------------
 
-  // Le balayage est strictement decroissant : la mesure repond au souffle.
-  for (size_t i = 1; i < sizeof(kSweep) / sizeof(kSweep[0]); i++) {
-    assert(measured[i] < measured[i - 1]);
-  }
+  // LE POINT QUI EMPECHE LA RECIDIVE. Le filtrage de production ne doit presque
+  // pas deplacer la mesure : il retire du bruit hors bande, que le HNR ne
+  // compte plus d'aucun cote du rapport. Cette assertion echoue si le plancher
+  // redevient estime puis etendu a tout le spectre - l'ecart repasse alors a
+  // plus de 12 dB, et les seuils ci-dessous decrivent de nouveau un signal
+  // imaginaire. Verifiee par mutation.
+  assert(worstChainGap < 2.0f);
+
+  // Le balayage decroit : la mesure repond au souffle. Les DEUX premiers points
+  // sont a egalite, et ce n'est pas un defaut a masquer : sur la chaine de
+  // production un souffle de 0,010 - 2,5 % de la fondamentale - donne le meme
+  // +40,00 dB qu'une note sans souffle, parce que la mesure BUTE sur
+  // MIC_HNR_MAX_DB. Le haut de l'echelle est ecrase contre cette borne, et
+  // c'est ce qui dicte le choix de AQ_BREATH_HNR_TONE_DB.
+  assert(measured[0] == MIC_HNR_MAX_DB);
+  assert(measured[1] == MIC_HNR_MAX_DB);
+  for (size_t i = 2; i < kPoints; i++) assert(measured[i] < measured[i - 1]);
 
   // AQ_BREATH_HNR_TONE_DB doit separer "aucun souffle" de "souffle mesurable".
-  // Mesure : souffle 0 sature a MIC_HNR_MAX_DB, souffle 0,010 tombe juste sous
-  // le seuil, souffle 0,020 nettement sous.
   assert(AQ_BREATH_HNR_TONE_DB < MIC_HNR_MAX_DB);
   assert(measured[0] > AQ_BREATH_HNR_TONE_DB);          // souffle 0
-  assert(measured[2] < AQ_BREATH_HNR_TONE_DB - 4.0f);   // souffle 0,020
-  // ... et il doit etre BIEN AU-DESSUS de l'ancien seuil de 20 dB, sans quoi
-  // toute la moitie superieure de la plage serait ecrasee a "parfait".
+  // Le premier souffle que la mesure separe de la borne est 0,020 : il doit
+  // tomber sous le seuil, sinon toute la plage 0..0,020 est declaree parfaite.
+  assert(measured[2] < AQ_BREATH_HNR_TONE_DB);
+  // ...et le seuil doit rester a au moins 4 dB de la borne - l'etendue relevee
+  // sur six realisations de bruit - sinon c'est la realisation du bruit, et non
+  // le souffle, qui deciderait du verdict.
+  assert(AQ_BREATH_HNR_TONE_DB <= MIC_HNR_MAX_DB - 4.0f);
+  // ... et BIEN AU-DESSUS de l'ancien seuil de 20 dB, sans quoi toute la moitie
+  // superieure de la plage serait ecrasee a "parfait".
   assert(AQ_BREATH_HNR_TONE_DB > 30.0f);
 
+  // LE CAS DE L'AUDIT, verrouille : une note dont le souffle vaut 12,5 % de la
+  // fondamentale (souffle 0,050 sur amp 0,40) ne doit NI saturer la composante
+  // de qualite a 1,00, NI saturer celle de respiration a 0. C'est exactement ce
+  // qu'elle faisait avec le plancher etendu a tout le spectre, seuil a 20 dB
+  // comme a 34 dB.
+  assert(measured[3] < AQ_BREATH_HNR_TONE_DB - 4.0f);
+  assert(qualityHnrComponent(measured[3]) < 0.90f);
+  assert(breathHnrComponent(measured[3]) > 0.10f);
+
   // AQ_BREATH_HNR_NOISE_DB est sous la note la plus soufflee dont le pitch
-  // survive (souffle 0,200) et au-dessus du bruit blanc pur : la composante
+  // survive (souffle 0,350) et au-dessus du bruit blanc pur : la composante
   // n'est donc ni saturee ni inatteignable sur la plage utile.
-  assert(AQ_BREATH_HNR_NOISE_DB < measured[5]);
+  assert(AQ_BREATH_HNR_NOISE_DB < measured[kPoints - 1]);
   assert(AQ_BREATH_HNR_NOISE_DB > noiseOnlyDb);
-  assert(noiseOnlyDb < -10.0f);   // le PLUS FAVORABLE des releves de bruit pur
+  // BORNE ELARGIE DE -10 A -5 dB, et il faut dire pourquoi. Sur du bruit pur le
+  // HNR est une statistique : la somme des bins de raies fluctue autour du
+  // plancher et laisse un residu. Le mesurer dans la seule bande passante
+  // reduit l'echantillon - 111 bins au lieu de 256 - donc augmente ce residu.
+  // Releve sur 2800 tirages : la mediane reste a la borne -40 dB et 82 % des
+  // tirages sont sous -10 dB, mais la queue atteint -0,75 dB avant correction
+  // et +1,34 dB apres. La marge entre le bruit pur et le seuil 0 dB s'est donc
+  // reduite, sur un signal que la chaine complete refuse de toute facon faute
+  // de pitch (verifie juste au-dessus). La distribution complete est verrouillee
+  // par hnr_pure_tone_and_pure_noise_sit_at_the_extremes.
+  assert(noiseOnlyDb < -5.0f);   // le PLUS FAVORABLE des trois releves
 
   // AQ_QUALITY_HNR_GOOD_DB : la meme plage, donc le meme repere haut.
   assert(AQ_QUALITY_HNR_GOOD_DB > AQ_QUALITY_HNR_MIN_DB);
@@ -570,7 +726,15 @@ void quality_hnr_scale_is_the_one_the_thresholds_describe() {
 // soufflee tombe de 0,325 a 0,12. Verifie par mutation.
 void quality_breathiness_rises_with_breath_on_the_spectral_scale() {
   std::vector<float> buf(kFrame);
-  const float kSweep[] = {0.0f, 0.010f, 0.020f, 0.050f, 0.100f, 0.200f};
+  // BALAYAGE DEPLACE SUR LA CHAINE DE PRODUCTION, et les points avec lui.
+  // Le point 0,010 sort du balayage monotone : sur le signal reellement
+  // analyse, il donne exactement le meme +40,00 dB qu'une note sans souffle
+  // (mesure bornee par MIC_HNR_MAX_DB) et exactement la meme respiration. Il
+  // n'est pas ecarte en silence - il est verifie a part, plus bas, comme une
+  // propriete MESUREE de la chaine. Le haut monte en revanche a 0,350, ou le
+  // pitch survit encore une fois le flux filtre : le balayage couvre donc
+  // strictement plus de terrain qu'avant, pas moins.
+  const float kSweep[] = {0.0f, 0.020f, 0.050f, 0.100f, 0.200f, 0.350f};
   constexpr size_t kPoints = sizeof(kSweep) / sizeof(kSweep[0]);
   static_assert(kPoints >= 4, "au moins quatre points de balayage");
 
@@ -578,7 +742,8 @@ void quality_breathiness_rises_with_breath_on_the_spectral_scale() {
   for (size_t i = 0; i < kPoints; i++) {
     Rig rig;
     AcousticContext ctx;
-    const AcousticFeatures f = sustainedNote(rig, buf, 440.0f, kSweep[i], kMidiA4, ctx);
+    const AcousticFeatures f =
+        sustainedProductionNote(rig, buf, 440.0f, kSweep[i], kMidiA4, ctx);
     const BreathinessResult b =
         AcousticQuality::computeBreathiness(f, ctx, AcousticQuality::breathinessAnchorHz(f, ctx));
     assert(b.valid);
@@ -590,7 +755,7 @@ void quality_breathiness_rises_with_breath_on_the_spectral_scale() {
     value[i] = b.value;
   }
 
-  printf("  [hnr-calib] respiration le long du balayage :");
+  printf("  [hnr-calib] respiration le long du balayage (production) :");
   for (size_t i = 0; i < kPoints; i++) printf(" %.3f", (double)value[i]);
   printf("\n");
 
@@ -606,6 +771,34 @@ void quality_breathiness_rises_with_breath_on_the_spectral_scale() {
   // deux points ci-dessous saturent tous les deux la composante HNR a zero et
   // cet ecart tombe sous 0,15.
   assert(value[3] - value[1] > 0.25f);
+
+  // CE QUE LA CHAINE NE SAIT PAS FAIRE, mesure plutot que tu. Un souffle de
+  // 0,010 - 2,5 % de la fondamentale - est indiscernable d'une note sans
+  // souffle apres filtrage : la mesure bute sur MIC_HNR_MAX_DB, la platitude
+  // reste sous AQ_BREATH_FLATNESS_TONE et les creux inter-partiels sous
+  // AQ_BREATH_INTER_TONE_DB. Les trois composantes valent zero de chaque cote.
+  // Ce n'est pas une regression du recalibrage : c'est la resolution de la
+  // chaine, et un balayage qui pretendrait le contraire mentirait.
+  {
+    Rig clean, faint;
+    AcousticContext ctxClean, ctxFaint;
+    const AcousticFeatures fc =
+        sustainedProductionNote(clean, buf, 440.0f, 0.0f, kMidiA4, ctxClean);
+    const AcousticFeatures ff =
+        sustainedProductionNote(faint, buf, 440.0f, 0.010f, kMidiA4, ctxFaint);
+    assert(fc.hnrIsSpectral && ff.hnrIsSpectral);
+    assert(fc.harmonicToNoiseRatio == MIC_HNR_MAX_DB);
+    assert(ff.harmonicToNoiseRatio == MIC_HNR_MAX_DB);
+    const BreathinessResult bc = AcousticQuality::computeBreathiness(
+        fc, ctxClean, AcousticQuality::breathinessAnchorHz(fc, ctxClean));
+    const BreathinessResult bf = AcousticQuality::computeBreathiness(
+        ff, ctxFaint, AcousticQuality::breathinessAnchorHz(ff, ctxFaint));
+    assert(bc.valid && bf.valid);
+    assert(bc.value == 0.0f && bf.value == 0.0f);
+    printf("  [hnr-calib] resolution de la chaine : souffle 0,010 donne le meme "
+           "%+.2f dB et la meme respiration %.3f qu'une note sans souffle\n",
+           (double)ff.harmonicToNoiseRatio, (double)bf.value);
+  }
 }
 
 // Le seuil ne doit jamais etre applique a l'approximation Goertzel : elle lit
@@ -698,6 +891,25 @@ void quality_score_ranks_a_timbred_note_above_a_breathy_one() {
   airy.partial[0] = 0.70f; airy.partial[1] = 0.15f; airy.partial[2] = 0.07f;
   airy.noise = 0.30f;
 
+  // CE TEST RESTE SUR DU PCM BRUT, et il faut dire pourquoi, parce que le reste
+  // de ce bloc est passe a la chaine de production.
+  //
+  // Il compare un CLASSEMENT - la note timbree au-dessus de la note soufflee -
+  // et ce classement tient sur les deux signaux : mesure sur la chaine de
+  // production, la paire donne respiration 0,174 / 0,481 et qualite 0,954 /
+  // 0,713, donc le meme verdict relatif, plus net encore sur la qualite.
+  //
+  // Ce qui NE tient pas sur la chaine de production, c'est l'assertion absolue
+  // `bB.value > AQ_BREATHY_MAX` : 0,481 passe sous le seuil de 0,55. La cause
+  // n'est PAS le HNR - il vaut +12,58 dB sur cette note, largement du bon cote -
+  // mais les deux autres composantes de la respiration : la platitude spectrale
+  // est mesuree sur TOUT le spectre alors que la chaine en a vide 56 %, donc
+  // elle s'effondre d'un facteur 2,5, et les creux inter-partiels suivent.
+  // AQ_BREATH_FLATNESS_TONE/NOISE et AQ_BREATHY_MAX sont donc encore etalonnes
+  // en PCM brut - meme defaut que celui corrige ici pour le HNR, mais sur une
+  // mesure qui sert aussi a NoiseModel et a WebConfigurator : le corriger
+  // demande son propre chantier. Le signaler vaut mieux que deplacer ce test
+  // pour qu'il passe, ou deplacer le seuil pour qu'il tombe du bon cote.
   Rig rigT, rigB;
   AcousticContext ctxT, ctxB;
   AcousticFeatures fT = sustainedRich(rigT, buf, rich, kMidi, ctxT);

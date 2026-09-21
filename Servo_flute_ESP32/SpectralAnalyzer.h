@@ -35,7 +35,7 @@
  * exactement comme une note soufflee. Les deux mesures sont alors du meme ordre
  * de grandeur et peuvent meme se croiser.
  *
- * Trois decisions portent cette mesure :
+ * Quatre decisions portent cette mesure :
  *
  *   1. Les bins d'une raie sont ceux du LOBE PRINCIPAL de la fenetre de Hann,
  *      soit +-2 bins autour de la raie. Une raie n'occupe jamais un seul bin ;
@@ -48,6 +48,16 @@
  *   3. La mediane est trouvee par BISSECTION sur la valeur, pas par tri : trier
  *      demanderait une copie des 257 bins (1 ko de pile) alors que la
  *      bissection ne demande rien du tout.
+ *   4. Tout se mesure DANS LA BANDE QUE LA CHAINE LAISSE PASSER, jamais sur le
+ *      spectre entier. AudioAnalyzer::drainI2S() filtre le FLUX avant l'anneau
+ *      (AudioFilterChain, MIC_FILTER_HP_HZ..MIC_FILTER_LP_HZ) : la FFT ne voit
+ *      donc jamais qu'un signal deja filtre, et a 32 kHz sur 512 points les
+ *      bins 112 a 256 - 56 % du spectre - sont dans la bande coupee. Une
+ *      mediane prise sur tous les bins non harmoniques y tombe (ils sont
+ *      majoritaires), et l'etendre a la totalite du spectre sous-estime le
+ *      bruit de plus de 12 dB, donc surestime le HNR d'autant. On ne peut pas
+ *      extrapoler un plancher a une bande dont on a soi-meme retire le
+ *      contenu : voir SpectralAnalyzer::analysisBand.
  *
  * Et une regle : sans spectre, sans f0 fiable ou sans assez de bins restants,
  * le resultat est explicitement INVALIDE. Aucun nombre plausible n'est rendu a
@@ -91,6 +101,9 @@ constexpr float kHarmonicHalfWidthBins = 2.0f;
 // d'harmonique et ne ferait que reduire l'echantillon servant au plancher. Les
 // rares partiels eleves qui restent dans le lot de bruit sont sans effet : la
 // mediane les ignore.
+// Les rangs dont la raie tombe HORS de la bande passante de la chaine ne
+// coutent plus rien depuis que la mesure se limite a cette bande : leurs bins
+// n'y sont tout simplement pas.
 constexpr uint8_t kMaxPartials = 20;
 
 // Fondamentale minimale, exprimee en bins. En dessous, le lobe principal de la
@@ -103,6 +116,13 @@ constexpr float kMinF0Bins = 3.0f;
 // Nombre minimal de bins restants pour estimer un plancher. Sous une quinzaine
 // d'echantillons une mediane n'est plus une statistique stable ; on refuse la
 // mesure plutot que de rendre un plancher tire de trois bins.
+// Le comptage porte sur les bins non harmoniques DE LA BANDE PASSANTE, qui est
+// nettement plus etroite que le spectre : a 32 kHz sur 512 points elle vaut
+// 111 bins. Le pire cas de la plage de l'instrument - f0 = 375 Hz, ou vingt
+// lobes de +-2 bins en recouvrent presque toute la largeur - laisse encore
+// 20 bins. La marge est MINCE : un test la releve sur toute la plage
+// MIC_PITCH_MIN_HZ..MIC_PITCH_MAX_HZ et echouerait avant que la mesure ne se
+// mette a refuser silencieusement des notes.
 constexpr uint16_t kMinNoiseBins = 16;
 
 // Iterations de la bissection qui trouve la mediane sans trier ni copier.
@@ -147,11 +167,14 @@ struct HarmonicEnergies {
   uint8_t measured = 0;
 };
 
-// Rapport harmonique / bruit mesure sur le spectre COMPLET.
+// Rapport harmonique / bruit mesure sur le spectre COMPLET - c'est-a-dire sur
+// tous les rangs harmoniques, et non sur quatre raies - mais DANS LA SEULE
+// BANDE que la chaine d'acquisition laisse passer (voir analysisBand).
 //
 // `valid` faux signifie que la mesure n'a PAS pu etre faite - pas de spectre,
-// pas de fondamentale exploitable, spectre numeriquement vide, ou trop peu de
-// bins restants pour un plancher. `db`, `noiseFloorPerBin` et `noiseEnergy`
+// pas de fondamentale exploitable, spectre numeriquement vide, spectre non
+// fini, ou trop peu de bins restants pour un plancher. `db`,
+// `noiseFloorPerBin` et `noiseEnergy`
 // restent alors a zero et ne doivent pas etre lus : lire `db` sans regarder
 // `valid` revient a prendre un zero pour un rapport de 0 dB. Les compteurs
 // (`partials`, `harmonicBins`, `noiseBins`) et `harmonicEnergy`, eux, peuvent
@@ -168,8 +191,8 @@ struct HarmonicNoiseRatio {
   float db = 0.0f;                  // borne a +-MIC_HNR_MAX_DB
   float harmonicEnergy = 0.0f;      // somme des puissances des bins de raies
   float noiseFloorPerBin = 0.0f;    // puissance moyenne estimee d'UN bin de bruit
-  float noiseEnergy = 0.0f;         // plancher etendu a tous les bins analyses
-  uint16_t harmonicBins = 0;        // bins attribues aux raies
+  float noiseEnergy = 0.0f;         // plancher etendu aux bins de la bande analysee
+  uint16_t harmonicBins = 0;        // bins de raies DANS la bande analysee
   uint16_t noiseBins = 0;           // bins ayant servi a estimer le plancher
   uint8_t partials = 0;             // rangs harmoniques pris en compte
 };
@@ -229,6 +252,36 @@ public:
     return hz * (float)MIC_FFT_SIZE / sampleRate;
   }
 
+  // Bornes INCLUSIVES, en bins, de la bande sur laquelle le HNR est mesure.
+  //
+  // POURQUOI CETTE BANDE EXISTE. Le HNR compare une energie de raies a un
+  // plancher de bruit EXTRAPOLE : on mesure le plancher sur les bins ou aucune
+  // raie ne se trouve, puis on l'etend aux bins de raies, ou il est invisible.
+  // Cette extrapolation suppose que les bins sur lesquels on mesure et les bins
+  // auxquels on etend portent le MEME bruit. La chaine d'acquisition rend cette
+  // hypothese fausse hors de sa bande passante : AudioAnalyzer::drainI2S()
+  // filtre le flux (MIC_FILTER_HP_HZ..MIC_FILTER_LP_HZ) avant l'anneau, donc la
+  // FFT ne voit au-dela qu'un bruit que le firmware a lui-meme retire. Y
+  // mesurer le plancher, c'est mesurer l'effet du filtre ; l'etendre au reste
+  // du spectre, c'est pretendre que la bande utile est aussi vide.
+  //
+  // La bande est donc celle du filtre, bornes a -3 dB comprises, et elle se
+  // DERIVE de settings.h : aucune frequence n'est ecrite ici. Une coupure a 0
+  // desactive l'etage correspondant (AudioFilterChain::configure : la cellule
+  // devient transparente), et la borne correspondante revient alors au spectre
+  // entier - la mesure reste donc exacte sans filtrage.
+  //
+  // `sampleRate` est celle des echantillons analyses ; la chaine de filtrage
+  // etant configuree a MIC_SAMPLE_RATE sur le meme flux, les deux coincident en
+  // production (AudioAnalyzer::begin -> configureDefaults()).
+  struct AnalysisBand {
+    uint16_t lo = 1;     // premier bin analyse (jamais 0 : le continu est retire)
+    uint16_t hi = 0;     // dernier bin analyse, INCLUS ; hi < lo = bande vide
+    uint16_t count() const { return (hi >= lo) ? (uint16_t)(hi - lo + 1u) : 0u; }
+    bool contains(size_t bin) const { return bin >= lo && bin <= hi; }
+  };
+  static AnalysisBand analysisBand(float sampleRate = (float)MIC_SAMPLE_RATE);
+
   // Rangs harmoniques exploitables pour cette f0 : ceux dont la raie tombe sous
   // Nyquist, plafonnes a SpectralHnr::kMaxPartials. Rend 0 quand f0 est
   // inutilisable, ce qui est aussi la condition de refus du HNR.
@@ -250,12 +303,14 @@ public:
 
 private:
 #if MIC_FFT_ENABLED
-  // Mediane des puissances des bins NON harmoniques, par bissection sur la
-  // valeur : aucun tampon de travail, aucune copie du spectre. `minNoise` et
-  // `maxNoise` encadrent la recherche - la mediane est par definition entre les
-  // deux, ce qui evite de bissecter sur un intervalle imaginaire.
-  float medianNoisePower(float f0Bins, uint8_t partials, uint16_t noiseBins,
-                         float minNoise, float maxNoise) const;
+  // Mediane des puissances des bins NON harmoniques DE LA BANDE ANALYSEE, par
+  // bissection sur la valeur : aucun tampon de travail, aucune copie du
+  // spectre. `minNoise` et `maxNoise` encadrent la recherche - la mediane est
+  // par definition entre les deux, ce qui evite de bissecter sur un intervalle
+  // imaginaire. `band` doit etre exactement celle qui a servi a compter
+  // `noiseBins`, sinon le rang cherche ne correspond plus a l'echantillon.
+  float medianNoisePower(const AnalysisBand& band, float f0Bins, uint8_t partials,
+                         uint16_t noiseBins, float minNoise, float maxNoise) const;
 
   float _re[MIC_FFT_SIZE];
   float _im[MIC_FFT_SIZE];

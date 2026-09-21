@@ -10,14 +10,27 @@
  * niveau. Le test hnr_separates_a_timbred_note_from_a_breathy_note mesure cette
  * inversion et montre que la nouvelle mesure la corrige.
  *
- * Les autres tests verrouillent les trois decisions qui la rendent possible :
+ * Les autres tests verrouillent les quatre decisions qui la rendent possible :
  * la largeur de fenetre autour d'une raie (lobe principal de Hann), la mediane
- * comme estimateur de plancher, et le refus explicite de mesurer quand les
- * conditions ne sont pas reunies.
+ * comme estimateur de plancher, la BANDE sur laquelle plancher et energie sont
+ * mesures, et le refus explicite de mesurer quand les conditions ne sont pas
+ * reunies.
+ *
+ * LA CHAINE MESUREE EST CELLE DE LA PRODUCTION
+ * --------------------------------------------
+ * AudioAnalyzer::drainI2S() filtre le flux avant l'anneau : la FFT ne recoit
+ * jamais de PCM brut. Cette suite mesurait pourtant du PCM brut, et c'est ce
+ * qui avait laisse passer une extrapolation de plancher a tout le spectre alors
+ * que 56 % de ce spectre est dans la bande coupee. Les tests qui portent sur la
+ * mesure elle-meme passent desormais par AudioFilterChain, memoire de filtre
+ * etablie avant la frame mesuree (voir ProductionStream).
  *
  * Tous les signaux sont synthetiques et reproductibles : cela valide le
- * TRAITEMENT DU SIGNAL, jamais le comportement acoustique reel d'une flute.
+ * TRAITEMENT DU SIGNAL, jamais le comportement acoustique reel d'une flute. Un
+ * filtrage de production applique a du PCM synthetique reste du PCM
+ * synthetique.
  ***********************************************************************************************/
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -25,6 +38,7 @@
 
 #include "settings.h"
 #include "SpectralAnalyzer.h"
+#include "AudioFilters.h"
 #include "audio_signals.h"
 
 void spectral_hnr_run_all_tests();
@@ -111,6 +125,109 @@ double meanNonHarmonicPower(const SpectralAnalyzer& sa, float f0) {
 // reference contre laquelle le plancher estime est verifie EN VALEUR ABSOLUE,
 // et pas seulement en tendance.
 constexpr float kHannOneSidedPowerFactor = 3.0f / 16.0f;
+
+// ---------------------------------------------------------------------------
+// La BANDE, recalculee ici depuis settings.h
+//
+// Le HNR ne se mesure que dans la bande que AudioAnalyzer::drainI2S() laisse
+// passer. Les bornes sont recalculees dans ce fichier, a la main, depuis les
+// memes macros : un test qui les lirait par SpectralAnalyzer::analysisBand()
+// verifierait le code avec lui-meme et passerait meme si la bande etait fausse.
+// ---------------------------------------------------------------------------
+constexpr size_t kLastBin = MIC_FFT_SIZE / 2;
+
+size_t expectedBandLo() {
+  if (MIC_FILTER_HP_HZ <= 0.0f) return 1;   // etage desactive : tout le spectre
+  size_t k = 1;
+  while (k < kLastBin && (float)k * kFs / (float)MIC_FFT_SIZE < MIC_FILTER_HP_HZ) k++;
+  return k;
+}
+size_t expectedBandHi() {
+  if (MIC_FILTER_LP_HZ <= 0.0f) return kLastBin;
+  size_t k = kLastBin;
+  while (k > 0 && (float)k * kFs / (float)MIC_FFT_SIZE > MIC_FILTER_LP_HZ) k--;
+  return k;
+}
+size_t expectedBandCount() {
+  const size_t lo = expectedBandLo(), hi = expectedBandHi();
+  return (hi >= lo) ? (hi - lo + 1) : 0;
+}
+
+// Energie des bins de raies DANS la bande, lue sur le spectre expose.
+double harmonicEnergyInBand(const SpectralAnalyzer& sa, float f0) {
+  double sum = 0.0;
+  for (size_t k = expectedBandLo(); k <= expectedBandHi(); k++) {
+    if (!SpectralAnalyzer::isHarmonicBin(k, f0, kFs)) continue;
+    sum += (double)sa.magnitudes()[k] * sa.magnitudes()[k];
+  }
+  return sum;
+}
+double spectralEnergyInBand(const SpectralAnalyzer& sa) {
+  double sum = 0.0;
+  for (size_t k = expectedBandLo(); k <= expectedBandHi(); k++) {
+    sum += (double)sa.magnitudes()[k] * sa.magnitudes()[k];
+  }
+  return sum;
+}
+
+// ---------------------------------------------------------------------------
+// LA CHAINE DE PRODUCTION
+//
+// AudioAnalyzer::drainI2S() filtre le FLUX (AudioFilterChain) avant l'anneau :
+// la FFT ne voit JAMAIS le PCM brut. Un test qui mesure du PCM brut mesure une
+// chaine qui n'existe pas - c'est exactement ce qui avait laisse passer
+// l'extrapolation a plancher plat.
+//
+// Le filtre est un IIR : sa memoire doit etre ETABLIE avant la frame mesuree,
+// sinon on mesure un transitoire. `frameAt()` fait donc defiler les frames
+// precedentes du meme signal continu dans la MEME chaine, comme le flux reel.
+// ---------------------------------------------------------------------------
+struct ProductionStream {
+  AudioFilterChain chain;
+  ProductionStream() { chain.configureDefaults(); }
+
+  // Remplit `out` avec la frame d'indice `index` d'une note tenue, filtree par
+  // une chaine dont la memoire a ete etablie sur les `index` frames d'avant.
+  void fluteFrame(float* out, size_t n, float f0, float amp, float breath, int index) {
+    chain.configureDefaults();          // configure() remet la memoire a zero
+    for (int i = 0; i < index; i++) {
+      audiosig::fluteLike(out, n, f0, amp, breath, kFs, (size_t)i * n);
+      chain.processBlock(out, n);
+    }
+    audiosig::fluteLike(out, n, f0, amp, breath, kFs, (size_t)index * n);
+    chain.processBlock(out, n);
+  }
+};
+
+// Nombre de frames de rodage avant la frame mesuree. Quatre frames = 128 ms a
+// 32 kHz, soit vingt fois la constante de temps du retrait de continu (pole
+// 0,995, environ 6 ms) : le transitoire est eteint.
+constexpr int kWarmFrames = 4;
+
+// L'ANCIEN estimateur, reproduit ici : mediane des bins non harmoniques sur TOUT
+// le spectre, etendue a TOUT le spectre. Il vit dans le test, et non derriere un
+// appel au firmware, pour que la comparaison reste valable apres la correction -
+// c'est la reference dont on doit montrer qu'elle surestime.
+float flatFloorHnrDb(const SpectralAnalyzer& sa, float f0) {
+  std::vector<double> p;
+  double harmonic = 0.0;
+  size_t harmonicBins = 0;
+  for (size_t k = 1; k <= kLastBin; k++) {
+    const double e = (double)sa.magnitudes()[k] * sa.magnitudes()[k];
+    if (SpectralAnalyzer::isHarmonicBin(k, f0, kFs)) { harmonic += e; harmonicBins++; }
+    else p.push_back(e);
+  }
+  if (p.empty()) return 0.0f;
+  std::sort(p.begin(), p.end());
+  const double floorPerBin = p[(p.size() + 1) / 2 - 1] * (double)SpectralHnr::kMedianToMeanPower;
+  const double noise = floorPerBin * (double)kLastBin;
+  double net = harmonic - floorPerBin * (double)harmonicBins;
+  if (net <= 0.0) return -MIC_HNR_MAX_DB;
+  double db = 10.0 * log10(net / noise);
+  if (db > MIC_HNR_MAX_DB) db = MIC_HNR_MAX_DB;
+  if (db < -MIC_HNR_MAX_DB) db = -MIC_HNR_MAX_DB;
+  return (float)db;
+}
 
 // ---------------------------------------------------------------------------
 // 1 - Ce qui n'est pas mesurable est refuse, pas devine
@@ -244,12 +361,23 @@ void hnr_harmonic_bins_cover_the_hann_main_lobe() {
   assert(sa.computeSpectrum(buf.data(), kFrame));
   HarmonicNoiseRatio h = sa.harmonicNoiseRatio(f0, kFs);
   assert(h.valid);
-  assert((size_t)(h.harmonicBins + h.noiseBins) == sa.binCount() - 1);
+  // ASSERTION DEPLACEE, PAS AFFAIBLIE. Elle disait "les deux lots couvrent tout
+  // le spectre" (binCount() - 1). C'etait vrai du code et faux du signal : la
+  // chaine de production a vide les bins hors de MIC_FILTER_HP_HZ..LP_HZ, et
+  // les compter revenait a etendre le plancher a une bande dont le firmware
+  // avait lui-meme retire le contenu. La partition porte maintenant sur la
+  // BANDE ANALYSEE - meme propriete, meme rigueur, sur le bon domaine - et ses
+  // bornes sont recalculees ici depuis settings.h.
+  assert((size_t)(h.harmonicBins + h.noiseBins) == expectedBandCount());
   size_t counted = 0;
-  for (size_t k = 1; k < sa.binCount(); k++) {
+  for (size_t k = expectedBandLo(); k <= expectedBandHi(); k++) {
     if (SpectralAnalyzer::isHarmonicBin(k, f0, kFs)) counted++;
   }
   assert(counted == h.harmonicBins);
+  // Et l'energie de raies publiee est bien celle des seuls bins DE LA BANDE :
+  // une somme prise sur tout le spectre serait strictement plus grande.
+  assert(fabs((double)h.harmonicEnergy - harmonicEnergyInBand(sa, f0)) <=
+         1e-5 * (double)h.harmonicEnergy);
   // Il reste largement de quoi estimer un plancher, y compris sur la note la
   // plus grave de la plage - le cas ou les raies sont les plus serrees.
   assert(h.noiseBins >= SpectralHnr::kMinNoiseBins);
@@ -273,10 +401,34 @@ void hnr_noise_floor_is_a_robust_median() {
       assert(sa.computeSpectrum(buf.data(), kFrame));
       HarmonicNoiseRatio h = sa.harmonicNoiseRatio(1000.0f, kFs);
       assert(h.valid);
-      const float expected =
-          kHannOneSidedPowerFactor * SpectralAnalyzer::totalPower(buf.data(), MIC_FFT_SIZE);
-      const float err = fabsf(h.noiseEnergy - expected) / expected;
-      assert(err < 0.15f);
+
+      // (a.1) ANCRAGE DE PARSEVAL, conserve mot pour mot. La somme des
+      //       |X[k]|^2 sur TOUT le spectre retrouve la puissance temporelle au
+      //       facteur de fenetre pres. C'est ce que l'ancienne assertion
+      //       verifiait a travers noiseEnergy, du temps ou le plancher etait
+      //       etendu a tout le spectre ; elle est gardee ici, portee sur le
+      //       spectre lui-meme, pour que le facteur 3/16 reste verrouille.
+      double whole = 0.0;
+      for (size_t k = 1; k <= kLastBin; k++) {
+        whole += (double)sa.magnitudes()[k] * sa.magnitudes()[k];
+      }
+      const double parseval =
+          (double)kHannOneSidedPowerFactor * SpectralAnalyzer::totalPower(buf.data(), MIC_FFT_SIZE);
+      assert(fabs(whole - parseval) / parseval < 0.15);
+
+      // (a.2) Et l'energie de bruit ESTIMEE retrouve celle qui est reellement
+      //       dans la bande analysee. La reference est la somme reelle de ces
+      //       bins-la, pas la puissance temporelle mise a l'echelle : une bande
+      //       de 111 bins ne porte pas exactement sa part de la puissance d'une
+      //       realisation donnee - l'ecart-type relatif de cette somme vaut
+      //       1/sqrt(111), soit 9,5 %, ce qui melangerait la variance du signal
+      //       a l'erreur de l'estimateur.
+      double realInBand = 0.0;
+      for (size_t k = expectedBandLo(); k <= expectedBandHi(); k++) {
+        realInBand += (double)sa.magnitudes()[k] * sa.magnitudes()[k];
+      }
+      const double err = fabs((double)h.noiseEnergy - realInBand) / realInBand;
+      assert(err < 0.15);
     }
   }
 
@@ -361,18 +513,45 @@ void hnr_pure_tone_and_pure_noise_sit_at_the_extremes() {
 
   // Bruit blanc pur : aucun contenu harmonique, quelle que soit la f0 qu'on
   // pretend y chercher.
-  for (uint32_t seed : {12345u, 999u}) {
-    audiosig::whiteNoise(buf.data(), kFrame, 0.4f, seed);
-    assert(sa.computeSpectrum(buf.data(), kFrame));
-    for (float hz : {500.0f, 880.0f, 2000.0f}) {
-      HarmonicNoiseRatio h = sa.harmonicNoiseRatio(hz, kFs);
-      assert(h.valid);
-      // Pas exactement -MIC_HNR_MAX_DB : la somme des bins de raies fluctue
-      // autour du plancher, ce qui laisse un residu statistique. Le verdict
-      // reste sans ambiguite.
-      assert(h.db < -10.0f);
-      assert(h.db >= -MIC_HNR_MAX_DB);
+  //
+  // ASSERTION ELARGIE, ET IL FAUT DIRE POURQUOI. Elle exigeait moins de -10 dB
+  // sur DEUX graines. Cette borne tenait par chance : sur un bruit pur, le HNR
+  // est une STATISTIQUE - la somme des bins de raies fluctue autour du plancher
+  // et laisse un residu - et restreindre la mesure a la bande passante reduit
+  // l'echantillon (111 bins au lieu de 256, dont jusqu'a 68 sous des lobes de
+  // raies a f0 = 500 Hz), donc augmente ce residu. Mesure sur 2800 tirages :
+  // la queue atteint -0,75 dB AVANT la correction et +1,34 dB apres - deux
+  // dB de degradation sur un evenement rare, sur un signal que la chaine
+  // complete refuse de toute facon faute de pitch. La propriete est donc
+  // verifiee sur une POPULATION, ce qui est plus fort que sur deux graines, et
+  // la borne par tirage dit ce qui est vraiment garanti.
+  {
+    std::vector<float> readings;
+    for (uint32_t s = 1; s <= 24; s++) {
+      audiosig::whiteNoise(buf.data(), kFrame, 0.4f, s * 7919u);
+      assert(sa.computeSpectrum(buf.data(), kFrame));
+      for (float hz : {440.0f, 500.0f, 880.0f, 2000.0f}) {
+        HarmonicNoiseRatio h = sa.harmonicNoiseRatio(hz, kFs);
+        assert(h.valid);
+        assert(!std::isnan(h.db) && !std::isinf(h.db));
+        assert(h.db >= -MIC_HNR_MAX_DB && h.db <= MIC_HNR_MAX_DB);
+        readings.push_back(h.db);
+      }
     }
+    std::sort(readings.begin(), readings.end());
+    size_t below10 = 0;
+    for (float db : readings) if (db < -10.0f) below10++;
+    const float worst = readings.back();
+    const float median = readings[readings.size() / 2];
+    printf("  [hnr] bruit blanc pur, %zu tirages : pire %+.2f dB, mediane %+.2f dB, "
+           "%.0f %% sous -10 dB\n",
+           readings.size(), (double)worst, (double)median,
+           100.0 * (double)below10 / (double)readings.size());
+    // Aucun tirage ne fait passer du bruit pur pour un son domine par ses raies.
+    assert(worst < 0.0f);
+    // La borne d'origine, conservee comme propriete d'ensemble.
+    assert(median < -15.0f);
+    assert(below10 * 10 >= readings.size() * 7);   // au moins 70 %
   }
 
   // Bornes respectees dans les deux sens, toujours.
@@ -509,11 +688,9 @@ void hnr_separates_a_timbred_note_from_a_breathy_note() {
   // moitie dans le "bruit". Une fenetre trop etroite (flancs de raie perdus) ou
   // un nombre de rangs trop faible (H5..H8 perdues) font chuter cette part.
   assert(sa.computeSpectrum(timbred.data(), kFrame));
-  double spectralTotal = 0.0;
-  for (size_t k = 1; k < sa.binCount(); k++) {
-    const double m = (double)sa.magnitudes()[k];
-    spectralTotal += m * m;
-  }
+  // Rapportee a l'energie de la BANDE, puisque c'est la seule que la mesure
+  // compte des deux cotes (voir SpectralAnalyzer::analysisBand).
+  const double spectralTotal = spectralEnergyInBand(sa);
   const double captured = (double)newT.harmonicEnergy / spectralTotal;
   printf("  [hnr] part de l'energie spectrale captee par les fenetres de raies : "
          "%.1f %% (timbree)\n", 100.0 * captured);
@@ -572,23 +749,36 @@ void hnr_is_insensitive_to_f0_falling_between_bins() {
     // plus proche coute un demi-bin au rang 1 mais N/2 bins au rang N, et les
     // rangs eleves sortiraient alors de leur fenetre - invisible sur le seul
     // ecart en dB, immediat ici.
-    double spectral = 0.0;
-    for (size_t k = 1; k < sa.binCount(); k++) {
-      const double m = (double)sa.magnitudes()[k];
-      spectral += m * m;
-    }
+    const double spectral = spectralEnergyInBand(sa);
     assert((double)h.harmonicEnergy / spectral > 0.95);
 
     const float old = legacyHnrDb(buf.data(), kFrame, f0);
     if (old < oldLo) oldLo = old;
     if (old > oldHi) oldHi = old;
   }
-  // Moins de 3 dB d'ecart entre le cas le mieux aligne et le pire.
+  // BORNE ELARGIE DE 3,0 A 3,5 dB, ET IL FAUT DIRE POURQUOI - c'est le seul
+  // endroit ou restreindre la mesure a la bande passante coute quelque chose.
+  //
+  // Mesure sur ces six f0 : 32,53 a 35,72 dB, soit 3,19 dB d'etendue contre
+  // moins de 3 dB avant. La cause est identifiee et elle n'est pas dans
+  // l'attribution des bins - la part d'energie captee reste a 0,999 partout,
+  // verifiee ci-dessus - mais dans le PLANCHER : il est estime sur 43 a 65 bins
+  // au lieu de 188, et ces bins-la sont ceux qui bordent les vingt lobes de
+  // raies, donc ceux qui recoivent leurs lobes secondaires. Le plancher estime
+  // passe de 9,65e-8 (f0 pile sur un bin : les zeros du lobe de Hann tombent
+  // dans la fenetre, le premier bin de bruit est a -31 dB) a 2,0e-7 (f0 entre
+  // deux bins : la fuite s'etale). Le sens de l'erreur est le bon : la fuite
+  // GONFLE le plancher, donc ABAISSE le HNR. La mesure devient un peu
+  // pessimiste sur les notes tres propres, jamais flatteuse.
+  //
+  // En compensation, la borne basse est RESSERREE de 25 a 30 dB : le pire
+  // alignement mesure 32,53 dB, et une regression de l'attribution des bins s'y
+  // verrait immediatement.
   printf("  [hnr] f0 alignee ou non sur la grille : %.2f a %.2f dB (etendue %.2f dB) ; "
          "ancienne mesure : %.2f a %.2f dB\n",
          (double)lo, (double)hi, (double)(hi - lo), (double)oldLo, (double)oldHi);
-  assert(hi - lo < 3.0f);
-  assert(lo > 25.0f);
+  assert(hi - lo < 3.5f);
+  assert(lo > 30.0f);
 
   // Sur ces memes signaux - riches en harmoniques - l'ancienne approximation
   // est uniformement mauvaise : son pire cas et son meilleur cas sont tous deux
@@ -615,23 +805,21 @@ void hnr_reported_fields_are_self_consistent() {
     HarmonicNoiseRatio h = sa.harmonicNoiseRatio(t.f0, kFs);
     assert(h.valid);
 
-    // Le decoupage couvre exactement le spectre analyse.
-    assert((size_t)(h.harmonicBins + h.noiseBins) == sa.binCount() - 1);
+    // Le decoupage couvre exactement la bande analysee (cf. la note sur le
+    // deplacement de cette assertion dans hnr_harmonic_bins_cover_the_hann_main_lobe).
+    assert((size_t)(h.harmonicBins + h.noiseBins) == expectedBandCount());
     assert(h.partials == SpectralAnalyzer::usablePartials(t.f0, kFs));
 
-    // noiseEnergy est bien le plancher etendu a TOUS les bins analyses, et non
-    // aux seuls bins ou il a pu etre mesure : le bruit existe aussi sous les
-    // raies.
+    // noiseEnergy est bien le plancher etendu a TOUS les bins de la bande, et
+    // non aux seuls bins ou il a pu etre mesure : le bruit existe aussi sous
+    // les raies. Il s'arrete en revanche aux bornes de la bande, ou il n'y a
+    // plus de bruit a compter.
     const float expectedNoise =
         h.noiseFloorPerBin * (float)(h.harmonicBins + h.noiseBins);
     assert(fabsf(h.noiseEnergy - expectedNoise) <= 1e-6f * expectedNoise + 1e-18f);
 
     // harmonicEnergy est bien la somme des bins de raies du spectre expose.
-    double sum = 0.0;
-    for (size_t k = 1; k < sa.binCount(); k++) {
-      if (!SpectralAnalyzer::isHarmonicBin(k, t.f0, kFs)) continue;
-      sum += (double)sa.magnitudes()[k] * sa.magnitudes()[k];
-    }
+    const double sum = harmonicEnergyInBand(sa, t.f0);
     assert(fabsf((float)sum - h.harmonicEnergy) <= 1e-5f * h.harmonicEnergy);
 
     // Et db se recalcule a partir des champs publies, bruit des bins de raies
@@ -662,6 +850,229 @@ void hnr_reported_fields_are_self_consistent() {
   assert(sa.hasSpectrum());
 }
 
+// ---------------------------------------------------------------------------
+// 9 - La bande est celle que la chaine d'acquisition laisse passer
+// ---------------------------------------------------------------------------
+
+void hnr_band_is_the_one_the_acquisition_chain_leaves() {
+  const SpectralAnalyzer::AnalysisBand band = SpectralAnalyzer::analysisBand(kFs);
+
+  // Les bornes viennent de settings.h, recalculees ici sans passer par le code
+  // surveille.
+  assert(band.lo == expectedBandLo());
+  assert(band.hi == expectedBandHi());
+  assert(band.count() == expectedBandCount());
+  assert(band.lo >= 1);                 // le continu n'est jamais analyse
+  assert(band.hi <= kLastBin);
+
+  // Le contenu de la bande : tout bin dedans est au-dessus du passe-haut et au
+  // -dessous du passe-bas ; tout bin juste dehors est du mauvais cote.
+  for (size_t k = band.lo; k <= band.hi; k++) {
+    const float hz = SpectralAnalyzer::binToHz(k, kFs);
+    if (MIC_FILTER_HP_HZ > 0.0f) assert(hz >= MIC_FILTER_HP_HZ);
+    if (MIC_FILTER_LP_HZ > 0.0f) assert(hz <= MIC_FILTER_LP_HZ);
+  }
+  if (MIC_FILTER_HP_HZ > 0.0f && band.lo > 1) {
+    assert(SpectralAnalyzer::binToHz(band.lo - 1, kFs) < MIC_FILTER_HP_HZ);
+  }
+  if (MIC_FILTER_LP_HZ > 0.0f && band.hi < kLastBin) {
+    assert(SpectralAnalyzer::binToHz(band.hi + 1, kFs) > MIC_FILTER_LP_HZ);
+  }
+
+  // Filtrage DESACTIVE : la bande redevient le spectre entier, et la mesure
+  // avec elle. C'est la configuration que AudioFilterChain accepte en mettant
+  // une coupure a 0 - la cellule devient transparente - et elle ne doit pas
+  // etre un cas particulier dans le code.
+  if (MIC_FILTER_HP_HZ <= 0.0f) assert(band.lo == 1);
+  if (MIC_FILTER_LP_HZ <= 0.0f) assert(band.hi == kLastBin);
+
+  // Frequence d'echantillonnage degeneree : bande vide, donc refus, jamais une
+  // bande inventee.
+  assert(SpectralAnalyzer::analysisBand(0.0f).count() == 0);
+  assert(SpectralAnalyzer::analysisBand(-32000.0f).count() == 0);
+
+  printf("  [hnr] bande analysee : bins %u..%u (%u sur %zu) = %.0f..%.0f Hz, "
+         "soit %.0f %% du spectre\n",
+         band.lo, band.hi, band.count(), kLastBin,
+         (double)SpectralAnalyzer::binToHz(band.lo, kFs),
+         (double)SpectralAnalyzer::binToHz(band.hi, kFs),
+         100.0 * (double)band.count() / (double)kLastBin);
+}
+
+// ---------------------------------------------------------------------------
+// 10 - LE test de non-recidive : la mesure survit a la chaine de production
+//
+// C'est le test que la suite n'avait pas. Elle mesurait du PCM brut, alors que
+// AudioAnalyzer::drainI2S() filtre le flux avant l'anneau : personne n'avait
+// donc vu que le plancher etait estime au milieu de la bande COUPEE, puis
+// etendu a tout le spectre.
+//
+// Deux choses sont verrouillees ici :
+//   1. le filtrage de production ne doit presque pas deplacer le HNR - il
+//      retire du bruit hors bande, que la mesure ne compte plus d'aucun cote ;
+//   2. l'ancienne extrapolation a plancher plat, reproduite dans ce fichier,
+//      doit etre massivement OPTIMISTE sur ce meme signal. Si quelqu'un la
+//      remet, c'est le point 1 qui casse.
+// ---------------------------------------------------------------------------
+
+void hnr_survives_the_production_filter_chain() {
+  SpectralAnalyzer sa;
+  std::vector<float> filtered(kFrame);
+  std::vector<float> raw(kFrame);
+  ProductionStream stream;
+
+  const float kBreath[] = {0.0f, 0.010f, 0.020f, 0.050f, 0.100f, 0.200f};
+  float worstGap = 0.0f;
+  float worstFlatFloorGap = 0.0f;
+
+  printf("  [hnr] %-8s %10s %10s %8s %10s\n", "souffle", "brut", "production",
+         "ecart", "plancher plat");
+  for (float breath : kBreath) {
+    stream.fluteFrame(filtered.data(), kFrame, 440.0f, 0.40f, breath, kWarmFrames);
+    // MEME frame du meme signal, sans la chaine : la seule difference est le
+    // filtrage.
+    audiosig::fluteLike(raw.data(), kFrame, 440.0f, 0.40f, breath, kFs,
+                        (size_t)kWarmFrames * kFrame);
+
+    assert(sa.computeSpectrum(raw.data(), kFrame));
+    const HarmonicNoiseRatio rawHnr = sa.harmonicNoiseRatio(440.0f, kFs);
+    assert(sa.computeSpectrum(filtered.data(), kFrame));
+    const HarmonicNoiseRatio prodHnr = sa.harmonicNoiseRatio(440.0f, kFs);
+    assert(rawHnr.valid && prodHnr.valid);
+
+    // Ce que la mesure rendrait si le plancher etait de nouveau estime puis
+    // etendu a tout le spectre - sur le signal que la production presente.
+    const float flatFloor = flatFloorHnrDb(sa, 440.0f);
+
+    const float gap = fabsf(prodHnr.db - rawHnr.db);
+    const float flatGap = flatFloor - prodHnr.db;
+    if (gap > worstGap) worstGap = gap;
+    if (flatGap > worstFlatFloorGap) worstFlatFloorGap = flatGap;
+
+    printf("  [hnr] %-8.3f %+9.2f  %+9.2f  %+7.2f  %+9.2f\n", (double)breath,
+           (double)rawHnr.db, (double)prodHnr.db, (double)(prodHnr.db - rawHnr.db),
+           (double)flatFloor);
+  }
+  fflush(stdout);
+
+  // 1. Le filtrage de production ne deplace plus le verdict. Avant correction
+  //    l'ecart atteignait +12,5 dB - la moitie de la plage utile de la mesure.
+  //    2 dB est la tolerance : il reste l'attenuation du passe-bas DANS la
+  //    bande, jusqu'a -3 dB a la coupure, qui touche un peu plus le bruit que
+  //    les partiels d'une note grave.
+  assert(worstGap < 2.0f);
+
+  // 2. ...et ce n'est pas parce que la mesure serait devenue insensible : sur
+  //    le MEME signal, l'ancienne extrapolation lit 7,4 dB trop haut (mesure :
+  //    +5,50 dB a souffle 0,020, +7,43 a 0,050, +7,04 a 0,100, +7,41 a 0,200 ;
+  //    l'ecart est ECRASE aux deux premiers points parce que l'ancienne mesure
+  //    y sature deja contre MIC_HNR_MAX_DB - c'est precisement le defaut).
+  //    Cette assertion echoue si le plancher redevient etendu a tout le
+  //    spectre, puisque les deux mesures se confondraient alors.
+  //
+  //    Elle n'a de sens que si la chaine filtre vraiment. Avec MIC_FILTER_HP_HZ
+  //    et MIC_FILTER_LP_HZ a 0, la bande analysee EST le spectre entier et les
+  //    deux estimateurs se confondent exactement - c'est justement la propriete
+  //    a garantir : la correction ne deplace rien quand il n'y a rien a
+  //    corriger. Dans cette configuration on le verifie donc a l'envers.
+  if (SpectralAnalyzer::analysisBand(kFs).count() < kLastBin) {
+    assert(worstFlatFloorGap > 6.0f);
+  } else {
+    assert(fabsf(worstFlatFloorGap) < 0.1f);
+  }
+
+  printf("  [hnr] ecart max production/brut : %.2f dB ; ce que l'extrapolation a "
+         "plancher plat ajouterait : +%.2f dB\n",
+         (double)worstGap, (double)worstFlatFloorGap);
+
+  // 3. La memoire du filtre est bien ETABLIE. Un IIR remis a zero juste avant
+  //    la frame mesuree produit un transitoire : le PCM en est visiblement
+  //    different. Sans ce controle, un futur "nettoyage" du banc d'essai
+  //    pourrait reinitialiser la chaine a chaque frame sans que rien ne le
+  //    signale - et on mesurerait de nouveau autre chose que la production.
+  {
+    AudioFilterChain cold;
+    cold.configureDefaults();
+    std::vector<float> coldFrame(kFrame);
+    audiosig::fluteLike(coldFrame.data(), kFrame, 440.0f, 0.40f, 0.020f, kFs,
+                        (size_t)kWarmFrames * kFrame);
+    cold.processBlock(coldFrame.data(), kFrame);
+    stream.fluteFrame(filtered.data(), kFrame, 440.0f, 0.40f, 0.020f, kWarmFrames);
+    float maxDelta = 0.0f;
+    for (size_t i = 0; i < (size_t)kFrame; i++) {
+      const float d = fabsf(coldFrame[i] - filtered[i]);
+      if (d > maxDelta) maxDelta = d;
+    }
+    printf("  [hnr] transitoire d'etablissement du filtre : ecart PCM max %.4f\n",
+           (double)maxDelta);
+    // Le transitoire mesurable vient des biquads. Avec les deux coupures a 0 il
+    // ne reste que le retrait de continu, dont la reponse est quasi plate : la
+    // comparaison n'aurait plus rien a montrer.
+    if (cold.highPassActive() || cold.lowPassActive()) assert(maxDelta > 0.05f);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 11 - Il reste de quoi estimer un plancher sur TOUTE la plage de l'instrument
+//
+// Restreindre la mesure a la bande passante reduit l'echantillon qui sert au
+// plancher : les vingt lobes de raies en occupent une bonne part. Si l'un des
+// pitchs de la plage passait sous SpectralHnr::kMinNoiseBins, la mesure y
+// serait refusee - une regression silencieuse, puisque le repli Goertzel prend
+// alors la main sans rien dire.
+// ---------------------------------------------------------------------------
+
+void hnr_noise_sample_survives_the_whole_pitch_range() {
+  SpectralAnalyzer sa;
+  std::vector<float> buf(kFrame);
+  ProductionStream stream;
+  stream.fluteFrame(buf.data(), kFrame, 440.0f, 0.40f, 0.020f, kWarmFrames);
+  assert(sa.computeSpectrum(buf.data(), kFrame));
+
+  uint16_t worst = 0xFFFF;
+  float worstHz = 0.0f;
+  for (float hz = MIC_PITCH_MIN_HZ; hz <= MIC_PITCH_MAX_HZ; hz += 1.0f) {
+    const HarmonicNoiseRatio h = sa.harmonicNoiseRatio(hz, kFs);
+    assert(h.valid);                       // jamais un refus sur la plage utile
+    assert(h.noiseBins >= SpectralHnr::kMinNoiseBins);
+    if (h.noiseBins < worst) { worst = h.noiseBins; worstHz = hz; }
+  }
+  printf("  [hnr] pire echantillon de plancher sur %g..%g Hz : %u bins a %.0f Hz "
+         "(minimum exige %u)\n",
+         (double)MIC_PITCH_MIN_HZ, (double)MIC_PITCH_MAX_HZ, worst, (double)worstHz,
+         SpectralHnr::kMinNoiseBins);
+}
+
+// ---------------------------------------------------------------------------
+// 12 - Un spectre non fini est REFUSE, pas rendu
+//
+// Contrat de HarmonicNoiseRatio : `valid` faux ou un nombre utilisable, jamais
+// `valid = true` avec un NaN. Un NaN traverse `< 0.0f`, `<= kPowerFloor` et
+// `> MIC_HNR_MAX_DB` sans en declencher aucun ; il faut donc un refus explicite.
+// Cas de contrat, non atteignable depuis l'I2S qui livre des entiers.
+// ---------------------------------------------------------------------------
+
+void hnr_refuses_a_non_finite_spectrum() {
+  SpectralAnalyzer sa;
+  std::vector<float> buf(kFrame);
+  audiosig::fluteLike(buf.data(), kFrame, 500.0f, 0.4f, 0.02f, kFs);
+  buf[123] = NAN;                  // un seul echantillon suffit : la FFT melange tout
+  assert(sa.computeSpectrum(buf.data(), kFrame));
+  const HarmonicNoiseRatio h = sa.harmonicNoiseRatio(500.0f, kFs);
+  assert(!h.valid);
+  assert(!std::isnan(h.db));
+  assert(h.db == 0.0f);
+  // Le refus est TARDIF : les compteurs disent pourquoi la mesure a ete refusee.
+  assert(h.partials > 0 && h.harmonicBins > 0);
+
+  // Et l'infini, meme traitement.
+  audiosig::fluteLike(buf.data(), kFrame, 500.0f, 0.4f, 0.02f, kFs);
+  buf[7] = INFINITY;
+  assert(sa.computeSpectrum(buf.data(), kFrame));
+  const HarmonicNoiseRatio inf = sa.harmonicNoiseRatio(500.0f, kFs);
+  assert(!inf.valid || (!std::isnan(inf.db) && !std::isinf(inf.db)));
+}
+
 #endif  // MIC_FFT_ENABLED
 
 // Sans FFT, la structure existe toujours et reste honnete : un appelant peut en
@@ -689,6 +1100,10 @@ void spectral_hnr_run_all_tests() {
   hnr_separates_a_timbred_note_from_a_breathy_note();
   hnr_is_insensitive_to_f0_falling_between_bins();
   hnr_reported_fields_are_self_consistent();
+  hnr_band_is_the_one_the_acquisition_chain_leaves();
+  hnr_survives_the_production_filter_chain();
+  hnr_noise_sample_survives_the_whole_pitch_range();
+  hnr_refuses_a_non_finite_spectrum();
 #else
   // Sans FFT il n'y a pas de spectre complet, donc pas de HNR spectral. Le dire
   // vaut mieux qu'une suite verte qui n'a rien execute.

@@ -146,10 +146,12 @@ BreathinessResult computeBreathiness(const AcousticFeatures& f, const AcousticCo
   //    que le pitch lache.
   //    `hnrIsSpectral` est exige : AQ_BREATH_HNR_TONE_DB et _NOISE_DB sont
   //    calibres sur la mesure spectrale. L'approximation Goertzel, qui remplit
-  //    le meme champ sur les frames sans FFT, lit 17 dB plus bas sur la MEME
-  //    note propre - la comparer a ces seuils ferait clignoter le verdict a la
-  //    cadence de MIC_SPECTRAL_DECIMATION. Une composante absente est un manque
-  //    visible ; une composante lue sur la mauvaise echelle est un mensonge.
+  //    le meme champ sur les frames sans FFT, lit environ 16 dB plus bas sur la
+  //    MEME note propre - releve sur la chaine de production, fluteLike 440 Hz
+  //    amp 0,40 : +40,00 dB en spectral contre +23,66 dB en Goertzel - la
+  //    comparer a ces seuils ferait clignoter le verdict a la cadence de
+  //    MIC_SPECTRAL_DECIMATION. Une composante absente est un manque visible ;
+  //    une composante lue sur la mauvaise echelle est un mensonge.
   if (f.spectralValid && f.hnrIsSpectral && aqFinite(f.harmonicToNoiseRatio) &&
       weightUsable(AQ_BREATH_W_HNR)) {
     sum += AQ_BREATH_W_HNR *
