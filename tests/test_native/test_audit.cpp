@@ -1280,6 +1280,54 @@ void reset_all_controllers_clears_expression_runtime_state() {
   delete im;
 }
 
+// Finding 10 : le vibrato REEL doit osciller symetriquement autour de l'angle de
+// base. Le test de formule plus bas documente le biais ; celui-ci verifie le
+// chemin de production (AirflowController::update()).
+void vibrato_oscillation_is_symmetric_around_base() {
+  auditResetCfg();
+  cfg.cc2Enabled = false;                 // pas de souffle CC2 dans ce test
+  cfg.vibratoFrequencyHz = 6.0f;
+  cfg.vibratoMaxAmplitudeDeg = 8.0f;
+  // Plage large et nominal au centre : l'oscillation ne doit jamais etre ecretee
+  // par _currentMinAngle / _currentMaxAngle, sinon la symetrie testee serait
+  // celle du limiteur et non celle de l'arrondi.
+  cfg.servoAirflowOff = 10;
+  cfg.servoAirflowMin = 40;
+  cfg.servoAirflowMax = 140;
+  for (int i = 0; i < 3; i++) {
+    cfg.notes[i].airflowMinPercent = 0;
+    cfg.notes[i].airflowMaxPercent = 100;
+    cfg.notes[i].airflowNominalPercent = 50;
+  }
+  InstrumentManager* im = makeReadyInstrument();
+  __test_millis = 1000;
+
+  // CC1 = 127 : modulation au maximum, donc vibrato actif a pleine amplitude.
+  im->handleControlChange(MIDI_CC_MODULATION, MIDI_CC_MAX);
+  im->noteOn(60, 100);
+  for (int i = 0; i < 6; i++) { __test_millis += 20; im->update(); }
+  assert(im->getAirflowCtrl().isNoteSounding());
+
+  const int base = (int)im->getAirflowCtrl().getBaseAirflowAngle();
+  int lowest = base, highest = base;
+  // Plusieurs periodes completes (6 Hz => 167 ms), pas de 1 ms pour visiter
+  // finement les deux alternances.
+  for (int i = 0; i < 1200; i++) {
+    __test_millis += 1;
+    im->update();
+    int a = (int)im->getAirflowCtrl().getAirflowAngle();
+    if (a < lowest) lowest = a;
+    if (a > highest) highest = a;
+  }
+  const int below = base - lowest;
+  const int above = highest - base;
+  assert(below > 0 && above > 0);          // le vibrato oscille bien des deux cotes
+  assert(below == above);                  // et symetriquement
+  // Amplitude conforme a la configuration (8 degres a CC1 = 127).
+  assert(above == (int)cfg.vibratoMaxAmplitudeDeg);
+  delete im;
+}
+
 // Finding 10 : l'arrondi du vibrato doit etre symetrique.
 void vibrato_rounding_is_symmetric() {
   // (int16_t)(x + 0.5) tronque vers zero : -0.6 donnait 0 et +0.6 donnait 1,
@@ -1334,5 +1382,6 @@ void audit_run_all_tests() {
   note_off_is_never_dropped_on_full_command_queue();
   cc2_silence_drops_air_source_and_restores();
   reset_all_controllers_clears_expression_runtime_state();
+  vibrato_oscillation_is_symmetric_around_base();
   vibrato_rounding_is_symmetric();
 }
