@@ -343,6 +343,15 @@ void WebConfigurator::update() {
         // reallocations du tas - et les verdicts ajoutes plus bas allongent
         // encore la chaine. Une seule allocation, dimensionnee au pire cas
         // mesure (322 octets, marge comprise), remplace la serie.
+        //
+        // BUDGET. Les deux drapeaux d'echelle et de poids ajoutes plus bas
+        // ("hnr_sp", "brw") coutent 11 octets chacun, soit +22 sur ce pire
+        // cas : 344 octets, et 370 en majorant CHAQUE champ a sa largeur
+        // maximale (dBFS a -120,0, centroide a 5 chiffres, etat "wrong_note").
+        // La reserve de 384 tient donc sans changer, et la poussee reste un
+        // releve de descripteurs - pas un flux. Tout le reste (chronometrie
+        // complete, compteurs de refus, drapeaux `missing` nommes) part
+        // UNIQUEMENT sur GET /api/diagnostics, a la demande.
         aj.reserve(384);
         aj += ",\"rms\":" + String(_audio->getRMS(), 3);
         aj += ",\"snd\":" + String(_audio->isSoundDetected() ? 1 : 0);
@@ -356,8 +365,22 @@ void WebConfigurator::update() {
           aj += ",\"midi\":" + String(_audio->getPitchMidi());
           aj += ",\"cents\":" + String(_audio->getPitchCents(), 1);
           aj += ",\"conf\":" + String((int)(_audio->getPitchConfidence() * 100.0f + 0.5f));
+          // "valid" est le verdict du DETECTEUR DE PITCH, et rien d'autre :
+          // il ne dit RIEN de la stabilite publiee juste en dessous.
           aj += ",\"valid\":" + String(_audio->isPitchValid() ? 1 : 0);
-          aj += ",\"stab\":" + String(af.pitchStability, 2);
+          // La stabilite ne part que MESUREE. Voir AcousticFeatures.h : 0
+          // signifie "pas encore mesure" AUTANT que "tres instable". Il faut
+          // MIC_PITCH_HISTORY frames d'historique (8 frames, soit 112 ms) pour
+          // que le chiffre veuille dire quelque chose, alors que cette poussee
+          // part toutes les AUTOCAL_AUDIO_INTERVAL_MS (100 ms) : la PREMIERE
+          // poussee de chaque note porterait donc presque toujours "stab":0.00,
+          // et un consommateur classerait chaque debut de note comme un defaut.
+          // Omise plutot que renvoyee nue, comme les champs spectraux non
+          // mesures plus bas : absente = pas mesuree, ce qui ne se confond avec
+          // aucune valeur. Cout : -12 octets sur les frames concernees.
+          if (af.stabilityValid) {
+            aj += ",\"stab\":" + String(af.pitchStability, 2);
+          }
         }
         // Champs spectraux UNIQUEMENT quand ils ont ete mesures : les omettre
         // vaut mieux que de renvoyer la valeur d'une frame anterieure.
@@ -371,7 +394,22 @@ void WebConfigurator::update() {
         if (af.spectralValid) {
           aj += ",\"h2\":" + String(af.h2Ratio, 3);
           aj += ",\"h3\":" + String(af.h3Ratio, 3);
+          // DEUX ECHELLES derriere une seule cle, donc JAMAIS le chiffre nu.
+          // "hnr" est rempli soit par la mesure spectrale (FFT complete), soit
+          // par l'APPROXIMATION Goertzel a quatre raies, qui compte tout
+          // harmonique de rang > 4 comme du bruit : sur une meme note timbree
+          // tenue, la mesure spectrale rend >= +31,86 dB la ou l'approximation
+          // rend <= -0,02 dB, soit 31,88 dB d'ecart : les deux ne se comparent
+          // pas et CLASSENT LES NOTES A L'ENVERS. La FFT ne tournant qu'une
+          // frame sur MIC_SPECTRAL_DECIMATION, la cle alterne entre les deux
+          // echelles a 15,6 Hz : sans ce drapeau, tout consommateur qui la
+          // compare a un seuil voit son verdict clignoter.
+          // Meme regle que hnr_is_spectral dans /api/diagnostics, et meme
+          // exigence qu'AcousticQuality, qui refuse la composante HNR quand ce
+          // drapeau est faux. Les deux champs partent ensemble ou pas du tout.
+          // Cout : 11 octets.
           aj += ",\"hnr\":" + String(af.harmonicToNoiseRatio, 1);
+          aj += ",\"hnr_sp\":" + String(af.hnrIsSpectral ? 1 : 0);
           // Uniquement si la FFT a tourne sur CETTE frame. Sinon ces deux
           // valeurs datent de la frame precedente (jusqu'a 64 ms) et les
           // envoyer comme une mesure courante serait faux.
@@ -434,8 +472,21 @@ void WebConfigurator::update() {
           aj += ",\"q\":" + String(qs.score, 2);
           aj += ",\"qw\":" + String(qs.weightUsed, 2);
         }
+        // MEME REGLE QUE POUR LA QUALITE, et pour une raison plus forte
+        // encore : la respiration est une moyenne ponderee de trois
+        // composantes (HNR, energie inter-harmonique, platitude) dont deux
+        // n'existent qu'une frame sur MIC_SPECTRAL_DECIMATION. weightUsed
+        // descend donc jusqu'a 0,30 - un ecart bien plus grand que celui du
+        // score de qualite, qui ne descend qu'a 0,75. Sur une note tenue
+        // immobile, "br" alterne ainsi entre une valeur pleine et 0,00 a
+        // 62,5 Hz avec valid=true dans les deux cas : c'est le poids, et lui
+        // seul, qui distingue "pas de souffle" de "presque rien de mesure".
+        // Les deux champs partent ensemble ou pas du tout. Cout : 11 octets.
         const BreathinessResult& br = _audio->getBreathiness();
-        if (br.valid) aj += ",\"br\":" + String(br.value, 2);
+        if (br.valid) {
+          aj += ",\"br\":" + String(br.value, 2);
+          aj += ",\"brw\":" + String(br.weightUsed, 2);
+        }
         // Couac CONFIRME seulement. Un candidat instantane est retire
         // retroactivement une fois sur deux : l'annoncer ferait clignoter
         // l'interface sur des evenements qui n'ont pas eu lieu.
@@ -2570,7 +2621,21 @@ void WebConfigurator::handleApiDiagnostics(AsyncWebServerRequest* request) {
         o["peak_hz"] = p.peakHz;
       }
     }
-    const AcousticFeatures& feat = _audio->getFeatures();
+    // COPIE, pas une reference vivante. Cette fonction s'execute sur la tache
+    // AsyncTCP pendant que loop() reecrit _features toutes les 16 ms. Relire le
+    // membre champ par champ, avec des allocations ArduinoJson entre deux
+    // lectures, laissait la paire hnr_db / hnr_is_spectral venir de DEUX frames
+    // differentes : un HNR Goertzel publie avec hnr_is_spectral vrai, soit
+    // 31,88 dB d'erreur sur l'echelle meme du chiffre.
+    //
+    // CE QUE CETTE COPIE NE FAIT PAS : elle n'est pas atomique. 96 octets se
+    // copient en plusieurs instructions, et rien n'empeche loop() d'ecrire au
+    // milieu. Elle RETRECIT la fenetre de quelques millisecondes (le temps de
+    // serialiser le document) a quelques microsecondes ; elle ne la ferme pas.
+    // La fermer demanderait un verrou ou un double tampon cote AudioAnalyzer,
+    // ce qui n'est pas du ressort de la couche web - et un verrou ferait
+    // attendre l'acquisition I2S derriere une serialisation JSON.
+    const AcousticFeatures feat = _audio->getFeatures();
     a["snr_valid"] = feat.snrValid;
     a["snr_db"] = feat.snrDb;
     a["snr_fallback"] = feat.snrUsedFallback;
@@ -2583,19 +2648,34 @@ void WebConfigurator::handleApiDiagnostics(AsyncWebServerRequest* request) {
      * et ne fait avancer aucune machine d'etat. Tous les verdicts ci-dessous
      * ont ete produits par loop() (AudioAnalyzer::update()), unique ecrivain.
      *
-     * On en prend une COPIE locale immediate - meme raison que le `RuntimeConfig
-     * tmp = cfg` du debut de cette fonction : les champs d'un meme verdict
-     * restent alors coherents entre eux, au lieu d'etre relus un par un pendant
-     * que ArduinoJson alloue ses noeuds. Aucun verrou n'est pris, exactement
-     * comme pour getFeatures() et getCaptureStats() juste au-dessus : il
-     * n'existe pas de mutex audio, et en introduire un ferait attendre la tache
-     * loop() - donc l'acquisition I2S - derriere une serialisation JSON.
+     * On en prend une COPIE locale immediate, comme pour `feat` ci-dessus.
+     * Mais, CONTRAIREMENT au `RuntimeConfig tmp = cfg` du debut de cette
+     * fonction - qui, lui, est pris sous lockConfig() et est donc reellement
+     * coherent -, aucun verrou n'est pris ici : il n'existe pas de mutex audio,
+     * et en introduire un ferait attendre la tache loop(), donc l'acquisition
+     * I2S, derriere une serialisation JSON.
+     *
+     * Ces copies ne sont donc PAS atomiques et ne garantissent PAS la coherence
+     * des champs entre eux : loop() peut ecrire pendant la copie. Ce qu'elles
+     * apportent est mesurable et limite - la fenetre de lecture passe de la
+     * duree de serialisation du document (millisecondes) a celle d'un memcpy
+     * (microsecondes). C'est une reduction du risque, pas sa suppression, et un
+     * champ lu ici peut encore, rarement, ne pas decrire la meme frame que son
+     * voisin. Tout ce qui DOIT rester coherent - une valeur et son drapeau -
+     * est donc lu depuis la MEME copie, jamais depuis le membre vivant.
      *-----------------------------------------------------------------------*/
     const AcousticClassification cls = _audio->getClassification();
     const QualityScore           qual = _audio->getQualityScore();
     const BreathinessResult      brth = _audio->getBreathiness();
 
-    a["acoustic_state"] = _audio->getAcousticStateName();
+    // Depuis la COPIE `cls`, et non depuis getAcousticStateName(), qui relit le
+    // membre vivant _classification : l'etat serait alors lu dans une frame
+    // differente de celle du drapeau publie juste en dessous, et un "good"
+    // pouvait partir avec classified:false. Meme regle de nommage que
+    // getAcousticStateName() - non classe se dit "unclassified", jamais
+    // "silence", qui se lirait comme un verdict.
+    a["acoustic_state"] = cls.classified ? AcousticQuality::stateName(cls.state)
+                                         : "unclassified";
     a["acoustic_classified"] = cls.classified;
     // quality_weight_used accompagne TOUJOURS quality_score. Le score est une
     // moyenne ponderee de sept criteres ; l'attaque (10 % du cahier des
@@ -2606,13 +2686,37 @@ void WebConfigurator::handleApiDiagnostics(AsyncWebServerRequest* request) {
     a["quality_score"] = qual.score;
     a["quality_weight_used"] = qual.weightUsed;
     a["quality_valid"] = qual.valid;
+    // breathiness_weight_used accompagne TOUJOURS breathiness, pour la meme
+    // raison que le couple ci-dessus, et avec un ecart PLUS GRAND : la
+    // respiration est une moyenne ponderee de trois composantes dont deux
+    // (HNR spectral, platitude) n'existent qu'une frame sur
+    // MIC_SPECTRAL_DECIMATION. weightUsed descend jusqu'a 0,30 quand celui de
+    // la qualite ne descend qu'a 0,75. Sur une note tenue immobile, la valeur
+    // alterne entre une mesure pleine et 0,00 a 62,5 Hz avec valid=true dans
+    // les deux cas : seul le poids distingue "pas de souffle" de "presque rien
+    // de mesure".
     a["breathiness"] = brth.value;
+    a["breathiness_weight_used"] = brth.weightUsed;
     a["breathiness_valid"] = brth.valid;
     // Deux echelles distinctes derriere un seul champ : mesure spectrale (FFT)
     // ou approximation Goertzel a quatre raies. Elles ne se comparent pas, donc
     // le chiffre ne part pas sans dire laquelle il est.
-    a["hnr_db"] = feat.harmonicToNoiseRatio;
-    a["hnr_is_spectral"] = feat.hnrIsSpectral;
+    //
+    // ET IL NE PART PAS NON PLUS SANS DIRE S'IL A ETE MESURE. Quand
+    // spectralValid est faux - aucune note en cours, ou apres tout
+    // markMeasurementInvalid() - fillSpectral() remet harmonicToNoiseRatio a
+    // 0.0f. Publie tel quel, ce "hnr_db": 0 etait INDISTINGUABLE d'une vraie
+    // mesure Goertzel autour de 0 dB - la reference documentee d'une note
+    // timbree sur cette echelle est -0,06 dB. Le drapeau dit desormais l'etat,
+    // et le chiffre n'est emis que MESURE - meme discipline que la poussee
+    // WebSocket, qui omet "hnr" dans ce cas, et que snr_valid / snr_db
+    // ci-dessus. Les deux champs partent ensemble ou pas du tout : une echelle
+    // sans valeur ne dit rien, une valeur sans echelle ment.
+    a["hnr_valid"] = feat.spectralValid;
+    if (feat.spectralValid) {
+      a["hnr_db"] = feat.harmonicToNoiseRatio;
+      a["hnr_is_spectral"] = feat.hnrIsSpectral;
+    }
 
     // De QUOI la classification a ete privee. Un etat "good" obtenu faute
     // d'avoir pu mesurer le pitch, le rapport signal/bruit ou le spectre n'est
@@ -2656,6 +2760,22 @@ void WebConfigurator::handleApiDiagnostics(AsyncWebServerRequest* request) {
     webAddTimingMeasure(tm, "attack", note.attackTime);
     webAddTimingMeasure(tm, "pitch_stabilization", note.pitchStabilizationTime);
     webAddTimingMeasure(tm, "release", note.releaseTime);
+    // Les DEUX modes de panne de la chronometrie, sans lesquels un releve vide
+    // ou immobile ne se distingue pas d'une absence de jeu. Ils n'avaient aucun
+    // consommateur : les compter sans jamais les publier revient a ne pas les
+    // compter.
+    //   rejected_frames : frames refusees parce que leur horodatage RECULE
+    //     (le repliement de millis() n'en fait pas partie). La machine a etats
+    //     n'avance pas sur ces frames, et les durees qui en dependent ne sont
+    //     jamais mesurees.
+    //   rejected_events : ordres d'actionneur refuses parce qu'ils arrivent
+    //     hors de la fenetre ou ils ont un sens (air ou valve apres que le son
+    //     sonne, deuxieme occurrence, evenement anterieur a l'ordre MIDI, arret
+    //     sans note en cours). Un compteur qui monte ici designe un cablage
+    //     d'appels errone, pas un defaut de jeu.
+    // Compteurs cumulatifs 16 bits remis a zero par AcousticTiming::reset().
+    tm["rejected_frames"] = tmg.rejectedFrames();
+    tm["rejected_events"] = tmg.rejectedEvents();
 
     if (nm.capturedCount() == 0) {
       addCheck("noise_model", "warning",

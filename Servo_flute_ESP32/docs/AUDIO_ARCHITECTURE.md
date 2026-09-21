@@ -56,9 +56,22 @@ INMP441 ──I2S DMA──> AudioAnalyzer ──> PitchDetector (YIN) ──> I
 | YIN lag range | τ = 8 … 160 | `tauMax` capped by `MIC_YIN_TAU_MAX` = 200 |
 | YIN inner loop | 160 × 512 = **81 920 multiply-add per frame** | |
 
-### Static RAM
+### RAM — and it is heap, not static
 
-| Buffer | Size |
+**Correction (audit, PHASE 7).** Every "RAM" figure in this document, in this
+section and in the per-phase tables below, is `sizeof(AudioAnalyzer)` — and
+`AudioAnalyzer` is allocated with `new` in `WebConfigurator::begin()`. It lives
+on the **heap**, not in `.bss`. The linker's static-RAM figure is a different
+number and did not move at all across PHASES 0–7: **64 768 B (19.8 %)** before
+and after, measured in CI on `espressif32@6.10.0`.
+
+The distinction is not pedantic. On an ESP32 the heap is shared with the WiFi
+stack and AsyncTCP buffers, and it is the heap that actually runs out; calling
+this "static RAM" makes it look accounted for at link time when it is not.
+Flash, which *is* static, went from 1 690 373 B (80.6 %) to **1 702 009 B
+(81.2 %)** over PHASES 6–7, i.e. **+11 636 B**, leaving 395 kB of headroom.
+
+| Buffer (heap, inside `AudioAnalyzer`) | Size |
 |---|---|
 | `PitchDetector::_hann[1024]` float | 4 096 B |
 | `PitchDetector::_yinBuf[202]` float | 808 B |
@@ -235,7 +248,7 @@ transient is not a permanently saturated microphone.
 | Analysis frame | — | 4 096 B | |
 | `PitchDetector` | 4 904 B | 4 904 B | |
 | `FrameLevel` + stats | — | 68 B | |
-| **Total static RAM** | **13 096 B** | **19 324 B** | **+6 228 B (+6.1 kB)** |
+| **Total (heap object)** | **13 096 B** | **19 324 B** | **+6 228 B (+6.1 kB)** |
 
 CPU: the analysis rate rises from 25 to **62.5 frames/s**. YIN costs 81 920
 multiply-add per frame, so **5.12 M MAC/s**, which at a rough 6 cycles/MAC is
@@ -355,7 +368,7 @@ distinguishable from a correct one.
 
 | | PHASE 0 | PHASE 1 | PHASE 2 |
 |---|---|---|---|
-| Static RAM | 13 096 B | 19 324 B | **15 300 B** |
+| Heap object | 13 096 B | 19 324 B | **15 300 B** |
 | YIN per frame | 81 920 MAC | 81 920 MAC | 92 160 MAC |
 | Frames/s | 25 | 62.5 | 62.5 |
 | Estimated core load | ~5 % | ~12.8 % | **~14.4 %** |
@@ -491,7 +504,7 @@ is ever streamed.
 
 | | PHASE 0 | PHASE 1 | PHASE 2 | PHASE 4 |
 |---|---|---|---|---|
-| Static RAM | 13 096 B | 19 324 B | 15 300 B | **21 532 B** |
+| Heap object | 13 096 B | 19 324 B | 15 300 B | **21 532 B** |
 | — without FFT | | | | 15 388 B |
 | Operations/frame | 81 920 | 81 920 | 92 160 | 99 712 |
 | Frames/s | 25 | 62.5 | 62.5 | 62.5 |
@@ -635,7 +648,7 @@ would create a format to migrate twice.
 | `AudioFilterChain` | — | 76 B |
 | `NoiseModel` (7 × 48 B) | — | 388 B |
 | `AcousticFeatures` | 80 B | 88 B |
-| **Total static RAM** | 21 532 B | **22 004 B** |
+| **Total (heap object)** | 21 532 B | **22 004 B** |
 | Operations/frame | 99 712 | 105 344 |
 | Estimated core load | ~15.6 % | **~16.5 %** |
 
@@ -734,13 +747,28 @@ in `0ab0881`, where noise capture was accumulating the stale spectrum of the
 previous note. The option was considered and rejected twice, independently.
 
 **Consequence a consumer must handle.** `QualityScore::weightUsed` alternates
-between 0.75 (spectral frame) and 0.60 (decimated frame); breathiness likewise
-drops from 1.00 to 0.30. Two scores with different `weightUsed` are **not the
-same measurement** and must not be averaged together: a naive one-second mean
-would blend 15 spectral scores with 47 partial ones and produce a number that
-means nothing. Group by `weightUsed`, or plot only the spectral frames. The
-missing-ness is published rather than hidden — the same discipline as
-`snrUsedFallback`, `missing*` and `stabilityValid` elsewhere in this chain.
+between **0.90** (spectral frame) and **0.75** (decimated frame); breathiness
+likewise drops from 1.00 to 0.30. Two scores with different `weightUsed` are
+**not the same measurement** and must not be averaged together: a naive
+one-second mean would blend 15 spectral scores with 47 partial ones and produce
+a number that means nothing. Group by `weightUsed`, or plot only the spectral
+frames.
+
+*Corrected by the audit.* This paragraph previously said 0.75 / 0.60. Those are
+the values when **no noise profile has been captured** either, i.e. a degraded
+configuration that `/api/diagnostics` flags with a warning of its own — not the
+nominal case. The weights sum to 1.00; attack (0.10) is structurally absent, so
+a spectral frame reaches 0.90, and a decimated frame loses harmonic (0.15) as
+well, reaching 0.75. Since this number is the *only* instruction this document
+gives for grouping scores, the error was not cosmetic: filtering on 0.75 would
+have kept the decimated frames and discarded the spectral ones — the exact
+opposite of the intent.
+
+The missing-ness is published rather than hidden — the same discipline as
+`snrUsedFallback` and `missing*` elsewhere in this chain. `stabilityValid` was
+named here too, wrongly: until the audit it was the one flag whose value was
+published (`stab`, on the WebSocket push) while the flag itself reached neither
+channel. It is now gated like the others.
 
 ### What is not measured is not invented
 
@@ -1017,10 +1045,11 @@ for exactly that comparison.
   on that frame, and remains the PHASE 4 Goertzel approximation otherwise;
   `hnrIsSpectral` says which. `snrDb` is a *different* quantity (level against
   the machine's own noise floor) and the two coexist deliberately.
-- **`QualityScore::weightUsed` alternates between 0.75 and 0.60** at frame rate,
+- **`QualityScore::weightUsed` alternates between 0.90 and 0.75** at frame rate,
   because the harmonic component only exists on FFT frames (15.6 Hz). Scores
   with different `weightUsed` are not the same measurement and must not be
-  averaged together. See PHASE 6.
+  averaged together. (0.75 / 0.60 is the same alternation with no noise profile
+  captured — a degraded configuration, not the nominal one.) See PHASE 6.
 - Attack quality is measured in milliseconds by PHASE 7 but does not feed the
   PHASE 6 score: no threshold says which duration is worth 1, and inventing one
   would dress taste as measurement.
