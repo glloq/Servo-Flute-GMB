@@ -38,6 +38,7 @@ void fillSpectral(AcousticFeatures& f, const float* frame, size_t n, float f0,
   f.h2Ratio = 0.0f;
   f.h3Ratio = 0.0f;
   f.harmonicToNoiseRatio = 0.0f;
+  f.hnrIsSpectral = false;
 
   if (frame == nullptr || n == 0 || f0 <= 0.0f) {
     // Rien de mesurable : les descripteurs de FORME de spectre sont effaces
@@ -58,8 +59,12 @@ void fillSpectral(AcousticFeatures& f, const float* frame, size_t n, float f0,
   // Rapport harmonique / non-harmonique, en dB. APPROXIMATION assumee :
   // l'energie dite "non harmonique" est tout ce que les quatre raies mesurees
   // ne captent pas, ce qui inclut le souffle mais aussi les harmoniques de rang
-  // superieur. Un HNR rigoureux demanderait le spectre complet et une
-  // estimation de plancher de bruit ; ce n'est pas ce qui est fourni ici.
+  // superieur. Un HNR rigoureux demande le spectre complet et une estimation de
+  // plancher de bruit : c'est SpectralAnalyzer::harmonicNoiseRatio, branche
+  // plus bas quand la FFT a tourne. Ce calcul-ci reste le REPLI - FFT compilee
+  // hors du binaire, frame decimee, ou mesure spectrale refusee - et il est le
+  // seul disponible dans ces cas-la. Il n'est pas sur la meme echelle que la
+  // mesure spectrale : `hnrIsSpectral` dit laquelle des deux a rempli le champ.
   const float total = SpectralAnalyzer::totalPower(frame, n);
   // Goertzel rend la puissance d'une raie complexe (A^2/4), totalPower la
   // puissance moyenne du signal reel (A^2/2) : le facteur 2 aligne les unites.
@@ -84,6 +89,16 @@ void fillSpectral(AcousticFeatures& f, const float* frame, size_t n, float f0,
     f.spectralCentroid = spectral->spectralCentroid();
     f.spectralFlatness = spectral->spectralFlatness();
     f.fftValid = true;
+    // Le spectre complet est la : le HNR se MESURE au lieu de s'approximer.
+    // La mesure peut refuser (f0 trop basse, spectre vide, trop peu de bins
+    // pour un plancher) ; dans ce cas l'approximation Goertzel deja calculee
+    // reste en place et `hnrIsSpectral` reste faux. On ne remplace jamais une
+    // mesure par un zero au motif qu'une meilleure mesure a echoue.
+    const HarmonicNoiseRatio hnr = spectral->harmonicNoiseRatio(f0);
+    if (hnr.valid) {
+      f.harmonicToNoiseRatio = hnr.db;
+      f.hnrIsSpectral = true;
+    }
   }
 #else
   (void)spectral;

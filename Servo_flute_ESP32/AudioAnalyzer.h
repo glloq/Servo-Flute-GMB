@@ -35,6 +35,8 @@
 #include "AudioLevel.h"
 #include "SpectralAnalyzer.h"
 #include "AcousticFeatures.h"
+#include "AcousticQuality.h"
+#include "AcousticTiming.h"
 #include "AudioFilters.h"
 #include "NoiseModel.h"
 
@@ -127,10 +129,44 @@ public:
   const NoiseModel& getNoiseModel() const { return _noise; }
   void resetNoiseModel() { _noise.reset(); }
 
+  // --- Classification et note de qualite (PHASE 6) --------------------------
+  // Verdicts de la DERNIERE frame analysee. Ils ne survivent pas a la mesure
+  // qui les a produits : des qu'une frame n'est plus fraiche
+  // (markMeasurementInvalid) ou que la note change (resetAcousticTracking),
+  // ils redeviennent invalides au lieu de rester ceux de la derniere frame
+  // reussie. Lire `classified` / `valid` AVANT le contenu.
+  const AcousticClassification& getClassification() const { return _classification; }
+  const QualityScore&           getQualityScore() const { return _quality; }
+  // La respiration et le couac sont calcules PAR la classification, qui les
+  // range dans son propre resultat : ces deux accesseurs pointent donc la
+  // meme mesure, jamais une seconde mesure faite a part.
+  const BreathinessResult&      getBreathiness() const { return _classification.breathiness; }
+  const SqueakResult&           getSqueak() const { return _classification.squeak; }
+  // Rend "unclassified" tant qu'aucun verdict n'a pu etre rendu :
+  // AcousticClassification::state garde alors sa valeur par defaut
+  // (ACOUSTIC_SILENCE), qui ne doit pas etre affichee comme un etat mesure.
+  const char*                   getAcousticStateName() const;
+  // Note changee / arret. Remet a zero le detecteur de couac ET l'historique
+  // de pitch, et invalide les verdicts de la note precedente. Ne touche PAS a
+  // AcousticTiming, dont le cycle est pilote par les ordres d'actionneur.
+  void                          resetAcousticTracking();
+
+  // --- Chronometrie acoustique (PHASE 7) ------------------------------------
+  // Alimentee par l'analyse a chaque frame ; les instants d'ORDRE lui sont
+  // donnes par la chaine d'actionneurs (noteCommanded, airCommanded,
+  // valveOpened, noteReleased). Le flux est a SENS UNIQUE : rien dans cette
+  // classe ne lit ses verdicts pour decider quoi que ce soit.
+  AcousticTiming&               timing() { return _timing; }
+  const AcousticTiming&         timing() const { return _timing; }
+
   // Chaine de filtrage appliquee au flux (voir AudioFilters.h).
   const AudioFilterChain& getFilters() const { return _filters; }
   bool isActive() const override { return _active; }
-  void setActive(bool active) override { _active = active; }
+  // Mise en pause / reprise de l'analyse. Ce n'est pas un simple drapeau :
+  // update() sort des sa premiere ligne quand l'analyseur est inactif, donc
+  // aucun plafond d'obsolescence ne s'appliquerait pendant la pause. Voir le
+  // corps dans AudioAnalyzer.cpp.
+  void setActive(bool active) override;
   uint32_t getFrameSequence() const override { return _frameSeq; }
   unsigned long getFrameTimestamp() const override { return _frameTimestamp; }
 
@@ -158,6 +194,16 @@ private:
   SpectralAnalyzer _spectral;
   AcousticFeatures _features;
   AudioFilterChain _filters;
+  // --- PHASE 6 : etat persistant de la classification -----------------------
+  // Le detecteur de couac est le SEUL etat qui traverse les frames : il lui
+  // faut un historique de brillance pour distinguer un accident bref d'un
+  // defaut installe. Il appartient a l'analyseur, pas a une variable statique
+  // cachee dans AcousticQuality.
+  SqueakDetector _squeak;
+  AcousticClassification _classification;
+  QualityScore _quality;
+  // --- PHASE 7 --------------------------------------------------------------
+  AcousticTiming _timing;
   NoiseModel _noise;
   NoiseProfileId _noiseProfileId;
   bool _noiseCaptureFinished;
@@ -189,6 +235,12 @@ private:
   // Descripteurs spectraux : Goertzel a chaque frame ou la fondamentale est
   // connue, FFT une frame sur MIC_SPECTRAL_DECIMATION.
   void analyzeSpectrum();
+  // PHASE 6/7 : classification, note de qualite et chronometrie d'UNE frame.
+  // Appelee APRES que la frame ait recu son numero et son horodatage - le
+  // detecteur de couac compte les frames par leur SEQUENCE et la chronometrie
+  // date les siennes par leur horodatage : les lui donner avant leur mise a
+  // jour ferait travailler les deux sur l'identite de la frame PRECEDENTE.
+  void analyzeAcoustics();
   void markMeasurementInvalid();
 };
 

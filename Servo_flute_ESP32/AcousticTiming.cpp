@@ -520,18 +520,27 @@ TimingFrame AcousticTiming::fromFeatures(const AcousticFeatures& f) {
   TimingFrame out;
   out.timestampMs = f.timestamp;
   out.rmsDbFS = f.rmsDbFS;
-  // Verdict de fiabilite du pitch, reconstruit avec le MEME critere que
-  // PitchDetector : une frequence DANS LA PLAGE (hz n'est renseigne que dans ce
-  // cas) et une confiance suffisante. Deviner plus large ferait passer du bruit
-  // pour un pitch au moment precis - l'attaque - ou le signal est le moins
-  // periodique, et pitchDetectedTimestamp daterait alors un souffle.
+  // Le verdict du DETECTEUR, propage tel quel. fillPitch() renseigne desormais
+  // `pitchValid` depuis PitchResult::valid, ce qui retire d'ici le critere qui
+  // y avait ete reconstruit faute de mieux.
   //
-  // AcousticFeatures a recu un champ `pitchValid` pendant l'ecriture de cette
-  // phase, mais fillPitch() ne le renseigne pas encore : le lire rendrait tous
-  // les pitchs invalides. Des que l'assemblage le remplira, cette ligne devra
-  // devenir `out.pitchValid = f.pitchValid;` - un seul critere, defini a un
-  // seul endroit.
-  out.pitchValid = (f.pitchHz > 0.0f) && (f.pitchConfidence >= MIC_YIN_CONFIDENCE_MIN);
+  // LES DEUX CRITERES NE SONT PAS EQUIVALENTS, et c'est pour cela qu'on garde
+  // celui-ci. La reconstruction disait `hz > 0 && confiance >= seuil`. Elle
+  // reposait sur un INVARIANT de runYin() - `hz` n'est renseigne que dans la
+  // plage [MIC_PITCH_MIN_HZ, MIC_PITCH_MAX_HZ] - au lieu de l'exprimer :
+  // presentee une frequence repliee hors plage accompagnee d'une bonne
+  // confiance, elle la declarait valide, la ou le detecteur l'a rejetee. Sur la
+  // chaine reelle les deux coincident exactement (verifie frame a frame sur le
+  // flux complet d'une note) ; partout ailleurs - descripteurs assembles a la
+  // main, futur detecteur, mesure importee - c'est le drapeau qui a raison,
+  // pour la meme raison qu'AcousticQuality::pitchIsUsable teste la plage
+  // explicitement.
+  //
+  // Ce que le critere protege reste le meme : une frequence dans la plage
+  // accompagnee d'une confiance insuffisante est exactement ce que YIN produit
+  // sur un transitoire d'attaque. La prendre pour un pitch daterait
+  // pitchDetectedTimestamp sur du souffle.
+  out.pitchValid = f.pitchValid;
   out.pitchHz = f.pitchHz;
   return out;
 }

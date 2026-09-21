@@ -141,10 +141,17 @@ BreathinessResult computeBreathiness(const AcousticFeatures& f, const AcousticCo
   float sum = 0.0f;
   float weight = 0.0f;
 
-  // 1. Rapport harmonique / bruit. Mesure a chaque frame et ancre sur la
-  //    fondamentale reellement detectee : c'est la composante la plus directe,
-  //    mais elle disparait des que le pitch lache.
-  if (f.spectralValid && aqFinite(f.harmonicToNoiseRatio) && weightUsable(AQ_BREATH_W_HNR)) {
+  // 1. Rapport harmonique / bruit, ancre sur la fondamentale reellement
+  //    detectee : c'est la composante la plus directe, mais elle disparait des
+  //    que le pitch lache.
+  //    `hnrIsSpectral` est exige : AQ_BREATH_HNR_TONE_DB et _NOISE_DB sont
+  //    calibres sur la mesure spectrale. L'approximation Goertzel, qui remplit
+  //    le meme champ sur les frames sans FFT, lit 17 dB plus bas sur la MEME
+  //    note propre - la comparer a ces seuils ferait clignoter le verdict a la
+  //    cadence de MIC_SPECTRAL_DECIMATION. Une composante absente est un manque
+  //    visible ; une composante lue sur la mauvaise echelle est un mensonge.
+  if (f.spectralValid && f.hnrIsSpectral && aqFinite(f.harmonicToNoiseRatio) &&
+      weightUsable(AQ_BREATH_W_HNR)) {
     sum += AQ_BREATH_W_HNR *
            mapToUnit(f.harmonicToNoiseRatio, AQ_BREATH_HNR_TONE_DB, AQ_BREATH_HNR_NOISE_DB);
     weight += AQ_BREATH_W_HNR;
@@ -627,7 +634,11 @@ QualityScore computeAcousticQuality(const AcousticFeatures& f, const AcousticCon
     out.snrMeasured = true;
   }
 
-  if (f.spectralValid && aqFinite(f.harmonicToNoiseRatio) && weightUsable(w.harmonic)) {
+  // Meme exigence que pour la respiration : AQ_QUALITY_HNR_GOOD_DB decrit la
+  // mesure spectrale. Sur l'approximation Goertzel, ce seuil noterait une note
+  // propre comme mediocre une frame sur MIC_SPECTRAL_DECIMATION.
+  if (f.spectralValid && f.hnrIsSpectral && aqFinite(f.harmonicToNoiseRatio) &&
+      weightUsable(w.harmonic)) {
     sum += w.harmonic *
            mapToUnit(f.harmonicToNoiseRatio, AQ_QUALITY_HNR_MIN_DB, AQ_QUALITY_HNR_GOOD_DB);
     used += w.harmonic;

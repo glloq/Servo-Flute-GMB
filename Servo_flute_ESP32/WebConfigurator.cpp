@@ -7,6 +7,14 @@
 #include "DeviceSecrets.h"
 #include "web_content.h"
 #include "WebValueParsers.h"
+#if MIC_ENABLED
+// Verdicts deja calcules par la chaine audio et simplement RELAYES ici. Inclus
+// explicitement : ce fichier nomme AcousticClassification, QualityScore,
+// NoteTiming et TimingOutcome, il ne doit pas dependre du fait qu'un autre
+// en-tete les tire par hasard.
+#include "AcousticQuality.h"
+#include "AcousticTiming.h"
+#endif
 #include <WiFi.h>
 
 // Serialize a single string value through ArduinoJson so quotes, backslashes and
@@ -310,6 +318,12 @@ void WebConfigurator::update() {
         // mesures deja reduites.
         const AcousticFeatures& af = _audio->getFeatures();
         String aj = "{\"t\":\"audio\"";
+        // Le message se construit par une vingtaine de += successifs et part 10
+        // fois par seconde. Sans reserve, chaque poussee enchaine autant de
+        // reallocations du tas - et les verdicts ajoutes plus bas allongent
+        // encore la chaine. Une seule allocation, dimensionnee au pire cas
+        // mesure (322 octets, marge comprise), remplace la serie.
+        aj.reserve(384);
         aj += ",\"rms\":" + String(_audio->getRMS(), 3);
         aj += ",\"snd\":" + String(_audio->isSoundDetected() ? 1 : 0);
         // Niveaux en dBFS : pleine echelle NUMERIQUE, jamais du dB SPL.
@@ -347,6 +361,67 @@ void WebConfigurator::update() {
           }
         }
         if (af.overblowDetected) aj += ",\"overblow\":1";
+
+        // --- Classification et qualite (PHASES 6/7) : LE STRICT MINIMUM ------
+        // Tout ce qui est ajoute ICI est multiplie par 10 par seconde et par le
+        // nombre de clients (WS_MAX_CLIENTS = 4), soit 40 messages/s. Le releve
+        // de chronometrie complet et les drapeaux `missing` NOMMES pesent a eux
+        // seuls plus que la poussee entiere : les mettre la transformerait un
+        // moniteur en flux permanent, ce que l'ESP32-WROOM ne doit pas soutenir
+        // (cf. AUDIO_ARCHITECTURE.md). Ils partent donc UNIQUEMENT sur
+        // GET /api/diagnostics, a la demande. Ne restent ici que les verdicts
+        // qui changent a chaque frame et qu'un afficheur temps reel ne peut pas
+        // reconstituer autrement.
+        //
+        // Lecture sans verrou, comme af juste au-dessus : cette fonction est
+        // appelee par update(), donc par la tache loop(), qui est aussi la
+        // SEULE a ecrire ces resultats (via _audio->update() quelques lignes
+        // plus haut). Il n'y a pas d'autre ecrivain a serialiser, et aucun
+        // calcul n'est declenche : on relit des champs deja poses.
+        const AcousticClassification& cl = _audio->getClassification();
+        // Etat omis tant qu'il n'a pas ete CLASSE : absent = inconnu, alors
+        // qu'un "silence" par defaut se lirait comme une mesure.
+        if (cl.classified) {
+          aj += ",\"st\":\"" + String(_audio->getAcousticStateName()) + "\"";
+        }
+        // De QUOI la classification a ete privee, en un seul entier :
+        //   bit 0 pitch, 1 snr, 2 spectre, 3 note visee, 4 stabilite,
+        //   bit 5 historique de couac, 6 repli du SNR (compare au profil d'un
+        //   AUTRE etat machine que l'etat reel : il surestime probablement la
+        //   qualite).
+        // Le detail nomme est dans /api/diagnostics (audio.missing) ; ici les
+        // memes sept bits couteraient plus de 120 octets. Sans ce champ, un
+        // etat "good" obtenu faute d'avoir rien pu mesurer serait, a l'ecran,
+        // indiscernable d'un vrai "good". Omis quand rien ne manque.
+        uint8_t miss = 0;
+        if (cl.missingPitch)         miss |= 0x01;
+        if (cl.missingSnr)           miss |= 0x02;
+        if (cl.missingSpectrum)      miss |= 0x04;
+        if (cl.missingExpectedNote)  miss |= 0x08;
+        if (cl.missingStability)     miss |= 0x10;
+        if (cl.missingSqueakHistory) miss |= 0x20;
+        if (cl.snrUsedFallback)      miss |= 0x40;
+        if (miss) aj += ",\"miss\":" + String((int)miss);
+        // La note de qualite ne part JAMAIS sans le poids sur lequel elle a ete
+        // calculee, ici comme dans /api/diagnostics : c'est une moyenne
+        // ponderee de sept criteres dont l'attaque, qui peut ne pas avoir ete
+        // mesuree ; le score est alors renormalise sur les six autres et ne
+        // couvre que 90 % du cahier des charges. Les deux champs partent
+        // ensemble ou pas du tout - un score seul mentirait sur ce qu'il
+        // mesure.
+        const QualityScore& qs = _audio->getQualityScore();
+        if (qs.valid) {
+          aj += ",\"q\":" + String(qs.score, 2);
+          aj += ",\"qw\":" + String(qs.weightUsed, 2);
+        }
+        const BreathinessResult& br = _audio->getBreathiness();
+        if (br.valid) aj += ",\"br\":" + String(br.value, 2);
+        // Couac CONFIRME seulement. Un candidat instantane est retire
+        // retroactivement une fois sur deux : l'annoncer ferait clignoter
+        // l'interface sur des evenements qui n'ont pas eu lieu.
+        const SqueakResult& sq = _audio->getSqueak();
+        if (sq.confirmed) aj += ",\"squeak\":1";
+
         aj += "}";
         _ws.textAll(aj);
         _lastAudioBroadcast = now;
@@ -2285,6 +2360,34 @@ void WebConfigurator::handleApiWifiConnect(AsyncWebServerRequest* request) {
   request->send(op.httpStatus, "application/json", op.json);
 }
 
+#if MIC_ENABLED
+// Nom lisible de la facon dont le suivi d'une note s'est TERMINE. Table pure :
+// aucune mesure n'est refaite, c'est une traduction d'enum.
+static const char* webTimingOutcomeName(TimingOutcome o) {
+  switch (o) {
+    case TIMING_OUTCOME_NONE: return "none";
+    case TIMING_IN_PROGRESS:  return "in_progress";
+    case TIMING_COMPLETE:     return "complete";
+    case TIMING_NO_SOUND:     return "no_sound";
+    case TIMING_CUT_SHORT:    return "cut_short";
+    case TIMING_TIMEOUT:      return "timeout";
+    case TIMING_ABORTED:      return "aborted";
+    default:                  return "?";
+  }
+}
+
+// Une duree de chronometrie ne se rend JAMAIS nue : {"valid":bool,"ms":float}.
+// Un attackTime jamais mesure vaut 0 ms dans la structure ; publie seul, ce 0
+// se lirait comme une attaque instantanee - exactement le defaut deja survenu
+// dans ce projet. Le drapeau part donc avec la valeur, systematiquement, par
+// cette fonction unique : aucun appelant ne peut l'oublier.
+static void webAddTimingMeasure(JsonObject parent, const char* key, const TimingMeasure& m) {
+  JsonObject o = parent[key].to<JsonObject>();
+  o["valid"] = m.valid;
+  o["ms"] = (float)m.ms;
+}
+#endif  // MIC_ENABLED
+
 void WebConfigurator::handleApiDiagnostics(AsyncWebServerRequest* request) {
   // Diagnostic PUREMENT PASSIF : aucune commande ci-dessous ne fait bouger un
   // actionneur. Un test actif se demande explicitement par les commandes
@@ -2451,6 +2554,88 @@ void WebConfigurator::handleApiDiagnostics(AsyncWebServerRequest* request) {
     a["snr_valid"] = feat.snrValid;
     a["snr_db"] = feat.snrDb;
     a["snr_fallback"] = feat.snrUsedFallback;
+
+    /*------------------------------------------------------------------------
+     * Classification, note de qualite et chronometrie (PHASES 6/7)
+     *
+     * LECTURE SEULE, ET RIEN QUE DE LA LECTURE. Cette fonction s'execute sur la
+     * tache AsyncTCP : elle ne declenche aucun DSP, n'appelle aucun `compute*`
+     * et ne fait avancer aucune machine d'etat. Tous les verdicts ci-dessous
+     * ont ete produits par loop() (AudioAnalyzer::update()), unique ecrivain.
+     *
+     * On en prend une COPIE locale immediate - meme raison que le `RuntimeConfig
+     * tmp = cfg` du debut de cette fonction : les champs d'un meme verdict
+     * restent alors coherents entre eux, au lieu d'etre relus un par un pendant
+     * que ArduinoJson alloue ses noeuds. Aucun verrou n'est pris, exactement
+     * comme pour getFeatures() et getCaptureStats() juste au-dessus : il
+     * n'existe pas de mutex audio, et en introduire un ferait attendre la tache
+     * loop() - donc l'acquisition I2S - derriere une serialisation JSON.
+     *-----------------------------------------------------------------------*/
+    const AcousticClassification cls = _audio->getClassification();
+    const QualityScore           qual = _audio->getQualityScore();
+    const BreathinessResult      brth = _audio->getBreathiness();
+
+    a["acoustic_state"] = _audio->getAcousticStateName();
+    a["acoustic_classified"] = cls.classified;
+    // quality_weight_used accompagne TOUJOURS quality_score. Le score est une
+    // moyenne ponderee de sept criteres ; l'attaque (10 % du cahier des
+    // charges) peut ne pas avoir ete mesuree, le score est alors renormalise
+    // sur les six autres. 0,82 pondere a 1,00 et 0,82 pondere a 0,90 ne
+    // decrivent pas le meme son : un score publie sans son poids ment sur ce
+    // qu'il mesure.
+    a["quality_score"] = qual.score;
+    a["quality_weight_used"] = qual.weightUsed;
+    a["quality_valid"] = qual.valid;
+    a["breathiness"] = brth.value;
+    a["breathiness_valid"] = brth.valid;
+    // Deux echelles distinctes derriere un seul champ : mesure spectrale (FFT)
+    // ou approximation Goertzel a quatre raies. Elles ne se comparent pas, donc
+    // le chiffre ne part pas sans dire laquelle il est.
+    a["hnr_db"] = feat.harmonicToNoiseRatio;
+    a["hnr_is_spectral"] = feat.hnrIsSpectral;
+
+    // De QUOI la classification a ete privee. Un etat "good" obtenu faute
+    // d'avoir pu mesurer le pitch, le rapport signal/bruit ou le spectre n'est
+    // pas un etat "good" : sans ces drapeaux l'interface ne peut pas faire la
+    // difference entre "c'est bon" et "je n'ai rien pu evaluer".
+    // `snr_fallback` a la meme fonction : le SNR a ete compare au profil d'un
+    // AUTRE etat machine que l'etat reel, il surestime donc probablement la
+    // qualite. Il est ici sous sa forme vue par la CLASSIFICATION ; le champ
+    // de meme nom au niveau de `a` reste celui de la frame (AcousticFeatures).
+    JsonObject missing = a["missing"].to<JsonObject>();
+    missing["pitch"] = cls.missingPitch;
+    missing["snr"] = cls.missingSnr;
+    missing["spectrum"] = cls.missingSpectrum;
+    missing["expected_note"] = cls.missingExpectedNote;
+    missing["stability"] = cls.missingStability;
+    missing["squeak_history"] = cls.missingSqueakHistory;
+    missing["snr_fallback"] = cls.snrUsedFallback;
+
+    // Chronometrie de la DERNIERE note terminee (PHASE 7). Elle est ici et pas
+    // sur la poussee WebSocket : ce bloc pese a lui seul plus que la poussee
+    // entiere, qui part 10 fois par seconde vers jusqu'a WS_MAX_CLIENTS
+    // clients. Ici il ne coute que lorsqu'un humain ouvre le diagnostic.
+    //
+    // `_last` est remis a zero en meme temps que `_hasLast`, donc le lire quand
+    // has_last est faux rend des mesures toutes invalides - jamais des restes
+    // d'une note precedente.
+    const AcousticTiming& tmg = _audio->timing();
+    const bool timingHasLast = tmg.hasLast();
+    const NoteTiming note = tmg.last();
+    JsonObject tm = a["timing"].to<JsonObject>();
+    tm["has_last"] = timingHasLast;
+    tm["outcome"] = webTimingOutcomeName(note.outcome);
+    // Le plancher d'avant-note conditionne le seuil d'apparition : sans lui,
+    // toutes les durees qui en decoulent sont des suppositions.
+    tm["baseline_valid"] = note.baselineValid;
+    // CHAQUE duree porte sa validite. Un "attack":{"ms":0} sans son "valid"
+    // se lirait comme une attaque instantanee alors qu'il signifie "jamais
+    // mesuree" : c'est le defaut precis a ne pas reintroduire.
+    webAddTimingMeasure(tm, "command_to_sound", note.commandToSoundLatency);
+    webAddTimingMeasure(tm, "air_to_sound", note.airToSoundLatency);
+    webAddTimingMeasure(tm, "attack", note.attackTime);
+    webAddTimingMeasure(tm, "pitch_stabilization", note.pitchStabilizationTime);
+    webAddTimingMeasure(tm, "release", note.releaseTime);
 
     if (nm.capturedCount() == 0) {
       addCheck("noise_model", "warning",

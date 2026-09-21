@@ -23,7 +23,9 @@
  *   stability,
  *   flatness
  *   h2Ratio, h3Ratio     rapports de PUISSANCE a la fondamentale (pas d'amplitude)
- *   harmonicToNoiseRatio dB
+ *   harmonicToNoiseRatio dB - mais sur DEUX echelles distinctes, voir
+ *                        `hnrIsSpectral` : la mesure spectrale et
+ *                        l'approximation Goertzel ne se comparent pas.
  *   spectralCentroid     Hz
  *
  * TAILLE
@@ -77,6 +79,17 @@ struct AcousticFeatures {
   float h2Ratio = 0.0f;
   float h3Ratio = 0.0f;
   float harmonicToNoiseRatio = 0.0f;   // dB
+  // DEUX ECHELLES, PAS UNE. `harmonicToNoiseRatio` est rempli soit par la
+  // mesure spectrale (SpectralAnalyzer::harmonicNoiseRatio, sur le spectre FFT
+  // complet), soit - quand la FFT est compilee hors du binaire, n'a pas tourne
+  // sur cette frame, ou a refuse de mesurer - par l'APPROXIMATION Goertzel a
+  // quatre raies. Les deux ne sont PAS comparables : l'approximation compte les
+  // harmoniques de rang superieur a 4 comme du bruit, ce qui punit une note
+  // timbree comme une note soufflee et peut meme les inverser. Un consommateur
+  // qui compare ce champ a un seuil DOIT savoir sur quelle echelle il raisonne,
+  // d'ou ce drapeau. Vrai UNIQUEMENT quand la mesure spectrale a effectivement
+  // remplace l'approximation.
+  bool hnrIsSpectral = false;
   // La FFT, elle, ne tourne qu'une frame sur MIC_SPECTRAL_DECIMATION.
   // `fftValid` dit si les deux champs qui suivent ont ete RAFRAICHIS sur CETTE
   // frame. Sans lui, `spectralValid` laissait croire qu'ils l'etaient toujours,

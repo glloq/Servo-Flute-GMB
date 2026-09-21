@@ -15,6 +15,11 @@
 #include "settings.h"
 #include "ConfigStorage.h"
 
+// PHASE 7 : chronometrie acoustique. Declaration AVANCEE - le manager n'en
+// detient qu'un pointeur OPTIONNEL qu'il transmet a la chaine d'actionneurs ;
+// il n'appelle lui-meme aucune de ses methodes.
+class AcousticTiming;
+
 enum HardwareInitStatus {
   HW_INIT_OK,
   HW_PCA0_MISSING,
@@ -81,6 +86,25 @@ public:
   // valve/airflow/pump/fan energized indefinitely, so route every disconnect to
   // allSoundOff(). Mirrors what MidiFilePlayer already does on stop/pause.
   void handleTransportLost();
+
+  // --- PHASE 7 : observateur de chronometrie acoustique ----------------------
+  // OPTIONNEL : nullptr par defaut, et l'instrument doit se comporter STRICTEMENT
+  // de la meme facon sans lui. Le pointeur est transmis tel quel au sequenceur et
+  // au controleur de souffle, qui NOTIFIENT les quatre instants d'ordre
+  // (note commandee, air commande, valve ouverte, note relachee) aux endroits ou
+  // ces ordres agissent reellement sur un actionneur.
+  //
+  // Le flux est A SENS UNIQUE, et ce n'est pas un detail de style : le cahier des
+  // charges interdit que le moteur audio puisse maintenir un actionneur active
+  // ou perturber sa securite. Aucune decision d'actionneur ne lit la valeur
+  // rendue par un hook ni ne teste la presence de l'observateur ; un
+  // AcousticTiming absent, fige ou plante ne change donc rien a la mecanique.
+  //
+  // Appartenance : l'appelant reste proprietaire de l'objet vise et doit le
+  // maintenir en vie tant qu'il est pose (passer nullptr pour le retirer).
+  void setTimingObserver(AcousticTiming* obs);
+  AcousticTiming* timingObserver() const { return _timingObserver; }
+
   void resetAllControllers();
   void powerOnServos();
   void ensureServosPowered();
@@ -193,6 +217,9 @@ private:
   // keeps pushing against a valve the breath controller just closed.
   NoteState _prevSequencerState;
   bool _prevNoteSounding;
+
+  // Observateur de chronometrie (PHASE 7). nullptr = aucun, et c'est le defaut.
+  AcousticTiming* _timingObserver;
 };
 
 #endif

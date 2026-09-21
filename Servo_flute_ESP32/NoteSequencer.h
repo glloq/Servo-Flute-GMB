@@ -7,6 +7,11 @@
 #include "AirflowController.h"
 #include "settings.h"
 
+// PHASE 7 : observateur de chronometrie acoustique. Declaration AVANCEE
+// deliberee - le sequenceur n'a jamais besoin du type complet, il ne fait que
+// detenir un pointeur eventuellement nul et l'appeler depuis le .cpp.
+class AcousticTiming;
+
 // Etats de la machine a etats pour une note
 enum NoteState {
   STATE_IDLE,              // Aucune note en cours
@@ -34,6 +39,15 @@ public:
   // Arrete immediatement toute lecture (pour All Sound Off)
   void stop();
 
+  // --- PHASE 7 : observateur de chronometrie (OPTIONNEL) ---------------------
+  // Pose par InstrumentManager::setTimingObserver(), nullptr par defaut.
+  // Le flux est a SENS UNIQUE : le sequenceur NOTIFIE l'observateur aux instants
+  // ou un ordre agit REELLEMENT sur la chaine d'actionneurs, et ne lit jamais
+  // rien de lui. Aucune decision de cette classe - pas une, pas dans un cas
+  // degrade - ne depend de sa presence ni de ce que ses hooks rendent.
+  void setTimingObserver(AcousticTiming* obs) { _timing = obs; }
+  AcousticTiming* timingObserver() const { return _timing; }
+
 private:
   EventQueue& _eventQueue;
   FingerController& _fingerCtrl;
@@ -47,6 +61,16 @@ private:
   unsigned long _playbackStartTime;
   unsigned long _noteSoundStartTime;
   bool _pendingStopAfterMinDuration;
+
+  // Observateur de chronometrie, nullptr tant que personne n'en pose un.
+  AcousticTiming* _timing;
+
+  // Notifications SORTANTES. Elles ignorent volontairement la valeur rendue par
+  // les hooks : un ordre hors sequence est deja compte par AcousticTiming
+  // lui-meme (rejectedEvents()), et surtout la suite du traitement d'actionneur
+  // ne doit en aucun cas en dependre.
+  void notifyNoteCommanded();
+  void notifyNoteReleased();
 
   void processDueEvents();
   void transitionTo(NoteState newState);

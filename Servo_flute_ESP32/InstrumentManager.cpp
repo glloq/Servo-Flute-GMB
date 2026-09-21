@@ -34,7 +34,20 @@ InstrumentManager::InstrumentManager()
     _powerOnRequested(false),
     _resetControllersRequested(false),
     _prevSequencerState(STATE_IDLE),
-    _prevNoteSounding(false) {
+    _prevNoteSounding(false),
+    _timingObserver(nullptr) {
+}
+
+void InstrumentManager::setTimingObserver(AcousticTiming* obs) {
+  // Simple transmission d'un pointeur : aucun appel n'est fait sur l'observateur
+  // ici, aucune consigne d'actionneur n'est (re)calculee, et poser ou retirer un
+  // observateur en pleine note ne touche ni la valve, ni le souffle, ni la
+  // pompe. Les seuls a le connaitre sont ceux qui ont un instant d'ordre a
+  // signaler : le sequenceur (note commandee / relachee) et le controleur de
+  // souffle (consigne d'air / valve ouverte).
+  _timingObserver = obs;
+  _sequencer.setTimingObserver(obs);
+  _airflowCtrl.setTimingObserver(obs);
 }
 
 void InstrumentManager::begin() {

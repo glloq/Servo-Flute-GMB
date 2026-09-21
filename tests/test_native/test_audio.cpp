@@ -1362,7 +1362,11 @@ void captureNoise(NoiseModel& nm, NoiseProfileId id, float amp, int frames,
   nm.beginCapture(id);
   for (int i = 0; i < frames; i++) {
     audiosig::whiteNoise(buf.data(), buf.size(), amp, 1000u + (uint32_t)i);
+#if MIC_FFT_ENABLED
     if (sa) sa->computeSpectrum(buf.data(), buf.size());
+#endif
+    // NoiseModel accepte toujours un analyseur, meme quand la FFT est compilee
+    // hors du binaire : il ne lui demande alors simplement rien.
     nm.accumulate(buf.data(), buf.size(), sa);
   }
   nm.endCapture();

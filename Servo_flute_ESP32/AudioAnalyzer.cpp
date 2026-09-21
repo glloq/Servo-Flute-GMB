@@ -108,6 +108,11 @@ bool AudioAnalyzer::begin() {
   _rawSamplesSinceFrame = 0;
   _clippedSinceFrame = 0;
   _lastDrain = 0;
+  // Un flux qui repart ne doit rien heriter du precedent. Les filtres viennent
+  // d'etre remis a neuf juste au-dessus, pour la meme raison ; l'historique de
+  // brillance, l'historique de pitch et les verdicts de la derniere frame sont
+  // exactement du meme ordre - ils decrivent un flux qui n'existe plus.
+  markMeasurementInvalid();
   _initialized = true;
   _micDetected = detectMicrophone();
 
@@ -129,6 +134,11 @@ void AudioAnalyzer::end() {
     _initialized = false;
   }
   _active = false;
+  // Plus aucune frame n'arrivera. update() sort desormais immediatement, donc
+  // le plafond d'obsolescence ne s'appliquera JAMAIS : sans cette invalidation
+  // explicite, un diagnostic ouvert apres l'arret afficherait indefiniment
+  // l'etat acoustique et la note de qualite de la derniere frame analysee.
+  markMeasurementInvalid();
 }
 
 bool AudioAnalyzer::resetMicrophone() {
@@ -138,6 +148,16 @@ bool AudioAnalyzer::resetMicrophone() {
   _micDetected = false;
   _frameSeq = 0;
   _frameTimestamp = 0;
+  // INVALIDATION EXPLICITE, et pas seulement par l'intermediaire de begin().
+  // Deux raisons distinctes :
+  //   - `_frameTimestamp = 0` ci-dessus DESARME le plafond d'obsolescence de
+  //     update() (qui ne s'applique que si l'horodatage est non nul) : si le
+  //     microphone ne revient pas, plus rien n'invaliderait jamais le dernier
+  //     verdict, qui resterait publie comme s'il venait d'etre mesure ;
+  //   - begin() peut echouer avant d'y arriver (installation I2S refusee).
+  // De plus, `_frameSeq` repart de zero : l'historique du detecteur de couac
+  // compte les frames par leur sequence et n'y survivrait pas proprement.
+  markMeasurementInvalid();
   bool ok = begin();
   return ok;
 }
@@ -221,6 +241,11 @@ void AudioAnalyzer::update() {
   // l'ordre des appels a l'interieur d'analyzeFrame().
   _features.frameSequence = _frameSeq;
   _features.timestamp = (uint32_t)now;
+
+  // PHASE 6/7, une fois par frame analysee et APRES son identite : le
+  // detecteur de couac mesure des durees en frames a partir de
+  // `frameSequence`, et la chronometrie date ses instants avec `timestamp`.
+  analyzeAcoustics();
 }
 
 void AudioAnalyzer::markMeasurementInvalid() {
@@ -240,6 +265,52 @@ void AudioAnalyzer::markMeasurementInvalid() {
   // frames qui ne viennent plus du microphone.
   _noise.abortCapture();
   _features.reset();
+
+  // PHASE 6. Les verdicts de la derniere frame reussie datent d'au moins
+  // MIC_FRAME_STALE_MS : les laisser en place ferait lire un etat acoustique
+  // et une note de qualite perimes comme s'ils decrivaient l'instant present -
+  // le meme defaut que lire une platitude spectrale vieille de 64 ms en la
+  // croyant fraiche. Un verdict perime n'est pas "un peu moins vrai", il est
+  // faux.
+  _classification = AcousticClassification();
+  _quality = QualityScore();
+  // L'historique de couac se compte en FRAMES, et _frameSeq n'avance que sur
+  // les frames ANALYSEES : apres un trou de flux, la sequence reste contigue
+  // alors que le temps, lui, a saute. Le detecteur ne peut donc pas voir ce
+  // trou tout seul ; c'est ici qu'on le lui dit.
+  _squeak.reset();
+  // AcousticTiming n'est PAS touchee : son cycle est pilote par les ordres
+  // d'actionneur, et elle possede ses propres plafonds (kOnsetTimeoutMs,
+  // kReleaseTimeoutMs...) pour conclure quand le son n'arrive jamais. La
+  // remettre a zero ici effacerait une note en cours de chronometrage sur un
+  // simple trou d'acquisition.
+}
+
+void AudioAnalyzer::resetAcousticTracking() {
+  // Changement de note, ou arret. L'historique de brillance decrit la note
+  // PRECEDENTE : comparer la nouvelle a celle-la inventerait un couac au
+  // premier instant de chaque note. Meme chose pour l'historique de pitch,
+  // dont l'etendue traverserait les deux notes et les declarerait instables.
+  _squeak.reset();
+  _pitch.resetTracking();
+  // resetTracking() efface aussi la note visee : on la restaure, car changer
+  // de note ne veut pas dire qu'on ne vise plus rien.
+  if (_expectedMidi > 0) _pitch.setExpectedMidiNote(_expectedMidi);
+  // Les verdicts portaient sur la note precedente.
+  _classification = AcousticClassification();
+  _quality = QualityScore();
+  // AcousticTiming n'est deliberement PAS remise a zero : son cycle commence a
+  // noteCommanded() et se termine a noteReleased(), tous deux emis par la
+  // chaine d'actionneurs. L'effacer ici depuis le chemin d'ANALYSE perdrait la
+  // note en cours de mesure.
+}
+
+const char* AudioAnalyzer::getAcousticStateName() const {
+  // `classified` faux signifie qu'AUCUN verdict n'a pu etre rendu : `state`
+  // garde alors sa valeur par defaut (ACOUSTIC_SILENCE), qui se lirait comme
+  // une mesure - "il n'y a pas de son" - alors qu'elle ne dit rien.
+  if (!_classification.classified) return "unclassified";
+  return AcousticQuality::stateName(_classification.state);
 }
 
 void AudioAnalyzer::setExpectedMidiNote(int midi) {
@@ -377,6 +448,85 @@ void AudioAnalyzer::analyzeFrame() {
   _features.snrUsedFallback = snr.usedFallback;
   _features.snrDb = snr.valid ? snr.db : 0.0f;
   _features.noiseProfile = (uint8_t)_noiseProfileId;
+}
+
+/*----------------------------------------------------------------------------
+ * PHASE 6 et 7 - classification, note de qualite, chronometrie
+ *
+ * UN CONTEXTE HONNETE, CHAMP PAR CHAMP
+ * ------------------------------------
+ * AcousticQuality ne devine rien de ce qu'AcousticFeatures ne porte pas : il
+ * demande a l'appelant de le DIRE. Cette fonction est donc le seul endroit du
+ * firmware qui sait, pour une frame donnee, ce qui a reellement ete mesure sur
+ * elle - et le seul endroit ou l'on peut mentir sans que rien ne le detecte.
+ * Chaque champ ci-dessous est pris a sa source, jamais reconstruit.
+ *
+ * COUT, par frame analysee (62,5 par seconde)
+ * -------------------------------------------
+ * huit Goertzel de 1024 points pour la respiration (~8 % de YIN), deux pour
+ * l'overblow (~2 %), 2n operations pour la brillance (~2 %), le reste etant de
+ * la comparaison de seuils. Ce sont des COMPTES D'OPERATIONS, pas des mesures
+ * sur materiel : rien n'a jamais tourne sur un ESP32 dans ce projet.
+ *--------------------------------------------------------------------------*/
+
+void AudioAnalyzer::analyzeAcoustics() {
+  AcousticContext ctx;
+  ctx.expectedMidi = _expectedMidi;
+
+  // FRAICHEUR DE LA FFT. `fftValid` est remis a faux en tete de chaque
+  // fillSpectral() et n'est releve que lorsque computeSpectrum() a REELLEMENT
+  // tourne sur cette frame-ci. analyzeSpectrum(), lui, ne lance la FFT qu'une
+  // frame sur MIC_SPECTRAL_DECIMATION, soit toutes les 64 ms. Annoncer un
+  // contexte frais a chaque frame ferait juger la respiration - et, faute de
+  // PCM, la brillance - sur un centroide et une platitude vieux de trois
+  // frames. C'est le drapeau du constructeur de descripteurs qui fait foi,
+  // jamais une hypothese locale sur la decimation.
+  ctx.fftFresh = _features.fftValid;
+
+  // HISTORIQUE DE PITCH. `pitchStability` vaut 0 tant que l'historique n'est
+  // pas rempli ET 0 pour une note franchement instable : les deux cas sont
+  // indiscernables dans le champ lui-meme. `stabilityValid` vient de
+  // PitchResult::stabilityValid, propage tel quel par fillPitch() ; sans lui,
+  // chaque debut de note serait classe ACOUSTIC_UNSTABLE.
+  ctx.stabilityMeasured = _features.stabilityValid;
+
+  // PCM DE LA FRAME COURANTE. Indispensable, et pas seulement utile :
+  // evaluateOverblow mesure la puissance a la note VISEE et a son octave,
+  // alors que les harmoniques deja rangees dans _features sont ancrees sur la
+  // frequence DETECTEE - c'est-a-dire sur l'octave elle-meme pendant un
+  // overblow, ou le critere ne verrait donc plus rien. Sans ce pointeur,
+  // OverblowResult::valid reste faux et l'etat ACOUSTIC_OVERBLOW est
+  // inatteignable. _frame contient encore la frame que analyzeFrame() vient de
+  // traiter : ni detect() ni les mesures spectrales ne le modifient.
+  ctx.frame = _frame;
+  ctx.frameSize = MIC_ANALYSIS_FRAME_SIZE;
+  ctx.sampleRate = (float)MIC_SAMPLE_RATE;
+
+  // classify() fait AVANCER la machine a couac a chaque frame - c'est son
+  // historique qui distingue un accident bref d'un defaut installe - et range
+  // dans son resultat la respiration qu'elle a calculee au passage.
+  _classification = AcousticQuality::classify(_features, ctx, &_squeak);
+
+  // La respiration est REPRISE de la classification, pas recalculee :
+  // computeBreathiness est une fonction pure, la rappeler avec les memes
+  // entrees rendrait exactement le meme resultat pour huit Goertzel de plus
+  // par frame. getBreathiness() expose cette mesure-la.
+  //
+  // QUALITE D'ATTAQUE : la sentinelle, volontairement. La PHASE 7 mesure des
+  // DUREES en millisecondes ; la note de qualite attend une valeur 0..1. Aucun
+  // seuil de ce projet ne dit quelle duree d'attaque vaut 1, et en inventer un
+  // ici ferait passer un reglage de gout pour une mesure. La composante reste
+  // donc ABSENTE et QualityScore::weightUsed le dit - c'est exactement a quoi
+  // sert ce champ.
+  _quality = AcousticQuality::computeAcousticQuality(_features, ctx,
+                                                     _classification.breathiness,
+                                                     AQ_ATTACK_NOT_MEASURED);
+
+  // PHASE 7. Flux a SENS UNIQUE : l'analyse alimente la chronometrie, et rien
+  // ici ne lit ses verdicts pour decider quoi que ce soit. Les instants
+  // d'ORDRE (noteCommanded, airCommanded, valveOpened, noteReleased) lui
+  // viennent de la chaine d'actionneurs, jamais de l'analyse.
+  _timing.update(AcousticTiming::fromFeatures(_features));
 }
 
 void AudioAnalyzer::setAirSourceState(uint8_t airMode, uint8_t pumpPercent,

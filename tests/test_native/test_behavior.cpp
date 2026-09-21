@@ -13,6 +13,7 @@
 #include "AirflowController.h"
 #include "NoteSequencer.h"
 #include "InstrumentManager.h"
+#include "AcousticTiming.h"
 #include "IAudioSource.h"
 #include "ICalibrationAirSupply.h"
 #include "CalibrationAirSupply.h"
@@ -26,6 +27,7 @@
 #include "MidiFilePlayer.h"
 #undef private
 #include <cmath>
+#include <cstdio>
 #include <vector>
 #include <string>
 extern std::map<uint8_t,int> __analog_writes, __digital_writes, __analog_reads, __digital_reads;
@@ -1205,6 +1207,334 @@ static void midi_unsupported_formats_rejected(){
   assert(p3.getLoadError()==MIDI_LOAD_ERR_SMPTE);
 }
 
+// ===================== PHASE 7 : chronometrie acoustique =====================
+//
+// AcousticTiming mesure la latence entre un ORDRE et le SON qui en resulte. Le
+// cote SON lui vient de l'analyseur audio ; le cote ORDRE vient d'ici, de la
+// chaine d'actionneurs. Deux proprietes se testent, et les deux comptent :
+//
+//   A. l'observateur est OPTIONNEL et le flux est a SENS UNIQUE. La chaine
+//      NOTIFIE, elle ne LIT jamais. Aucune decision d'actionneur ne depend de
+//      la valeur rendue par un hook ni de la presence de l'observateur.
+//   B. les quatre instants sont poses la ou l'ordre agit REELLEMENT sur un
+//      actionneur, pas la ou un message MIDI arrive. Une note refusee ou
+//      remplacee doit produire la notification juste, ou aucune.
+
+// Configuration commune : mode a valve physique, trois notes jouables, fenetre
+// de positionnement et duree minimale explicites (aucune valeur implicite ne
+// doit pouvoir faire passer un test pour une mauvaise raison).
+static void timingCfg(){
+  resetCfg();
+  cfg.airMode=AIR_MODE_PUMP_VALVE; cfg.valveType=0;
+  cfg.pumpFollowAirflow=true; cfg.pumpDirectMaxPercent=100; cfg.pumpDirectIdlePercent=10;
+  cfg.numNotes=3;
+  for(int i=0;i<3;i++){ cfg.notes[i].midiNote=(uint8_t)(60+i); cfg.notes[i].airflowMinPercent=0; cfg.notes[i].airflowMaxPercent=100; cfg.notes[i].airflowNominalPercent=50; }
+  cfg.servoToSolenoidDelayMs=10; cfg.minNoteDurationMs=100; cfg.minNoteIntervalForValveCloseMs=0;
+  extern WireClass Wire; Wire.clear(); Wire.setPresent(PCA_ADDR_BOARD0,true);
+  __test_millis=0;
+}
+
+// Une frame d'analyse synthetique, a l'instant courant.
+static TimingFrame timingFrameAt(unsigned long ms, float db, bool pitchOk){
+  TimingFrame f; f.timestampMs=(uint32_t)ms; f.rmsDbFS=db;
+  f.pitchValid=pitchOk; f.pitchHz=pitchOk?261.63f:0.0f; return f;
+}
+
+// Signature COMPLETE de ce que la mecanique a fait a cet instant : etat du
+// sequenceur, valve, angles reellement ecrits sur les servos, niveau de commande
+// du solenoide (PWM et TOR), demande de pompe, nombre total d'ecritures PWM,
+// niveau de l'OE des servos. Deux scenarios identiques doivent produire deux
+// traces identiques caractere pour caractere - la forme la plus stricte de
+// "comportement inchange".
+static std::string timingTraceStep(InstrumentManager& im){
+  extern int __pwm_write_count;
+  char buf[224];
+  snprintf(buf,sizeof(buf),"s%d v%d a%u b%u g%u solA%d solD%d pump%u fan%u pwm%d oe%d|",
+           (int)im.getSequencer().getState(),
+           im.getAirflowCtrl().isValveOpen()?1:0,
+           (unsigned)im.getAirflowCtrl().getAirflowAngle(),
+           (unsigned)im.getAirflowCtrl().getBaseAirflowAngle(),
+           (unsigned)im.getAirflowCtrl().getAngleServoAngle(),
+           __analog_writes[cfg.solenoidPin],
+           __digital_writes[cfg.solenoidPin],
+           (unsigned)im.getPressureCtrl().getTargetPercent(),
+           (unsigned)im.getFanCtrl().getSpeed(),
+           __pwm_write_count,
+           __digital_writes[PIN_SERVOS_OFF]);
+  return std::string(buf);
+}
+
+// Moteur audio qui DERAILLE : remises a zero en pleine note, ordres inventes,
+// et un ordre de note date dans le futur - qui fait REFUSER (return false) tous
+// les hooks suivants. C'est le cas degrade du cahier des charges : un
+// AcousticTiming fige ou plante ne doit rien changer a la mecanique.
+static void timingDisturb(AcousticTiming* t, int step){
+  if (t == nullptr) return;
+  switch (step % 5) {
+    case 0: t->reset(); break;
+    case 1: (void)t->noteReleased(millis()); break;
+    case 2: t->noteCommanded(millis()+100000UL); break;   // ordre fantome
+    case 3: (void)t->airCommanded(millis()); break;
+    case 4: (void)t->valveOpened(millis()); break;
+  }
+}
+
+// Scenario d'instrument complet, joue a l'identique quel que soit l'observateur :
+// note hors plage, note nominale, Control Change sur note tenue, remplacement
+// monophonique, note plus courte que la duree minimale, panic de transport,
+// prise de possession par le calibrateur, All Sound Off.
+static std::string timingScenario(AcousticTiming* obs, void (*disturb)(AcousticTiming*,int)){
+  timingCfg();
+  extern int __pwm_write_count;
+  __pwm_write_count=0; __digital_writes.clear(); __analog_writes.clear();
+  InstrumentManager im;
+  assert(im.beginSafe());
+  im.setTimingObserver(obs);
+  assert(im.timingObserver()==obs);
+  std::string tr;
+  int step=0;
+  auto tick=[&](){ if(disturb) disturb(obs,step++); im.update(); tr+=timingTraceStep(im); };
+
+  tr += timingTraceStep(im);                              // etat initial
+  im.noteOn(99,100); tick(); tick();                      // hors plage : refusee
+  im.noteOn(60,100); tick();                              // POSITIONING
+  __test_millis+=cfg.servoToSolenoidDelayMs; tick();      // air + valve
+  __test_millis+=50; tick();
+  im.handleControlChange(11,64); tick();                  // CC sur note tenue
+  __test_millis+=50; im.noteOn(62,100); tick();           // remplacement monophonique
+  __test_millis+=cfg.servoToSolenoidDelayMs; tick();
+  __test_millis+=20; im.noteOff(62); tick();              // plus courte que minNoteDuration
+  for(int i=0;i<6;i++){ __test_millis+=30; tick(); }      // arret differe puis IDLE
+  im.noteOn(61,100); tick();
+  __test_millis+=cfg.servoToSolenoidDelayMs; tick();
+  im.handleTransportLost(); tick();                       // panic : transport perdu
+  __test_millis+=20; tick();
+  im.setActuatorSessionActive(true); tick();              // le calibrateur prend la main
+  im.noteOn(60,100); __test_millis+=20; tick();           // MIDI ignore pendant la session
+  im.setActuatorSessionActive(false); tick();
+  im.allSoundOff(); tick();
+  return tr;
+}
+
+// TEST 1. SANS observateur, le comportement est STRICTEMENT inchange - et il
+// l'est aussi avec un observateur present, ou avec un observateur qui deraille.
+// Le test compare des traces d'actionneurs completes : si un hook pouvait
+// influencer une decision d'actionneur (par exemple fermer la valve parce que
+// valveOpened() a rendu false), les traces divergeraient.
+static void timing_observer_cannot_touch_actuators(){
+  const std::string without = timingScenario(nullptr, nullptr);
+  AcousticTiming t1; const std::string present = timingScenario(&t1, nullptr);
+  AcousticTiming t2; const std::string hostile = timingScenario(&t2, timingDisturb);
+  assert(present == without);
+  assert(hostile == without);
+  // ANTI-VACUITE : sans cela le test comparerait deux scenarios ou l'observateur
+  // ne recoit rien, et ne prouverait rigoureusement rien.
+  assert(t1.hasLast());
+  assert(t1.last().hasNoteCommand && t1.last().hasAirCommand && t1.last().hasValveOpen);
+  assert(t1.last().hasReleaseCommand);
+  // Le scenario nominal ne produit AUCUN ordre hors sequence : les quatre hooks
+  // sont poses a des instants que la machine a etats accepte.
+  assert(t1.rejectedEvents()==0);
+  // Le scenario se termine par un panic de transport, une prise de possession
+  // par le calibrateur et un All Sound Off : plus AUCUNE note ne doit rester
+  // suivie. Sans la notification d'arret de NoteSequencer::stop(), la note
+  // coupee par le panic resterait armee jusqu'au plafond de 60 s de la machine
+  // a etats, et la note suivante serait datee par rapport a elle.
+  assert(!t1.active());
+  // L'observateur maltraite a bien ete maltraite (il a refuse des ordres), ce
+  // qui confirme que la variante "hostile" a exerce le chemin degrade.
+  assert(t2.rejectedEvents()>0);
+}
+
+// TEST 2. La sequence nominale produit les QUATRE notifications, dans l'ordre,
+// et aux bons instants : l'ordre de note quand le sequenceur demarre vraiment la
+// note (pas a l'arrivee du message MIDI), l'air et la valve a la fin de la
+// fenetre de positionnement, l'arret quand l'extinction est commandee.
+static void timing_nominal_reports_four_orders_in_order(){
+  timingCfg();
+  InstrumentManager im; assert(im.beginSafe());
+  AcousticTiming t; im.setTimingObserver(&t);
+  assert(im.timingObserver()==&t);
+  assert(!t.active() && !t.hasLast());
+
+  // 1. ORDRE DE NOTE. Le message MIDI n'est qu'un enfilement : rien n'est
+  //    chronometre tant que le sequenceur n'a pas demarre la note.
+  im.noteOn(60,100);
+  assert(!t.active());
+  im.update();
+  assert(im.getSequencer().getState()==STATE_POSITIONING);
+  assert(t.state()==TIMING_WAIT_ONSET);
+  assert(t.current().hasNoteCommand && !t.current().hasAirCommand && !t.current().hasValveOpen);
+  const uint32_t tCmd = t.current().noteCommandTimestamp;
+  assert(tCmd==(uint32_t)__test_millis);
+  assert(!im.getAirflowCtrl().isValveOpen());
+
+  // 2. et 3. CONSIGNE D'AIR puis VALVE, a la fin de la fenetre de positionnement.
+  __test_millis += cfg.servoToSolenoidDelayMs;
+  im.update();
+  assert(im.getSequencer().getState()==STATE_PLAYING && im.getAirflowCtrl().isValveOpen());
+  assert(t.current().hasAirCommand && t.current().hasValveOpen);
+  const uint32_t tAir = t.current().airCommandTimestamp;
+  const uint32_t tValve = t.current().valveOpenTimestamp;
+  assert(tAir == tCmd + cfg.servoToSolenoidDelayMs);
+  assert((int32_t)(tValve - tAir) >= 0);
+
+  // Le SON apparait. Les frames sont injectees a la main : ce test ne porte que
+  // sur le cote ORDRE, le cote son est cable ailleurs (AudioAnalyzer).
+  const unsigned long period = AcousticTimingCfg::kFramePeriodMs;
+  __test_millis += period;
+  const uint32_t tOnset = (uint32_t)__test_millis;
+  assert(t.update(timingFrameAt(__test_millis,-20.0f,true)));
+  for(int i=0;i<4;i++){
+    __test_millis += period;
+    assert(t.update(timingFrameAt(__test_millis,-20.0f,true)));
+    im.update();
+  }
+  assert(t.current().hasSoundOnset && t.current().soundOnsetTimestamp==tOnset);
+  assert(t.current().commandToSoundLatency.valid && t.current().airToSoundLatency.valid);
+  assert(t.current().commandToSoundLatency.ms == tOnset - tCmd);
+  assert(t.current().airToSoundLatency.ms == tOnset - tAir);
+  // L'ecart entre les deux latences vaut EXACTEMENT la fenetre de positionnement.
+  // C'est la preuve que les deux hooks sont poses a deux endroits distincts de la
+  // chaine : notifier l'air a l'arrivee du message MIDI rendrait cet ecart nul.
+  assert(t.current().commandToSoundLatency.ms - t.current().airToSoundLatency.ms
+         == cfg.servoToSolenoidDelayMs);
+
+  // 4. ORDRE D'ARRET, au moment ou il commande vraiment l'extinction.
+  __test_millis += 200;
+  const uint32_t tRel = (uint32_t)__test_millis;
+  im.noteOff(60); im.update();
+  assert(!im.getAirflowCtrl().isValveOpen());
+  assert(t.state()==TIMING_RELEASING);
+  assert(t.current().hasReleaseCommand && t.current().releaseCommandTimestamp==tRel);
+
+  // Le son s'eteint : la note se clot proprement.
+  for(int i=0;i<3;i++){ __test_millis += period; assert(t.update(timingFrameAt(__test_millis,-70.0f,false))); }
+  assert(!t.active() && t.hasLast());
+  const NoteTiming& L = t.last();
+  assert(L.outcome==TIMING_COMPLETE);
+  assert(L.hasNoteCommand && L.hasAirCommand && L.hasValveOpen && L.hasReleaseCommand);
+  assert((int32_t)(L.airCommandTimestamp - L.noteCommandTimestamp) >= 0);
+  assert((int32_t)(L.valveOpenTimestamp - L.airCommandTimestamp) >= 0);
+  assert((int32_t)(L.releaseCommandTimestamp - L.valveOpenTimestamp) > 0);
+  assert(L.releaseTime.valid);
+  assert(t.rejectedEvents()==0);
+  im.allSoundOff();
+}
+
+// TEST 3. Une note REFUSEE ne produit AUCUN noteCommanded(). Trois refus
+// distincts, tous en amont du sequenceur : calibration en cours, note hors
+// plage, PCA absent. Une note qui ne sonne pas ne doit pas entrer dans les
+// statistiques de latence, pas meme comme note sans son.
+static void timing_refused_note_is_never_commanded(){
+  // (a) Une session d'actionneurs (auto-calibration) possede la mecanique.
+  timingCfg();
+  InstrumentManager im; assert(im.beginSafe());
+  AcousticTiming t; im.setTimingObserver(&t);
+  im.setActuatorSessionActive(true);
+  im.noteOn(60,100);
+  for(int i=0;i<5;i++){ __test_millis+=20; im.update(); }
+  assert(im.getSequencer().getState()==STATE_IDLE);
+  assert(!t.active() && !t.hasLast());
+  assert(!t.current().hasNoteCommand);
+  // Rien n'a meme ete TENTE : aucun ordre hors sequence n'a ete envoye. Le
+  // sequenceur arrete par la prise de possession etait deja au repos.
+  assert(t.rejectedEvents()==0);
+
+  // (b) Note hors plage : refusee par isNotePlayable(), jamais enfilee.
+  im.setActuatorSessionActive(false);
+  im.noteOn(99,100);
+  for(int i=0;i<3;i++){ __test_millis+=20; im.update(); }
+  assert(im.getSequencer().getState()==STATE_IDLE);
+  assert(!t.active() && !t.hasLast() && t.rejectedEvents()==0);
+
+  // (c) Meme note, acceptee cette fois : le test (a)/(b) ne passe pas parce que
+  //     rien ne marche jamais.
+  im.noteOn(60,100); im.update();
+  assert(t.state()==TIMING_WAIT_ONSET);
+  im.allSoundOff();
+
+  // (d) PCA absent : l'instrument est inerte de bout en bout.
+  timingCfg();
+  { extern WireClass Wire; Wire.clear(); }
+  InstrumentManager dead;
+  assert(!dead.beginSafe());
+  assert(dead.hardwareInitStatus()==HW_PCA0_MISSING);
+  AcousticTiming t2; dead.setTimingObserver(&t2);
+  dead.noteOn(60,100); dead.noteOff(60);
+  for(int i=0;i<5;i++){ __test_millis+=50; dead.update(); }
+  dead.allSoundOff();
+  assert(dead.getSequencer().getState()==STATE_IDLE);
+  assert(!t2.active() && !t2.hasLast());
+  assert(!t2.current().hasNoteCommand);
+  assert(t2.rejectedEvents()==0);
+}
+
+// TEST 4. Remplacement monophonique : l'ancienne note est CLOSE avec son ordre
+// d'arret horodate, la nouvelle est ouverte, et les deux ne se chevauchent pas.
+// L'ancienne note a reellement sonne ici (frames injectees), pour exercer le
+// chemin ou la cloture arrive en pleine attaque et non depuis l'attente de son.
+static void timing_monophonic_replacement_closes_before_opening(){
+  timingCfg();
+  cfg.minNoteDurationMs=0;
+  InstrumentManager im; assert(im.beginSafe());
+  AcousticTiming t; im.setTimingObserver(&t);
+  const unsigned long period = AcousticTimingCfg::kFramePeriodMs;
+
+  im.noteOn(60,100); im.update();
+  const uint32_t cmd60 = t.current().noteCommandTimestamp;
+  __test_millis += cfg.servoToSolenoidDelayMs; im.update();
+  assert(t.current().hasAirCommand && t.current().hasValveOpen);
+  const uint32_t air60 = t.current().airCommandTimestamp;
+
+  // La note 60 sonne.
+  for(int i=0;i<3;i++){ __test_millis += period; assert(t.update(timingFrameAt(__test_millis,-20.0f,true))); im.update(); }
+  assert(t.current().hasSoundOnset);
+  const uint32_t onset60 = t.current().soundOnsetTimestamp;
+
+  // Remplacement : Note On de 62 alors que 60 tient encore.
+  __test_millis += 20;
+  const uint32_t swap = (uint32_t)__test_millis;
+  im.noteOn(62,100); im.update();
+  assert(im.getSequencer().getState()==STATE_POSITIONING);
+  assert(im.getSequencer().getCurrentNote()==62);
+
+  // L'ANCIENNE est close, avec son ordre d'arret : sans la notification de
+  // stopCurrentNoteForReplacement(), elle serait bien fermee par le
+  // noteCommanded() suivant mais sans jamais dater son arret.
+  assert(t.hasLast());
+  const NoteTiming old = t.last();
+  assert(old.outcome==TIMING_ABORTED);          // remplacee, pas terminee
+  assert(old.hasNoteCommand && old.noteCommandTimestamp==cmd60);
+  assert(old.hasAirCommand && old.airCommandTimestamp==air60);
+  assert(old.hasSoundOnset && old.soundOnsetTimestamp==onset60);
+  assert(old.hasReleaseCommand && old.releaseCommandTimestamp==swap);
+  assert(old.commandToSoundLatency.valid);
+  // Coupee avant tout palier de relachement : la duree d'extinction n'a pas ete
+  // mesuree et vaut donc INVALIDE, jamais zero.
+  assert(!old.releaseTime.valid);
+
+  // La NOUVELLE est ouverte, et ne reprend rien de l'ancienne.
+  assert(t.state()==TIMING_WAIT_ONSET);
+  assert(t.current().hasNoteCommand && t.current().noteCommandTimestamp==swap);
+  assert(!t.current().hasAirCommand && !t.current().hasValveOpen);
+  assert(!t.current().hasReleaseCommand && !t.current().hasSoundOnset);
+  assert(!t.current().commandToSoundLatency.valid);
+
+  // AUCUN CHEVAUCHEMENT : l'arret de l'ancienne ne suit pas le depart de la
+  // nouvelle, et une seule note est suivie a la fois.
+  assert((int32_t)(t.current().noteCommandTimestamp - old.releaseCommandTimestamp) >= 0);
+
+  // La nouvelle note suit ensuite son cycle normal : air et valve a la fin de sa
+  // propre fenetre de positionnement.
+  __test_millis += cfg.servoToSolenoidDelayMs; im.update();
+  assert(im.getAirflowCtrl().isValveOpen());
+  assert(t.current().hasAirCommand && t.current().hasValveOpen);
+  assert(t.current().airCommandTimestamp == swap + cfg.servoToSolenoidDelayMs);
+  assert(t.rejectedEvents()==0);
+  im.allSoundOff();
+}
+
 // General-Midi-Boop recognition tests (tests/test_native/test_gmb.cpp).
 void gmb_run_all_tests();
-int main(){ gmb_run_all_tests(); audit_run_all_tests(); audio_run_all_tests(); spectral_hnr_run_all_tests(); quality_run_all_tests(); timing_run_all_tests(); pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); airflow_nominal_drives_angle(); autocal_frozen_source_fails(); autocal_air_supply_gate(); autocal_14_notes_no_timeout(); autocal_plus70_cents_rejected(); autocal_storage_failure_restores(); autocal_range_finder(); autocal_range_finder_stale(); autocal_range_apply_storage(); autocal_air_lost_midnote(); calair_reservoir_requires_sensor(); instrument_power_held_during_actuator_session(); instrument_ignores_midi_during_calibration(); instrument_inert_after_pca_failure(); air_pump_demand_follows_real_note(); air_fan_speed_follows_replacement(); pump_enable_and_single_pump_test(); gpio_validation_reserved_and_conflicts(); tof_nonblocking_stale_safety(); tof_presence_is_not_initialisation(); autocal_global_timeout_scales_to_max_notes(); airflow_cc2_silence_and_live_cc(); airflow_attack_cancelled_on_rest(); airflow_cc2_timeout_on_held_note(); audio_yin_pcm_core(); audio_mic_classification(); note_sequencer_short_note_still_sounds(); instrument_transport_lost_panics(); angle_servo_enable_requires_restart(); midi_tempo_map_math(); midi_type1_global_tempo(); midi_type0_tempo_change_midtrack(); midi_truncation_rejected(); midi_unsupported_formats_rejected(); std::cout << "behavior tests passed\n"; }
+int main(){ gmb_run_all_tests(); audit_run_all_tests(); audio_run_all_tests(); spectral_hnr_run_all_tests(); quality_run_all_tests(); timing_run_all_tests(); pca_detection_safe_boot(); reservoir_autostart_behaviour(); cc73_does_not_mutate_persistent_cfg(); pressure_direct_pwm_once(); pressure_hall_pid_once_and_guards(); event_queue_cases(); note_sequencer_min_and_panic(); note_sequencer_monophonic_replacement(); fan_autonomous(); midi_validation_edges(); air_modes_paths(); autocal_pitch_conversions(); autocal_math_helpers(); autocal_config_nominal_validation(); autocal_integration_minmax_nominal(); autocal_keep_old_on_fail(); autocal_timeout_safe_stop(); autocal_mic_absent(); airflow_nominal_drives_angle(); autocal_frozen_source_fails(); autocal_air_supply_gate(); autocal_14_notes_no_timeout(); autocal_plus70_cents_rejected(); autocal_storage_failure_restores(); autocal_range_finder(); autocal_range_finder_stale(); autocal_range_apply_storage(); autocal_air_lost_midnote(); calair_reservoir_requires_sensor(); instrument_power_held_during_actuator_session(); instrument_ignores_midi_during_calibration(); instrument_inert_after_pca_failure(); air_pump_demand_follows_real_note(); air_fan_speed_follows_replacement(); pump_enable_and_single_pump_test(); gpio_validation_reserved_and_conflicts(); tof_nonblocking_stale_safety(); tof_presence_is_not_initialisation(); autocal_global_timeout_scales_to_max_notes(); airflow_cc2_silence_and_live_cc(); airflow_attack_cancelled_on_rest(); airflow_cc2_timeout_on_held_note(); audio_yin_pcm_core(); audio_mic_classification(); note_sequencer_short_note_still_sounds(); instrument_transport_lost_panics(); angle_servo_enable_requires_restart(); midi_tempo_map_math(); midi_type1_global_tempo(); midi_type0_tempo_change_midtrack(); midi_truncation_rejected(); midi_unsupported_formats_rejected(); timing_observer_cannot_touch_actuators(); timing_nominal_reports_four_orders_in_order(); timing_refused_note_is_never_commanded(); timing_monophonic_replacement_closes_before_opening(); std::cout << "behavior tests passed\n"; }

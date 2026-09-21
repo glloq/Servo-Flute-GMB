@@ -1026,22 +1026,126 @@ void timing_end_to_end_from_acoustic_features() {
   // L'adaptateur, verifie DIRECTEMENT et pas seulement en passant : une
   // frequence dans la plage accompagnee d'une confiance insuffisante est
   // exactement ce que YIN produit sur un transitoire d'attaque. La prendre
-  // pour un pitch daterait pitchDetectedTimestamp sur du bruit.
+  // pour un pitch daterait pitchDetectedTimestamp sur du bruit. Les
+  // descripteurs sont assembles par fillPitch(), comme en production : le
+  // verdict teste est donc bien celui du detecteur.
   {
     AcousticFeatures weak;
     weak.timestamp = 12345;
     weak.rmsDbFS = -20.0f;
-    weak.pitchHz = 587.33f;
-    weak.pitchConfidence = MIC_YIN_CONFIDENCE_MIN - 0.05f;
-    assert(!AcousticTiming::fromFeatures(weak).pitchValid);
 
-    weak.pitchConfidence = MIC_YIN_CONFIDENCE_MIN;
+    PitchResult p;
+    p.hz = 587.33f;
+    p.midi = PitchMath::hzToMidi(p.hz);
+    p.confidence = MIC_YIN_CONFIDENCE_MIN - 0.05f;
+    p.valid = false;                      // ce que runYin() conclut sous le seuil
+    AcousticFeatureBuilder::fillPitch(weak, p, true);
+    assert(!AcousticTiming::fromFeatures(weak).pitchValid);
+    assert(AcousticTiming::fromFeatures(weak).timestampMs == 12345);
+
+    p.confidence = MIC_YIN_CONFIDENCE_MIN;
+    p.valid = true;
+    AcousticFeatureBuilder::fillPitch(weak, p, true);
     assert(AcousticTiming::fromFeatures(weak).pitchValid);
+    assert(AcousticTiming::fromFeatures(weak).pitchHz == p.hz);
 
     // Aucune frequence : aucun pitch, quelle que soit la confiance annoncee.
-    weak.pitchHz = 0.0f;
-    weak.pitchConfidence = 1.0f;
+    p = PitchResult();
+    p.confidence = 1.0f;
+    AcousticFeatureBuilder::fillPitch(weak, p, true);
     assert(!AcousticTiming::fromFeatures(weak).pitchValid);
+  }
+}
+
+// ===========================================================================
+// 13b - Le verdict de pitch vient du DETECTEUR, il n'est pas reconstruit
+// ===========================================================================
+//
+// fromFeatures() reconstruisait `pitchValid` a partir de `pitchHz > 0` et de la
+// confiance, parce qu'AcousticFeatures ne portait pas encore le verdict du
+// detecteur. Il le porte, et la reconstruction a ete retiree.
+//
+// Les deux criteres coincident sur la chaine reelle - la reconstruction
+// s'appuyait sur un INVARIANT de runYin(), qui ne renseigne `hz` que dans
+// [MIC_PITCH_MIN_HZ, MIC_PITCH_MAX_HZ] - mais ils ne disent pas la meme chose :
+// la reconstruction ne teste pas la plage, elle la SUPPOSE. Presentee une
+// frequence repliee hors plage avec une bonne confiance, elle la declare
+// valide ; le drapeau, lui, porte le rejet du detecteur. C'est ce point-la que
+// ce test verrouille, puisque c'est le seul ou la simplification change
+// quelque chose.
+
+void timing_from_features_trusts_the_detector_verdict() {
+  // 1. Frequence HORS PLAGE avec une confiance parfaite. runYin() rejette (il
+  //    ne renseigne meme pas `hz`), mais un descripteur assemble autrement peut
+  //    tres bien porter ce couple : l'adaptateur doit suivre le drapeau.
+  {
+    AcousticFeatures f;
+    f.timestamp = 1000;
+    f.rmsDbFS = -20.0f;
+    f.pitchHz = 2.0f * MIC_PITCH_MAX_HZ;   // repliement, pas une note
+    f.pitchMidi = (int16_t)PitchMath::hzToMidi(f.pitchHz);
+    f.pitchConfidence = 1.0f;
+    f.pitchValid = false;
+    assert(!AcousticTiming::fromFeatures(f).pitchValid);
+
+    f.pitchHz = 0.5f * MIC_PITCH_MIN_HZ;   // sous la plage
+    f.pitchMidi = (int16_t)PitchMath::hzToMidi(f.pitchHz);
+    assert(!AcousticTiming::fromFeatures(f).pitchValid);
+  }
+
+  // 2. Un pitch valide reste valide, et sa frequence est propagee telle quelle.
+  {
+    AcousticFeatures f;
+    f.timestamp = 2000;
+    f.rmsDbFS = -20.0f;
+    f.pitchHz = 440.0f;
+    f.pitchMidi = 69;
+    f.pitchConfidence = 0.95f;
+    f.pitchValid = true;
+    const TimingFrame tf = AcousticTiming::fromFeatures(f);
+    assert(tf.pitchValid);
+    assert(tf.pitchHz == 440.0f);
+    assert(tf.timestampMs == 2000);
+    assert(tf.rmsDbFS == -20.0f);
+  }
+
+  // 3. IL N'Y A QU'UN CRITERE. Cette combinaison - validee par le detecteur
+  //    mais avec une confiance sous le seuil - ne sort jamais de la chaine
+  //    reelle ; elle est ici pour qu'aucune condition supplementaire ne puisse
+  //    etre rajoutee dans l'adaptateur sans casser ce test.
+  {
+    AcousticFeatures f;
+    f.timestamp = 3000;
+    f.pitchHz = 440.0f;
+    f.pitchMidi = 69;
+    f.pitchConfidence = MIC_YIN_CONFIDENCE_MIN - 0.5f;
+    f.pitchValid = true;
+    assert(AcousticTiming::fromFeatures(f).pitchValid);
+  }
+
+  // 4. Et la chaine REELLE reste d'accord avec elle-meme : sur un vrai signal,
+  //    le drapeau assemble par fillPitch() est exactement PitchResult::valid.
+  {
+    PitchDetector det;
+    std::vector<float> buf;
+    NoteEnvelope env;
+    env.f0 = 440.0f;
+    env.onsetMs = 0.0f;
+    env.riseMs = 1.0f;
+    int seen = 0, pitched = 0;
+    for (uint32_t ts = 100; ts <= 500u; ts += kHop) {
+      buildFrameSamples(buf, env, ts);
+      AcousticFeatures feat;
+      feat.timestamp = ts;
+      AcousticFeatureBuilder::fillLevel(feat, AudioLevel::compute(buf.data(), kN));
+      const PitchResult p = det.detect(buf.data(), kN);
+      AcousticFeatureBuilder::fillPitch(feat, p, feat.rms > MIC_RMS_ABSOLUTE_MIN);
+      assert(AcousticTiming::fromFeatures(feat).pitchValid == p.valid);
+      seen++;
+      if (p.valid) pitched++;
+    }
+    // Un test qui ne verrait que des frames sans pitch ne prouverait rien.
+    assert(seen > 10 && pitched > seen / 2);
   }
 }
 
@@ -1136,6 +1240,7 @@ void timing_run_all_tests() {
   timing_interpolation_beats_frame_quantisation();
   timing_window_smearing_is_measured_and_bounded();
   timing_end_to_end_from_acoustic_features();
+  timing_from_features_trusts_the_detector_verdict();
   timing_baseline_fallback_is_explicit();
   timing_isolated_frame_is_not_an_onset();
 }

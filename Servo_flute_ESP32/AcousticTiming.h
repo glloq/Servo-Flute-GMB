@@ -355,8 +355,10 @@ public:
   // Injecte UNE frame. Rend false si la frame est refusee (temps qui recule).
   bool update(const TimingFrame& f);
 
-  // Adaptateur depuis la chaine audio. `pitchValid` y est reconstruit selon le
-  // meme critere que PitchResult::valid, qu'AcousticFeatures n'expose pas.
+  // Adaptateur depuis la chaine audio. `pitchValid` est le verdict du
+  // DETECTEUR, propage tel quel par AcousticFeatures : un seul critere, defini
+  // a un seul endroit. Voir le corps de la fonction pour ce que la
+  // reconstruction precedente laissait passer.
   static TimingFrame fromFeatures(const AcousticFeatures& f);
 
   // --- Resultats ------------------------------------------------------------

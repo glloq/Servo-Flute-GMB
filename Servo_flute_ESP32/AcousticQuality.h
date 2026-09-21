@@ -119,10 +119,37 @@ constexpr float AQ_UNSTABLE_STABILITY = 0.60f;
 
 // --- Respiration (breathiness) ----------------------------------------------
 
-// Bornes de la composante "rapport harmonique / bruit". 20 dB : mesure sur une
-// note flute propre (HNR releve entre 22 et 25 dB sans souffle ajoute). 0 dB :
-// l'energie harmonique et le residu sont a egalite, il n'y a plus de timbre.
-constexpr float AQ_BREATH_HNR_TONE_DB  = 20.0f;
+// Bornes de la composante "rapport harmonique / bruit".
+//
+// CES DEUX BORNES DECRIVENT LA MESURE SPECTRALE, PAS L'APPROXIMATION GOERTZEL.
+// Les valeurs precedentes (20 dB / 0 dB) etaient calibrees sur l'approximation
+// a quatre raies, qui compte les harmoniques au-dessus du 4e rang comme du
+// bruit et plafonne donc vers 22-25 dB sur une note propre. La mesure spectrale
+// (SpectralAnalyzer::harmonicNoiseRatio) monte a la borne MIC_HNR_MAX_DB sur la
+// meme note : garder 20 dB reviendrait a declarer "sans aucun souffle" une note
+// dont le bruit vaut deja 12 % de la fondamentale. C'est pourquoi la composante
+// n'est calculee QUE si AcousticFeatures::hnrIsSpectral est vrai : sur l'autre
+// echelle ces bornes ne veulent rien dire.
+//
+// 34 dB : releve sur fluteLike(440 Hz, amp 0,40) - 40,00 dB sans souffle,
+// 39,79 dB a souffle 0,005, 33,82 dB a souffle 0,010. Ce dernier point est
+// aussi celui ou la platitude spectrale atteint AQ_BREATH_FLATNESS_TONE
+// (0,1178 mesure pour un seuil a 0,10) : les deux composantes declarent donc
+// "plus de souffle du tout" au meme endroit, au lieu de se contredire.
+// MESURE SUR PCM SYNTHETIQUE - a reverifier sur microphone reel, ou le plancher
+// de la piece et le bruit de la pompe interdiront probablement d'atteindre
+// 34 dB sur une note pourtant propre.
+constexpr float AQ_BREATH_HNR_TONE_DB  = 34.0f;
+
+// 0 dB : la valeur ne change pas, sa SIGNIFICATION si. Sur la mesure spectrale
+// elle est litterale - l'energie des raies egale l'energie du plancher de bruit
+// etendu a toute la bande analysee, il n'y a plus de timbre qui domine. Sur
+// l'ancienne approximation elle disait seulement que les quatre raies mesurees
+// portaient la moitie de la puissance, ce qui arrive aussi sur une note tres
+// timbree sans le moindre souffle. Releve sur les memes signaux : souffle 0,200
+// donne +8,25 dB, du bruit blanc pur donne -13,00 dB ; la borne est donc bien
+// au-dela de la note la plus soufflee dont le pitch survive, et en deca du
+// bruit pur. MESURE SUR PCM SYNTHETIQUE - a reverifier sur microphone reel.
 constexpr float AQ_BREATH_HNR_NOISE_DB = 0.0f;
 
 // Bornes de la composante "platitude spectrale". Releve sur les memes signaux :
@@ -241,9 +268,19 @@ constexpr float AQ_QUALITY_CENTS_REF = 50.0f;
 constexpr float AQ_QUALITY_SNR_REF_DB = 24.0f;
 
 // Bornes de la composante "qualite harmonique" (HNR). Memes reperes mesures que
-// pour la respiration.
+// pour la respiration, et meme condition : la composante n'est calculee que si
+// AcousticFeatures::hnrIsSpectral est vrai.
+//
+// 34 dB au lieu de 20 : avec l'ancienne borne, une note dont le souffle vaut
+// 12 % de la fondamentale mesure 20,12 dB et sature donc la composante a 1,00 -
+// exactement la meme note de qualite harmonique qu'une note sans aucun souffle
+// a 40,00 dB. La composante ne discriminait plus rien sur toute la plage utile.
+// A 34 dB, ces deux notes donnent 0,59 et 1,00. Releve sur fluteLike(440 Hz,
+// amp 0,40) : souffle 0,010 -> 33,82 dB ; 0,020 -> 28,11 dB ; 0,050 -> 20,12 dB ;
+// 0,100 -> 14,04 dB ; 0,200 -> 8,25 dB.
+// MESURE SUR PCM SYNTHETIQUE - a reverifier sur microphone reel.
 constexpr float AQ_QUALITY_HNR_MIN_DB  = 0.0f;
-constexpr float AQ_QUALITY_HNR_GOOD_DB = 20.0f;
+constexpr float AQ_QUALITY_HNR_GOOD_DB = 34.0f;
 
 // Valeur SENTINELLE de la qualite d'attaque. La PHASE 7 (analyse temporelle) ne
 // l'a pas encore mesuree et ce fichier ne l'invente pas : tant qu'elle vaut
@@ -291,6 +328,9 @@ struct BreathinessResult {
   bool valid = false;
   float value = 0.0f;            // 0 = son pur et timbre, 1 = essentiellement du souffle
   float weightUsed = 0.0f;       // somme des poids des composantes reellement mesurees
+  // Faux aussi quand le HNR disponible vient de l'approximation Goertzel :
+  // AcousticFeatures::hnrIsSpectral est exige, car les bornes de la composante
+  // decrivent la mesure spectrale et elle seule.
   bool usedHnr = false;
   bool usedInterHarmonic = false;
   bool usedFlatness = false;
@@ -409,6 +449,8 @@ struct QualityScore {
   bool stabilityMeasured = false;
   bool confidenceMeasured = false;
   bool snrMeasured = false;
+  // Faux quand le HNR disponible n'est pas la mesure spectrale : voir
+  // AQ_QUALITY_HNR_GOOD_DB et AcousticFeatures::hnrIsSpectral.
   bool harmonicMeasured = false;
   bool breathMeasured = false;
   bool attackMeasured = false;

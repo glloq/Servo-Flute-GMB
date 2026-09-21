@@ -110,6 +110,10 @@ AcousticFeatures healthyFeatures() {
   f.h2Ratio = 0.09f;
   f.h3Ratio = 0.01f;
   f.harmonicToNoiseRatio = 24.0f;
+  // Le HNR d'une frame saine vient de la MESURE spectrale : les seuils
+  // AQ_BREATH_HNR_* et AQ_QUALITY_HNR_GOOD_DB ne decrivent que cette
+  // echelle-la, et la composante est absente sans ce drapeau.
+  f.hnrIsSpectral = true;
   f.spectralCentroid = 650.0f;
   f.spectralFlatness = 0.02f;
   f.snrValid = true;
@@ -203,7 +207,13 @@ void quality_breathiness_is_monotone() {
     Rig rig;
     AcousticFeatures f;
     AcousticContext ctx;
-    // Quatre frames pour que la FFT tombe au moins une fois sur la derniere.
+    // Quatre frames, et la FFT tombe sur la PREMIERE (decimation 0) : la
+    // derniere frame n'a donc ni platitude fraiche ni HNR spectral, et cette
+    // boucle exerce la seule composante inter-partiels - celle qui survit
+    // jusqu'au bout du balayage, quand le pitch a lache et que les deux
+    // autres composantes ont disparu. La monotonie des trois composantes
+    // ensemble, sur la plage ou le pitch tient, est verrouillee separement par
+    // quality_breathiness_rises_with_breath_on_the_spectral_scale().
     for (int i = 0; i < 4; i++) {
       goodNote(buf, 440.0f, breath, (size_t)i * kFrame);
       f = rig.analyse(buf.data(), kFrame, kMidiA4);
@@ -301,6 +311,479 @@ void quality_breathiness_refuses_what_it_cannot_measure() {
     assert(!b.valid);
   }
 }
+
+// ===========================================================================
+// 6.2 bis - Recalibrage des seuils HNR sur la MESURE spectrale
+//
+// AcousticFeatures::harmonicToNoiseRatio est rempli par deux mesures qui ne
+// sont PAS sur la meme echelle : la mesure spectrale (spectre FFT complet,
+// fenetres de raies + plancher median) quand la FFT a tourne sur la frame, et
+// l'approximation Goertzel a quatre raies sinon. Les trois seuils
+// AQ_BREATH_HNR_TONE_DB, AQ_BREATH_HNR_NOISE_DB et AQ_QUALITY_HNR_GOOD_DB
+// etaient calibres sur la seconde. Ces tests etablissent la plage reelle de la
+// premiere, verrouillent les seuils dessus, et echouent si on remet les
+// anciens.
+//
+// TOUTES CES VALEURS SONT MESUREES SUR DU PCM SYNTHETIQUE. Elles valident le
+// traitement du signal, pas le comportement acoustique d'une flute : sur un
+// microphone reel, le plancher de la piece et le bruit de la pompe les
+// deplaceront, et le recalibrage sera a refaire.
+//
+// TOUT CE BLOC EXIGE LA FFT. Sans elle il n'y a pas de mesure spectrale du
+// tout : `hnrIsSpectral` ne devient jamais vrai, la composante HNR est
+// absente partout, et il n'y a plus rien a calibrer. Le dire vaut mieux qu'une
+// suite verte qui n'a rien execute.
+// ===========================================================================
+#if MIC_FFT_ENABLED
+
+// Composantes de reference, recalculees ICI a partir des seuils. Les tests
+// comparent la valeur rendue par le firmware a cette arithmetique, de sorte
+// qu'un changement de seuil se voie immediatement.
+float breathHnrComponent(float db) {
+  return clampRef((db - AQ_BREATH_HNR_TONE_DB) /
+                  (AQ_BREATH_HNR_NOISE_DB - AQ_BREATH_HNR_TONE_DB));
+}
+float qualityHnrComponent(float db) {
+  return clampRef((db - AQ_QUALITY_HNR_MIN_DB) /
+                  (AQ_QUALITY_HNR_GOOD_DB - AQ_QUALITY_HNR_MIN_DB));
+}
+
+// Analyse `frames` frames consecutives et rend la DERNIERE. `frames` est
+// choisi pour que la derniere retombe sur une frame FFT (decimation 0 modulo
+// MIC_SPECTRAL_DECIMATION), sans quoi le HNR rendu serait celui de
+// l'approximation Goertzel et non la mesure que ces seuils decrivent.
+constexpr int kFramesEndingOnFft = MIC_SPECTRAL_DECIMATION + 1;
+
+AcousticFeatures sustainedNote(Rig& rig, std::vector<float>& buf, float f0, float breath,
+                               int midi, AcousticContext& ctxOut) {
+  AcousticFeatures f;
+  for (int i = 0; i < kFramesEndingOnFft; i++) {
+    audiosig::fluteLike(buf.data(), buf.size(), f0, 0.4f, breath, kFs, (size_t)i * buf.size());
+    f = rig.analyse(buf.data(), buf.size(), midi);
+    ctxOut = rig.context(buf.data(), buf.size(), midi);
+  }
+  return f;
+}
+
+// ---------------------------------------------------------------------------
+// Generateur de note TIMBREE
+//
+// audio_signals.h s'arrete a la 4e harmonique : c'est precisement le point
+// aveugle a exercer. Il faut H5..H8 pour construire une note dont l'energie
+// vit au-dessus de ce que les quatre raies de Goertzel mesurent. Le generateur
+// reste local plutot que dans audio_signals.h, qui est partage.
+// ---------------------------------------------------------------------------
+constexpr int kRichPartials = 8;
+
+struct RichTone {
+  float f0 = 0.0f;
+  float partial[kRichPartials] = {};   // amplitudes ABSOLUES de H1..H8
+  float noise = 0.0f;
+  uint32_t seed = 4242u;
+};
+
+void fillRich(float* buf, size_t n, const RichTone& s, size_t startSample = 0) {
+  audiosig::Lcg rng(s.seed + (uint32_t)startSample);
+  for (size_t i = 0; i < n; i++) {
+    const float t = (float)(startSample + i) / kFs;
+    float v = 0.0f;
+    for (int k = 0; k < kRichPartials; k++) {
+      if (s.partial[k] == 0.0f) continue;
+      v += s.partial[k] * sinf(2.0f * audiosig::kPi * s.f0 * (float)(k + 1) * t);
+    }
+    if (s.noise > 0.0f) v += s.noise * rng.bipolar();
+    buf[i] = v;
+  }
+}
+
+// Reproduction EXACTE de l'approximation Goertzel de AcousticFeatures, gardee
+// ici pour servir de temoin : un test de non-regression ne doit pas mesurer sa
+// reference a travers le code qu'il surveille.
+float legacyHnrDb(const float* x, size_t n, float f0) {
+  const HarmonicEnergies h = SpectralAnalyzer::harmonics(x, n, f0, kFs);
+  if (!h.valid) return 0.0f;
+  const float total = SpectralAnalyzer::totalPower(x, n);
+  const float harmonic = 2.0f * h.harmonicTotal;
+  const float residual = (total > harmonic) ? (total - harmonic) : 0.0f;
+  float db = 0.0f;
+  if (residual > 1e-12f && harmonic > 0.0f) db = 10.0f * log10f(harmonic / residual);
+  else if (harmonic > 0.0f) db = MIC_HNR_MAX_DB;
+  if (db > MIC_HNR_MAX_DB) db = MIC_HNR_MAX_DB;
+  if (db < -MIC_HNR_MAX_DB) db = -MIC_HNR_MAX_DB;
+  return db;
+}
+
+AcousticFeatures sustainedRich(Rig& rig, std::vector<float>& buf, const RichTone& t, int midi,
+                               AcousticContext& ctxOut) {
+  AcousticFeatures f;
+  for (int i = 0; i < 2 * MIC_SPECTRAL_DECIMATION + 1; i++) {
+    fillRich(buf.data(), buf.size(), t, (size_t)i * buf.size());
+    f = rig.analyse(buf.data(), buf.size(), midi);
+    ctxOut = rig.context(buf.data(), buf.size(), midi);
+  }
+  return f;
+}
+
+// Note TRES TIMBREE de reference : fondamentale moderee, H2..H8 fortes, souffle
+// minime. C'est le cas que l'approximation Goertzel punit, puisque H5..H8
+// tombent hors de ses quatre raies et sont donc comptees comme du bruit.
+RichTone timbredReference(float f0) {
+  RichTone t;
+  t.f0 = f0;
+  t.partial[0] = 0.20f; t.partial[1] = 0.28f; t.partial[2] = 0.30f;
+  t.partial[3] = 0.30f; t.partial[4] = 0.32f; t.partial[5] = 0.30f;
+  t.partial[6] = 0.26f; t.partial[7] = 0.22f;
+  t.noise = 0.02f;
+  return t;
+}
+
+// Plage reelle prise par le HNR spectral sur les generateurs deterministes.
+// Le tableau est IMPRIME : c'est lui qui justifie les trois seuils, et il doit
+// rester lisible dans la sortie de la suite pour qu'on puisse le comparer, plus
+// tard, a un releve sur microphone.
+void quality_hnr_scale_is_the_one_the_thresholds_describe() {
+  std::vector<float> buf(kFrame);
+
+  printf("  [hnr-calib] plage du HNR SPECTRAL sur PCM synthetique "
+         "(fluteLike 440 Hz, amp 0,40 ; %d frames, la derniere avec FFT)\n",
+         kFramesEndingOnFft);
+  printf("  [hnr-calib] %-26s %9s %9s %9s %9s\n",
+         "signal", "HNR (dB)", "breath", "compo_br", "compo_q");
+
+  // Sinus pur : rien a mesurer comme bruit, la mesure est bornee.
+  {
+    Rig rig;
+    AcousticFeatures f;
+    AcousticContext ctx;
+    for (int i = 0; i < kFramesEndingOnFft; i++) {
+      audiosig::pureTone(buf.data(), kFrame, 440.0f, 0.4f, kFs, (size_t)i * kFrame);
+      f = rig.analyse(buf.data(), kFrame, kMidiA4);
+      ctx = rig.context(buf.data(), kFrame, kMidiA4);
+    }
+    assert(f.hnrIsSpectral);
+    assert(f.harmonicToNoiseRatio == MIC_HNR_MAX_DB);
+    printf("  [hnr-calib] %-26s %9.2f %9s %9.3f %9.3f\n", "sinus pur",
+           (double)f.harmonicToNoiseRatio, "-",
+           (double)breathHnrComponent(f.harmonicToNoiseRatio),
+           (double)qualityHnrComponent(f.harmonicToNoiseRatio));
+  }
+
+  // Balayage du souffle sur une note harmonique.
+  const float kSweep[] = {0.0f, 0.010f, 0.020f, 0.050f, 0.100f, 0.200f};
+  float measured[sizeof(kSweep) / sizeof(kSweep[0])] = {};
+  for (size_t i = 0; i < sizeof(kSweep) / sizeof(kSweep[0]); i++) {
+    Rig rig;
+    AcousticContext ctx;
+    const AcousticFeatures f = sustainedNote(rig, buf, 440.0f, kSweep[i], kMidiA4, ctx);
+    // Chaque point DOIT porter la mesure spectrale : un seuil calibre sur une
+    // echelle ne se verifie pas sur des points mesures sur l'autre.
+    assert(f.pitchValid && f.spectralValid && f.hnrIsSpectral);
+    measured[i] = f.harmonicToNoiseRatio;
+    const BreathinessResult b =
+        AcousticQuality::computeBreathiness(f, ctx, AcousticQuality::breathinessAnchorHz(f, ctx));
+    char label[32];
+    snprintf(label, sizeof(label), "fluteLike souffle=%.3f", (double)kSweep[i]);
+    printf("  [hnr-calib] %-26s %9.2f %9.3f %9.3f %9.3f\n", label, (double)measured[i],
+           (double)b.value, (double)breathHnrComponent(measured[i]),
+           (double)qualityHnrComponent(measured[i]));
+  }
+
+  // Bruit blanc seul : la chaine REFUSE de rendre un HNR (pas de pitch, donc
+  // pas de fondamentale fiable). La plage basse se releve donc directement sur
+  // l'analyseur, en lui imposant la frequence de la note VISEE. Plusieurs
+  // graines, parce que sur du bruit pur le resultat DEPEND de la realisation :
+  // c'est une statistique, pas une constante.
+  float noiseOnlyDb = -MIC_HNR_MAX_DB;   // le moins negatif des releves
+  {
+    SpectralAnalyzer sa;
+    for (uint32_t seed : {99u, 12345u, 7u}) {
+      audiosig::whiteNoise(buf.data(), kFrame, 0.4f, seed);
+      assert(sa.computeSpectrum(buf.data(), kFrame));
+      const HarmonicNoiseRatio h = sa.harmonicNoiseRatio(440.0f, kFs);
+      assert(h.valid);
+      if (h.db > noiseOnlyDb) noiseOnlyDb = h.db;
+      char label[32];
+      snprintf(label, sizeof(label), "bruit blanc (graine %u)", seed);
+      printf("  [hnr-calib] %-26s %9.2f %9s %9.3f %9.3f\n", label, (double)h.db, "-",
+             (double)breathHnrComponent(h.db), (double)qualityHnrComponent(h.db));
+      assert(h.db >= -MIC_HNR_MAX_DB);
+    }
+
+    // Et la chaine complete, elle, ne rend RIEN plutot qu'un chiffre plausible.
+    Rig rig;
+    audiosig::whiteNoise(buf.data(), kFrame, 0.4f, 99u);
+    const AcousticFeatures f = rig.analyse(buf.data(), kFrame, kMidiA4);
+    assert(!f.spectralValid && !f.hnrIsSpectral && f.harmonicToNoiseRatio == 0.0f);
+  }
+  fflush(stdout);   // le tableau doit survivre a l'echec d'une assertion ci-dessous
+
+  // --- Ce que ce tableau impose aux trois seuils ---------------------------
+
+  // Le balayage est strictement decroissant : la mesure repond au souffle.
+  for (size_t i = 1; i < sizeof(kSweep) / sizeof(kSweep[0]); i++) {
+    assert(measured[i] < measured[i - 1]);
+  }
+
+  // AQ_BREATH_HNR_TONE_DB doit separer "aucun souffle" de "souffle mesurable".
+  // Mesure : souffle 0 sature a MIC_HNR_MAX_DB, souffle 0,010 tombe juste sous
+  // le seuil, souffle 0,020 nettement sous.
+  assert(AQ_BREATH_HNR_TONE_DB < MIC_HNR_MAX_DB);
+  assert(measured[0] > AQ_BREATH_HNR_TONE_DB);          // souffle 0
+  assert(measured[2] < AQ_BREATH_HNR_TONE_DB - 4.0f);   // souffle 0,020
+  // ... et il doit etre BIEN AU-DESSUS de l'ancien seuil de 20 dB, sans quoi
+  // toute la moitie superieure de la plage serait ecrasee a "parfait".
+  assert(AQ_BREATH_HNR_TONE_DB > 30.0f);
+
+  // AQ_BREATH_HNR_NOISE_DB est sous la note la plus soufflee dont le pitch
+  // survive (souffle 0,200) et au-dessus du bruit blanc pur : la composante
+  // n'est donc ni saturee ni inatteignable sur la plage utile.
+  assert(AQ_BREATH_HNR_NOISE_DB < measured[5]);
+  assert(AQ_BREATH_HNR_NOISE_DB > noiseOnlyDb);
+  assert(noiseOnlyDb < -10.0f);   // le PLUS FAVORABLE des releves de bruit pur
+
+  // AQ_QUALITY_HNR_GOOD_DB : la meme plage, donc le meme repere haut.
+  assert(AQ_QUALITY_HNR_GOOD_DB > AQ_QUALITY_HNR_MIN_DB);
+  assert(nearly(AQ_QUALITY_HNR_GOOD_DB, AQ_BREATH_HNR_TONE_DB, 1e-6f));
+}
+
+// La monotonie, sur la plage ou les TROIS composantes sont disponibles, et avec
+// assez de points pour qu'un accident ne passe pas : six, pas deux.
+//
+// Ce test echoue avec les anciens seuils. Avec TONE = 20 dB, les points a
+// souffle 0,010 (HNR ~34 dB) et 0,050 (HNR ~21 dB) donnent tous deux une
+// composante HNR nulle : la moitie du poids de la mesure ne bouge plus, et
+// l'ecart de respiration entre une note presque propre et une note franchement
+// soufflee tombe de ~0,32 a ~0,12.
+void quality_breathiness_rises_with_breath_on_the_spectral_scale() {
+  std::vector<float> buf(kFrame);
+  const float kSweep[] = {0.0f, 0.010f, 0.020f, 0.050f, 0.100f, 0.200f};
+  constexpr size_t kPoints = sizeof(kSweep) / sizeof(kSweep[0]);
+  static_assert(kPoints >= 4, "au moins quatre points de balayage");
+
+  float value[kPoints] = {};
+  for (size_t i = 0; i < kPoints; i++) {
+    Rig rig;
+    AcousticContext ctx;
+    const AcousticFeatures f = sustainedNote(rig, buf, 440.0f, kSweep[i], kMidiA4, ctx);
+    const BreathinessResult b =
+        AcousticQuality::computeBreathiness(f, ctx, AcousticQuality::breathinessAnchorHz(f, ctx));
+    assert(b.valid);
+    // Les trois composantes sont la : c'est bien la mesure complete qui est
+    // verifiee, pas le seul inter-partiels qui survit quand la FFT manque.
+    assert(b.usedHnr && b.usedInterHarmonic && b.usedFlatness);
+    assert(nearly(b.weightUsed, AQ_BREATH_W_HNR + AQ_BREATH_W_INTER + AQ_BREATH_W_FLATNESS,
+                  1e-5f));
+    value[i] = b.value;
+  }
+
+  printf("  [hnr-calib] respiration le long du balayage :");
+  for (size_t i = 0; i < kPoints; i++) printf(" %.3f", (double)value[i]);
+  printf("\n");
+
+  // Strictement croissant, sans exception.
+  for (size_t i = 1; i < kPoints; i++) assert(value[i] > value[i - 1]);
+
+  // Une note propre reste propre, une note franchement soufflee est declaree
+  // soufflee : les deux bouts du balayage tombent du bon cote du verdict.
+  assert(value[0] < 0.05f);
+  assert(value[kPoints - 1] > AQ_BREATHY_MAX);
+
+  // LA PREUVE QUE LE RECALIBRAGE N'EST PAS COSMETIQUE. Avec TONE = 20 dB, les
+  // deux points ci-dessous saturent tous les deux la composante HNR a zero et
+  // cet ecart tombe sous 0,15.
+  assert(value[3] - value[1] > 0.25f);
+}
+
+// Le seuil ne doit jamais etre applique a l'approximation Goertzel : elle lit
+// une quinzaine de dB plus bas sur la MEME note propre, et une frame sur
+// MIC_SPECTRAL_DECIMATION porte cette valeur-la.
+void quality_hnr_component_is_absent_on_the_goertzel_scale() {
+  std::vector<float> buf(kFrame);
+
+  // UNE SEULE NOTE TENUE, analysee frame par frame. Le champ
+  // harmonicToNoiseRatio bascule d'une echelle a l'autre au rythme de
+  // MIC_SPECTRAL_DECIMATION, alors que le SIGNAL, lui, ne change pas. C'est
+  // exactement ce qu'un seuil unique ne peut pas absorber.
+  const int kMidi = 71;                                // si4
+  const RichTone note = timbredReference(PitchMath::midiToHz(kMidi));
+  Rig rig;
+  float worstSpectral = MIC_HNR_MAX_DB;   // le plus BAS des releves spectraux
+  float bestGoertzel = -MIC_HNR_MAX_DB;   // le plus HAUT des releves Goertzel
+  int spectralFrames = 0;
+  int goertzelFrames = 0;
+  for (int i = 0; i < 4 * MIC_SPECTRAL_DECIMATION; i++) {
+    fillRich(buf.data(), kFrame, note, (size_t)i * kFrame);
+    const AcousticFeatures f = rig.analyse(buf.data(), kFrame, kMidi);
+    const AcousticContext ctx = rig.context(buf.data(), kFrame, kMidi);
+    assert(f.pitchValid && f.spectralValid);
+    assert(f.hnrIsSpectral == f.fftValid);   // vrai UNIQUEMENT quand la FFT a tourne
+    const BreathinessResult b =
+        AcousticQuality::computeBreathiness(f, ctx, AcousticQuality::breathinessAnchorHz(f, ctx));
+    // La composante suit le drapeau, jamais le seul `spectralValid`.
+    assert(b.usedHnr == f.hnrIsSpectral);
+    const QualityScore q = AcousticQuality::computeAcousticQuality(
+        f, ctx, b, AQ_ATTACK_NOT_MEASURED);
+    assert(q.harmonicMeasured == f.hnrIsSpectral);
+    if (f.hnrIsSpectral) {
+      if (f.harmonicToNoiseRatio < worstSpectral) worstSpectral = f.harmonicToNoiseRatio;
+      spectralFrames++;
+    } else {
+      if (f.harmonicToNoiseRatio > bestGoertzel) bestGoertzel = f.harmonicToNoiseRatio;
+      goertzelFrames++;
+    }
+  }
+  assert(spectralFrames == 4);
+  assert(goertzelFrames == 4 * (MIC_SPECTRAL_DECIMATION - 1));
+  printf("  [hnr-calib] MEME note timbree tenue : mesure spectrale >= %+.2f dB, "
+         "approximation Goertzel <= %+.2f dB (ecart %.2f dB)\n",
+         (double)worstSpectral, (double)bestGoertzel,
+         (double)(worstSpectral - bestGoertzel));
+  fflush(stdout);
+  // Les deux echelles ne se recouvrent meme pas : le pire releve spectral reste
+  // tres au-dessus du meilleur releve Goertzel. Un seuil commun placerait donc
+  // la meme note des deux cotes du verdict selon la parite de la frame.
+  assert(worstSpectral - bestGoertzel > 10.0f);
+  // Ce que cela donnerait si on appliquait quand meme les seuils aux deux :
+  // la MEME note serait declaree "quasiment du souffle" une frame sur
+  // MIC_SPECTRAL_DECIMATION, et "propre" la suivante.
+  assert(breathHnrComponent(bestGoertzel) > 0.90f);
+  assert(breathHnrComponent(worstSpectral) < 0.15f);
+
+  // Et le refus est net, pas une valeur moyenne : sans le drapeau, la
+  // composante disparait et le poids le dit.
+  AcousticFeatures f = healthyFeatures();
+  f.hnrIsSpectral = false;
+  AcousticContext ctx = plainContext();
+  const BreathinessResult b = AcousticQuality::computeBreathiness(f, ctx, 440.0f);
+  assert(b.valid && !b.usedHnr);
+  assert(nearly(b.weightUsed, AQ_BREATH_W_FLATNESS, 1e-5f));
+  BreathinessResult given;
+  given.valid = true; given.value = 0.0f; given.weightUsed = 1.0f;
+  const QualityScore q =
+      AcousticQuality::computeAcousticQuality(f, ctx, given, AQ_ATTACK_NOT_MEASURED);
+  assert(q.valid && !q.harmonicMeasured);
+  assert(nearly(q.weightUsed, 1.0f - QualityWeights().attack - QualityWeights().harmonic, 1e-5f));
+}
+
+// LE test de la PHASE 4 corrigee, porte jusqu'a la note de qualite : une note
+// timbree doit etre MIEUX notee qu'une note soufflee de meme niveau. Avec
+// l'approximation Goertzel, le classement etait INVERSE - ce test le remontre
+// sur les memes signaux, puis verifie que la chaine ne le reproduit plus.
+void quality_score_ranks_a_timbred_note_above_a_breathy_one() {
+  std::vector<float> buf(kFrame);
+  const int kMidi = 71;                                 // si4
+  const float f0 = PitchMath::midiToHz(kMidi);          // 493,88 Hz
+
+  const RichTone rich = timbredReference(f0);
+
+  // Note SOUFFLEE : fondamentale dominante, presque pas d'harmoniques, beaucoup
+  // de bruit large bande. Le souffle reste sous le seuil ou YIN lache, sans
+  // quoi la comparaison porterait sur un refus et non sur une note.
+  RichTone airy;
+  airy.f0 = f0;
+  airy.partial[0] = 0.70f; airy.partial[1] = 0.15f; airy.partial[2] = 0.07f;
+  airy.noise = 0.30f;
+
+  Rig rigT, rigB;
+  AcousticContext ctxT, ctxB;
+  AcousticFeatures fT = sustainedRich(rigT, buf, rich, kMidi, ctxT);
+  const float legacyT = legacyHnrDb(buf.data(), kFrame, f0);
+  const float rmsT = sqrtf(SpectralAnalyzer::totalPower(buf.data(), kFrame));
+  AcousticFeatures fB = sustainedRich(rigB, buf, airy, kMidi, ctxB);
+  const float legacyB = legacyHnrDb(buf.data(), kFrame, f0);
+  const float rmsB = sqrtf(SpectralAnalyzer::totalPower(buf.data(), kFrame));
+
+  // Les deux notes sont au meme niveau : la comparaison ne doit rien a une
+  // difference d'amplitude.
+  const float levelGapDb = 20.0f * log10f(rmsT / rmsB);
+  assert(fabsf(levelGapDb) < 1.0f);
+
+  // Les deux portent bien la MESURE spectrale, sinon on comparerait deux
+  // echelles.
+  assert(fT.pitchValid && fT.hnrIsSpectral);
+  assert(fB.pitchValid && fB.hnrIsSpectral);
+
+  // Le SNR est fourni a l'identique : il ne doit pas expliquer l'ecart.
+  fT.snrValid = true; fT.snrDb = 30.0f;
+  fB.snrValid = true; fB.snrDb = 30.0f;
+
+  const BreathinessResult bT =
+      AcousticQuality::computeBreathiness(fT, ctxT, AcousticQuality::breathinessAnchorHz(fT, ctxT));
+  const BreathinessResult bB =
+      AcousticQuality::computeBreathiness(fB, ctxB, AcousticQuality::breathinessAnchorHz(fB, ctxB));
+  const QualityScore qT =
+      AcousticQuality::computeAcousticQuality(fT, ctxT, bT, AQ_ATTACK_NOT_MEASURED);
+  const QualityScore qB =
+      AcousticQuality::computeAcousticQuality(fB, ctxB, bB, AQ_ATTACK_NOT_MEASURED);
+
+  printf("  [hnr-calib] timbree %.2f dBFS / soufflee %.2f dBFS (ecart %.2f dB)\n",
+         (double)(20.0f * log10f(rmsT)), (double)(20.0f * log10f(rmsB)), (double)levelGapDb);
+  printf("  [hnr-calib] HNR    : spectral %+6.2f / %+6.2f dB   Goertzel %+6.2f / %+6.2f dB\n",
+         (double)fT.harmonicToNoiseRatio, (double)fB.harmonicToNoiseRatio,
+         (double)legacyT, (double)legacyB);
+  printf("  [hnr-calib] verdict: respiration %.3f / %.3f   qualite %.4f / %.4f\n",
+         (double)bT.value, (double)bB.value, (double)qT.score, (double)qB.score);
+  fflush(stdout);
+
+  // L'ANCIENNE approximation classait la note soufflee AU-DESSUS de la timbree.
+  assert(legacyT < legacyB);
+
+  // La chaine actuelle les classe dans le bon sens, et largement.
+  assert(fT.harmonicToNoiseRatio > fB.harmonicToNoiseRatio + 15.0f);
+  assert(bT.valid && bB.valid && bT.usedHnr && bB.usedHnr);
+  // La note timbree reste franchement du bon cote du verdict, la soufflee du
+  // mauvais, et l'ecart entre les deux est large - ce n'est pas un classement
+  // arrache a la troisieme decimale.
+  assert(bT.value < 0.5f * AQ_BREATHY_MAX);
+  assert(bB.value > AQ_BREATHY_MAX);
+  assert(bB.value - bT.value > 0.40f);
+  assert(qT.valid && qB.valid && qT.harmonicMeasured && qB.harmonicMeasured);
+  assert(nearly(qT.weightUsed, qB.weightUsed, 1e-5f));   // meme base de comparaison
+  assert(qT.score > qB.score + 0.20f);
+
+  // L'INVERSION, portee jusqu'a la composante de qualite : alimentee avec les
+  // valeurs Goertzel, la composante harmonique note la note SOUFFLEE au-dessus
+  // de la timbree. Cette inversion-la ne depend d'aucun seuil - c'est la mesure
+  // elle-meme qui est fausse - et c'est pour cela que la brancher etait le
+  // prealable au recalibrage. La preuve que les seuils, eux, ont bouge est
+  // dans quality_breathiness_rises_with_breath_on_the_spectral_scale().
+  assert(qualityHnrComponent(legacyT) < qualityHnrComponent(legacyB));
+  assert(qualityHnrComponent(fT.harmonicToNoiseRatio) >
+         qualityHnrComponent(fB.harmonicToNoiseRatio) + 0.40f);
+  assert(breathHnrComponent(fT.harmonicToNoiseRatio) <
+         breathHnrComponent(fB.harmonicToNoiseRatio) - 0.40f);
+}
+
+#else   // !MIC_FFT_ENABLED
+
+// Sans FFT, AcousticFeatures::hnrIsSpectral ne devient jamais vrai : la
+// composante HNR de la respiration et celle de la note de qualite sont donc
+// absentes de TOUTES les frames. Ce n'est pas un defaut a corriger ici, c'est
+// la consequence assumee d'un binaire sans spectre - mais il faut le verifier,
+// sans quoi le repli Goertzel pourrait se glisser sous des seuils qui ne le
+// decrivent pas.
+void quality_hnr_is_absent_without_fft() {
+  std::vector<float> buf(kFrame);
+  Rig rig;
+  for (int i = 0; i < 4; i++) {
+    audiosig::fluteLike(buf.data(), kFrame, 440.0f, 0.4f, 0.01f, kFs, (size_t)i * kFrame);
+    const AcousticFeatures f = rig.analyse(buf.data(), kFrame, kMidiA4);
+    const AcousticContext ctx = rig.context(buf.data(), kFrame, kMidiA4);
+    // Goertzel a tourne - le champ porte donc une valeur - mais elle n'est pas
+    // sur l'echelle des seuils, et le drapeau le dit.
+    assert(f.spectralValid && !f.fftValid && !f.hnrIsSpectral);
+    const BreathinessResult b =
+        AcousticQuality::computeBreathiness(f, ctx, AcousticQuality::breathinessAnchorHz(f, ctx));
+    assert(!b.usedHnr);
+    const QualityScore q =
+        AcousticQuality::computeAcousticQuality(f, ctx, b, AQ_ATTACK_NOT_MEASURED);
+    assert(!q.harmonicMeasured);
+  }
+  printf("  [hnr-calib] MIC_FFT_ENABLED = 0 : mesure spectrale absente du binaire, "
+         "composante HNR retiree des deux notes\n");
+}
+
+#endif  // MIC_FFT_ENABLED
 
 // ===========================================================================
 // 6.3 - Overblow : trois criteres, et aucun ne suffit seul
@@ -1080,6 +1563,14 @@ void quality_run_all_tests() {
   quality_brightness_is_exact_on_a_sine();
   quality_breathiness_is_monotone();
   quality_breathiness_refuses_what_it_cannot_measure();
+#if MIC_FFT_ENABLED
+  quality_hnr_scale_is_the_one_the_thresholds_describe();
+  quality_breathiness_rises_with_breath_on_the_spectral_scale();
+  quality_hnr_component_is_absent_on_the_goertzel_scale();
+  quality_score_ranks_a_timbred_note_above_a_breathy_one();
+#else
+  quality_hnr_is_absent_without_fft();
+#endif
   quality_overblow_requires_three_criteria();
   quality_squeak_needs_burst_brevity_and_return();
   quality_state_priority_is_respected();

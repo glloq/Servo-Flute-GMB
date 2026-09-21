@@ -1,4 +1,5 @@
 #include "AirflowController.h"
+#include "AcousticTiming.h"
 #include "ConfigStorage.h"
 #include "ServoMath.h"
 #include "VibratoMath.h"
@@ -61,10 +62,36 @@ AirflowController::AirflowController(PwmWriteFn writePwm)
     _attackActive(false), _attackStartTime(0), _attackStartAngle(0), _attackTargetAngle(0),
     _runtimeAttackMode(cfg.airAttackMode), _runtimeAttackOffset(cfg.airAttackOffset),
     _ccBrightness(cfg.ccBrightnessDefault), _currentAngleServo(cfg.servoAngleOff),
-    _lastAngleNote(0) {
+    _lastAngleNote(0), _timing(nullptr) {
   for (uint8_t i = 0; i < CC2_SMOOTHING_BUFFER_SIZE; i++) {
     _cc2SmoothingBuffer[i] = cfg.ccBreathDefault;
   }
+}
+
+/*----------------------------------------------------------------------------
+ * Notifications de chronometrie - PHASE 7
+ *
+ * Trois invariants :
+ *   1. test de nullite systematique (l'observateur est optionnel) ;
+ *   2. valeur rendue jetee explicitement : ces hooks signalent un ordre hors
+ *      sequence, qu'AcousticTiming compte deja dans rejectedEvents(). Aucune
+ *      decision d'actionneur ne doit en dependre ;
+ *   3. notifiees APRES l'action sur l'actionneur, jamais avant.
+ *--------------------------------------------------------------------------*/
+
+void AirflowController::notifyAirCommanded() {
+  if (_timing == nullptr) return;
+  (void)_timing->airCommanded(millis());
+}
+
+void AirflowController::notifyValveOpened() {
+  if (_timing == nullptr) return;
+  // Une ouverture de banc (testSolenoid depuis l'interface web ou le
+  // calibrateur) n'appartient a aucune note : la signaler ne mesurerait rien et
+  // ne ferait que gonfler rejectedEvents(). Le critere est l'etat de CE
+  // controleur, jamais celui de l'observateur.
+  if (!_noteActive) return;
+  (void)_timing->valveOpened(millis());
 }
 
 void AirflowController::begin() {
@@ -135,6 +162,11 @@ bool AirflowController::recomputeActiveNote() {
 
 bool AirflowController::computeAirflow(byte midiNote, byte velocity, bool isOnset) {
   const NoteConfig* note = getNoteByMidi(midiNote);
+  // Etat sonore AVANT recalcul : il distingue la consigne d'air qui LANCE
+  // reellement l'air pour une note (attaque, ou reprise apres un silence CC2)
+  // d'une simple mise a jour periodique d'une note qui sonne deja. Seule la
+  // premiere est chronometrable - c'est elle qui a fait sonner la note.
+  const bool wasSounding = isNoteSounding();
 
   uint16_t minAngle, maxAngle, nominalAngle;
   uint16_t baseAngle;
@@ -314,6 +346,13 @@ bool AirflowController::computeAirflow(byte midiNote, byte velocity, bool isOnse
   // Angle servo (trav uniquement) — positionner simultanement (onset only, so a
   // live CC recomputation does not re-drive the embouchure angle).
   if (isOnset) setAngleForNote(midiNote);
+
+  // CONSIGNE D'AIR REELLEMENT POSEE POUR CETTE NOTE. La condition ecarte les
+  // recalculs periodiques (CC7/CC11/CC2 sur une note qui sonne deja, repli de
+  // timeout CC2) : ils rejouent un angle, ils ne lancent pas l'air. Le cas
+  // `!wasSounding` hors attaque est celui d'une note nee muette sous CC2 dont le
+  // souffle remonte : c'est bien cette consigne-la qui la fait parler.
+  if (isOnset || !wasSounding) notifyAirCommanded();
   return true;
 }
 
@@ -321,6 +360,9 @@ void AirflowController::openValve() {
   // Modes sans valve physique: servo-only (2) et ventilateur (3)
   if (!modeUsesPhysicalValve(cfg.airMode)) {
     _solenoidOpen = true;
+    // Pas de valve a ouvrir, mais c'est bien l'instant ou l'air est laisse
+    // passer : le chemin mecanique se documente de la meme facon.
+    notifyValveOpened();
     return;
   }
 
@@ -342,6 +384,7 @@ void AirflowController::openValve() {
   }
 
   _solenoidOpen = true;
+  notifyValveOpened();
 
   if (DEBUG) {
     Serial.print("DEBUG: AirflowController - Valve OUVERTE (");
