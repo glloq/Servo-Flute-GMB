@@ -131,11 +131,14 @@ constexpr float AQ_UNSTABLE_STABILITY = 0.60f;
 // n'est calculee QUE si AcousticFeatures::hnrIsSpectral est vrai : sur l'autre
 // echelle ces bornes ne veulent rien dire.
 //
-// 34 dB : releve sur fluteLike(440 Hz, amp 0,40) - 40,00 dB sans souffle,
-// 39,79 dB a souffle 0,005, 33,82 dB a souffle 0,010. Ce dernier point est
-// aussi celui ou la platitude spectrale atteint AQ_BREATH_FLATNESS_TONE
-// (0,1178 mesure pour un seuil a 0,10) : les deux composantes declarent donc
-// "plus de souffle du tout" au meme endroit, au lieu de se contredire.
+// 34 dB : releve sur fluteLike(440 Hz, amp 0,40), cinq frames consecutives dont
+// la derniere porte la FFT - 40,00 dB (borne) sans souffle et a souffle 0,005,
+// 34,40 dB a souffle 0,010, 28,49 dB a 0,020. Le point a 0,010 est aussi celui
+// ou la platitude spectrale franchit AQ_BREATH_FLATNESS_TONE (0,113 mesure pour
+// un seuil a 0,10) : les deux composantes declarent donc "plus de souffle du
+// tout" au meme endroit, au lieu de se contredire.
+// Le tableau complet est IMPRIME par la suite native, test
+// quality_hnr_scale_is_the_one_the_thresholds_describe, lignes [hnr-calib].
 // MESURE SUR PCM SYNTHETIQUE - a reverifier sur microphone reel, ou le plancher
 // de la piece et le bruit de la pompe interdiront probablement d'atteindre
 // 34 dB sur une note pourtant propre.
@@ -147,9 +150,13 @@ constexpr float AQ_BREATH_HNR_TONE_DB  = 34.0f;
 // l'ancienne approximation elle disait seulement que les quatre raies mesurees
 // portaient la moitie de la puissance, ce qui arrive aussi sur une note tres
 // timbree sans le moindre souffle. Releve sur les memes signaux : souffle 0,200
-// donne +8,25 dB, du bruit blanc pur donne -13,00 dB ; la borne est donc bien
-// au-dela de la note la plus soufflee dont le pitch survive, et en deca du
-// bruit pur. MESURE SUR PCM SYNTHETIQUE - a reverifier sur microphone reel.
+// donne +8,53 dB - et c'est la note la plus soufflee dont le pitch survive,
+// au-dela YIN refuse et il n'y a plus de HNR du tout - tandis que du bruit
+// blanc pur donne -19,66 dB, voire la borne -40 dB selon la realisation (c'est
+// une statistique, pas une constante : trois graines sont relevees dans le
+// test). La borne 0 dB est donc bien sous la plage des notes et bien au-dessus
+// du bruit pur : la composante n'est ni saturee ni inatteignable.
+// MESURE SUR PCM SYNTHETIQUE - a reverifier sur microphone reel.
 constexpr float AQ_BREATH_HNR_NOISE_DB = 0.0f;
 
 // Bornes de la composante "platitude spectrale". Releve sur les memes signaux :
@@ -272,12 +279,13 @@ constexpr float AQ_QUALITY_SNR_REF_DB = 24.0f;
 // AcousticFeatures::hnrIsSpectral est vrai.
 //
 // 34 dB au lieu de 20 : avec l'ancienne borne, une note dont le souffle vaut
-// 12 % de la fondamentale mesure 20,12 dB et sature donc la composante a 1,00 -
-// exactement la meme note de qualite harmonique qu'une note sans aucun souffle
-// a 40,00 dB. La composante ne discriminait plus rien sur toute la plage utile.
-// A 34 dB, ces deux notes donnent 0,59 et 1,00. Releve sur fluteLike(440 Hz,
-// amp 0,40) : souffle 0,010 -> 33,82 dB ; 0,020 -> 28,11 dB ; 0,050 -> 20,12 dB ;
-// 0,100 -> 14,04 dB ; 0,200 -> 8,25 dB.
+// 12,5 % de la fondamentale mesure 20,55 dB et sature donc la composante a
+// 1,00 - exactement la meme note de qualite harmonique qu'une note sans aucun
+// souffle a 40,00 dB. La composante ne discriminait plus rien sur toute la
+// plage utile. A 34 dB, ces deux notes donnent 0,60 et 1,00. Releve sur
+// fluteLike(440 Hz, amp 0,40) : souffle 0,010 -> 34,40 dB (compo 1,00) ;
+// 0,020 -> 28,49 dB (0,84) ; 0,050 -> 20,55 dB (0,60) ; 0,100 -> 14,57 dB
+// (0,43) ; 0,200 -> 8,53 dB (0,25).
 // MESURE SUR PCM SYNTHETIQUE - a reverifier sur microphone reel.
 constexpr float AQ_QUALITY_HNR_MIN_DB  = 0.0f;
 constexpr float AQ_QUALITY_HNR_GOOD_DB = 34.0f;

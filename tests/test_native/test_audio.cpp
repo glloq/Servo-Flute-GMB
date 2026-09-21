@@ -1635,7 +1635,6 @@ void features_fft_fields_never_claim_to_be_fresh() {
   assert(f.hnrIsSpectral);
   const float measuredCentroid = f.spectralCentroid;
   const float measuredFlatness = f.spectralFlatness;
-  const float measuredHnr = f.harmonicToNoiseRatio;
   assert(measuredCentroid > 0.0f);
 
   // Frame SANS FFT (decimation) : Goertzel reste valide, mais fftValid tombe.
@@ -1649,7 +1648,11 @@ void features_fft_fields_never_claim_to_be_fresh() {
   assert(!f.hnrIsSpectral);
   assert(f.spectralCentroid == measuredCentroid);
   assert(f.spectralFlatness == measuredFlatness);
-  (void)measuredHnr;
+  // Difference de nature a bien voir : le centroide et la platitude sont
+  // RETENUS tels quels, le HNR est RECALCULE par l'autre mesure. Il reste donc
+  // renseigne et borne - mais sur une autre echelle, ce que dit le drapeau.
+  assert(f.harmonicToNoiseRatio <= MIC_HNR_MAX_DB);
+  assert(f.harmonicToNoiseRatio >= -MIC_HNR_MAX_DB);
 
   // Plus rien de mesurable : les descripteurs de forme sont EFFACES. Les laisser
   // ferait decrire une note precedente a une frame qui n'en contient pas.
