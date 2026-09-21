@@ -162,21 +162,21 @@ public:
   // QUI L'APPELLE, EXACTEMENT - la liste, pas une intention :
   //   - setActive(true) : reprise apres une pause de duree inconnue ;
   //   - setExpectedMidiNote() / clearExpectedMidiNote(), sur TRANSITION de la
-  //     note visee. Seul AutoCalibrator declare une note visee.
+  //     note visee. Seul AutoCalibrator declare une note visee ;
+  //   - NoteSequencer, aux DEUX bornes de chaque note jouee, via l'observateur
+  //     audio d'IAudioSource. C'est le chemin qui compte en lecture MIDI
+  //     ordinaire, ou aucune note visee n'est declaree.
   //
-  // CE QUI MANQUE, ET IL FAUT LE LIRE AVANT DE SE FIER AUX VERDICTS : en
-  // lecture MIDI ordinaire personne ne declare de note visee (_expectedMidi
-  // vaut 0), donc AUCUN appel ci-dessus ne survient a un changement de note
-  // joue. Un legato montant d'une octave fait alors comparer la premiere frame
-  // de la note nouvelle a la brillance de l'ancienne : le detecteur de couac
-  // publie ACOUSTIC_SQUEAK - troisieme dans l'ordre de priorite, donc il
-  // masque tout ce qui suit - pendant quelques frames sur une note propre, et
-  // `stability` tombe a zero AVEC `stabilityValid` vrai, l'historique
-  // traversant les deux notes. Le signal manquant ne peut PAS etre fabrique
-  // ici : le deviner depuis le pitch mesure ferait d'une observation une
-  // cause. Il doit venir de la chaine d'actionneurs, qui seule sait quand
-  // l'ordre part : NoteSequencer notifie deja la chronometrie aux deux bornes
-  // de la note, et il manque a ces deux notifications un observateur audio.
+  // POURQUOI LE SIGNAL VIENT DE LA CHAINE D'ACTIONNEURS. Tant que ce dernier
+  // appelant a manque, un legato montant d'une octave faisait comparer la
+  // premiere frame de la note nouvelle a la brillance de l'ancienne : le
+  // detecteur de couac publiait ACOUSTIC_SQUEAK - troisieme dans l'ordre de
+  // priorite, donc il masquait tout ce qui suit - pendant 96 ms sur une note
+  // propre, et `stability` tombait a zero AVEC `stabilityValid` vrai,
+  // l'historique traversant les deux notes. Le signal ne pouvait PAS etre
+  // fabrique ici : le deviner depuis le pitch mesure aurait fait d'une
+  // observation une cause. Seule la chaine d'actionneurs sait quand l'ordre
+  // part.
   void                          resetAcousticTracking();
 
   // --- Chronometrie acoustique (PHASE 7) ------------------------------------

@@ -385,12 +385,11 @@ void AudioAnalyzer::setActive(bool active) {
 // chaine de jeu. Ce qui manque est un signal de changement de note venu de la
 // chaine d'actionneurs - elle seule sait QUAND l'ordre part - et non une
 // heuristique qui le devinerait depuis le pitch mesure : ce serait reintroduire
-// une mesure inventee. Le point d'accrochage existe deja et n'est PAS dans ce
-// fichier : NoteSequencer notifie la chronometrie aux DEUX bornes de la note
-// (voir dans NoteSequencer.cpp la section "Notifications de chronometrie"), et
-// ces deux notifications sont exactement les instants ou il faudrait aussi
-// appeler resetAcousticTracking(). Il leur manque un observateur audio ;
-// InstrumentManager::setTimingObserver() est l'endroit ou il se cablerait.
+// une mesure inventee. Ce chemin existe : NoteSequencer notifie aux DEUX bornes
+// de la note (voir dans NoteSequencer.cpp la section des notifications), et
+// porte desormais un observateur audio a cote de celui de la chronometrie.
+// WebConfigurator pose et retire les deux ENSEMBLE - l'observateur pointe dans
+// _audio, que WebConfigurator detruit alors qu'InstrumentManager lui survit.
 
 void AudioAnalyzer::setExpectedMidiNote(int midi) {
   const int wanted = (midi > 0 && midi <= 127) ? midi : 0;

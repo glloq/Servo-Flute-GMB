@@ -782,7 +782,10 @@ The `missing*` flags (`pitch`, `snr`, `spectrum`, `expectedNote`, `stability`,
 `squeakHistory`) exist for the same reason: a "good" reached because nothing
 could be measured is not a "good", and the interface must be able to tell.
 
-### A trap found while wiring this up: four lifecycle holes, not one
+### A trap found while wiring this up: five lifecycle holes, not one
+
+**The list below said "four" and presented itself as exhaustive. It was not** —
+the audit found a fifth, described after it.
 
 `AudioAnalyzer::update()` returns on its first line when the analyser is
 inactive or uninitialised. The `MIC_FRAME_STALE_MS` ceiling therefore **never**
@@ -800,6 +803,22 @@ verdict published as though it described the present instant:
 `setActive()` now acts on **transitions**: several callers re-post the value it
 already holds, and acting on the value would wipe the pitch history at every
 event, so stability would never be measured at all.
+
+**The fifth, found by the audit: `_level` and `_rms`.**
+`markMeasurementInvalid()` reset `_features`, `_classification`, `_quality`,
+`_squeak` and `_lastPitch` — but not the level, which only `begin()` reset.
+After a stop, a pause or a failed `resetMicrophone()`, `/api/diagnostics` still
+published `rms_dbfs`, `peak_dbfs` and `clipping` from the last analysed frame,
+and emitted an **active verdict** — "Microphone input is clipping" — while
+nothing was being measured at all, at the same time as `acoustic_state`
+correctly read `"unclassified"`. The two halves of one JSON block described
+different instants. `_pitchCents`, forgotten beside its three neighbours, is
+reset too.
+
+The lesson generalises past this list: a reset that enumerates members is a
+list someone will extend without extending the reset. The static audit now
+derives the required set **from the code** — any member `analyzeFrame()` fills
+and an accessor publishes must be cleared — so it extends itself.
 
 ### Where the classification runs, and why the order matters
 
@@ -919,11 +938,30 @@ actuator**, not when a MIDI message arrives.
 destructor) and receives the `InstrumentManager`: it is the only place the two
 worlds meet.
 
-- `begin()`: `_instrument->setTimingObserver(&_audio->timing())`, conditioned on
-  the microphone being **detected**, not merely on the instrument existing.
-  Without a microphone nobody feeds the timing any frames, so every note would
-  open a cycle ending in `TIMING_TIMEOUT` and the interface would read "no sound
-  measured" when the truth is "nobody was listening".
+- `begin()`: `_instrument->setTimingObserver(&_audio->timing())` **and**
+  `setAudioObserver(_audio)`, both conditioned on the microphone being detected,
+  and both removed together in the destructor.
+
+  **This gate was wrong, and the audit caught it.** It guarded microphone
+  *detection*; what mattered was analysis *activity*. The analyser is inactive
+  by default (the mic monitor is off), so in ordinary MIDI playback the four
+  order hooks fired on every note and **no frame ever arrived**:
+  `/api/diagnostics` published `timing.has_last: true, outcome: "no_sound"` for
+  every note played — "the instrument produced no sound" when the truth was
+  "nobody was listening", which is the exact reading this gate was written to
+  prevent.
+
+  The justification written here was wrong too: it claimed the cycle would end
+  in `TIMING_TIMEOUT`. Without frames the ceilings are never evaluated — they
+  only run inside `update(frame)` — so the real outcome was `TIMING_NO_SOUND`.
+  The mechanism had not been traced to the end.
+
+  The fix is in `AcousticTiming`, not here: `noteCommanded()` refuses to open a
+  cycle when the frame stream is not live, using the firmware's existing
+  definition of dead (`MIC_FRAME_STALE_MS`) rather than a second one. The refusal
+  is counted in `rejectedEvents()` and leaves `_last` untouched, so `has_last`
+  stays false instead of carrying a manufactured verdict. A gate in the wiring
+  is a gate someone can forget; a gate in the state machine cannot be.
 - destructor: `setTimingObserver(nullptr)` **before** `delete _audio`. The
   observer points inside `_audio`, which `WebConfigurator` destroys, while
   `InstrumentManager` outlives it. Without the detach, the next note would write
@@ -958,6 +996,77 @@ by a scratch execution harness that really runs `update()` on 56 frames
 and by adversarial diff review. That harness is **not in CI** — and the static
 audit verifies that a call is *present*, not that it is *reachable*: an early
 `return` inserted before it would slip past.
+
+---
+
+## Audit of PHASES 6 and 7
+
+Four independent passes over the ~4 500 lines these two phases added: real-time
+safety, measurement correctness, test sensitivity, interface honesty. Everything
+below was **reproduced**, not argued. This section exists because the phases
+above were written by their own authors; a phase that grades its own homework is
+worth less than one that has been read against.
+
+### What held
+
+- **The actuator safety invariant.** Six lines of observer use in the whole
+  actuator chain, each null-guarded, each *after* the action, every return value
+  discarded through an explicit `(void)`. No actuator decision can depend on the
+  observer. Also tested, not just inspected: a full scenario is replayed without
+  / with / with a misbehaving observer and the actuator traces must match
+  character for character.
+- **Hook cost**: two to three orders of magnitude below the smallest actuator
+  time constant.
+- **No dangling pointer is reachable**, no DSP runs on a network or BLE task, no
+  allocation in the frame path.
+- **The native tests are not vacuous**: 68 mutations, 89 % killed, and all six
+  "what if nothing ever worked" probes caught.
+- **The HNR core is correct**: exhaustive bin-attribution sweep with zero
+  disagreement, bisection median within 0.01 dB of an exact sort, the 1/ln(2)
+  correction validated to 0.06 dB. It was its *extrapolation* that was wrong.
+
+### What did not, and what it cost
+
+| Defect | Consequence, measured |
+|---|---|
+| Noise floor extrapolated flat over a band the firmware itself empties (56 % of bins) | HNR overestimated by **+14 dB**; the 20→34 dB recalibration was **annulled**: the note used to justify it still saturated the component |
+| Timing gate guarded microphone *detection*, not analysis *activity* | `outcome: "no_sound"` published for **every note** in ordinary MIDI playback |
+| Anti-rollback guard returned before resynchronising | a gap over 24.86 days locked the timing **silently for ~25 days** |
+| `resetAcousticTracking()` had no caller on note change | **96 ms of `"squeak"`** published on a clean rising octave, score 0.94 → 0.67 |
+| `_level` / `_rms` survived a stop | an active "clipping" verdict while nothing was measured |
+| Six publication defects | two incomparable HNR scales under one key; `stab` = 0.00 for the first 112 ms of every note |
+| `weightUsed` documented as 0.75 / 0.60 | it is **0.90 / 0.75**; this was the only number given for grouping scores |
+| "Static RAM" labelling a heap object | the linker figure never moved; the heap is what actually runs out |
+
+### The common root, and the only durable fix
+
+Three of these are the same mistake: **a statistic computed over the whole
+spectrum of a signal whose chain deliberately emptied half of it**. The noise
+floor, and then spectral flatness — where `AQ_BREATH_FLATNESS_NOISE = 0.70`
+turned out to be *unreachable*, pure white noise measuring 0.39 after filtering,
+so that component could never declare noise at all.
+
+None of this was visible because `grep -c AudioFilterChain` over the HNR and
+quality tests returned **0 and 0**. The suite measured a chain that does not
+exist in production, and would have kept validating anything indefinitely. The
+tests now instantiate `AudioFilterChain` and settle its memory before the
+measured frame. *That*, not the arithmetic fix, is what prevents a recurrence.
+
+### What is still wrong after the fixes
+
+- **Up to +8.4 dB of optimism on a steeply low-frequency-weighted floor** — the
+  pump-noise case. The median lands at the geometric middle of a sloped floor.
+  Sub-band estimation would fix it and cost nothing, but was rejected on
+  measurement: at f0 = 251 Hz it leaves **one** noise bin per sub-band, and a
+  median over one bin is not a statistic.
+- **The margin below `AQ_BREATH_HNR_NOISE_DB` shrank** from ~20 dB to ~5 dB:
+  pure filtered noise now measures −5.34 dB against a 0 dB threshold.
+- **The static audit still verifies presence, not reachability**, and the
+  note-change wiring is now *external* to `AudioAnalyzer.cpp`, so the caller
+  count cannot see it. Only the native tests catch its removal.
+- **`AudioAnalyzer.cpp` is in no test binary.** It was checked by an execution
+  harness that lives outside the repository — the only thing that ever runs this
+  file. Putting it in the host build behind an I2S seam would close the gap.
 
 ---
 
