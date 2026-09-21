@@ -87,6 +87,14 @@ public:
   float getClippingRatio() const { return _level.clippingRatio; }
   const AudioCaptureStats& getCaptureStats() const { return _stats; }
   void resetCaptureStats() { _stats.reset(); }
+
+  // --- Pitch enrichi (PHASE 2) ---
+  const PitchResult& getPitchResult() const { return _lastPitch; }
+  float getPitchStability() const { return _lastPitch.stability; }
+  // Note visee : permet au detecteur de lever l'ambiguite d'octave de facon
+  // deterministe (f0/2, f0, 2*f0, 3*f0). Pose par l'auto-calibration.
+  void setExpectedMidiNote(int midi) override { _pitch.setExpectedMidiNote(midi); }
+  void clearExpectedMidiNote() override { _pitch.clearExpectedMidiNote(); }
   bool isActive() const override { return _active; }
   void setActive(bool active) override { _active = active; }
   uint32_t getFrameSequence() const override { return _frameSeq; }
@@ -112,6 +120,7 @@ private:
 #endif
 
   PitchDetector _pitch;
+  PitchResult _lastPitch;
   FrameLevel _level;
   AudioCaptureStats _stats;
   AudioRingBuffer _ring;

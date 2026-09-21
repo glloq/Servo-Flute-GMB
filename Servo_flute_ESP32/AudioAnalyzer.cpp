@@ -221,6 +221,8 @@ void AudioAnalyzer::markMeasurementInvalid() {
   _pitchMidi = 0;
   _pitchConfidence = 0;
   _soundDetected = false;
+  _lastPitch = PitchResult();
+  _pitch.resetTracking();
 }
 
 void AudioAnalyzer::drainI2S() {
@@ -268,15 +270,21 @@ void AudioAnalyzer::analyzeFrame() {
   _pitchHz = 0; _pitchMidi = 0; _pitchCents = 0; _pitchConfidence = 0; _pitchValid = false;
 
   if (_rms > MIC_RMS_ABSOLUTE_MIN) {
-    // detect() modifie _frame en place ; il n'est pas relu ensuite.
-    PitchResult pr = _pitch.detect(_frame, MIC_ANALYSIS_FRAME_SIZE);
-    if (pr.hz > 0.0f) {
-      _pitchHz = pr.hz;
-      _pitchConfidence = pr.confidence;
-      _pitchMidi = PitchMath::hzToMidi(pr.hz);
-      _pitchCents = PitchMath::hzToCents(pr.hz, _pitchMidi);
-      _pitchValid = pr.valid;
+    // detect() ne modifie PAS _frame : la meme frame reste disponible pour
+    // l'analyse spectrale (PHASE 3), sans recopie.
+    _lastPitch = _pitch.detect(_frame, MIC_ANALYSIS_FRAME_SIZE);
+    if (_lastPitch.hz > 0.0f) {
+      _pitchHz = _lastPitch.hz;
+      _pitchConfidence = _lastPitch.confidence;
+      _pitchMidi = _lastPitch.midi;
+      _pitchCents = _lastPitch.cents;
+      _pitchValid = _lastPitch.valid;
     }
+  } else {
+    // Sous le plancher de niveau il n'y a rien a suivre : on vide l'historique
+    // pour qu'une note ulterieure ne herite pas de la stabilite d'une autre.
+    _lastPitch = PitchResult();
+    _pitch.resetTracking();
   }
 }
 

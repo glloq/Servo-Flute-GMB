@@ -114,38 +114,107 @@ void ref_pitch_saturated_and_harmonic() {
   { PitchResult r = det.detect(buf.data(), kFrame); assert(r.valid && PitchMath::hzToMidi(r.hz) == 74); }
 }
 
-// PRECISION EN CENTS - ETAT DE REFERENCE, PAS UN OBJECTIF.
+// PRECISION EN CENTS - resserree en PHASE 2.
 //
-// Mesure faite sur la chaine actuelle (PHASE 0) : autour de 440 Hz l'erreur
-// atteint 23 cents, et un 440 Hz PUR est rendu a 435,7 Hz (-17 cents). Un pas
-// de tau vaut 23,6 cents a cette frequence ; l'interpolation parabolique est
-// donc pratiquement sans effet. La cause probable est la fenetre de Hann
-// appliquee AVANT la fonction de difference YIN : l'enveloppe biaise
-// d(tau) et deplace le minimum.
+// Ce test etait le fil de detente de la PHASE 0 : il exigeait que l'erreur
+// reste SUPERIEURE a 10 cents, pour qu'une amelioration ne puisse pas passer
+// inapercue. La PHASE 2 l'a fait echouer, comme prevu, et il est desormais
+// resserre a l'etat reellement atteint.
 //
-// Ce test verrouille le comportement actuel pour que la PHASE 2 puisse
-// demontrer un gain mesurable. Il sera resserre a ce moment-la, pas avant.
-void ref_pitch_cents_accuracy_current_limit() {
+// Historique mesure sur les memes signaux :
+//   PHASE 0 (parabole sur tau entier + fenetre de Hann) : 47 c pire-cas
+//   + raffinement fractionnaire, fenetre conservee       : 4,4 c
+//   + retrait de la fenetre (etat actuel)                : 0,17 c
+void pitch_cents_accuracy_is_sub_cent() {
   PitchDetector det;
   std::vector<float> buf(kFrame);
 
-  const float kCases[] = {-40.0f, -20.0f, -10.0f, 0.0f, +10.0f, +20.0f, +40.0f};
+  const float kCases[] = {-40.0f, -30.0f, -20.0f, -10.0f, 0.0f, +10.0f, +20.0f, +30.0f, +40.0f};
   float worst = 0.0f;
   for (float cents : kCases) {
     const float hz = PitchMath::midiToHz(69) * powf(2.0f, cents / 1200.0f);
     audiosig::pureTone(buf.data(), kFrame, hz, 0.4f, kFs);
-    PitchResult r = det.detect(buf.data(), kFrame);
+    PitchResult r = det.analyse(buf.data(), kFrame);
     assert(r.valid);
-    // La NOTE reste toujours correcte : c'est ce dont depend l'auto-calibration
-    // actuelle, et c'est pour cela que le defaut de precision est passe inapercu.
-    assert(PitchMath::hzToMidi(r.hz) == 69);
-    const float err = fabsf(PitchMath::hzToCents(r.hz, 69) - cents);
+    assert(r.midi == 69);
+    const float err = fabsf(r.cents - cents);
     if (err > worst) worst = err;
+    // Le SIGNE doit maintenant etre correct, ce qui etait faux en PHASE 0.
+    if (fabsf(cents) > 5.0f) assert((r.cents < 0.0f) == (cents < 0.0f));
   }
-  // Borne haute observee aujourd'hui. Un resserrement de cette valeur est le
-  // critere de reussite de la PHASE 2.
-  assert(worst < 25.0f);
-  assert(worst > 10.0f);   // si cela devient faux, la precision a ETE amelioree
+  assert(worst < 1.0f);
+
+  // Sur toute la tessiture utile, y compris le haut ou le pas de tau devient
+  // grossier (55 cents par pas a 1046 Hz).
+  float worstWide = 0.0f;
+  for (int midi = 60; midi <= 88; midi++) {
+    const float hz = PitchMath::midiToHz(midi);
+    audiosig::pureTone(buf.data(), kFrame, hz, 0.4f, kFs);
+    PitchResult r = det.analyse(buf.data(), kFrame);
+    assert(r.valid && r.midi == midi);
+    const float err = fabsf(r.cents);
+    if (err > worstWide) worstWide = err;
+  }
+  assert(worstWide < 2.0f);
+}
+
+// COMPARAISON A/B demandee par la PHASE 2.1 : la fenetre de Hann appliquee
+// avant YIN degrade bien la mesure. Les deux chemins partagent desormais le
+// meme raffinement fractionnaire, donc la comparaison isole l'effet de la
+// SEULE fenetre.
+void pitch_window_ab_comparison() {
+  std::vector<float> buf(kFrame), copy(kFrame);
+  float worstPlain = 0.0f, worstWindowed = 0.0f;
+  double sumPlain = 0.0, sumWindowed = 0.0;
+  int n = 0;
+
+  for (int midi = 60; midi <= 84; midi++) {
+    const float hz = PitchMath::midiToHz(midi);
+    audiosig::pureTone(buf.data(), kFrame, hz, 0.4f, kFs);
+
+    PitchDetector a;
+    PitchResult plain = a.analyse(buf.data(), kFrame);
+
+    // detectWindowed() modifie son tampon : on lui en donne une copie.
+    copy = buf;
+    PitchDetector b;
+    PitchResult windowed = b.detectWindowed(copy.data(), kFrame);
+
+    assert(plain.valid && windowed.valid);
+    assert(plain.midi == midi && windowed.midi == midi);
+
+    const float ep = fabsf(plain.cents);
+    const float ew = fabsf(windowed.cents);
+    if (ep > worstPlain) worstPlain = ep;
+    if (ew > worstWindowed) worstWindowed = ew;
+    sumPlain += ep; sumWindowed += ew; n++;
+
+    // Le signal d'origine n'est PAS modifie par analyse() : c'est ce qui permet
+    // de reutiliser la meme frame pour l'analyse spectrale.
+    assert(buf[10] != copy[10] || buf[10] == 0.0f);
+  }
+
+  // L'ecart doit etre net, pas marginal : la fenetre coute au moins un facteur
+  // 5 sur l'erreur moyenne.
+  assert(sumPlain * 5.0 < sumWindowed);
+  assert(worstPlain < worstWindowed);
+  assert(worstPlain < 1.0f);
+}
+
+// analyse() ne doit JAMAIS modifier le tampon de l'appelant.
+void pitch_analysis_is_non_destructive() {
+  PitchDetector det;
+  std::vector<float> buf(kFrame), before(kFrame);
+  audiosig::fluteLike(buf.data(), kFrame, 523.25f, 0.4f, 0.02f, kFs);
+  before = buf;
+
+  PitchResult r = det.analyse(buf.data(), kFrame);
+  assert(r.valid);
+  for (int i = 0; i < kFrame; i++) assert(buf[i] == before[i]);
+
+  // detect() non plus (il n'ajoute que le suivi de stabilite).
+  det.detect(buf.data(), kFrame);
+  for (int i = 0; i < kFrame; i++) assert(buf[i] == before[i]);
 }
 
 void ref_pitch_octave_relationships() {
@@ -545,13 +614,200 @@ void level_clipping_detection() {
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// PHASE 2.2 - Note attendue : levee deterministe de l'ambiguite d'octave
+// ---------------------------------------------------------------------------
+
+void pitch_expected_note_resolves_octave() {
+  std::vector<float> buf(kFrame);
+
+  // Sans note attendue, le comportement general reste STRICTEMENT inchange.
+  {
+    PitchDetector det;
+    audiosig::pureTone(buf.data(), kFrame, 440.0f, 0.4f, kFs);
+    PitchResult r = det.analyse(buf.data(), kFrame);
+    assert(r.valid && r.midi == 69);
+    assert(!r.expectedMatch && !r.octaveAbove && !r.octaveBelow);
+  }
+
+  // Avec la note attendue, une note correcte est signalee comme telle.
+  {
+    PitchDetector det;
+    det.setExpectedMidiNote(69);
+    assert(det.hasExpectedNote() && det.expectedMidiNote() == 69);
+    audiosig::pureTone(buf.data(), kFrame, 440.0f, 0.4f, kFs);
+    PitchResult r = det.analyse(buf.data(), kFrame);
+    assert(r.valid && r.midi == 69);
+    assert(r.expectedMatch);
+    assert(!r.octaveAbove && !r.octaveBelow);
+  }
+
+  // Overblow : la flute sonne une octave au-dessus. La note est detectee pour
+  // ce qu'elle est, ET signalee comme octave superieure de l'attendue.
+  {
+    PitchDetector det;
+    det.setExpectedMidiNote(69);
+    audiosig::pureTone(buf.data(), kFrame, PitchMath::midiToHz(81), 0.4f, kFs);
+    PitchResult r = det.analyse(buf.data(), kFrame);
+    assert(r.valid && r.midi == 81);
+    assert(r.octaveAbove);
+    assert(!r.expectedMatch);
+    assert(!r.octaveBelow);
+  }
+
+  // Octave en dessous.
+  {
+    PitchDetector det;
+    det.setExpectedMidiNote(81);
+    audiosig::pureTone(buf.data(), kFrame, PitchMath::midiToHz(69), 0.4f, kFs);
+    PitchResult r = det.analyse(buf.data(), kFrame);
+    assert(r.valid && r.midi == 69);
+    assert(r.octaveBelow);
+    assert(!r.octaveAbove && !r.expectedMatch);
+  }
+
+  // Une note voisine (pas une octave) n'est ni un match ni une octave.
+  {
+    PitchDetector det;
+    det.setExpectedMidiNote(69);
+    audiosig::pureTone(buf.data(), kFrame, PitchMath::midiToHz(71), 0.4f, kFs);
+    PitchResult r = det.analyse(buf.data(), kFrame);
+    assert(r.valid && r.midi == 71);
+    assert(!r.expectedMatch && !r.octaveAbove && !r.octaveBelow);
+  }
+
+  // Bonne note mais franchement fausse en justesse : ce n'est PAS un match.
+  // 45 cents arrondit encore a la note 69 (le basculement est a 50 cents) mais
+  // depasse MIC_EXPECTED_TOLERANCE_CENTS. C'est precisement la distinction que
+  // la calibration doit voir : "la bonne note, mal jouee".
+  {
+    PitchDetector det;
+    det.setExpectedMidiNote(69);
+    const float hz = PitchMath::midiToHz(69) * powf(2.0f, 45.0f / 1200.0f);
+    audiosig::pureTone(buf.data(), kFrame, hz, 0.4f, kFs);
+    PitchResult r = det.analyse(buf.data(), kFrame);
+    assert(r.valid && r.midi == 69);
+    assert(r.cents > 40.0f && r.cents < 50.0f);
+    assert(!r.expectedMatch);
+    assert(!r.octaveAbove && !r.octaveBelow);
+  }
+
+  // La meme note a 20 cents reste un match : la tolerance n'est pas absurde.
+  {
+    PitchDetector det;
+    det.setExpectedMidiNote(69);
+    const float hz = PitchMath::midiToHz(69) * powf(2.0f, 20.0f / 1200.0f);
+    audiosig::pureTone(buf.data(), kFrame, hz, 0.4f, kFs);
+    PitchResult r = det.analyse(buf.data(), kFrame);
+    assert(r.valid && r.midi == 69 && r.expectedMatch);
+  }
+
+  // Note attendue invalide : ignoree proprement, pas de comportement bizarre.
+  {
+    PitchDetector det;
+    det.setExpectedMidiNote(0);    assert(!det.hasExpectedNote());
+    det.setExpectedMidiNote(-5);   assert(!det.hasExpectedNote());
+    det.setExpectedMidiNote(200);  assert(!det.hasExpectedNote());
+    det.setExpectedMidiNote(60);   assert(det.hasExpectedNote());
+    det.clearExpectedMidiNote();   assert(!det.hasExpectedNote());
+  }
+}
+
+// Un spectre ou l'harmonique 2 DOMINE la fondamentale est le piege classique de
+// l'erreur d'octave. Sans note attendue le detecteur peut se tromper ; avec
+// elle, il doit trancher correctement.
+void pitch_expected_note_helps_on_dominant_h2() {
+  std::vector<float> buf(kFrame);
+  ToneSpec s;
+  s.sampleRate = kFs;
+  s.f0 = PitchMath::midiToHz(62);   // re4, ~293,66 Hz
+  s.amp = 0.10f;                    // fondamentale FAIBLE
+  s.h2 = 0.50f;                     // harmonique 2 dominante
+  s.h3 = 0.15f;
+  audiosig::fill(buf.data(), kFrame, s);
+
+  PitchDetector det;
+  det.setExpectedMidiNote(62);
+  PitchResult r = det.analyse(buf.data(), kFrame);
+  assert(r.valid);
+  assert(r.midi == 62);           // la fondamentale, pas l'harmonique
+  assert(r.expectedMatch);
+}
+
+// ---------------------------------------------------------------------------
+// PHASE 2.3 - Stabilite
+// ---------------------------------------------------------------------------
+
+void pitch_stability_tracking() {
+  std::vector<float> buf(kFrame);
+
+  // Note parfaitement tenue : la stabilite monte a 1 une fois l'historique plein.
+  {
+    PitchDetector det;
+    PitchResult r;
+    for (int i = 0; i < MIC_PITCH_HISTORY - 1; i++) {
+      audiosig::pureTone(buf.data(), kFrame, 440.0f, 0.4f, kFs, (size_t)i * kFrame);
+      r = det.detect(buf.data(), kFrame);
+      assert(r.stability == 0.0f);   // historique incomplet : 0, pas une valeur inventee
+    }
+    audiosig::pureTone(buf.data(), kFrame, 440.0f, 0.4f, kFs,
+                       (size_t)(MIC_PITCH_HISTORY - 1) * kFrame);
+    r = det.detect(buf.data(), kFrame);
+    assert(r.stability > 0.99f);
+  }
+
+  // Pitch qui derive franchement : la stabilite s'effondre.
+  {
+    PitchDetector det;
+    PitchResult r;
+    for (int i = 0; i < MIC_PITCH_HISTORY; i++) {
+      const float hz = PitchMath::midiToHz(69) * powf(2.0f, (float)(i * 20) / 1200.0f);
+      audiosig::pureTone(buf.data(), kFrame, hz, 0.4f, kFs, (size_t)i * kFrame);
+      r = det.detect(buf.data(), kFrame);
+    }
+    assert(r.stability < 0.1f);   // dispersion >= 140 cents
+  }
+
+  // resetTracking() vide bien l'historique.
+  {
+    PitchDetector det;
+    for (int i = 0; i < MIC_PITCH_HISTORY; i++) {
+      audiosig::pureTone(buf.data(), kFrame, 440.0f, 0.4f, kFs, (size_t)i * kFrame);
+      det.detect(buf.data(), kFrame);
+    }
+    det.resetTracking();
+    audiosig::pureTone(buf.data(), kFrame, 440.0f, 0.4f, kFs);
+    PitchResult r = det.detect(buf.data(), kFrame);
+    assert(r.stability == 0.0f);
+  }
+
+  // Une mesure NON VALIDE n'entre pas dans l'historique : elle ferait paraitre
+  // instable une note qui ne l'est pas.
+  {
+    PitchDetector det;
+    for (int i = 0; i < MIC_PITCH_HISTORY; i++) {
+      audiosig::pureTone(buf.data(), kFrame, 440.0f, 0.4f, kFs, (size_t)i * kFrame);
+      det.detect(buf.data(), kFrame);
+    }
+    audiosig::whiteNoise(buf.data(), kFrame, 0.4f);
+    PitchResult noise = det.detect(buf.data(), kFrame);
+    assert(!noise.valid);
+    audiosig::pureTone(buf.data(), kFrame, 440.0f, 0.4f, kFs);
+    PitchResult back = det.detect(buf.data(), kFrame);
+    assert(back.stability > 0.99f);   // l'historique n'a pas ete pollue
+  }
+}
+
 }  // namespace
 
 void audio_run_all_tests() {
   ref_pitch_pure_tones_in_range();
   ref_pitch_degraded_inputs();
   ref_pitch_saturated_and_harmonic();
-  ref_pitch_cents_accuracy_current_limit();
+  pitch_cents_accuracy_is_sub_cent();
+  pitch_window_ab_comparison();
+  pitch_analysis_is_non_destructive();
   ref_pitch_octave_relationships();
   ref_rms_reference_values();
   ref_raw_signal_classification();
@@ -563,4 +819,7 @@ void audio_run_all_tests() {
   ring_steady_state_does_not_drift();
   level_rms_peak_and_dbfs();
   level_clipping_detection();
+  pitch_expected_note_resolves_octave();
+  pitch_expected_note_helps_on_dominant_h2();
+  pitch_stability_tracking();
 }

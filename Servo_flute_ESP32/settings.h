@@ -148,6 +148,32 @@ Set MIC_ENABLED to false if no mic is connected.
 #define MIC_CLIP_THRESHOLD      0.98f
 #define MIC_CLIP_RATIO_WARN     0.005f  // 0,5 % des echantillons
 
+// --- Detection de pitch (PHASE 2) -----------------------------------------
+
+// Nombre de mesures conservees pour calculer la stabilite. A 16 ms par frame
+// (hop 512 a 32 kHz), 8 frames couvrent ~128 ms : assez pour distinguer une
+// note tenue d'une attaque, assez court pour reagir a un changement de note.
+#define MIC_PITCH_HISTORY       8
+
+// Dispersion (en cents) qui correspond a une stabilite nulle. 50 cents est un
+// demi-demi-ton : au-dela, la note n'est plus tenue, elle derive.
+#define MIC_PITCH_STABILITY_REF_CENTS 50.0f
+
+// Tolerance pour declarer qu'une note detectee EST la note attendue.
+// Strictement INFERIEURE a 50 cents, sinon le critere ne sert a rien : au-dela
+// de 50 cents la frequence arrondit deja a la note MIDI voisine, donc c'est le
+// numero de note qui differe et la comparaison en cents ne se declenche jamais.
+// A 35 cents, une note JUSTE en hauteur mais franchement fausse en justesse est
+// distinguee d'une note correcte - exactement ce que la calibration doit voir.
+#define MIC_EXPECTED_TOLERANCE_CENTS  35.0f
+
+// Iterations de la recherche ternaire qui affine le lag YIN a pas
+// fractionnaire. Chaque iteration divise l'intervalle par 1,5 et coute deux
+// evaluations de d(tau). 10 iterations ramenent l'erreur pire-cas de 47 a
+// 0,53 cent pour environ +12 % du cout YIN ; 12 iterations donnent 0,27 cent
+// pour +15 %. C'est le bouton a tourner si le temps CPU devient critique.
+#define MIC_YIN_REFINE_ITERATIONS 10
+
 /*----------------------------------------------------------------------------
  * Auto-calibration (microphone-driven per-note airflow calibration)
  *--------------------------------------------------------------------------*/

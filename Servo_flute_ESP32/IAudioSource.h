@@ -30,6 +30,14 @@ public:
   virtual float getPitchConfidence() const = 0; // YIN confidence 0..1
   virtual bool  isPitchValid() const = 0;    // confidence high enough to trust the pitch
 
+  // Note visee, quand elle est connue (calibration, note jouee). Elle permet au
+  // detecteur de lever l'ambiguite d'octave de facon deterministe en evaluant
+  // explicitement les lags de 3*f0, 2*f0, f0 et f0/2. L'implementation par
+  // defaut ne fait RIEN : une source qui n'analyse pas le pitch (double de test,
+  // source simulee) reste valide sans modification.
+  virtual void setExpectedMidiNote(int midi) { (void)midi; }
+  virtual void clearExpectedMidiNote() {}
+
   // Frame freshness: the sequence increments once per newly analysed I2S frame,
   // and the timestamp records when that analysis happened (millis). Consumers use
   // these to avoid counting the same frame twice and to detect a frozen source.

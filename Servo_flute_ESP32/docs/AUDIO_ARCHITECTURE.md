@@ -110,11 +110,17 @@ Measured on synthetic pure tones at 440 Hz:
 | 450.28 Hz (+40 c) | 450.24 Hz | −0.2 c |
 
 One τ step is 23.6 cents at 440 Hz, so the parabolic interpolation is achieving
-essentially nothing. The likely cause is that **the Hann window is applied before
-the YIN difference function**: the envelope makes `x[i] − x[i+τ]` depend on
-position in the frame, which skews `d(τ)` and displaces its minimum. Windowing
-belongs to the spectral path (FFT/Goertzel), not to an autocorrelation-family
-estimator.
+essentially nothing.
+
+> **Correction (PHASE 2).** The first diagnosis written here blamed the Hann
+> window applied before the YIN difference function. That was **wrong as the
+> primary cause**. Measuring both variants showed removing the window alone moved
+> the mean error from 20.9 to 19.6 cents — nothing. The dominant cause is that
+> **parabolic interpolation over three integer τ values is a poor fit to `d(τ)`,
+> which is strongly asymmetric near its minimum**, and the τ grid gets coarse as
+> pitch rises (55 cents per step at 1046 Hz). See PHASE 2 for the measurement and
+> the fix. The window *is* harmful — it costs a factor of 17 once the real fix is
+> in place — but it was not what made the error 47 cents.
 
 The note number stays correct throughout, which is why the auto-calibration
 never surfaced this: it only ever compares MIDI note numbers and a ±50 cent
@@ -255,6 +261,122 @@ playback. And `MIC_ANALYSIS_HOP_SIZE` is the single knob: raising it to 768 or
 
 ---
 
+## PHASE 2 — Pitch detection
+
+Fixes A0-3 and A0-8.
+
+### The real cause of A0-3
+
+The Phase 0 hypothesis (the Hann window) was measured and rejected. The actual
+mechanism, on a pure C6 whose true period is 30.578 samples:
+
+```
+d(30) = 0.579    d(31) = 0.308    d(32) = 3.470
+```
+
+The discrete minimum is τ = 31, but the true minimum is at 30.58. Point 32 is
+already far up the steep side and drags the fitted parabola right, giving 31.42
+— **−47 cents**. The three points do bracket the minimum, but `d(τ)` is nothing
+like a parabola there.
+
+### The fix: fractional-lag refinement
+
+`refineTau()` now runs a ternary search on `d(τ)` evaluated at genuinely
+**fractional** lags, with the shifted sample obtained by linear interpolation.
+This removes the dependence on the τ grid entirely.
+
+| Variant | Worst error | Mean error |
+|---|---|---|
+| Parabolic on integer τ, Hann window (PHASE 0) | 47.5 c | 20.9 c |
+| Fractional refinement, Hann window kept | 4.4 c | 2.6 c |
+| **Fractional refinement, no window (current)** | **0.17 c** | **0.15 c** |
+
+Measured over MIDI 60–84 on pure tones. Both changes matter; the refinement is
+the large one, the window removal is the last factor of 17.
+
+Cost: `MIC_YIN_REFINE_ITERATIONS` = 10 → 20 extra evaluations of `d` over a
+512-sample window = **+12 % on YIN**. 12 iterations would give 0.27 c for +15 %;
+6 would give 2.6 c for +8 %. This is the knob if CPU becomes tight.
+
+### Why the window had to go anyway
+
+YIN belongs to the autocorrelation family: it compares `x[i]` with `x[i+τ]`.
+Multiplying by an envelope gives those two samples *different* gains, so
+
+```
+d(τ) = Σ (w[i]·x[i] − w[i+τ]·x[i+τ])²
+```
+
+no longer measures periodicity alone — it also measures the slope of the
+envelope, which grows with τ. Windowing belongs to the spectral path, where it
+limits leakage between bins. It has no place in a time-domain estimator.
+
+Removing it also made `analyse()` **non-destructive**: DC removal is a no-op for
+a difference (`(x[i]−m) − (x[i+τ]−m) = x[i] − x[i+τ]`), so nothing needs to be
+written back. The same frame therefore stays available for spectral analysis in
+PHASE 3, with no copy. The 4 kB Hann table disappeared with it.
+
+`detectWindowed()` is kept solely as the A/B reference for
+`pitch_window_ab_comparison`, so the improvement is demonstrated rather than
+asserted. It is not used in production.
+
+### Expected-note tracking (A0-8)
+
+`setExpectedMidiNote()` lets the detector evaluate the lags of `3·f0`, `2·f0`,
+`f0` and `f0/2` explicitly. Candidates are walked **from the shortest lag
+upward**, and the first one below threshold wins.
+
+Taking the *deepest* dip instead would be wrong: for any periodic signal `d(2T)`
+and `d(3T)` are naturally deep. An A4 overblown to 880 Hz has a very deep dip at
+the 440 Hz lag (exactly two periods), and picking it would report a correct A4
+while the instrument is sounding an octave high. Shortest-qualifying-lag is the
+same principle as the generic path, and correct for the same reason.
+
+`IAudioSource` gained `setExpectedMidiNote` / `clearExpectedMidiNote` with
+**default no-op implementations**, so existing implementers (the test fakes) are
+unaffected. `AutoCalibrator` declares the target note in `prepareNote()` and
+clears it in `safeHardware()`, so the bias never outlives the calibration.
+
+### Enriched result
+
+`PitchResult` now carries `midi`, `cents`, `expectedMatch`, `octaveAbove`,
+`octaveBelow` and `stability`. Stability is the spread of the last
+`MIC_PITCH_HISTORY` (8 ≈ 128 ms) valid measurements in absolute cents, mapped
+through `AutoCalMath::pitchStability`. Invalid measurements never enter the
+history — they would make a steady note look unstable.
+
+`MIC_EXPECTED_TOLERANCE_CENTS` was lowered from 50 to 35 cents. At 50 the cents
+check was dead code: beyond 50 cents the frequency already rounds to the
+neighbouring MIDI note, so the note *number* differs and the cents comparison
+never fires. At 35 a note that is right in pitch class but badly out of tune is
+distinguishable from a correct one.
+
+### Cost
+
+| | PHASE 0 | PHASE 1 | PHASE 2 |
+|---|---|---|---|
+| Static RAM | 13 096 B | 19 324 B | **15 300 B** |
+| YIN per frame | 81 920 MAC | 81 920 MAC | 92 160 MAC |
+| Frames/s | 25 | 62.5 | 62.5 |
+| Estimated core load | ~5 % | ~12.8 % | **~14.4 %** |
+
+RAM *fell* by 4 kB versus PHASE 1 because the Hann table is gone; the net cost
+over the original baseline is +2.2 kB. The core-load figures remain estimates
+from operation counts — **no device was available to measure them**.
+
+### Tests added
+
+| Test | What it proves |
+|---|---|
+| `pitch_cents_accuracy_is_sub_cent` | < 1 c over ±40 c detuning, < 2 c over MIDI 60–88, correct sign |
+| `pitch_window_ab_comparison` | The windowed path is at least 5× worse on mean error, with the refinement held constant |
+| `pitch_analysis_is_non_destructive` | Neither `analyse()` nor `detect()` modifies the caller's buffer |
+| `pitch_expected_note_resolves_octave` | Match, octave above, octave below, neighbouring note, right note badly out of tune, invalid inputs |
+| `pitch_expected_note_helps_on_dominant_h2` | A weak fundamental with a dominant H2 still resolves to the fundamental |
+| `pitch_stability_tracking` | 0 until the history fills, ~1 on a held note, collapses on drift, reset works, invalid frames never pollute it |
+
+---
+
 ## Target architecture
 
 ```
@@ -289,7 +411,7 @@ analysis. This is the same ownership rule the actuator path already follows.
 |---|---|---|
 | 0 | Audit + reference tests | **unit tested** |
 | 1 | Ring buffer, overlap, clipping, dBFS, I2S diagnostics | **unit tested** |
-| 2 | YIN without window, expected-note tracking, richer result | not started |
+| 2 | YIN without window, expected-note tracking, richer result | **unit tested** |
 | 3 | Goertzel + optional FFT | not started |
 | 4 | `AcousticFeatures` | not started |
 | 5+ | Noise model, classification, timing, quality, calibration | not started |
@@ -298,5 +420,6 @@ analysis. This is the same ownership rule the actuator path already follows.
 
 - Nothing has been validated against a real microphone or a real flute.
 - CPU time is estimated from operation counts, never measured on the device.
-- Pitch accuracy is currently ±23 cents (A0-3); anything built on a cents
-  measurement is therefore not yet trustworthy.
+- Pitch accuracy on synthetic pure tones is now < 1 cent (was ±47). This has
+  never been checked against a real microphone, where noise, room response and
+  the flute's own spectrum all apply.
