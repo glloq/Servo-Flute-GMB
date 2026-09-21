@@ -13,6 +13,11 @@ void fillLevel(AcousticFeatures& f, const FrameLevel& level) {
 }
 
 void fillPitch(AcousticFeatures& f, const PitchResult& p, bool soundDetected) {
+  // Le verdict du detecteur est PROPAGE, et non laisse a reconstituer par chaque
+  // consommateur a partir de la confiance : deux criteres reimplementes finissent
+  // toujours par diverger.
+  f.pitchValid = p.valid;
+  f.stabilityValid = p.stabilityValid;
   f.pitchHz = p.hz;
   f.pitchMidi = (int16_t)p.midi;
   f.cents = p.cents;
@@ -28,12 +33,20 @@ void fillPitch(AcousticFeatures& f, const PitchResult& p, bool soundDetected) {
 void fillSpectral(AcousticFeatures& f, const float* frame, size_t n, float f0,
                   SpectralAnalyzer* spectral, bool runFft) {
   f.spectralValid = false;
+  f.fftValid = false;
   f.fundamentalEnergy = 0.0f;
   f.h2Ratio = 0.0f;
   f.h3Ratio = 0.0f;
   f.harmonicToNoiseRatio = 0.0f;
 
-  if (frame == nullptr || n == 0 || f0 <= 0.0f) return;
+  if (frame == nullptr || n == 0 || f0 <= 0.0f) {
+    // Rien de mesurable : les descripteurs de FORME de spectre sont effaces
+    // aussi. Les laisser porter la valeur d'une note precedente ferait decrire
+    // cette note a une frame qui n'en contient pas.
+    f.spectralCentroid = 0.0f;
+    f.spectralFlatness = 0.0f;
+    return;
+  }
 
   const HarmonicEnergies h = SpectralAnalyzer::harmonics(frame, n, f0);
   if (!h.valid) return;
@@ -63,9 +76,14 @@ void fillSpectral(AcousticFeatures& f, const float* frame, size_t n, float f0,
   if (f.harmonicToNoiseRatio < -MIC_HNR_MAX_DB) f.harmonicToNoiseRatio = -MIC_HNR_MAX_DB;
 
 #if MIC_FFT_ENABLED
+  // La FFT ne tourne qu'une frame sur MIC_SPECTRAL_DECIMATION. Quand elle ne
+  // tourne pas, les deux champs gardent la DERNIERE valeur mesuree - elle reste
+  // la meilleure information disponible - mais `fftValid` reste faux pour que
+  // personne ne la prenne pour une mesure de cette frame.
   if (spectral != nullptr && runFft && spectral->computeSpectrum(frame, n)) {
     f.spectralCentroid = spectral->spectralCentroid();
     f.spectralFlatness = spectral->spectralFlatness();
+    f.fftValid = true;
   }
 #else
   (void)spectral;

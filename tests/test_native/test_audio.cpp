@@ -1606,6 +1606,89 @@ void noise_capture_is_bounded() {
   assert(!idle.endCapture());   // aucune frame accumulee
 }
 
+
+// Regression : les champs FFT ne doivent pas se faire passer pour frais.
+//
+// La FFT ne tourne qu'une frame sur MIC_SPECTRAL_DECIMATION, mais spectralValid
+// couvrait TOUS les champs spectraux, FFT comprise. Un consommateur lisait donc
+// une platitude vieille de 64 ms en la croyant mesuree sur la frame courante -
+// et rien ne le signalait, puisque spectralValid etait vrai.
+void features_fft_fields_never_claim_to_be_fresh() {
+  std::vector<float> buf(kFrame);
+  SpectralAnalyzer sa;
+  AcousticFeatures f;
+
+  ToneSpec a;
+  a.sampleRate = kFs; a.f0 = 500.0f; a.amp = 0.5f; a.h2 = 0.25f;
+  audiosig::fill(buf.data(), kFrame, a);
+
+  // Frame avec FFT : les deux champs sont mesures ET signales comme tels.
+  AcousticFeatureBuilder::fillSpectral(f, buf.data(), kFrame, 500.0f, &sa, true);
+  assert(f.spectralValid);
+  assert(f.fftValid);
+  const float measuredCentroid = f.spectralCentroid;
+  const float measuredFlatness = f.spectralFlatness;
+  assert(measuredCentroid > 0.0f);
+
+  // Frame SANS FFT (decimation) : Goertzel reste valide, mais fftValid tombe.
+  // Les valeurs restent disponibles - ce sont les dernieres reellement mesurees -
+  // et c'est justement pour cela que le drapeau est indispensable.
+  AcousticFeatureBuilder::fillSpectral(f, buf.data(), kFrame, 500.0f, &sa, false);
+  assert(f.spectralValid);
+  assert(!f.fftValid);
+  assert(f.spectralCentroid == measuredCentroid);
+  assert(f.spectralFlatness == measuredFlatness);
+
+  // Plus rien de mesurable : les descripteurs de forme sont EFFACES. Les laisser
+  // ferait decrire une note precedente a une frame qui n'en contient pas.
+  AcousticFeatureBuilder::fillSpectral(f, buf.data(), kFrame, 0.0f, &sa, true);
+  assert(!f.spectralValid && !f.fftValid);
+  assert(f.spectralCentroid == 0.0f);
+  assert(f.spectralFlatness == 0.0f);
+}
+
+// Regression : le verdict du detecteur doit traverser l'assemblage.
+//
+// pitchValid et stabilityValid etaient perdus, obligeant chaque consommateur a
+// les reconstituer depuis la confiance. Deux criteres reimplementes finissent
+// toujours par diverger de l'original. Pire pour la stabilite : 0 signifiait
+// "historique pas encore rempli" AUTANT que "tres instable", donc un classement
+// naif etiquetait chaque DEBUT de note comme un defaut.
+void features_validity_flags_survive_assembly() {
+  std::vector<float> buf(kFrame);
+  PitchDetector det;
+  AcousticFeatures f;
+
+  // Bruit : le detecteur rejette, et le rejet doit etre visible.
+  audiosig::whiteNoise(buf.data(), kFrame, 0.4f);
+  PitchResult bad = det.detect(buf.data(), kFrame);
+  assert(!bad.valid);
+  AcousticFeatureBuilder::fillPitch(f, bad, false);
+  assert(!f.pitchValid);
+
+  // Note propre, historique PAS ENCORE rempli : le pitch est valide, la
+  // stabilite ne l'est pas. Les deux doivent etre distinguables.
+  det.resetTracking();
+  audiosig::pureTone(buf.data(), kFrame, 440.0f, 0.4f, kFs);
+  PitchResult first = det.detect(buf.data(), kFrame);
+  assert(first.valid && !first.stabilityValid);
+  AcousticFeatureBuilder::fillPitch(f, first, true);
+  assert(f.pitchValid);
+  assert(!f.stabilityValid);
+  assert(f.pitchStability == 0.0f);   // 0, mais 0 "non mesure"
+
+  // Historique rempli sur une note tenue : la stabilite devient mesuree.
+  PitchResult held = first;
+  for (int i = 1; i < MIC_PITCH_HISTORY; i++) {
+    audiosig::pureTone(buf.data(), kFrame, 440.0f, 0.4f, kFs, (size_t)i * kFrame);
+    held = det.detect(buf.data(), kFrame);
+  }
+  assert(held.stabilityValid);
+  AcousticFeatureBuilder::fillPitch(f, held, true);
+  assert(f.stabilityValid);
+  assert(f.pitchStability > 0.99f);
+}
+
 }  // namespace
 
 void audio_run_all_tests() {
@@ -1641,6 +1724,8 @@ void audio_run_all_tests() {
   features_level_and_pitch_assembly();
   features_spectral_assembly();
   features_end_to_end_on_one_frame();
+  features_fft_fields_never_claim_to_be_fresh();
+  features_validity_flags_survive_assembly();
   filters_shape_is_correct();
   filters_can_be_disabled_and_are_safe();
   filters_must_run_on_the_stream_not_per_frame();

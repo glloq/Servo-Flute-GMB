@@ -55,22 +55,36 @@ struct AcousticFeatures {
   bool clipping = false;
 
   // --- Pitch (PHASE 2) -----------------------------------------------------
+  // `pitchValid` porte le verdict du detecteur. Il etait perdu a l'assemblage,
+  // obligeant chaque consommateur a le reconstituer a partir de la confiance -
+  // donc a reimplementer un critere qui existe deja, et a diverger de lui.
+  bool pitchValid = false;
   float pitchHz = 0.0f;
   int16_t pitchMidi = 0;
   float cents = 0.0f;
   float pitchConfidence = 0.0f;
+  // Voir PitchResult : 0 signifie "pas encore mesure" AUTANT que "tres
+  // instable". Sans ce drapeau, un consommateur classe chaque debut de note
+  // comme un defaut.
+  bool stabilityValid = false;
   float pitchStability = 0.0f;
 
   // --- Spectre (PHASE 3) ---------------------------------------------------
-  // Renseignes une frame sur MIC_SPECTRAL_DECIMATION. TOUJOURS verifier ce
-  // drapeau avant de lire les champs qui suivent.
+  // Goertzel tourne a chaque frame : `spectralValid` couvre fundamentalEnergy,
+  // h2Ratio, h3Ratio et harmonicToNoiseRatio.
   bool spectralValid = false;
   float fundamentalEnergy = 0.0f;
   float h2Ratio = 0.0f;
   float h3Ratio = 0.0f;
   float harmonicToNoiseRatio = 0.0f;   // dB
-  float spectralCentroid = 0.0f;       // Hz
-  float spectralFlatness = 0.0f;       // 0..1
+  // La FFT, elle, ne tourne qu'une frame sur MIC_SPECTRAL_DECIMATION.
+  // `fftValid` dit si les deux champs qui suivent ont ete RAFRAICHIS sur CETTE
+  // frame. Sans lui, `spectralValid` laissait croire qu'ils l'etaient toujours,
+  // alors qu'ils portaient la valeur d'une frame vieille de 64 ms : un
+  // consommateur lisait une platitude perimee en la croyant fraiche.
+  bool fftValid = false;
+  float spectralCentroid = 0.0f;       // Hz, derniere valeur MESUREE
+  float spectralFlatness = 0.0f;       // 0..1, derniere valeur MESUREE
 
   // --- Rapport signal / bruit (PHASE 5) ------------------------------------
   // Mesure contre le profil de bruit de l'etat REEL de la source d'air, et non

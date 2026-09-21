@@ -54,7 +54,13 @@ struct PitchResult {
   bool octaveBelow = false;    // une ou plusieurs octaves EN DESSOUS
 
   // Stabilite 0..1 sur les dernieres trames analysees (1 = parfaitement stable).
-  // Vaut 0 tant que l'historique n'est pas rempli.
+  //
+  // `stabilityValid` leve une ambiguite qui rendait ce champ inexploitable :
+  // `stability` vaut 0 tant que l'historique n'est pas rempli, ET 0 pour une
+  // note franchement instable. Les deux etaient indiscernables, si bien qu'un
+  // consommateur classait chaque DEBUT de note comme un defaut. Tant que
+  // `stabilityValid` est faux, la stabilite n'a simplement pas ete mesuree.
+  bool stabilityValid = false;
   float stability = 0.0f;
 };
 

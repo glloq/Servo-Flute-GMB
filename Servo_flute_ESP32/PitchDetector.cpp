@@ -271,6 +271,7 @@ PitchResult PitchDetector::detect(const float* samples, size_t n) {
       if (_history[i] > hi) hi = _history[i];
     }
     r.stability = AutoCalMath::pitchStability(hi - lo, MIC_PITCH_STABILITY_REF_CENTS);
+    r.stabilityValid = true;
   }
   return r;
 }

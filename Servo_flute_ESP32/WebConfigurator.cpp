@@ -338,7 +338,10 @@ void WebConfigurator::update() {
           aj += ",\"h2\":" + String(af.h2Ratio, 3);
           aj += ",\"h3\":" + String(af.h3Ratio, 3);
           aj += ",\"hnr\":" + String(af.harmonicToNoiseRatio, 1);
-          if (af.spectralCentroid > 0.0f) {
+          // Uniquement si la FFT a tourne sur CETTE frame. Sinon ces deux
+          // valeurs datent de la frame precedente (jusqu'a 64 ms) et les
+          // envoyer comme une mesure courante serait faux.
+          if (af.fftValid) {
             aj += ",\"centroid\":" + String(af.spectralCentroid, 0);
             aj += ",\"flatness\":" + String(af.spectralFlatness, 3);
           }
