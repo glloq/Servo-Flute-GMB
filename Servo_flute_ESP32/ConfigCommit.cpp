@@ -4,7 +4,8 @@
 ConfigCommitResult commitCandidateConfig(RuntimeConfig& active,
                                          RuntimeConfig& candidate,
                                          InstrumentManager* instrument,
-                                         ConfigSaveFn save) {
+                                         ConfigSaveFn save,
+                                         const ConfigCommitGuard* guard) {
   ConfigCommitResult out{false, false, false, false, false, false, "", "", ""};
 
   // --- 1. Validation complete du CANDIDAT (la config active n'a pas bouge) ---
@@ -47,8 +48,17 @@ ConfigCommitResult commitCandidateConfig(RuntimeConfig& active,
   // --- 5. COMMIT ATOMIQUE ---
   // Une seule affectation : les controleurs passent directement de l'ancienne
   // configuration complete a la nouvelle configuration complete et validee.
+  // Le verrou (s'il existe) n'entoure QUE cette affectation : un lecteur
+  // concurrent n'attend jamais la validation ni l'ecriture flash.
   RuntimeConfig previous = active;
+  bool locked = true;
+  if (guard && guard->lock) locked = guard->lock(guard->ctx);
   active = candidate;
+  if (locked && guard && guard->unlock) guard->unlock(guard->ctx);
+  if (!locked) {
+    if (out.warnings.length() > 0) out.warnings += "; ";
+    out.warnings += "config_lock_timeout";
+  }
   out.activated = true;
 
   if (instrument) {

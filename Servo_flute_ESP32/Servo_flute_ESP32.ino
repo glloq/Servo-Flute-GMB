@@ -101,10 +101,16 @@ void setup() {
   // Forcer l'etat sur des le demarrage
   initSafeState();
 
-  // Communication serie pour debug
+  // Port serie TOUJOURS ouvert. Il ne sert pas qu'au debug : c'est le seul canal
+  // par lequel l'appareil communique ses secrets d'acces (cle WPA2 du hotspot et
+  // mot de passe web, affiches au premier demarrage et apres une regeneration par
+  // le bouton BOOT). Quand Serial.begin() etait conditionne par DEBUG, une
+  // compilation avec DEBUG=0 rendait ces impressions muettes : l'appareil etait
+  // alors inaccessible, sans aucun moyen de recuperer le mot de passe. Seuls les
+  // journaux verbeux restent conditionnes par DEBUG.
+  Serial.begin(115200);
+  delay(SERIAL_STARTUP_DELAY_MS);
   if (DEBUG) {
-    Serial.begin(115200);
-    delay(SERIAL_STARTUP_DELAY_MS);
     Serial.println();
     Serial.println("========================================");
     Serial.println("  SERVO FLUTE ESP32 - INITIALISATION");

@@ -37,6 +37,10 @@ public:
   void begin();
   bool beginSafe();
   void initializeSafeOutputs();
+  // Force chaque GPIO d'actionneur CONFIGURABLE (solenoide, ventilateur, pompes)
+  // a son niveau inactif. Appele avant le sondage I2C pour qu'un echec
+  // d'initialisation ne laisse aucune sortie en haute impedance.
+  void driveConfiguredActuatorPinsInactive();
   void update();
 
   // Interface MIDI (appelee par BleMidiHandler ou WifiMidiHandler)
@@ -183,8 +187,12 @@ private:
   // Drive the direct pump / fan from the sequencer's real note transitions.
   void updateAirSourceFromSequencer();
 
-  // Air source (pump/fan): track sequencer state transitions
+  // Air source (pump/fan): track sequencer state transitions AND whether the held
+  // note is actually sounding. CC2 (breath) can silence a held note without any
+  // sequencer transition: the demand has to follow that too, otherwise the pump
+  // keeps pushing against a valve the breath controller just closed.
   NoteState _prevSequencerState;
+  bool _prevNoteSounding;
 };
 
 #endif

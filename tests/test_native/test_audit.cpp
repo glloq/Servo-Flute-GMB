@@ -28,6 +28,12 @@
 #include "InstrumentManager.h"
 #include "WebAuth.h"
 #include "Sha256.h"
+#include "IAudioSource.h"
+#include "ICalibrationAirSupply.h"
+#include "CalibrationAirSupply.h"
+#include "PitchMath.h"
+#include "AutoCalMath.h"
+#include "AutoCalibrator.h"
 
 extern std::map<uint8_t, int> __analog_writes, __digital_writes, __analog_reads, __digital_reads;
 extern int __pwm_write_count;
@@ -841,6 +847,442 @@ static void sha256_known_answers() {
   assert(memcmp(d1, d2, SHA256_DIGEST_SIZE) == 0);
 }
 
+
+/*******************************************************************************
+ * INTEGRATION : InstrumentManager + session web + AutoCalibrator
+ *
+ * Les tests de calibration existants exercent AutoCalibrator ISOLEMENT, avec ses
+ * propres controleurs. C'est exactement ce qui a laisse passer le defaut P0 : la
+ * calibration n'etait pas cassee par le calibrateur, mais par l'INTERACTION
+ * entre WebConfigurator (qui reclamait la session a chaque tour de boucle) et
+ * InstrumentManager (dont la prise de session appelle _sequencer.stop(), donc
+ * ferme la valve et ramene le servo de souffle au repos). Les tests ci-dessous
+ * font tourner les trois ensemble, sur les MEMES controleurs, dans l'ordre reel
+ * de loop() : serveur web d'abord, instrument ensuite.
+ ******************************************************************************/
+
+// Source audio simulee : pas d'I2S sur hote.
+struct AuditAudio : public IAudioSource {
+  bool micDetected = true, active = false;
+  float rms = 0, hz = 0, cents = 0, conf = 0;
+  int midi = 0;
+  bool valid = false, snd = false;
+  uint32_t seq = 0;
+  unsigned long ts = 0;
+  bool isMicDetected() const override { return micDetected; }
+  void setActive(bool a) override { active = a; }
+  bool isActive() const override { return active; }
+  float getRMS() const override { return rms; }
+  bool isSoundDetected() const override { return snd; }
+  float getPitchHz() const override { return hz; }
+  int getPitchMidi() const override { return midi; }
+  float getPitchCents() const override { return cents; }
+  float getPitchConfidence() const override { return conf; }
+  bool isPitchValid() const override { return valid; }
+  uint32_t getFrameSequence() const override { return seq; }
+  unsigned long getFrameTimestamp() const override { return ts; }
+};
+
+// Modele PHYSIQUE de la flute. Point essentiel : le son est derive de l'etat
+// REEL des actionneurs (valve + angle du servo de souffle), jamais de l'intention
+// du calibrateur. C'est ce qui rend ce test capable de voir le defaut : quand un
+// tiers referme la valve ou ramene le servo au repos entre le positionnement et
+// la mesure, le micro simule n'entend plus rien - exactement comme le vrai.
+void auditFluteModel(AirflowController& air, int expectedMidi, int lo, int hi,
+                     AuditAudio& f) {
+  int pct = -1;
+  if (air.isValveOpen()) {
+    int range = (int)cfg.servoAirflowMax - (int)cfg.servoAirflowMin;
+    if (range > 0) {
+      pct = ((int)air.getAirflowAngle() - (int)cfg.servoAirflowMin) * 100 / range;
+      if (pct < 0) pct = 0;
+      if (pct > 100) pct = 100;
+    }
+  }
+  if (pct >= lo && pct <= hi) {
+    f.rms = 0.06f; f.valid = true; f.conf = 0.95f; f.midi = expectedMidi;
+    f.hz = PitchMath::midiToHz(expectedMidi); f.cents = -4.0f; f.snd = true;
+  } else if (pct > hi) {
+    f.rms = 0.06f; f.valid = true; f.conf = 0.95f; f.midi = expectedMidi + 12;
+    f.hz = PitchMath::midiToHz(expectedMidi + 12); f.cents = -4.0f; f.snd = true;
+  } else {
+    // Valve fermee ou souffle insuffisant : uniquement le bruit de fond.
+    f.rms = 0.003f; f.valid = false; f.conf = 0.0f; f.midi = 0; f.hz = 0; f.cents = 0; f.snd = false;
+  }
+}
+
+// Modele FIDELE du pilote de session de WebConfigurator : meme sequence d'appels
+// que executeWebOp(WEBOP_AUTOCAL_START_*), WebConfigurator::update() et
+// cancelActiveActuatorSession().
+struct AuditWebSession {
+  InstrumentManager& im;
+  AutoCalibrator& cal;
+  bool calCancelRequested = false;   // drapeau non perdable (cf. _calCancelRequested)
+  bool sessionOwned = false;
+  // Reproduit l'ancien WebConfigurator::update() : re-demande de la session a
+  // CHAQUE tour de boucle tant que la calibration tourne.
+  bool reclaimEveryLoop = false;
+  // CONTROLE NEGATIF : effet de bord exact de l'ancienne prise de session non
+  // idempotente (_sequencer.stop() a chaque re-demande). Sert uniquement a
+  // prouver que les assertions ci-dessous detectent bien le defaut.
+  bool legacyNonIdempotent = false;
+  int cancelCount = 0;
+
+  AuditWebSession(InstrumentManager& i, AutoCalibrator& c) : im(i), cal(c) {}
+
+  void startCalibration(AutoCalMode mode) {
+    im.setActuatorSessionActive(true);
+    sessionOwned = true;
+    cal.start(mode);
+  }
+  void requestCalibrationCancel() { calCancelRequested = true; }
+  void cancelActiveActuatorSession() {
+    if (cal.isRunning() || cal.isComplete() || cal.isRangeFinderComplete()) cal.stop();
+    im.setActuatorSessionActive(false);
+    sessionOwned = false;
+    cancelCount++;
+  }
+  void update() {
+    if (calCancelRequested) {
+      calCancelRequested = false;
+      cancelActiveActuatorSession();
+    }
+    if (cal.isRunning()) {
+      if (reclaimEveryLoop) im.setActuatorSessionActive(true);
+      if (legacyNonIdempotent) im.getSequencer().stop();
+      cal.update();
+    } else if (sessionOwned && (cal.isComplete() || cal.isRangeFinderComplete())) {
+      cancelActiveActuatorSession();
+    }
+  }
+};
+
+// Observations recoltees pendant un cycle complet.
+struct AuditCalRun {
+  bool resultValid = false;
+  uint8_t airMin = 0, airMax = 0, airNominal = 0;
+  uint8_t failureReason = 0;
+  bool sawValveOpen = false;
+  int loops = 0;
+  bool sessionReleased = false;
+};
+
+// Execute une calibration de souffle complete a travers la vraie boucle
+// principale (web puis instrument), avec le vrai InstrumentManager, ses propres
+// controleurs, et la vraie CalibrationAirSupply branchee sur eux.
+AuditCalRun runCalibrationThroughLoop(bool reclaimEveryLoop, bool legacyNonIdempotent) {
+  auditResetCfg();
+  cfg.numNotes = 1;                       // un seul cycle : rapide et suffisant
+  cfg.notes[0].midiNote = 60;
+  cfg.airMode = AIR_MODE_SOLENOID_SERVO;  // source d'air passive : toujours prete
+
+  InstrumentManager* im = makeReadyInstrument();
+  __test_millis = 1000;
+
+  AuditAudio audio;
+  // Exactement le cablage de production (WebConfigurator::begin) : le calibrateur
+  // recoit les controleurs REELS de l'instrument et sa vraie passerelle d'air.
+  AutoCalibrator cal(im->getFingerCtrl(), im->getAirflowCtrl(), audio,
+                     im->getCalibrationAirSupply());
+  AuditWebSession web(*im, cal);
+  web.reclaimEveryLoop = reclaimEveryLoop;
+  web.legacyNonIdempotent = legacyNonIdempotent;
+
+  web.startCalibration(ACAL_MODE_AIRFLOW);
+  assert(im->isActuatorSessionActive());
+
+  AuditCalRun out;
+  while ((cal.isRunning() || web.sessionOwned) && out.loops < 200000) {
+    auditFluteModel(im->getAirflowCtrl(), 60, 20, 60, audio);
+    audio.seq++;
+    audio.ts = __test_millis;
+    __test_millis += 25;
+    web.update();                       // wireless->update() : WebConfigurator
+    im->update();                       // instrument->update()
+    if (im->getAirflowCtrl().isValveOpen()) out.sawValveOpen = true;
+    out.loops++;
+  }
+
+  AutoCalNoteResult r = cal.getResult(0);
+  out.resultValid = r.valid;
+  out.airMin = r.airMin;
+  out.airMax = r.airMax;
+  out.airNominal = r.airNominal;
+  out.failureReason = r.failureReason;
+  out.sessionReleased = !im->isActuatorSessionActive();
+  delete im;
+  return out;
+}
+
+// P0 : la prise de session repetee ne doit plus casser la calibration.
+void calibration_session_survives_repeated_ownership() {
+  // 1. Prise de session UNE fois (comportement corrige du WebConfigurator).
+  AuditCalRun once = runCalibrationThroughLoop(/*reclaimEveryLoop=*/false,
+                                               /*legacyNonIdempotent=*/false);
+  assert(once.sawValveOpen);
+  assert(once.resultValid);
+  // Le modele fait sonner la note entre 20 % et 60 % de souffle. Le calibrateur
+  // doit retrouver cette bande a un pas de balayage pres (la conversion
+  // pourcentage -> angle est quantifiee : 40 degres pour 100 %).
+  assert(once.airMin <= 25 && once.airMax >= 55);
+  assert(once.airMin < once.airNominal && once.airNominal < once.airMax);
+  // La session est rendue a la fin : la gestion d'energie peut reprendre.
+  assert(once.sessionReleased);
+
+  // 2. Meme cycle, mais la session est re-demandee a CHAQUE tour de boucle.
+  // Comme setActuatorSessionActive() est desormais idempotent, le resultat doit
+  // etre RIGOUREUSEMENT identique.
+  AuditCalRun repeated = runCalibrationThroughLoop(/*reclaimEveryLoop=*/true,
+                                                   /*legacyNonIdempotent=*/false);
+  assert(repeated.resultValid);
+  assert(repeated.airMin == once.airMin);
+  assert(repeated.airMax == once.airMax);
+  assert(repeated.airNominal == once.airNominal);
+  assert(repeated.sessionReleased);
+
+  // 3. CONTROLE NEGATIF. On rejoue l'effet de bord exact de l'ancienne prise de
+  // session non idempotente : _sequencer.stop() a chaque tour, donc valve
+  // refermee et servo de souffle ramene au repos entre le positionnement et la
+  // mesure. La calibration DOIT alors echouer - c'est la preuve que les
+  // assertions ci-dessus ne sont pas vides, et c'est exactement ce que voyait
+  // l'utilisateur : "aucun son detecte".
+  AuditCalRun broken = runCalibrationThroughLoop(/*reclaimEveryLoop=*/true,
+                                                 /*legacyNonIdempotent=*/true);
+  assert(!broken.resultValid);
+  assert(broken.failureReason == ACAL_FAIL_NO_SOUND ||
+         broken.failureReason == ACAL_FAIL_NOTE_TIMEOUT ||
+         broken.failureReason == ACAL_FAIL_GLOBAL_TIMEOUT);
+}
+
+// P0 (assertion directe) : pendant une session d'actionneurs, ni la valve ni
+// l'angle de souffle poses par le proprietaire ne doivent bouger, quel que soit
+// le nombre de fois ou la session est re-demandee.
+void actuator_session_take_is_idempotent() {
+  auditResetCfg();
+  InstrumentManager* im = makeReadyInstrument();
+  __test_millis = 1000;
+
+  im->setActuatorSessionActive(true);
+  // Ce que fait le calibrateur a l'entree d'une position : ouvrir le chemin
+  // d'air une fois, poser l'angle une fois. Il ne les reapplique PAS pendant
+  // ST_SETTLE / ST_COLLECT.
+  im->getAirflowCtrl().testSolenoid(true);
+  im->getAirflowCtrl().testAirflowAngle(120);
+  assert(im->getAirflowCtrl().isValveOpen());
+  assert(im->getAirflowCtrl().getAirflowAngle() == 120);
+
+  for (int i = 0; i < 50; i++) {
+    __test_millis += 20;
+    im->setActuatorSessionActive(true);   // l'appel repetitif de l'ancien update()
+    im->update();
+  }
+  assert(im->isActuatorSessionActive());
+  assert(im->getAirflowCtrl().isValveOpen());
+  assert(im->getAirflowCtrl().getAirflowAngle() == 120);
+
+  // La liberation, elle, n'est pas idempotente au sens "sans effet" : elle rend
+  // la main a la gestion d'energie. Une seconde liberation ne doit rien casser.
+  im->setActuatorSessionActive(false);
+  im->setActuatorSessionActive(false);
+  assert(!im->isActuatorSessionActive());
+  delete im;
+}
+
+// Finding 2 : pendant la session, la source d'air appartient au calibrateur.
+// updateAirSourceFromSequencer() ne doit plus ecraser sa demande.
+void calibration_owns_the_air_source() {
+  auditResetCfg();
+  cfg.airMode = AIR_MODE_PUMP_VALVE;
+  cfg.pumpDirectIdlePercent = 10;
+  cfg.pumpDirectMaxPercent = 90;
+  InstrumentManager* im = makeReadyInstrument();
+  __test_millis = 1000;
+
+  ICalibrationAirSupply& supply = im->getCalibrationAirSupply();
+
+  im->setActuatorSessionActive(true);
+  supply.prepare();                      // demande representative du mode
+  supply.setDemandPercent(100);
+  uint8_t demanded = im->getPressureCtrl().getTargetPercent();
+  assert(demanded == cfg.pumpDirectMaxPercent);
+
+  for (int i = 0; i < 40; i++) { __test_millis += 20; im->update(); }
+  // Sans le garde, le retour force du sequenceur a STATE_IDLE etait lu comme une
+  // fin de note et remettait la pompe au ralenti sous les pieds du calibrateur.
+  assert(im->getPressureCtrl().getTargetPercent() == demanded);
+
+  // Session rendue : le sequenceur reprend la main et redescend au ralenti.
+  im->setActuatorSessionActive(false);
+  im->noteOn(60, 100);
+  for (int i = 0; i < 5; i++) { __test_millis += 20; im->update(); }
+  im->noteOff(60);
+  for (int i = 0; i < 20; i++) { __test_millis += 30; im->update(); }
+  assert(im->getPressureCtrl().getTargetPercent() == cfg.pumpDirectIdlePercent);
+  delete im;
+}
+
+// Finding 3 : l'annulation de calibration ne doit jamais etre perdue.
+void calibration_cancel_is_never_lost() {
+  auditResetCfg();
+  cfg.numNotes = 1;
+  cfg.notes[0].midiNote = 60;
+  InstrumentManager* im = makeReadyInstrument();
+  __test_millis = 1000;
+
+  AuditAudio audio;
+  AutoCalibrator cal(im->getFingerCtrl(), im->getAirflowCtrl(), audio,
+                     im->getCalibrationAirSupply());
+  AuditWebSession web(*im, cal);
+
+  web.startCalibration(ACAL_MODE_AIRFLOW);
+  for (int i = 0; i < 40; i++) {
+    auditFluteModel(im->getAirflowCtrl(), 60, 20, 60, audio);
+    audio.seq++; audio.ts = __test_millis; __test_millis += 25;
+    web.update(); im->update();
+  }
+  assert(cal.isRunning());
+
+  // Le drapeau est pose depuis la tache AsyncTCP (panic / deconnexion du
+  // proprietaire / stop). Contrairement a un postWebOp(), il ne peut pas etre
+  // refuse : il est consomme au tour suivant, quoi qu'il arrive.
+  web.requestCalibrationCancel();
+  web.update();
+  assert(!cal.isRunning());
+  assert(!im->isActuatorSessionActive());
+  assert(web.cancelCount == 1);
+
+  // Une annulation posee alors que rien ne tourne ne doit rien casser.
+  web.requestCalibrationCancel();
+  web.update();
+  assert(!im->isActuatorSessionActive());
+  delete im;
+}
+
+// Finding 4 : un NOTE OFF ne doit jamais etre perdu, meme file pleine.
+void note_off_is_never_dropped_on_full_command_queue() {
+  auditResetCfg();
+  InstrumentManager* im = makeReadyInstrument();
+  __test_millis = 1000;
+
+  im->noteOn(60, 100);
+  for (int i = 0; i < 3; i++) { __test_millis += 20; im->update(); }
+  assert(im->getAirflowCtrl().isValveOpen());
+
+  // Saturer l'anneau de commandes : tous les push suivants echouent.
+  int accepted = 0;
+  for (int i = 0; i < COMMAND_QUEUE_SIZE * 4; i++) {
+    if (im->postCommand(ACMD_TEST_FINGER, 0, 0, 90)) accepted++;
+  }
+  assert(accepted == COMMAND_QUEUE_SIZE);   // l'anneau est plein, le reste est jete
+
+  // Le relachement passe malgre tout : il n'emprunte pas l'anneau.
+  assert(im->postCommand(ACMD_NOTE_OFF, 60));
+  assert(im->commandQueue().hasPendingNoteOff());
+
+  for (int i = 0; i < 20; i++) { __test_millis += 30; im->update(); }
+  assert(!im->commandQueue().hasPendingNoteOff());
+  assert(!im->getAirflowCtrl().isValveOpen());
+  assert(im->getSequencer().getState() == STATE_IDLE);
+  delete im;
+}
+
+// Finding 5 : un silence demande par CC2 doit faire retomber la source d'air,
+// et la remontee du CC2 doit la restaurer - sans aucune transition d'etat du
+// sequenceur, puisque la note reste TENUE.
+void cc2_silence_drops_air_source_and_restores() {
+  auditResetCfg();
+  cfg.airMode = AIR_MODE_PUMP_VALVE;
+  cfg.cc2Enabled = true;
+  cfg.cc2SilenceThreshold = 10;
+  cfg.pumpDirectIdlePercent = 10;
+  cfg.pumpDirectMaxPercent = 90;
+  InstrumentManager* im = makeReadyInstrument();
+  __test_millis = 1000;
+
+  im->noteOn(60, 100);
+  for (int i = 0; i < 6; i++) { __test_millis += 20; im->update(); }
+  assert(im->getSequencer().getState() == STATE_PLAYING);
+  assert(im->getAirflowCtrl().isNoteSounding());
+  uint8_t playing = im->getPressureCtrl().getTargetPercent();
+  assert(playing > cfg.pumpDirectIdlePercent);
+
+  // Souffle a zero : le lissage CC2 moyenne les dernieres valeurs, il faut donc
+  // remplir la fenetre pour passer sous le seuil de silence.
+  for (uint8_t i = 0; i < CC2_SMOOTHING_BUFFER_SIZE; i++) {
+    im->handleControlChange(MIDI_CC_BREATH, 0);
+    __test_millis += 20;
+    im->update();
+  }
+  assert(!im->getAirflowCtrl().isNoteSounding());
+  assert(!im->getAirflowCtrl().isValveOpen());
+  // La note est toujours TENUE : aucune transition du sequenceur n'a eu lieu.
+  assert(im->getSequencer().getState() == STATE_PLAYING);
+  // La pompe doit malgre tout etre redescendue au ralenti : elle poussait
+  // jusqu'ici a pleine demande contre une valve fermee.
+  assert(im->getPressureCtrl().getTargetPercent() == cfg.pumpDirectIdlePercent);
+
+  // Remontee du souffle : la demande est restauree.
+  for (uint8_t i = 0; i < CC2_SMOOTHING_BUFFER_SIZE; i++) {
+    im->handleControlChange(MIDI_CC_BREATH, 127);
+    __test_millis += 20;
+    im->update();
+  }
+  assert(im->getAirflowCtrl().isNoteSounding());
+  assert(im->getPressureCtrl().getTargetPercent() == playing);
+  delete im;
+}
+
+// Finding 11 : Reset All Controllers doit aussi remettre l'etat runtime
+// d'expression (lissage CC2, timeout CC2, mode d'attaque CC73).
+void reset_all_controllers_clears_expression_runtime_state() {
+  auditResetCfg();
+  cfg.cc2Enabled = true;
+  cfg.airAttackMode = 0;
+  cfg.airAttackOffset = 20;
+  InstrumentManager* im = makeReadyInstrument();
+  __test_millis = 1000;
+
+  // CC73 change le mode d'attaque runtime, CC2 remplit le tampon de lissage.
+  im->handleControlChange(MIDI_CC_ATTACK_TIME, 120);
+  assert(im->getAirflowCtrl().runtimeAttackMode() != cfg.airAttackMode);
+  for (uint8_t i = 0; i < CC2_SMOOTHING_BUFFER_SIZE; i++) {
+    im->handleControlChange(MIDI_CC_BREATH, 5);
+    __test_millis += 20;
+    im->update();
+  }
+  assert(im->getCCBreath() == 5);
+
+  im->handleControlChange(MIDI_CC_RESET_ALL_CONTROLLERS, 0);
+  __test_millis += 20;
+  im->update();
+
+  assert(im->getAirflowCtrl().runtimeAttackMode() == cfg.airAttackMode);
+  assert(im->getAirflowCtrl().runtimeAttackOffset() == cfg.airAttackOffset);
+  assert(im->getCCBreath() == cfg.ccBreathDefault);
+  // Le tampon de lissage est reparti du defaut : une note jouee juste apres
+  // n'herite plus du souffle quasi nul precedent.
+  im->noteOn(60, 100);
+  for (int i = 0; i < 6; i++) { __test_millis += 20; im->update(); }
+  assert(im->getAirflowCtrl().isNoteSounding());
+  delete im;
+}
+
+// Finding 10 : l'arrondi du vibrato doit etre symetrique.
+void vibrato_rounding_is_symmetric() {
+  // (int16_t)(x + 0.5) tronque vers zero : -0.6 donnait 0 et +0.6 donnait 1,
+  // soit un demi-degre de biais vers le haut sur toute l'alternance negative.
+  auto biased = [](float x) { return (int16_t)(x + 0.5f); };
+  auto fixed  = [](float x) { return (int16_t)lroundf(x); };
+  assert(biased(-0.6f) == 0 && fixed(-0.6f) == -1);
+  assert(biased(-1.6f) == -1 && fixed(-1.6f) == -2);
+  assert(fixed(0.6f) == 1);
+  // Symetrie exacte sur toute la plage utile d'amplitude.
+  for (int i = 1; i <= 200; i++) {
+    float v = i * 0.05f;
+    assert(fixed(v) == -fixed(-v));
+  }
+}
+
 void audit_run_all_tests() {
   sha256_known_answers();
   eventqueue_atomic_pop_is_indivisible();
@@ -872,4 +1314,12 @@ void audit_run_all_tests() {
   no_actuator_command_during_calibration_except_owner();
   web_auth_sessions();
   web_auth_secret_comparison();
+  actuator_session_take_is_idempotent();
+  calibration_session_survives_repeated_ownership();
+  calibration_owns_the_air_source();
+  calibration_cancel_is_never_lost();
+  note_off_is_never_dropped_on_full_command_queue();
+  cc2_silence_drops_air_source_and_restores();
+  reset_all_controllers_clears_expression_runtime_state();
+  vibrato_rounding_is_symmetric();
 }

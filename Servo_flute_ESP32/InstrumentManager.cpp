@@ -33,7 +33,8 @@ InstrumentManager::InstrumentManager()
     _cc2PendingValue(0),
     _powerOnRequested(false),
     _resetControllersRequested(false),
-    _prevSequencerState(STATE_IDLE) {
+    _prevSequencerState(STATE_IDLE),
+    _prevNoteSounding(false) {
 }
 
 void InstrumentManager::begin() {
@@ -68,6 +69,14 @@ bool InstrumentManager::beginSafe() {
 
   // Le resultat du sondage I2C est memorise : les diagnostics exposent l'etat
   // REEL des cartes plutot qu'un "probe requires hardware" generique.
+  // Mettre TOUTES les sorties d'actionneurs configurables a leur niveau inactif
+  // AVANT de sonder l'I2C. Si le sondage echoue, beginSafe() sort en erreur sans
+  // jamais appeler PressureController::begin() / FanController::begin() : les
+  // broches de pompe et de ventilateur restaient alors en haute impedance,
+  // c'est-a-dire une grille de MOSFET flottante. (Une resistance de pull-down
+  // materielle reste la protection de reference - voir HARDWARE_TEST_MATRIX.)
+  driveConfiguredActuatorPinsInactive();
+
   _hardwareProbeDone = true;
   _pca0Detected = detectPca(PCA_ADDR_BOARD0);
   _pca1Detected = detectPca(PCA_ADDR_BOARD1);
@@ -120,6 +129,25 @@ bool InstrumentManager::beginSafe() {
   return true;
 }
 
+void InstrumentManager::driveConfiguredActuatorPinsInactive() {
+  // La configuration est deja validee a ce stade (le boot refuse de construire
+  // l'InstrumentManager sinon), donc ces numeros de broches sont surs.
+  if (configurationUsesSolenoidValve(cfg)) {
+    pinMode(cfg.solenoidPin, OUTPUT);
+    digitalWrite(cfg.solenoidPin, SOLENOID_ACTIVE_HIGH ? LOW : HIGH);
+  }
+  if (configurationUsesFan(cfg)) {
+    pinMode(cfg.fanPin, OUTPUT);
+    digitalWrite(cfg.fanPin, LOW);
+  }
+  if (configurationUsesPumps(cfg)) {
+    for (uint8_t i = 0; i < cfg.numPumps && i < MAX_PUMPS; i++) {
+      pinMode(cfg.pumpPins[i], OUTPUT);
+      digitalWrite(cfg.pumpPins[i], LOW);
+    }
+  }
+}
+
 void InstrumentManager::initializeSafeOutputs() {
   _fingerCtrl.closeAllFingers();
   _airflowCtrl.closeValve();
@@ -145,8 +173,12 @@ void InstrumentManager::update() {
   // noteOn/noteOff/CC below) keeps external MIDI from corrupting the measurement.
   if (!_actuatorSessionActive) _sequencer.update();
   _airflowCtrl.update();
-  // Drive the direct pump / fan from the sequencer's real note transitions (§6/§7).
-  updateAirSourceFromSequencer();
+  // Traduction "etat du sequenceur + souffle reel -> consigne pompe/ventilateur".
+  // Placee APRES _airflowCtrl.update() pour lire le souffle de CE tour, et
+  // DESACTIVEE pendant une session d'actionneurs : c'est alors
+  // CalibrationAirSupply qui possede la source d'air, et la laisser tourner ici
+  // ecraserait sa demande a chaque boucle.
+  if (!_actuatorSessionActive) updateAirSourceFromSequencer();
   if (cfg.airMode >= AIR_MODE_PUMP_VALVE) {
     _pressureCtrl.update();
   }
@@ -250,17 +282,20 @@ void InstrumentManager::updateAirSourceFromSequencer() {
   if (!directPump && !fan) return;
 
   NoteState curState = _sequencer.getState();
-  if (curState == _prevSequencerState) return;
+  // Le souffle effectif, pas seulement l'etat du sequenceur : CC2 peut faire
+  // taire une note TENUE sans aucune transition d'etat. Sans ce second critere,
+  // la pompe restait a 100 % alors que la valve venait d'etre fermee.
+  bool sounding = _airflowCtrl.isNoteSounding();
+  if (curState == _prevSequencerState && sounding == _prevNoteSounding) return;
 
-  // A note the sequencer accepts always enters STATE_POSITIONING (including a fast
-  // replacement PLAYING->POSITIONING->PLAYING, which never reaches IDLE), so this
-  // is where we (re)apply the play demand from the note's real velocity. Every
-  // note has ended only when the sequencer returns to STATE_IDLE, so that is where
-  // we drop back to idle.
-  bool noteStarting = (curState == STATE_POSITIONING && _prevSequencerState != STATE_POSITIONING);
-  bool allNotesEnded = (curState == STATE_IDLE && _prevSequencerState != STATE_IDLE);
+  // POSITIONING est volontairement traite comme "demande de jeu" : la source
+  // d'air a besoin de ce temps d'avance pour monter avant l'ouverture de la
+  // valve. C'est seulement une note PLAYING rendue muette par CC2 qui redescend
+  // au ralenti.
+  bool wantPlayDemand = (curState == STATE_POSITIONING) ||
+                        (curState == STATE_PLAYING && sounding);
 
-  if (noteStarting) {
+  if (wantPlayDemand) {
     byte vel = _sequencer.getCurrentVelocity();
     if (directPump) {
       _pressureCtrl.setTargetPercent(computePumpDemand(vel));
@@ -268,7 +303,8 @@ void InstrumentManager::updateAirSourceFromSequencer() {
       _fanCtrl.onNoteOn();
       _fanCtrl.setSpeed(computeFanDemand(vel));
     }
-  } else if (allNotesEnded) {
+  } else {
+    // Plus de note qui sonne (fin de note, ou silence demande par CC2).
     if (directPump) {
       _pressureCtrl.setTargetPercent(cfg.pumpDirectIdlePercent);
     } else {
@@ -277,6 +313,7 @@ void InstrumentManager::updateAirSourceFromSequencer() {
   }
 
   _prevSequencerState = curState;
+  _prevNoteSounding = sounding;
 }
 
 void InstrumentManager::managePower() {
@@ -325,12 +362,32 @@ void InstrumentManager::registerActuatorActivity() {
 }
 
 void InstrumentManager::setActuatorSessionActive(bool active) {
+  // IDEMPOTENT, et c'est essentiel. L'appelant (WebConfigurator) pouvait
+  // reclamer la session a CHAQUE tour de boucle pendant une calibration. Comme
+  // la prise de possession appelle _sequencer.stop(), qui ferme la valve et
+  // ramene le servo de souffle au repos, le calibrateur se faisait ecraser en
+  // permanence : il positionne son angle une seule fois (ST_SET) puis mesure
+  // pendant ST_SETTLE/ST_COLLECT sans jamais reappliquer la consigne. Il
+  // mesurait donc valve fermee et servo au repos. Toute re-demande identique est
+  // desormais un no-op (on se contente de maintenir l'alimentation servo).
+  if (_actuatorSessionActive == active) {
+    if (active) ensureServosPowered();
+    return;
+  }
+
   _actuatorSessionActive = active;
+
   if (active) {
     // Release any note the sequencer was playing and drop queued MIDI so nothing
     // fires while the calibrator owns the actuators, then hold servo power.
     _sequencer.stop();
     _eventQueue.clear();
+    // Aligner le suivi de transition : sans cela, le retour force a STATE_IDLE
+    // serait lu au tour suivant comme une fin de note normale et remettrait la
+    // pompe / le ventilateur a leur consigne de repos, par-dessus la demande que
+    // le calibrateur vient d'etablir via CalibrationAirSupply.
+    _prevSequencerState = STATE_IDLE;
+    _prevNoteSounding = false;
     ensureServosPowered();
   }
 }
@@ -538,6 +595,12 @@ bool InstrumentManager::postCommand(const ActuatorCommand& cmd) {
     requestPanic();
     return true;
   }
+  if (cmd.type == ACMD_NOTE_OFF) {
+    // Un relachement ne doit jamais etre perdu par saturation de l'anneau :
+    // il partirait sinon avec la note, la valve et le souffle encore ouverts.
+    _commands.requestNoteOff(cmd.a);
+    return true;
+  }
   if (cmd.type == ACMD_CONTROL_CHANGE && isChannelModeControlChange(cmd.a)) {
     if (cmd.a == MIDI_CC_RESET_ALL_CONTROLLERS) {
       _resetControllersRequested = true;
@@ -572,6 +635,21 @@ void InstrumentManager::processCommands() {
   while (_commands.pop(cmd)) {
     applyCommand(cmd);
     // Un panic arrive pendant le drainage annule les commandes restantes.
+    if (_commands.panicPending()) {
+      _commands.takePanicRequest();
+      allSoundOff();
+      return;
+    }
+  }
+
+  // Les Note Off en attente sont appliques APRES l'anneau, pas avant. Un Note Off
+  // n'atterrit dans le bitmap que parce que l'anneau etait plein, donc tout ce
+  // qui le suivait a ete refuse aussi : le traiter en premier pourrait au
+  // contraire le faire preceder un Note On deja en file et laisser la note
+  // bloquee. Dans le pire cas on perd une note ; jamais on n'en bloque une.
+  uint8_t pendingNote;
+  while (_commands.takePendingNoteOff(pendingNote)) {
+    noteOff(pendingNote);
     if (_commands.panicPending()) {
       _commands.takePanicRequest();
       allSoundOff();
@@ -697,6 +775,7 @@ void InstrumentManager::allSoundOff() {
   _commands.clear();
   _cc2Pending = false;
   _sequencer.stop();
+  _prevNoteSounding = false;
   // Le panic doit TENIR. updateAirSourceFromSequencer() reagit aux transitions
   // d'etat du sequenceur : sans cette ligne, le retour force a STATE_IDLE serait
   // vu comme "fin normale de note" au tour suivant et remettrait la pompe a sa
@@ -741,6 +820,10 @@ void InstrumentManager::resetAllControllers() {
   _ccBrightness = cfg.ccBrightnessDefault;
   _airflowCtrl.setCCValues(_ccVolume, _ccExpression, _ccModulation);
   _airflowCtrl.setCC74Brightness(_ccBrightness);
+  // Remettre aussi l'etat runtime d'expression (lissage CC2, timeout CC2, mode
+  // d'attaque CC73) : le manager ne detenait que les valeurs de CC.
+  _airflowCtrl.resetRuntimeState();
+  _cc2Pending = false;
 
   if (DEBUG) {
     Serial.println("DEBUG: InstrumentManager - Reset All Controllers");

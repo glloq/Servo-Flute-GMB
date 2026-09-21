@@ -210,6 +210,7 @@ visible from the API:
 | Applied | `200 {"ok":true,"saved":true,"applied":true,"restart_required":false}` | new configuration active |
 | Needs a hardware re-init | `200 {"ok":true,"saved":true,"applied":false,"restart_required":true,"restarting":true}` | new configuration saved, **old one still active**, actuators safed, controlled reboot scheduled |
 | Loop busy / not answering | `503 {"ok":false,"error":"busy"}` | unchanged |
+| Configuration lock not obtained | `503 {"ok":false,"error":"config_busy"}` | unchanged — only `GET /api/config` and `GET /api/diagnostics` can answer this |
 
 A configuration change bumps the General-Midi-Boop revision only in the "applied"
 row — validated, saved *and* active. A restart-required change is announced after
@@ -253,6 +254,20 @@ The WebSocket is authenticated in-band: the server answers a new connection with
 `{"t":"error","msg":"unauthorized"}` until the client sends
 `{"t":"auth","token":"<token>"}`. The embedded UI does this automatically and
 shows a sign-in overlay when a 401 comes back.
+
+The server stores the **token** for each authenticated socket, not just the
+connection id, and revalidates it on every command. An open socket therefore
+expires with its session exactly like an HTTP caller (and slides its window the
+same way), and a password change — which revokes all sessions — takes effect on
+the WebSocket immediately instead of leaving long-lived connections authenticated
+under the old secret. A socket whose token has expired gets
+`{"t":"error","msg":"unauthorized"}` again and must re-send `{"t":"auth",...}`.
+
+`GET /api/config` and `GET /api/diagnostics` read the whole active configuration
+(about 5 KB) from the network task while `loop()` may be committing a new one.
+Both take a short lock around the read and answer `503 config_busy` rather than
+block the TCP stack; the commit holds the same lock only for the single atomic
+assignment, never across validation or the flash write.
 
 ### Initial credentials
 

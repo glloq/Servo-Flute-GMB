@@ -4,6 +4,7 @@ CommandQueue::CommandQueue(uint8_t capacity)
   : _capacity(capacity < 1 ? 1 : capacity), _head(0), _tail(0), _count(0),
     _dropped(0), _panic(false) {
   _items = new ActuatorCommand[_capacity];
+  for (uint8_t i = 0; i < 4; i++) _pendingNoteOff[i] = 0;
 }
 
 CommandQueue::~CommandQueue() {
@@ -46,7 +47,41 @@ void CommandQueue::requestPanic() {
   _head = 0;
   _tail = 0;
   _count = 0;
+  // Un panic coupe deja tout : les relachements en attente n'ont plus d'objet.
+  for (uint8_t i = 0; i < 4; i++) _pendingNoteOff[i] = 0;
   portEXIT_CRITICAL(&_mux);
+}
+
+void CommandQueue::requestNoteOff(uint8_t note) {
+  if (note > 127) return;
+  portENTER_CRITICAL(&_mux);
+  _pendingNoteOff[note >> 5] |= (uint32_t)1UL << (note & 31);
+  portEXIT_CRITICAL(&_mux);
+}
+
+bool CommandQueue::takePendingNoteOff(uint8_t& note) {
+  bool found = false;
+  portENTER_CRITICAL(&_mux);
+  for (uint8_t w = 0; w < 4 && !found; w++) {
+    if (_pendingNoteOff[w] == 0) continue;
+    for (uint8_t b = 0; b < 32; b++) {
+      if (_pendingNoteOff[w] & ((uint32_t)1UL << b)) {
+        _pendingNoteOff[w] &= ~((uint32_t)1UL << b);
+        note = (uint8_t)((w << 5) | b);
+        found = true;
+        break;
+      }
+    }
+  }
+  portEXIT_CRITICAL(&_mux);
+  return found;
+}
+
+bool CommandQueue::hasPendingNoteOff() const {
+  portENTER_CRITICAL(&_mux);
+  bool any = (_pendingNoteOff[0] | _pendingNoteOff[1] | _pendingNoteOff[2] | _pendingNoteOff[3]) != 0;
+  portEXIT_CRITICAL(&_mux);
+  return any;
 }
 
 bool CommandQueue::takePanicRequest() {
@@ -69,6 +104,10 @@ void CommandQueue::clear() {
   _head = 0;
   _tail = 0;
   _count = 0;
+  // clear() n'est appele qu'au demarrage et par allSoundOff(), qui eteint deja
+  // tout : un Note Off encore en attente n'a plus d'objet et serait applique sur
+  // une note qui ne joue plus.
+  for (uint8_t i = 0; i < 4; i++) _pendingNoteOff[i] = 0;
   portEXIT_CRITICAL(&_mux);
 }
 

@@ -4,6 +4,11 @@ ROOT = Path(__file__).resolve().parents[1]
 def read(path):
     return (ROOT / path).read_text(encoding='utf-8')
 
+def code_only(text):
+    """Drop // comment lines: an assertion must match real code, never a comment
+    that happens to quote the same symbol."""
+    return '\n'.join(l for l in text.splitlines() if not l.strip().startswith('//'))
+
 def test_validation_entry_points_present():
     assert 'validateAndNormalizeConfig(RuntimeConfig& config' in read('Servo_flute_ESP32/ConfigStorage.h')
     assert 'validateAndNormalizeConfig(RuntimeConfig& config' in read('Servo_flute_ESP32/ConfigValidator.cpp')
@@ -96,16 +101,51 @@ def test_autocal_actuator_ownership_and_locks():
     assert 'calibration_active' in web           # blocked commands + 409 config lock
     assert '409' in web                          # config POST lock status
     # Panic cancels the calibration before safing the hardware. Both now run on the
-    # loop task: the cancel is a deferred web op, the safe state a non-droppable
-    # panic request (an AsyncTCP callback must never drive actuators itself).
+    # loop task: the cancel is a NON-DROPPABLE flag (postWebOp() could fail on a
+    # full queue and leave _autoCal running after the panic), the safe state a
+    # non-droppable panic request (an AsyncTCP callback must never drive actuators).
     panic = web.split('strcmp(type, "panic")', 1)[1].split('else if', 1)[0]
-    assert 'WEBOP_AUTOCAL_CANCEL' in panic
+    assert 'requestCalibrationCancel()' in panic
     assert 'requestPanic()' in panic
-    assert panic.index('WEBOP_AUTOCAL_CANCEL') < panic.index('requestPanic()')
+    assert panic.index('requestCalibrationCancel()') < panic.index('requestPanic()')
     assert 'allSoundOff()' not in panic
+    # The cancel request can no longer travel through the droppable WebOp queue.
+    assert 'WEBOP_AUTOCAL_CANCEL' not in web and 'WEBOP_AUTOCAL_CANCEL' not in hdr
+    assert 'postWebOp(op)' not in web.split('auto_stop', 1)[1].split('#endif', 1)[0]
+    # The flag is consumed by the loop task, at the very top of update(), before
+    # _autoCal->update() can re-apply anything.
+    assert 'volatile bool _calCancelRequested;' in hdr
+    upd = code_only(web.split('void WebConfigurator::update()', 1)[1].split('\n}\n', 1)[0])
+    assert '_calCancelRequested' in upd
+    assert 'cancelActiveActuatorSession();' in upd
+    assert upd.index('_calCancelRequested') < upd.index('_autoCal->update()')
+    # P0 (2e passe): ownership is taken ONCE at the start of the calibration and
+    # released ONCE at the end. The old per-loop re-take ran _sequencer.stop() on
+    # every pass, closing the valve the calibrator had just opened.
+    assert 'setActuatorSessionActive(true)' not in upd
     # Owner-only disconnect stops the session.
     disc = web.split('WS_EVT_DISCONNECT', 1)[1].split('WS_EVT_DATA', 1)[0]
     assert '_autoCalOwnerClientId' in disc
+    assert 'requestCalibrationCancel()' in disc
+
+
+def test_audit2_actuator_session_is_idempotent():
+    # P0 (2e passe): the entry side effects of an actuator session (sequencer stop,
+    # queue purge) must run only on a real false->true transition. They closed the
+    # valve and rested the airflow servo, so repeating them mid-calibration made the
+    # auto-calibration measure a silent instrument.
+    im = code_only(read('Servo_flute_ESP32/InstrumentManager.cpp'))
+    body = im.split('void InstrumentManager::setActuatorSessionActive')[1].split('\n}\n')[0]
+    assert 'if (_actuatorSessionActive == active)' in body
+    assert body.index('if (_actuatorSessionActive == active)') < body.index('_sequencer.stop()')
+    # The transition also realigns the air-source tracking, otherwise the forced
+    # STATE_IDLE would be read as a note end and reset the pump under the calibrator.
+    assert '_prevSequencerState = STATE_IDLE;' in body
+    assert '_prevNoteSounding = false;' in body
+    # While a session owns the actuators, the sequencer no longer drives the air
+    # source: CalibrationAirSupply does.
+    upd = im.split('void InstrumentManager::update()')[1].split('\n}\n')[0]
+    assert 'if (!_actuatorSessionActive) updateAirSourceFromSequencer();' in upd
 
 
 def test_autocal_frame_freshness_contract():
@@ -427,8 +467,15 @@ def test_audit_p1_air_source_tied_to_sequencer_transitions():
     # transitions, not from raw incoming MIDI events.
     assert 'updateAirSourceFromSequencer' in im
     assert 'getCurrentVelocity' in nsh
-    assert 'STATE_POSITIONING && _prevSequencerState != STATE_POSITIONING' in im
-    assert 'STATE_IDLE && _prevSequencerState != STATE_IDLE' in im
+    # The demand now follows BOTH the sequencer state and whether the held note is
+    # really sounding: CC2 (breath) can silence a held note with no state change at
+    # all, and the pump used to keep pushing at full demand against a closed valve.
+    air = code_only(im).split('void InstrumentManager::updateAirSourceFromSequencer')[1].split('\n}\n')[0]
+    assert '_airflowCtrl.isNoteSounding()' in air
+    assert 'curState == _prevSequencerState && sounding == _prevNoteSounding' in air
+    assert '(curState == STATE_POSITIONING) ||' in air
+    assert '(curState == STATE_PLAYING && sounding)' in air
+    assert '_prevNoteSounding = sounding;' in air
     # noteOn / noteOff must no longer set the pump/fan demand themselves.
     note_on = im.split('InstrumentManager::noteOn')[1].split('InstrumentManager::noteOff')[0]
     note_off = im.split('InstrumentManager::noteOff')[1].split('InstrumentManager::isNotePlayable')[0]
@@ -1193,3 +1240,155 @@ def test_gmb_contract_is_preserved():
     # The HTTP descriptor route still serves the cached document.
     assert 'gmb::runtime::descriptorJson()' in web
     assert 'setHttpDescriptorAvailable(true)' in web
+
+
+# =============================================================================
+# Deuxieme passe d'audit (sur fcf3559) : douze constats confirmes.
+# Chaque assertion ci-dessous ancre UNE correction precise, pour qu'elle ne
+# puisse pas regresser silencieusement.
+# =============================================================================
+
+def test_audit2_note_off_is_never_dropped():
+    """#4: un Note Off ne doit pas pouvoir etre perdu par saturation de l'anneau."""
+    cqh = code_only(read('Servo_flute_ESP32/CommandQueue.h'))
+    cqc = code_only(read('Servo_flute_ESP32/CommandQueue.cpp'))
+    im = code_only(read('Servo_flute_ESP32/InstrumentManager.cpp'))
+    # Bitmap 128 notes, hors de l'anneau.
+    assert 'uint32_t _pendingNoteOff[4];' in cqh
+    assert 'void requestNoteOff(uint8_t note);' in cqh
+    assert 'bool takePendingNoteOff(uint8_t& note);' in cqh
+    # Le bitmap est manipule sous le meme verrou que l'anneau.
+    req = cqc.split('void CommandQueue::requestNoteOff')[1].split('\n}\n')[0]
+    assert 'portENTER_CRITICAL(&_mux);' in req and 'portEXIT_CRITICAL(&_mux);' in req
+    # Un panic (et un clear) annule les relachements en attente : tout est deja coupe.
+    assert '_pendingNoteOff[i] = 0;' in cqc.split('void CommandQueue::requestPanic')[1].split('\n}\n')[0]
+    # postCommand() route ACMD_NOTE_OFF vers le bitmap au lieu de l'anneau.
+    post = im.split('bool InstrumentManager::postCommand(const ActuatorCommand& cmd)')[1].split('\n}\n')[0]
+    assert 'cmd.type == ACMD_NOTE_OFF' in post
+    assert '_commands.requestNoteOff(cmd.a);' in post
+    # processCommands() les applique APRES l'anneau, et un panic reste prioritaire.
+    proc = im.split('void InstrumentManager::processCommands()')[1].split('\n}\n')[0]
+    assert 'takePendingNoteOff(pendingNote)' in proc
+    assert proc.index('_commands.pop(cmd)') < proc.index('takePendingNoteOff(pendingNote)')
+    assert 'panicPending()' in proc.split('takePendingNoteOff(pendingNote)')[1]
+
+
+def test_audit2_websocket_sessions_expire():
+    """#6: une WebSocket ouverte ne doit pas rester authentifiee au-dela du TTL."""
+    hdr = code_only(read('Servo_flute_ESP32/WebConfigurator.h'))
+    web = code_only(read('Servo_flute_ESP32/WebConfigurator.cpp'))
+    # L'identifiant de client seul ne suffit plus : le jeton est memorise.
+    assert '_wsAuthClients' not in hdr and '_wsAuthClients' not in web
+    assert 'struct WsSession' in hdr
+    assert 'char token[WEB_AUTH_TOKEN_LEN + 1];' in hdr
+    assert 'void setWsAuthenticated(uint32_t clientId, const String& token);' in hdr
+    assert 'void clearWsAuthentication(uint32_t clientId);' in hdr
+    # isWsAuthenticated() n'est plus const : chaque commande REVALIDE le jeton,
+    # ce qui applique l'expiration et fait glisser la fenetre comme pour HTTP.
+    assert 'bool isWsAuthenticated(uint32_t clientId);' in hdr
+    chk = web.split('bool WebConfigurator::isWsAuthenticated')[1].split('\n}\n')[0]
+    assert '_auth.validate(String(_wsSessions[i].token), millis())' in chk
+    # Un jeton expire libere la place au lieu de rester authentifie.
+    assert '_wsSessions[i].clientId = 0;' in chk
+    # Un changement de mot de passe revoque AUSSI les WebSockets.
+    pwd = web.split('case WEBOP_SET_ADMIN_PASSWORD')[1].split('\n    }\n')[0]
+    assert '_auth.revokeAll();' in pwd
+    assert '_wsSessions[i].clientId = 0;' in pwd
+
+
+def test_audit2_serial_is_always_initialised():
+    """#7: les secrets d'acces sont imprimes sur le port serie, donc il doit
+    toujours etre ouvert - seuls les journaux verbeux restent lies a DEBUG."""
+    ino = read('Servo_flute_ESP32/Servo_flute_ESP32.ino')
+    setup = ino.split('void setup()')[1].split('\nvoid loop()')[0]
+    code = code_only(setup)
+    # Serial.begin() est hors de tout if (DEBUG).
+    assert '\n  Serial.begin(115200);' in code
+    idx = code.index('Serial.begin(115200);')
+    assert 'if (DEBUG)' not in code[:idx].rsplit('\n  ', 1)[-1]
+    # Et il precede l'impression des secrets.
+    secrets = read('Servo_flute_ESP32/DeviceSecrets.cpp')
+    assert 'Serial.print' in secrets
+    assert code.index('Serial.begin(115200);') < code.index('DeviceSecrets::begin();')
+
+
+def test_audit2_config_reads_are_serialised_with_the_commit():
+    """#8: `cfg = candidat` recopie ~5 Ko ; un lecteur AsyncTCP ne doit jamais voir
+    une structure a moitie remplacee."""
+    hdr = code_only(read('Servo_flute_ESP32/WebConfigurator.h'))
+    web = code_only(read('Servo_flute_ESP32/WebConfigurator.cpp'))
+    cch = code_only(read('Servo_flute_ESP32/ConfigCommit.h'))
+    ccc = code_only(read('Servo_flute_ESP32/ConfigCommit.cpp'))
+    assert 'SemaphoreHandle_t _cfgMutex;' in hdr
+    assert 'bool lockConfig(uint32_t timeoutMs = WEB_CONFIG_LOCK_MS);' in hdr
+    assert '_cfgMutex = xSemaphoreCreateMutex();' in web
+    # Le verrou du commit n'entoure QUE l'affectation atomique : ni la validation,
+    # ni l'ecriture flash (sinon un GET /api/config attendrait la flash).
+    assert 'struct ConfigCommitGuard' in cch
+    assign = ccc.split('RuntimeConfig previous = active;')[1].split('out.activated = true;')[0]
+    assert 'guard->lock(guard->ctx)' in assign
+    assert 'active = candidate;' in assign
+    assert 'guard->unlock(guard->ctx)' in assign
+    assert 'save(candidate)' not in assign
+    # Les deux gros lecteurs AsyncTCP prennent le meme verrou et refusent plutot
+    # que de bloquer la pile TCP.
+    for fn in ('void WebConfigurator::handleApiConfig(',
+               'void WebConfigurator::handleApiDiagnostics('):
+        body = web.split(fn)[1].split('\n}\n')[0]
+        assert 'lockConfig(WEB_CONFIG_LOCK_MS)' in body, fn
+        assert 'config_busy' in body, fn
+        assert 'unlockConfig();' in body, fn
+        # Aucun hand-off vers loop() sous le verrou : pas d'interblocage possible.
+        assert 'runOnLoop(' not in body, fn
+
+
+def test_audit2_webop_queue_uses_a_mutex_not_a_spinlock():
+    """#9: une WebOp porte des String ; la copier alloue sur le tas, ce qui est
+    interdit dans une section critique."""
+    hdr = code_only(read('Servo_flute_ESP32/WebConfigurator.h'))
+    web = code_only(read('Servo_flute_ESP32/WebConfigurator.cpp'))
+    assert '_wsOpMux' not in hdr and '_wsOpMux' not in web
+    assert 'SemaphoreHandle_t _wsOpMutex;' in hdr
+    for fn in ('bool WebConfigurator::postWebOp', 'void WebConfigurator::serviceWsOps'):
+        body = web.split(fn)[1].split('\n}\n')[0]
+        assert 'portENTER_CRITICAL' not in body, fn
+        assert 'xSemaphoreTake(_wsOpMutex' in body, fn
+        assert 'xSemaphoreGive(_wsOpMutex)' in body, fn
+
+
+def test_audit2_vibrato_rounding_is_symmetric():
+    """#10: (int16_t)(x + 0.5) tronque vers zero, donc biaise l'alternance negative."""
+    ac = code_only(read('Servo_flute_ESP32/AirflowController.cpp'))
+    assert 'lroundf(vibratoOffset)' in ac
+    assert '(int16_t)(vibratoOffset + 0.5)' not in ac
+
+
+def test_audit2_reset_all_controllers_clears_expression_state():
+    """#11: CC121 doit aussi remettre l'etat runtime d'expression."""
+    ach = code_only(read('Servo_flute_ESP32/AirflowController.h'))
+    ac = code_only(read('Servo_flute_ESP32/AirflowController.cpp'))
+    im = code_only(read('Servo_flute_ESP32/InstrumentManager.cpp'))
+    assert 'void resetRuntimeState();' in ach
+    body = ac.split('void AirflowController::resetRuntimeState()')[1].split('\n}\n')[0]
+    for field in ('_cc2SmoothingBuffer[i]', '_cc2BufferIndex', '_cc2BufferCount',
+                  '_cc2TimedOut', '_ccBreath', '_runtimeAttackMode',
+                  '_runtimeAttackOffset', '_attackActive'):
+        assert field in body, field
+    rac = im.split('void InstrumentManager::resetAllControllers()')[1].split('\n}\n')[0]
+    assert '_airflowCtrl.resetRuntimeState();' in rac
+    assert '_cc2Pending = false;' in rac
+
+
+def test_audit2_actuator_pins_are_safed_before_the_i2c_probe():
+    """#12: un echec de sondage I2C sortait de beginSafe() sans jamais configurer
+    les broches de pompe/ventilateur : grilles de MOSFET laissees flottantes."""
+    imh = code_only(read('Servo_flute_ESP32/InstrumentManager.h'))
+    im = code_only(read('Servo_flute_ESP32/InstrumentManager.cpp'))
+    assert 'void driveConfiguredActuatorPinsInactive();' in imh
+    begin = im.split('bool InstrumentManager::beginSafe()')[1].split('\n}\n')[0]
+    assert 'driveConfiguredActuatorPinsInactive();' in begin
+    assert begin.index('driveConfiguredActuatorPinsInactive();') < begin.index('detectPca(')
+    body = im.split('void InstrumentManager::driveConfiguredActuatorPinsInactive()')[1].split('\n}\n')[0]
+    assert 'pinMode(cfg.solenoidPin, OUTPUT);' in body
+    assert 'pinMode(cfg.fanPin, OUTPUT);' in body
+    assert 'pinMode(cfg.pumpPins[i], OUTPUT);' in body

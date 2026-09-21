@@ -30,6 +30,17 @@ public:
   // actually take effect.
   bool recomputeActiveNote();
   bool isNoteActive() const { return _noteActive; }
+  // Vrai quand une note est tenue ET que le souffle effectif la fait
+  // reellement sonner. Faux si CC2 (breath) a demande le silence : la note reste
+  // tenue mais aucun air ne doit etre produit. InstrumentManager s'en sert pour
+  // retomber la pompe / le ventilateur au ralenti, au lieu de les laisser
+  // pousser contre une valve fermee.
+  bool isNoteSounding() const { return _noteActive && _noteSounding; }
+  // Remet l'etat runtime d'expression a ses valeurs de configuration (lissage
+  // CC2, fenetre de timeout CC2, mode/offset d'attaque CC73). Utilise par
+  // Reset All Controllers, qui ne remettait auparavant que les valeurs de CC
+  // detenues par InstrumentManager.
+  void resetRuntimeState();
 
   void openValve();
   void closeValve();
@@ -104,6 +115,7 @@ private:
   byte _activeNote;
   byte _activeVelocity;
   bool _noteActive;
+  bool _noteSounding;   // derniere decision de computeAirflow() : la note sonne-t-elle ?
   // Shared implementation of setAirflowForNote()/recomputeActiveNote(): the attack
   // transition is only (re)armed at the note onset.
   bool computeAirflow(byte midiNote, byte velocity, bool isOnset);

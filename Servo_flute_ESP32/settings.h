@@ -521,6 +521,14 @@ const uint16_t SERVO_FREQUENCY = 50;
 // de bloquer la pile TCP. Une iteration de loop() dure normalement quelques ms.
 #define WEBOP_TIMEOUT_MS 3000
 
+// Prise des verrous internes du serveur web (file des operations WebSocket,
+// coherence de `cfg`). Ces verrous ne sont tenus que le temps d'une copie de
+// structure ou d'une construction de reponse : quelques millisecondes suffisent
+// largement, et un depassement se traduit par un refus explicite plutot que par
+// un blocage de la pile TCP ou de loop().
+#define WEBOP_QUEUE_LOCK_MS 20
+#define WEB_CONFIG_LOCK_MS 200
+
 // Verrou d'upload MIDI exclusif : libere d'office si le client disparait en
 // cours de transfert (onglet ferme, Wi-Fi coupe) pour ne pas bloquer le suivant.
 #define UPLOAD_LOCK_TIMEOUT_MS 30000

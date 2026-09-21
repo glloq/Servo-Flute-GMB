@@ -56,7 +56,7 @@ AirflowController::AirflowController(PwmWriteFn writePwm)
     _ccBreath(cfg.ccBreathDefault),
     _cc2BufferIndex(0), _cc2BufferCount(0), _lastCC2Time(0), _lastVelocity(64), _cc2TimedOut(false),
     _baseAngleWithoutVibrato(cfg.servoAirflowOff), _lastSentAirflowAngle(cfg.servoAirflowOff),
-    _activeNote(0), _activeVelocity(0), _noteActive(false), _vibratoActive(false),
+    _activeNote(0), _activeVelocity(0), _noteActive(false), _noteSounding(false), _vibratoActive(false),
     _currentMinAngle(cfg.servoAirflowMin), _currentMaxAngle(cfg.servoAirflowMax),
     _attackActive(false), _attackStartTime(0), _attackStartAngle(0), _attackTargetAngle(0),
     _runtimeAttackMode(cfg.airAttackMode), _runtimeAttackOffset(cfg.airAttackOffset),
@@ -218,9 +218,11 @@ bool AirflowController::computeAirflow(byte midiNote, byte velocity, bool isOnse
     // CC2 (breath) requested silence: rest the servo but leave the valve to the
     // caller (the note stays held/active so a later CC2 rise can resume it). The
     // caller must NOT force the valve open over this silence.
+    _noteSounding = false;
     setAirflowServoAngle(cfg.servoAirflowOff);
     return false;
   }
+  _noteSounding = true;
 
   // 3. Airflow source -> base angle via a two-segment curve pivoting on the
   //    calibrated nominal airflow. The median input (AIRFLOW_SOURCE_PIVOT, e.g.
@@ -437,7 +439,10 @@ void AirflowController::update() {
     float vibratoOffset = vibratoAmplitude > 0 ?
       VibratoMath::fastSin(millis(), cfg.vibratoFrequencyHz) * vibratoAmplitude : 0;
 
-    int16_t finalAngle = currentBase + (int16_t)(vibratoOffset + 0.5);
+    // lroundf() arrondit symetriquement. "(int16_t)(x + 0.5)" est biaise vers le
+    // haut pour les valeurs negatives (-0.6 donnait 0, +0.6 donnait 1), ce qui
+    // rendait le vibrato legerement asymetrique une fois la LUT signee corrigee.
+    int16_t finalAngle = currentBase + (int16_t)lroundf(vibratoOffset);
 
     if (finalAngle < (int16_t)_currentMinAngle) finalAngle = _currentMinAngle;
     if (finalAngle > (int16_t)_currentMaxAngle) finalAngle = _currentMaxAngle;
@@ -609,6 +614,23 @@ void AirflowController::setCC74Brightness(byte ccValue) {
 }
 
 // ===================== CC2 BREATH CONTROLLER =====================
+
+void AirflowController::resetRuntimeState() {
+  // Reset All Controllers (CC121) doit repartir d'un etat d'expression propre.
+  // Sans cela, le lissage CC2 gardait les dernieres valeurs de souffle et le
+  // mode d'attaque runtime restait celui impose par le dernier CC73.
+  for (uint8_t i = 0; i < CC2_SMOOTHING_BUFFER_SIZE; i++) {
+    _cc2SmoothingBuffer[i] = cfg.ccBreathDefault;
+  }
+  _cc2BufferIndex = 0;
+  _cc2BufferCount = 0;
+  _cc2TimedOut = false;
+  _lastCC2Time = millis();
+  _ccBreath = cfg.ccBreathDefault;
+  _runtimeAttackMode = cfg.airAttackMode;
+  _runtimeAttackOffset = cfg.airAttackOffset;
+  _attackActive = false;
+}
 
 void AirflowController::updateCC2Breath(byte ccBreath) {
   if (!cfg.cc2Enabled) return;

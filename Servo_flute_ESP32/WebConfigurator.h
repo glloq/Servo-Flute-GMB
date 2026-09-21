@@ -84,7 +84,6 @@ enum WebOpType : uint8_t {
   WEBOP_PLAYER_CH_FILTER,
   WEBOP_AUTOCAL_START_AIR,
   WEBOP_AUTOCAL_START_RANGE,
-  WEBOP_AUTOCAL_CANCEL,
   WEBOP_AUTOCAL_APPLY_RANGE,
   WEBOP_MIC_MONITOR,
   WEBOP_MIC_RESET,
@@ -160,9 +159,23 @@ private:
   uint8_t _wsOpHead;
   uint8_t _wsOpTail;
   uint8_t _wsOpCount;
-  portMUX_TYPE _wsOpMux = portMUX_INITIALIZER_UNLOCKED;
+  // Un MUTEX, pas un portMUX : une WebOp porte des String, donc la copier alloue
+  // sur le tas. Faire cela dans une section critique (interruptions coupees,
+  // spinlock pris) est interdit - l'allocateur prend lui-meme un verrou. Un
+  // mutex FreeRTOS autorise l'allocation et la contention est negligeable
+  // (AsyncTCP produit, loop() consomme, le temps de garde est de l'ordre de la
+  // microseconde).
+  SemaphoreHandle_t _wsOpMutex;
   bool postWebOp(const WebOp& op);
   void serviceWsOps();
+
+  // Annulation de calibration NON perdable. postWebOp() peut echouer quand la
+  // file est pleine, et plusieurs appelants ignoraient ce resultat : le panic
+  // coupait alors les actionneurs mais _autoCal restait "running" et reprenait
+  // au cycle suivant en reappliquant ses commandes. Meme principe que le panic :
+  // un drapeau dedie, consomme au debut de update().
+  volatile bool _calCancelRequested;
+  void requestCalibrationCancel() { _calCancelRequested = true; }
   void executeWebOp(WebOp& op);
   // Libere les ressources portees par l'operation (candidat de configuration),
   // qu'elle ait ete appliquee ou abandonnee. Idempotent.
@@ -170,10 +183,32 @@ private:
 
   // --- Authentification ----------------------------------------------------
   WebAuth _auth;
-  // Clients WebSocket authentifies (identifiants AsyncWebSocket).
-  uint32_t _wsAuthClients[WS_MAX_CLIENTS];
-  bool isWsAuthenticated(uint32_t clientId) const;
-  void setWsAuthenticated(uint32_t clientId, bool authenticated);
+  // Clients WebSocket authentifies. On memorise le JETON, pas seulement
+  // l'identifiant de client : sinon une socket ouverte restait authentifiee bien
+  // au-dela du TTL de session, puisque plus rien ne reinterrogeait WebAuth.
+  // Chaque commande revalide le jeton, ce qui applique l'expiration ET fait
+  // glisser la fenetre comme pour HTTP.
+  struct WsSession {
+    uint32_t clientId;
+    char token[WEB_AUTH_TOKEN_LEN + 1];
+  };
+  WsSession _wsSessions[WS_MAX_CLIENTS];
+  bool isWsAuthenticated(uint32_t clientId);
+  void setWsAuthenticated(uint32_t clientId, const String& token);
+  void clearWsAuthentication(uint32_t clientId);
+
+  // Copie coherente de la configuration active pour les lecteurs AsyncTCP.
+  // `cfg = candidate` n'est pas atomique vis-a-vis d'un autre coeur : un
+  // constructeur de reponse HTTP qui parcourt cfg pendant le commit pourrait
+  // voir un struct a moitie recopie. Le commit et les gros lecteurs prennent
+  // donc ce mutex, tenu le temps d'une copie de structure.
+  SemaphoreHandle_t _cfgMutex;
+  bool lockConfig(uint32_t timeoutMs = WEB_CONFIG_LOCK_MS);
+  void unlockConfig();
+  // Adaptateurs passes a commitCandidateConfig() : le verrou n'entoure que
+  // l'affectation atomique `cfg = candidat`, pas la validation ni la flash.
+  static bool cfgGuardLock(void* ctx);
+  static void cfgGuardUnlock(void* ctx);
   // Extrait le jeton d'une requete (en-tete X-Auth-Token ou parametre ?token=).
   String extractToken(AsyncWebServerRequest* request) const;
   // Renvoie true (et repond 401) si la requete n'est pas authentifiee.

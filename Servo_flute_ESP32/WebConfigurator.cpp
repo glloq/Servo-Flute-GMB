@@ -123,14 +123,18 @@ WebConfigurator::WebConfigurator(uint16_t port)
     _webVelocity(WEB_DEFAULT_VELOCITY), _lastStatusBroadcast(0), _lastWsCleanup(0),
     _opPending(false), _opAbandoned(false), _opDoneSeq(0), _opSeqCounter(0),
     _opMutex(nullptr), _opDone(nullptr),
-    _wsOpHead(0), _wsOpTail(0), _wsOpCount(0),
+    _wsOpHead(0), _wsOpTail(0), _wsOpCount(0), _wsOpMutex(nullptr),
+    _calCancelRequested(false), _cfgMutex(nullptr),
     _uploadSequence(0)
 #if MIC_ENABLED
     , _audio(nullptr), _autoCal(nullptr), _micMonitorEnabled(false), _lastAudioBroadcast(0), _lastAcalBroadcast(0)
     , _autoCalOwnerClientId(0), _micMonitorBeforeCalibration(false), _rfDoneSent(false), _rfDoneTime(0)
 #endif
 {
-  for (uint8_t i = 0; i < WS_MAX_CLIENTS; i++) _wsAuthClients[i] = 0;
+  for (uint8_t i = 0; i < WS_MAX_CLIENTS; i++) {
+    _wsSessions[i].clientId = 0;
+    _wsSessions[i].token[0] = '\0';
+  }
 }
 
 WebConfigurator::~WebConfigurator() {
@@ -140,6 +144,8 @@ WebConfigurator::~WebConfigurator() {
 #endif
   if (_opDone) vSemaphoreDelete(_opDone);
   if (_opMutex) vSemaphoreDelete(_opMutex);
+  if (_wsOpMutex) vSemaphoreDelete(_wsOpMutex);
+  if (_cfgMutex) vSemaphoreDelete(_cfgMutex);
 }
 
 void WebConfigurator::begin(InstrumentManager* instrument, MidiFilePlayer* player) {
@@ -151,6 +157,13 @@ void WebConfigurator::begin(InstrumentManager* instrument, MidiFilePlayer* playe
   _opMutex = xSemaphoreCreateMutex();
   _opDone = xSemaphoreCreateBinary();
   _opPending = false;
+  // File des commandes WebSocket : un MUTEX, pas un spinlock. Copier une WebOp
+  // copie ses String, donc alloue sur le tas ; faire cela dans une section
+  // critique (interruptions coupees) est interdit.
+  _wsOpMutex = xSemaphoreCreateMutex();
+  // Coherence de `cfg` entre le commit (tache loop) et les lecteurs AsyncTCP.
+  _cfgMutex = xSemaphoreCreateMutex();
+  _calCancelRequested = false;
 
   // Sessions web : jeton aleatoire tire du RNG materiel, expiration glissante.
   DeviceSecrets::begin();
@@ -209,6 +222,19 @@ void WebConfigurator::update() {
   // lecteur MIDI ou le calibrateur.
   serviceWsOps();      // commandes WebSocket (non bloquantes)
   servicePendingOp();  // requete HTTP en attente de sa reponse
+
+#if MIC_ENABLED
+  // Annulation de calibration NON PERDABLE. Elle transitait par postWebOp(), qui
+  // echoue silencieusement quand la file est pleine : le panic coupait alors les
+  // actionneurs mais _autoCal restait "running" et reappliquait ses commandes au
+  // cycle suivant. Le drapeau, lui, ne peut pas etre perdu. Il est consomme ICI,
+  // apres les operations web (un "start" poste avant l'annulation est donc bien
+  // annule) et AVANT _autoCal->update() plus bas.
+  if (_calCancelRequested) {
+    _calCancelRequested = false;
+    cancelActiveActuatorSession();
+  }
+#endif
 
   // Liberer un slot d'upload abandonne (client disparu en plein transfert).
   abandonStaleUpload(now);
@@ -273,9 +299,14 @@ void WebConfigurator::update() {
 
     // Update auto-calibrator
     if (_autoCal && _autoCal->isRunning()) {
-      // Hold servo/PCA power for the whole measuring session so managePower() can
-      // never cut OE between settling and the last audio frame of a position.
-      if (_instrument) _instrument->setActuatorSessionActive(true);
+      // NE PAS reprendre la session ici. La prise de possession a lieu UNE fois
+      // au demarrage (WEBOP_AUTOCAL_START_*), la liberation UNE fois a la fin
+      // (cancelActiveActuatorSession). Repeter setActuatorSessionActive(true) a
+      // chaque boucle relancait son effet de bord d'entree - arret du sequenceur
+      // et purge de la file - ce qui, cote InstrumentManager, refermait la valve
+      // ouverte par le calibrateur : l'auto-calibration ne mesurait jamais aucun
+      // son. La fonction est desormais idempotente, mais l'appel repetitif reste
+      // inutile et trompeur.
       _autoCal->update();
 
       // Broadcast progress
@@ -507,32 +538,40 @@ bool WebConfigurator::runOnLoop(WebOp& op) {
   return done;
 }
 
+// Cette file etait protegee par un portMUX (spinlock + interruptions coupees).
+// Or une WebOp porte trois String : la copier ALLOUE sur le tas, et l'allocateur
+// prend lui-meme un verrou - operation interdite en section critique, qui peut
+// bloquer ou corrompre le tas. Un mutex FreeRTOS autorise l'allocation ; la
+// contention est negligeable (AsyncTCP produit, loop() consomme, la garde dure
+// le temps d'une copie).
 bool WebConfigurator::postWebOp(const WebOp& op) {
-  portENTER_CRITICAL(&_wsOpMux);
+  if (_wsOpMutex == nullptr) return false;
+  if (xSemaphoreTake(_wsOpMutex, pdMS_TO_TICKS(WEBOP_QUEUE_LOCK_MS)) != pdTRUE) return false;
   if (_wsOpCount >= kWsOpQueueSize) {
-    portEXIT_CRITICAL(&_wsOpMux);
+    xSemaphoreGive(_wsOpMutex);
     return false;
   }
   _wsOps[_wsOpHead] = op;
   _wsOpHead = (uint8_t)((_wsOpHead + 1) % kWsOpQueueSize);
   _wsOpCount++;
-  portEXIT_CRITICAL(&_wsOpMux);
+  xSemaphoreGive(_wsOpMutex);
   return true;
 }
 
 void WebConfigurator::serviceWsOps() {
+  if (_wsOpMutex == nullptr) return;
   while (true) {
     WebOp op;
-    portENTER_CRITICAL(&_wsOpMux);
+    if (xSemaphoreTake(_wsOpMutex, pdMS_TO_TICKS(WEBOP_QUEUE_LOCK_MS)) != pdTRUE) return;
     if (_wsOpCount == 0) {
-      portEXIT_CRITICAL(&_wsOpMux);
+      xSemaphoreGive(_wsOpMutex);
       return;
     }
     op = _wsOps[_wsOpTail];
     _wsOps[_wsOpTail] = WebOp();
     _wsOpTail = (uint8_t)((_wsOpTail + 1) % kWsOpQueueSize);
     _wsOpCount--;
-    portEXIT_CRITICAL(&_wsOpMux);
+    xSemaphoreGive(_wsOpMutex);
 
     executeWebOp(op);
     // Le demandeur n'attend pas : son resultat eventuel part sur le WebSocket.
@@ -557,29 +596,59 @@ void WebConfigurator::servicePendingOp() {
  * Authentification
  ******************************************************************************/
 
-bool WebConfigurator::isWsAuthenticated(uint32_t clientId) const {
+// La table ne memorisait que l'identifiant du client : une fois le "auth"
+// initial accepte, plus rien ne reinterrogeait WebAuth. Une socket laissee
+// ouverte restait donc authentifiee bien au-dela du TTL de session, et survivait
+// meme a une revocation globale des jetons. On memorise desormais le JETON, et
+// chaque commande le revalide : l'expiration s'applique, la fenetre glisse comme
+// pour HTTP, et revokeAll() coupe effectivement les WebSockets.
+bool WebConfigurator::isWsAuthenticated(uint32_t clientId) {
   if (clientId == 0) return false;
   for (uint8_t i = 0; i < WS_MAX_CLIENTS; i++) {
-    if (_wsAuthClients[i] == clientId) return true;
+    if (_wsSessions[i].clientId != clientId) continue;
+    if (_auth.validate(String(_wsSessions[i].token), millis())) return true;
+    // Jeton expire ou revoque : la socket redevient anonyme et devra se
+    // reauthentifier ({"t":"auth","token":"..."}).
+    _wsSessions[i].clientId = 0;
+    _wsSessions[i].token[0] = '\0';
+    return false;
   }
   return false;
 }
 
-void WebConfigurator::setWsAuthenticated(uint32_t clientId, bool authenticated) {
+void WebConfigurator::setWsAuthenticated(uint32_t clientId, const String& token) {
   if (clientId == 0) return;
-  if (!authenticated) {
-    for (uint8_t i = 0; i < WS_MAX_CLIENTS; i++) {
-      if (_wsAuthClients[i] == clientId) _wsAuthClients[i] = 0;
-    }
-    return;
-  }
-  if (isWsAuthenticated(clientId)) return;
+  clearWsAuthentication(clientId);
+  if (token.length() == 0 || token.length() > WEB_AUTH_TOKEN_LEN) return;
+  uint8_t slot = WS_MAX_CLIENTS;
   for (uint8_t i = 0; i < WS_MAX_CLIENTS; i++) {
-    if (_wsAuthClients[i] == 0) { _wsAuthClients[i] = clientId; return; }
+    if (_wsSessions[i].clientId == 0) { slot = i; break; }
   }
   // Table pleine : recycler la premiere entree (les clients WS sont limites a
   // WS_MAX_CLIENTS par cleanupClients()).
-  _wsAuthClients[0] = clientId;
+  if (slot >= WS_MAX_CLIENTS) slot = 0;
+  _wsSessions[slot].clientId = clientId;
+  strncpy(_wsSessions[slot].token, token.c_str(), WEB_AUTH_TOKEN_LEN);
+  _wsSessions[slot].token[WEB_AUTH_TOKEN_LEN] = '\0';
+}
+
+void WebConfigurator::clearWsAuthentication(uint32_t clientId) {
+  if (clientId == 0) return;
+  for (uint8_t i = 0; i < WS_MAX_CLIENTS; i++) {
+    if (_wsSessions[i].clientId != clientId) continue;
+    _wsSessions[i].clientId = 0;
+    _wsSessions[i].token[0] = '\0';
+  }
+}
+
+bool WebConfigurator::lockConfig(uint32_t timeoutMs) {
+  // Avant begin(), un seul contexte touche `cfg` : rien a serialiser.
+  if (_cfgMutex == nullptr) return true;
+  return xSemaphoreTake(_cfgMutex, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
+}
+
+void WebConfigurator::unlockConfig() {
+  if (_cfgMutex) xSemaphoreGive(_cfgMutex);
 }
 
 String WebConfigurator::extractToken(AsyncWebServerRequest* request) const {
@@ -740,7 +809,18 @@ void WebConfigurator::abandonStaleUpload(unsigned long now) {
  * Execution des operations web - TACHE loop() UNIQUEMENT
  ******************************************************************************/
 
+// Adaptateurs pour ConfigCommitGuard : ConfigCommit reste pur (aucun appel
+// FreeRTOS), le verrou reel vit ici.
+bool WebConfigurator::cfgGuardLock(void* ctx) {
+  return static_cast<WebConfigurator*>(ctx)->lockConfig(WEB_CONFIG_LOCK_MS);
+}
+void WebConfigurator::cfgGuardUnlock(void* ctx) {
+  static_cast<WebConfigurator*>(ctx)->unlockConfig();
+}
+
 void WebConfigurator::executeWebOp(WebOp& op) {
+  const ConfigCommitGuard cfgGuard{ &WebConfigurator::cfgGuardLock,
+                                    &WebConfigurator::cfgGuardUnlock, this };
   switch (op.type) {
     case WEBOP_COMMIT_CONFIG: {
       // Commit TRANSACTIONNEL (voir ConfigCommit.h) : valider -> sauvegarder ->
@@ -751,7 +831,8 @@ void WebConfigurator::executeWebOp(WebOp& op) {
         break;
       }
       ConfigCommitResult res =
-          commitCandidateConfig(cfg, *op.candidate, _instrument, &ConfigStorage::saveFrom);
+          commitCandidateConfig(cfg, *op.candidate, _instrument, &ConfigStorage::saveFrom,
+                                &cfgGuard);
 
       JsonDocument resp;
       if (!res.valid) {
@@ -861,7 +942,8 @@ void WebConfigurator::executeWebOp(WebOp& op) {
       strncpy(candidate.wifiPassword, op.strB.c_str(), sizeof(candidate.wifiPassword) - 1);
       candidate.wifiPassword[sizeof(candidate.wifiPassword) - 1] = '\0';
       ConfigCommitResult res =
-          commitCandidateConfig(cfg, candidate, _instrument, &ConfigStorage::saveFrom);
+          commitCandidateConfig(cfg, candidate, _instrument, &ConfigStorage::saveFrom,
+                                &cfgGuard);
       JsonDocument resp;
       resp["ok"] = res.saved;
       if (!res.saved) resp["error"] = res.valid ? "storage_failed" : res.error;
@@ -1076,11 +1158,6 @@ void WebConfigurator::executeWebOp(WebOp& op) {
       break;
     }
 
-    case WEBOP_AUTOCAL_CANCEL:
-      cancelActiveActuatorSession();
-      op.ok = true;
-      break;
-
     case WEBOP_AUTOCAL_APPLY_RANGE: {
       if (!_autoCal || !_autoCal->isRangeFinderComplete()) { op.ok = false; break; }
       bool hadValid = _autoCal->getRangeFinderMin() >= 0 && _autoCal->getRangeFinderMax() >= 0;
@@ -1134,7 +1211,10 @@ void WebConfigurator::executeWebOp(WebOp& op) {
       // invalider les jetons distribues sous l'ancien.
       if (ok) {
         _auth.revokeAll();
-        for (uint8_t i = 0; i < WS_MAX_CLIENTS; i++) _wsAuthClients[i] = 0;
+        for (uint8_t i = 0; i < WS_MAX_CLIENTS; i++) {
+          _wsSessions[i].clientId = 0;
+          _wsSessions[i].token[0] = '\0';
+        }
       }
       break;
     }
@@ -1581,6 +1661,16 @@ void WebConfigurator::handleApiStatus(AsyncWebServerRequest* request) {
 }
 
 void WebConfigurator::handleApiConfig(AsyncWebServerRequest* request) {
+  // Lecteur volumineux execute sur la tache AsyncTCP pendant que loop() peut
+  // commiter une nouvelle configuration. Sans ce verrou, la reponse pouvait
+  // melanger l'ancienne et la nouvelle config (numNotes deja mis a jour mais
+  // notes[] pas encore recopie => lecture au-dela des notes valides).
+  // Cette fonction ne fait AUCUN hand-off vers loop() : tenir le verrou ici ne
+  // peut pas provoquer d'interblocage.
+  if (!lockConfig(WEB_CONFIG_LOCK_MS)) {
+    request->send(503, "application/json", "{\"ok\":false,\"error\":\"config_busy\"}");
+    return;
+  }
   String json = "{";
 
   // Instrument info
@@ -1734,6 +1824,7 @@ void WebConfigurator::handleApiConfig(AsyncWebServerRequest* request) {
   json += "]";
 
   json += "}";
+  unlockConfig();
   request->send(200, "application/json", json);
 }
 
@@ -2080,6 +2171,13 @@ void WebConfigurator::handleApiDiagnostics(AsyncWebServerRequest* request) {
   // Diagnostic PUREMENT PASSIF : aucune commande ci-dessous ne fait bouger un
   // actionneur. Un test actif se demande explicitement par les commandes
   // WebSocket de test, qui sont soumises a la protection hardware_not_ready.
+  // Meme raison que pour GET /api/config : la copie et les lectures de `cfg`
+  // sont serialisees avec le commit execute par loop(). Aucun hand-off vers
+  // loop() ici non plus, donc aucun risque d'interblocage.
+  if (!lockConfig(WEB_CONFIG_LOCK_MS)) {
+    request->send(503, "application/json", "{\"ok\":false,\"error\":\"config_busy\"}");
+    return;
+  }
   RuntimeConfig tmp = cfg;
   ConfigValidationResult validation = validateAndNormalizeConfig(tmp, &cfg);
 
@@ -2259,6 +2357,8 @@ void WebConfigurator::handleApiDiagnostics(AsyncWebServerRequest* request) {
            restartPending() ? "Controlled restart pending" : "No restart pending");
 
   doc["ok"] = validation.valid && !bootConfigBad && fsOk && ready;
+
+  unlockConfig();
 
   String out;
   serializeJson(doc, out);
@@ -2566,7 +2666,7 @@ void WebConfigurator::onWsEvent(AsyncWebSocket* server, AsyncWebSocketClient* cl
     case WS_EVT_CONNECT:
       // Un nouveau client n'est PAS authentifie : il doit envoyer
       // {"t":"auth","token":"..."} avant toute commande.
-      setWsAuthenticated(client->id(), false);
+      clearWsAuthentication(client->id());
       client->text("{\"t\":\"auth_required\"}");
       if (DEBUG) {
         Serial.print("DEBUG: WS client connected #");
@@ -2575,7 +2675,7 @@ void WebConfigurator::onWsEvent(AsyncWebSocket* server, AsyncWebSocketClient* cl
       break;
 
     case WS_EVT_DISCONNECT: {
-      setWsAuthenticated(client->id(), false);
+      clearWsAuthentication(client->id());
       bool handled = false;
 #if MIC_ENABLED
       if (isCalibrationActive()) {
@@ -2587,7 +2687,9 @@ void WebConfigurator::onWsEvent(AsyncWebSocket* server, AsyncWebSocketClient* cl
           // Deconnexion du proprietaire : la calibration doit etre annulee et le
           // materiel remis en securite, mais depuis la tache loop() - et SANS
           // attendre ici, car ce callback peut detenir le verrou du WebSocket.
-          WebOp op; op.type = WEBOP_AUTOCAL_CANCEL; postWebOp(op);
+          // Drapeau non perdable (cf. update()) plutot qu'un postWebOp() qui
+          // echouerait silencieusement sur file pleine.
+          requestCalibrationCancel();
           if (_instrument) _instrument->requestPanic();
         }
       }
@@ -2642,7 +2744,9 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
   if (strcmp(type, "auth") == 0) {
     String token = String((const char*)(doc["token"] | ""));
     bool ok = _auth.validate(token, millis());
-    setWsAuthenticated(client->id(), ok);
+    // Le jeton lui-meme est conserve : chaque commande suivante le revalidera.
+    if (ok) setWsAuthenticated(client->id(), token);
+    else    clearWsAuthentication(client->id());
     client->text(ok ? "{\"t\":\"auth\",\"ok\":true}"
                     : "{\"t\":\"auth\",\"ok\":false,\"msg\":\"unauthorized\"}");
     return;
@@ -2713,7 +2817,7 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
       if (_autoCalOwnerClientId != 0 && client->id() != _autoCalOwnerClientId) {
         client->text("{\"t\":\"error\",\"msg\":\"not_calibration_owner\"}");
       } else {
-        WebOp op; op.type = WEBOP_AUTOCAL_CANCEL; postWebOp(op);
+        requestCalibrationCancel();
       }
       return;
     }
@@ -2725,7 +2829,8 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
   } else if (strcmp(type, "panic") == 0) {
 #if MIC_ENABLED
     // Panic must always abort a running calibration and safe the hardware first.
-    { WebOp op; op.type = WEBOP_AUTOCAL_CANCEL; postWebOp(op); }
+    // Drapeau non perdable : un panic ne doit jamais laisser _autoCal "running".
+    requestCalibrationCancel();
 #endif
     endTestSession(false);   // hardware is safed just below by the panic request
     // Le panic n'occupe pas une place de la file : il ne peut pas etre perdu et
@@ -2793,7 +2898,7 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
       if (_autoCal && _autoCal->isRunning() && client->id() != _autoCalOwnerClientId) {
         client->text("{\"t\":\"error\",\"msg\":\"not_calibration_owner\"}");
       } else {
-        WebOp op; op.type = WEBOP_AUTOCAL_CANCEL; postWebOp(op);
+        requestCalibrationCancel();
       }
     } else if (strcmp(mode, "apply_range") == 0) {
       if (_autoCal && _autoCal->isRangeFinderComplete()) {
@@ -2809,7 +2914,7 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
     if (_autoCal && _autoCal->isRunning() && client->id() != _autoCalOwnerClientId) {
       client->text("{\"t\":\"error\",\"msg\":\"not_calibration_owner\"}");
     } else {
-      WebOp op; op.type = WEBOP_AUTOCAL_CANCEL; postWebOp(op);
+      requestCalibrationCancel();
     }
 #endif
   } else {

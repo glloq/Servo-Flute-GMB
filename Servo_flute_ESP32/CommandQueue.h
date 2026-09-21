@@ -82,6 +82,20 @@ public:
   bool takePanicRequest();
   bool panicPending() const;
 
+  // --- Note Off non perdables -------------------------------------------------
+  // Un Note Off est deja protege DANS l'EventQueue (enqueue...Forced evince le
+  // plus ancien plutot que d'echouer). Mais un Note Off venu du WebSocket
+  // traverse d'abord CETTE file, dont le push echoue quand elle est pleine : le
+  // relachement n'atteignait alors jamais l'EventQueue et la note restait
+  // bloquee, valve et souffle ouverts. Les Note Off sont donc enregistres dans
+  // un bitmap de 128 bits plutot que dans l'anneau : ils ne peuvent pas etre
+  // perdus, quelle que soit la charge.
+  void requestNoteOff(uint8_t note);
+  // Retire le plus petit numero de note en attente. Retourne false quand il n'y
+  // en a plus.
+  bool takePendingNoteOff(uint8_t& note);
+  bool hasPendingNoteOff() const;
+
   void clear();
 
   uint8_t count() const;
@@ -96,6 +110,7 @@ private:
   uint8_t _count;
   uint16_t _dropped;
   bool _panic;
+  uint32_t _pendingNoteOff[4];   // bitmap 128 notes MIDI
   mutable portMUX_TYPE _mux = portMUX_INITIALIZER_UNLOCKED;
 };
 
