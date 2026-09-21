@@ -1100,6 +1100,17 @@ void calibration_owns_the_air_source() {
 
   ICalibrationAirSupply& supply = im->getCalibrationAirSupply();
 
+  // Point ESSENTIEL : une note est EN COURS quand la calibration demarre. C'est
+  // le cas reel (la calibration se lance depuis l'interface pendant que le
+  // lecteur MIDI joue ; WEBOP_AUTOCAL_START_* met d'ailleurs le lecteur en
+  // pause). Sans note prealable, le sequenceur est deja a STATE_IDLE et il n'y a
+  // aucune transition a mal interpreter : le defaut ne se reproduit pas.
+  im->noteOn(60, 100);
+  for (int i = 0; i < 6; i++) { __test_millis += 20; im->update(); }
+  assert(im->getSequencer().getState() == STATE_PLAYING);
+  assert(im->getPressureCtrl().getTargetPercent() > cfg.pumpDirectIdlePercent);
+
+  // Prise de session : elle arrete le sequenceur (retour force a STATE_IDLE).
   im->setActuatorSessionActive(true);
   supply.prepare();                      // demande representative du mode
   supply.setDemandPercent(100);
@@ -1107,8 +1118,9 @@ void calibration_owns_the_air_source() {
   assert(demanded == cfg.pumpDirectMaxPercent);
 
   for (int i = 0; i < 40; i++) { __test_millis += 20; im->update(); }
-  // Sans le garde, le retour force du sequenceur a STATE_IDLE etait lu comme une
-  // fin de note et remettait la pompe au ralenti sous les pieds du calibrateur.
+  // Sans le garde ET le realignement, le retour force a STATE_IDLE etait lu au
+  // tour suivant comme une fin de note et remettait la pompe au ralenti sous les
+  // pieds du calibrateur.
   assert(im->getPressureCtrl().getTargetPercent() == demanded);
 
   // Session rendue : le sequenceur reprend la main et redescend au ralenti.
@@ -1117,6 +1129,7 @@ void calibration_owns_the_air_source() {
   for (int i = 0; i < 5; i++) { __test_millis += 20; im->update(); }
   im->noteOff(60);
   for (int i = 0; i < 20; i++) { __test_millis += 30; im->update(); }
+  assert(im->getSequencer().getState() == STATE_IDLE);
   assert(im->getPressureCtrl().getTargetPercent() == cfg.pumpDirectIdlePercent);
   delete im;
 }
