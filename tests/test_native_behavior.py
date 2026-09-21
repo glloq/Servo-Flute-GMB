@@ -22,6 +22,8 @@ SOURCES = [
     "Servo_flute_ESP32/AudioFilters.cpp",
     "Servo_flute_ESP32/NoiseModel.cpp",
     "Servo_flute_ESP32/AcousticFeatures.cpp",
+    "Servo_flute_ESP32/AcousticQuality.cpp",
+    "Servo_flute_ESP32/AcousticTiming.cpp",
     "Servo_flute_ESP32/EventQueue.cpp",
     "Servo_flute_ESP32/CommandQueue.cpp",
     "Servo_flute_ESP32/FingerController.cpp",
@@ -45,6 +47,9 @@ SOURCES = [
     "tests/test_native/test_gmb.cpp",
     "tests/test_native/test_audit.cpp",
     "tests/test_native/test_audio.cpp",
+    "tests/test_native/test_spectral_hnr.cpp",
+    "tests/test_native/test_quality.cpp",
+    "tests/test_native/test_timing.cpp",
     "tests/test_native/test_behavior.cpp",
 ]
 
