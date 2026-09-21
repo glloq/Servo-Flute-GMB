@@ -208,4 +208,172 @@ float SpectralAnalyzer::bandEnergy(float loHz, float hiHz, float sampleRate) con
   return sum;
 }
 
+// ------------------------------------------------- Rapport harmonique / bruit --
+
+namespace {
+
+// Grille des raies d'une note : f0 exprimee en bins fractionnaires et nombre de
+// rangs retenus. Regroupee ici pour que l'appartenance d'un bin soit definie a
+// UN SEUL endroit - la somme d'energie et l'estimation du plancher doivent
+// partager exactement le meme decoupage, sinon l'energie d'une raie serait
+// comptee des deux cotes.
+struct HarmonicGrid {
+  float f0Bins = 0.0f;
+  float invF0Bins = 0.0f;   // pre-calcule : la bissection reevalue chaque bin
+  uint8_t partials = 0;
+
+  HarmonicGrid(float bins, uint8_t n)
+      : f0Bins(bins), invF0Bins(bins > 0.0f ? 1.0f / bins : 0.0f), partials(n) {}
+
+  // Le bin 0 est le continu, deja retire par computeSpectrum : il n'appartient
+  // ni aux raies ni au bruit.
+  bool contains(size_t bin) const {
+    if (bin == 0 || partials == 0 || f0Bins <= 0.0f) return false;
+    // La grille est reguliere : le rang le plus proche s'obtient d'une division,
+    // sans parcourir les rangs un par un. Le borner plutot que le rejeter evite
+    // de classer en bruit un bin qui tombe dans la fenetre du dernier rang.
+    int h = (int)((float)bin * invF0Bins + 0.5f);
+    if (h < 1) h = 1;
+    if (h > (int)partials) h = (int)partials;
+    const float center = (float)h * f0Bins;
+    const float d = (float)bin - center;
+    return (d < 0.0f ? -d : d) <= SpectralHnr::kHarmonicHalfWidthBins;
+  }
+};
+
+}  // namespace
+
+uint8_t SpectralAnalyzer::usablePartials(float f0, float sampleRate) {
+  if (f0 <= 0.0f || sampleRate <= 0.0f) return 0;
+  const float f0Bins = hzToBin(f0, sampleRate);
+  // Trop grave : la raie se confond avec le continu retire.
+  if (f0Bins < SpectralHnr::kMinF0Bins) return 0;
+  const float nyquistBin = (float)(MIC_FFT_SIZE / 2);
+  // Au-dessus de Nyquist il n'y a pas de fondamentale, seulement un repli.
+  if (f0Bins >= nyquistBin) return 0;
+  int n = (int)(nyquistBin / f0Bins);
+  if (n < 1) return 0;
+  if (n > (int)SpectralHnr::kMaxPartials) n = (int)SpectralHnr::kMaxPartials;
+  return (uint8_t)n;
+}
+
+bool SpectralAnalyzer::isHarmonicBin(size_t bin, float f0, float sampleRate) {
+  const uint8_t partials = usablePartials(f0, sampleRate);
+  if (partials == 0) return false;
+  if (bin >= (size_t)(MIC_FFT_SIZE / 2 + 1)) return false;
+  return HarmonicGrid(hzToBin(f0, sampleRate), partials).contains(bin);
+}
+
+float SpectralAnalyzer::medianNoisePower(float f0Bins, uint8_t partials,
+                                         uint16_t noiseBins, float minNoise,
+                                         float maxNoise) const {
+  if (noiseBins == 0) return 0.0f;
+  if (maxNoise <= SpectralHnr::kPowerFloor) return SpectralHnr::kPowerFloor;
+  if (minNoise < SpectralHnr::kPowerFloor) minNoise = SpectralHnr::kPowerFloor;
+
+  const HarmonicGrid grid(f0Bins, partials);
+  const size_t bins = binCount();
+  // Rang de la mediane basse, en numerotation 1.
+  const uint16_t target = (uint16_t)((noiseBins + 1u) / 2u);
+
+  // Bissection sur la VALEUR, menee dans le domaine logarithmique : un plancher
+  // peut se trouver dix decades sous le maximum et une bissection lineaire y
+  // perdrait toute precision des les premieres iterations. Trier serait exact
+  // mais demanderait une copie des bins ; ici le seul cout est de relire le
+  // spectre, qui est deja en RAM.
+  //
+  // Invariant : le predicat "au moins `target` bins sont sous le seuil" est
+  // faux en `lo` et vrai en `hi`. S'il est deja vrai en `lo` - plus de la
+  // moitie des bins au minimum, donc mediane confondue avec lui - `hi` converge
+  // vers `lo`, ce qui est la reponse correcte.
+  float lo = logf(minNoise);
+  float hi = logf(maxNoise);
+  for (uint8_t it = 0; it < SpectralHnr::kMedianIterations; it++) {
+    const float mid = 0.5f * (lo + hi);
+    const float threshold = expf(mid);
+    uint16_t count = 0;
+    for (size_t k = 1; k < bins; k++) {
+      if (grid.contains(k)) continue;
+      if (_mag[k] * _mag[k] <= threshold) count++;
+    }
+    if (count >= target) hi = mid; else lo = mid;
+  }
+  return expf(hi);
+}
+
+HarmonicNoiseRatio SpectralAnalyzer::harmonicNoiseRatio(float f0,
+                                                        float sampleRate) const {
+  HarmonicNoiseRatio out;
+  // Sans spectre calcule il n'y a rien a mesurer, et un HNR plausible serait
+  // une invention pure.
+  if (!_spectrumValid || sampleRate <= 0.0f) return out;
+
+  const uint8_t partials = usablePartials(f0, sampleRate);
+  if (partials == 0) return out;   // f0 absente, trop grave, ou hors Nyquist
+
+  const HarmonicGrid grid(hzToBin(f0, sampleRate), partials);
+  const size_t bins = binCount();
+
+  float harmonicEnergy = 0.0f;
+  float maxNoise = 0.0f;
+  float minNoise = 0.0f;
+  uint16_t harmonicBins = 0;
+  uint16_t noiseBins = 0;
+  for (size_t k = 1; k < bins; k++) {
+    const float p = _mag[k] * _mag[k];
+    if (grid.contains(k)) {
+      harmonicEnergy += p;
+      harmonicBins++;
+    } else {
+      if (noiseBins == 0 || p < minNoise) minNoise = p;
+      if (p > maxNoise) maxNoise = p;
+      noiseBins++;
+    }
+  }
+
+  out.partials = partials;
+  out.harmonicBins = harmonicBins;
+  out.noiseBins = noiseBins;
+  out.harmonicEnergy = harmonicEnergy;
+
+  // Silence numerique : ni raie ni bruit. Le rapport de deux riens n'existe
+  // pas, et -40 dB serait un verdict sur une note qui n'a pas ete jouee.
+  if (harmonicEnergy <= SpectralHnr::kPowerFloor &&
+      maxNoise <= SpectralHnr::kPowerFloor) {
+    return out;
+  }
+
+  // Trop peu de bins restants pour que la mediane veuille dire quelque chose.
+  if (noiseBins < SpectralHnr::kMinNoiseBins) return out;
+
+  float floorPerBin =
+      medianNoisePower(grid.f0Bins, partials, noiseBins, minNoise, maxNoise) *
+      SpectralHnr::kMedianToMeanPower;
+  if (floorPerBin < SpectralHnr::kPowerFloor) floorPerBin = SpectralHnr::kPowerFloor;
+  out.noiseFloorPerBin = floorPerBin;
+
+  // Le bruit occupe TOUT le spectre, y compris sous les raies : l'energie de
+  // bruit de la frame est le plancher etendu a l'ensemble des bins analyses, et
+  // non aux seuls bins ou on a pu le mesurer.
+  out.noiseEnergy = floorPerBin * (float)(harmonicBins + noiseBins);
+
+  // Les bins d'une raie contiennent eux aussi du bruit. Le retirer evite de le
+  // compter des deux cotes du rapport, ce qui flatterait les notes faibles.
+  float harmonicNet = harmonicEnergy - floorPerBin * (float)harmonicBins;
+  if (harmonicNet < 0.0f) harmonicNet = 0.0f;
+
+  if (harmonicNet <= SpectralHnr::kPowerFloor) {
+    // Rien ne depasse le plancher. C'est un resultat, pas une absence de
+    // resultat : le signal n'a pas de contenu harmonique a cette f0.
+    out.db = -MIC_HNR_MAX_DB;
+  } else {
+    out.db = 10.0f * log10f(harmonicNet / out.noiseEnergy);
+    // Un signal synthetique sans bruit donnerait l'infini : on borne.
+    if (out.db > MIC_HNR_MAX_DB) out.db = MIC_HNR_MAX_DB;
+    if (out.db < -MIC_HNR_MAX_DB) out.db = -MIC_HNR_MAX_DB;
+  }
+  out.valid = true;
+  return out;
+}
+
 #endif  // MIC_FFT_ENABLED
