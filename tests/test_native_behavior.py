@@ -39,6 +39,7 @@ SOURCES = [
     "Servo_flute_ESP32/gmb/GmbSysExService.cpp",
     "tests/test_native/test_gmb.cpp",
     "tests/test_native/test_audit.cpp",
+    "tests/test_native/test_audio.cpp",
     "tests/test_native/test_behavior.cpp",
 ]
 
