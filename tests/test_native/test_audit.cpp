@@ -235,6 +235,83 @@ static void sequencer_no_event_executed_after_clear() {
   assert(q.isEmpty());
 }
 
+// Production concurrente pendant la consommation. Le scenario reproduit
+// exactement ce que l'ancien code ne survivait pas : la tete est LUE, puis un
+// producteur insere un Note Off force (qui evince la tete quand la file est
+// pleine) avant que le consommateur ne "retire". Avec tryPopDueEvent(), lecture
+// et retrait portent sur le meme evenement, donc l'eviction ne peut plus
+// transformer le retrait en suppression d'un AUTRE evenement.
+static void eventqueue_producer_interleaved_with_consumer() {
+  EventQueue q(3);
+  __test_millis = 100;
+  assert(q.enqueueScheduledEvent(EVENT_NOTE_ON, 60, 100, 0));
+  assert(q.enqueueScheduledEvent(EVENT_NOTE_ON, 61, 100, 0));
+  assert(q.enqueueScheduledEvent(EVENT_NOTE_ON, 62, 100, 0));
+  assert(q.isFull());
+
+  // Le consommateur prend le premier evenement de facon indivisible.
+  MidiEvent first;
+  assert(q.tryPopDueEvent(__test_millis, 0, first));
+  assert(first.midiNote == 60);
+  assert(q.getCount() == 2);
+
+  // Un producteur insere ensuite deux evenements, dont un Note Off force sur une
+  // file redevenue pleine : il evince la tete (note 61).
+  assert(q.enqueueScheduledEvent(EVENT_NOTE_ON, 63, 100, 0));
+  assert(q.isFull());
+  assert(q.enqueueScheduledEventForced(EVENT_NOTE_OFF, 63, 0, 0));
+
+  // La consommation reste coherente : chaque retrait rend l'evenement qui etait
+  // reellement en tete, sans doublon ni saut.
+  MidiEvent e;
+  assert(q.tryPopDueEvent(__test_millis, 0, e) && e.midiNote == 62 && e.type == EVENT_NOTE_ON);
+  assert(q.tryPopDueEvent(__test_millis, 0, e) && e.midiNote == 63 && e.type == EVENT_NOTE_ON);
+  assert(q.tryPopDueEvent(__test_millis, 0, e) && e.midiNote == 63 && e.type == EVENT_NOTE_OFF);
+  assert(q.isEmpty());
+  // Le Note Off a survecu a la saturation : c'est lui qui relache la note.
+}
+
+// Un panic declenche pendant qu'une note joue doit tout relacher, y compris la
+// source d'air. C'est le chemin emprunte par forceAP() / la perte de transport
+// reseau pendant une note tenue.
+static void panic_during_active_note_releases_everything() {
+  auditResetCfg();
+  cfg.airMode = AIR_MODE_PUMP_VALVE;
+  cfg.pumpFollowAirflow = true;
+  cfg.pumpDirectMaxPercent = 100;
+  cfg.pumpDirectIdlePercent = 10;
+  InstrumentManager* im = makeReadyInstrument();
+  __test_millis = 1000;
+
+  im->noteOn(60, 120);
+  for (int i = 0; i < 4; i++) { __test_millis += 20; im->update(); }
+  assert(im->getSequencer().getState() != STATE_IDLE);
+  assert(im->getPressureCtrl().getTargetPercent() > cfg.pumpDirectIdlePercent);
+
+  // Panic poste depuis une autre tache (deconnexion BLE, bascule reseau...).
+  im->requestPanic();
+  __test_millis += 20;
+  im->update();
+
+  assert(im->getSequencer().getState() == STATE_IDLE);
+  assert(!im->getAirflowCtrl().isValveOpen());
+  assert(im->getPressureCtrl().getTargetPercent() == 0);
+  assert(!im->commandQueue().panicPending());
+
+  // Le panic TIENT : un tour de boucle supplementaire ne doit pas remettre la
+  // pompe a sa demande de repos (le retour force a STATE_IDLE n'est pas une fin
+  // de note normale).
+  for (int i = 0; i < 3; i++) { __test_millis += 20; im->update(); }
+  assert(im->getPressureCtrl().getTargetPercent() == 0);
+
+  // Une VRAIE note suivante reapplique bien la demande de jeu.
+  im->noteOn(61, 120);
+  for (int i = 0; i < 4; i++) { __test_millis += 20; im->update(); }
+  assert(im->getPressureCtrl().getTargetPercent() > cfg.pumpDirectIdlePercent);
+  im->allSoundOff();
+  delete im;
+}
+
 // --- 2. CommandQueue : panic prioritaire, jamais perdu ------------------------
 static void commandqueue_panic_never_dropped_and_cancels_pending() {
   CommandQueue q(2);
@@ -772,6 +849,8 @@ void audit_run_all_tests() {
   eventqueue_millis_rollover();
   eventqueue_clear_invalidates_burst();
   eventqueue_forced_note_off_on_full_queue();
+  eventqueue_producer_interleaved_with_consumer();
+  panic_during_active_note_releases_everything();
   sequencer_no_event_executed_after_clear();
   commandqueue_panic_never_dropped_and_cancels_pending();
   hardware_not_ready_refuses_every_actuator_command();

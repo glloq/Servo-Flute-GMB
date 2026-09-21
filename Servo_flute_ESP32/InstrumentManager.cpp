@@ -697,6 +697,14 @@ void InstrumentManager::allSoundOff() {
   _commands.clear();
   _cc2Pending = false;
   _sequencer.stop();
+  // Le panic doit TENIR. updateAirSourceFromSequencer() reagit aux transitions
+  // d'etat du sequenceur : sans cette ligne, le retour force a STATE_IDLE serait
+  // vu comme "fin normale de note" au tour suivant et remettrait la pompe a sa
+  // demande de repos (ou relancerait la rampe de ralenti du ventilateur), juste
+  // apres que allSoundOff() les ait arretes. Aligner l'etat precedent supprime
+  // la transition : la source d'air reste a l'arret jusqu'a la prochaine VRAIE
+  // note, qui appliquera elle-meme sa demande de jeu.
+  _prevSequencerState = STATE_IDLE;
   // Hardware jamais initialise (PCA absent / config invalide) : les controleurs
   // n'ont pas configure leurs GPIO, on ne doit rien ecrire dessus. Vider les files
   // et remettre la machine a etats au repos suffit - rien n'a pu etre active.

@@ -435,6 +435,11 @@ def test_audit_p1_air_source_tied_to_sequencer_transitions():
     assert '_pressureCtrl.setTargetPercent' not in note_on
     assert '_fanCtrl.setSpeed' not in note_on
     assert '_pressureCtrl.setTargetPercent' not in note_off
+    # A panic must STICK: allSoundOff() aligns _prevSequencerState so the forced
+    # return to STATE_IDLE is not read as a normal note end on the next update
+    # (which would put the pump back to its idle demand right after stopping it).
+    aso = im.split('void InstrumentManager::allSoundOff()')[1].split('\n}\n')[0]
+    assert '_prevSequencerState = STATE_IDLE;' in aso
 
 
 def test_audit_p1_test_note_and_pump_commands():
