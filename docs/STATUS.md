@@ -138,6 +138,10 @@ The earlier 2026 firmware audit introduced or reinforced:
   never run, because a plain `new` on this platform aborts instead of returning
   null. The handling is unchanged; it is now reachable.
 
+The defect-by-defect account — how each one was reproduced before being
+touched, which mutation proves each fix, and what this pass does *not* prove —
+is in [Hardening report](HARDENING_REPORT.md).
+
 Two rules are now enforced by CI rather than by attention: no test function may
 be defined without being reachable from `main()` and without asserting anything
 (two tests had been dead for weeks), and no line of the hardware matrix may
