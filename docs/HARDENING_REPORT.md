@@ -1,7 +1,10 @@
 # Passe de durcissement — rapport de validation
 
 Branche `claude/serene-allen-loflan`, repartie de `main` = `1eab8ef`.
-Neuf commits, 37 fichiers, +4381 / −315. Suite pytest : **105 → 121**.
+Dix commits, 38 fichiers touchés. Suite pytest : **105 → 121**.
+Dernière CI complète vérifiée : run #88 sur `55b2d92`, **cinq jobs au vert**,
+les deux builds ESP32 compris. Les commits postérieurs ne touchent que la
+documentation.
 
 Ce document dit ce qui a ete corrige, comment chaque defaut a ete REPRODUIT
 avant d'etre touche, et — ce qui compte autant — ce qui ne l'a pas ete et ce
