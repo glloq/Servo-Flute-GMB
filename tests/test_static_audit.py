@@ -2453,3 +2453,82 @@ def test_p2_config_lock_fails_closed_when_the_mutex_could_not_be_created():
         "Le retour inconditionnel `true` sur mutex absent est revenu."
     )
 
+
+# --- Section 11 : une validation materielle ne se decrete pas --------------
+
+HW_NOT_TESTED = 'NOT TESTED — requires hardware'
+# Convention de preuve : pour qu'une ligne quitte NOT TESTED, la colonne
+# Comments doit porter `EXECUTED <AAAA-MM-JJ> <sha7+>`. Ni la date ni le SHA ne
+# sont verifiables par la CI - c'est normal, ce n'est pas leur role. Leur role
+# est qu'on ne puisse pas changer un statut SANS ECRIRE sur quoi et quand
+# l'essai a tourne. Un statut qu'on ne peut pas retracer ne vaut rien.
+HW_EVIDENCE = __import__('re').compile(r'EXECUTED\s+\d{4}-\d{2}-\d{2}\s+[0-9a-f]{7,40}')
+
+
+def _hardware_matrix_rows():
+    """[(id, statut, commentaires)] pour chaque ligne des tableaux de la
+    matrice - il y en a plusieurs, et ils doivent tous obeir a la regle."""
+    rows = []
+    for line in read('Servo_flute_ESP32/docs/HARDWARE_TEST_MATRIX.md').splitlines():
+        line = line.strip()
+        if not line.startswith('|') or not line.endswith('|'):
+            continue
+        cells = [c.strip() for c in line.strip('|').split('|')]
+        if len(cells) != 8:
+            continue
+        if cells[0] in ('ID',) or set(cells[0]) <= set('- '):
+            continue
+        rows.append((cells[0], cells[6], cells[7]))
+    return rows
+
+
+def test_hardware_matrix_never_claims_pass_without_recorded_evidence():
+    """Aucun statut ne quitte NOT TESTED sans preuve tracable.
+
+    Rien de ce depot n'a tourne sur un ESP32 avec des peripheriques physiques.
+    Une case passee a PASS apres une passe purement logicielle est la pire sortie
+    possible de ce travail : elle transforme une lacune CONNUE en confiance
+    infondee, et c'est precisement ce qu'une longue campagne de corrections rend
+    tentant - on a beaucoup travaille, donc on a envie que ce soit valide.
+
+    Le test n'interdit pas de marquer PASS. Il interdit de le faire sans dire
+    QUAND et SUR QUEL FIRMWARE, via `EXECUTED <AAAA-MM-JJ> <sha>` dans les
+    commentaires de la ligne.
+    """
+    rows = _hardware_matrix_rows()
+    assert len(rows) >= 70, (
+        f"Seulement {len(rows)} lignes lues dans la matrice : l'analyse ne mord "
+        "plus sur le tableau reel, donc elle ne protege plus rien."
+    )
+    faulty = [
+        f'{rid}: statut "{status}" sans preuve EXECUTED dans les commentaires'
+        for rid, status, comments in rows
+        if status != HW_NOT_TESTED and not HW_EVIDENCE.search(comments)
+    ]
+    assert not faulty, (
+        "Statuts materiels revendiques sans trace d'execution :\n  "
+        + "\n  ".join(faulty)
+        + "\nAjoutez `EXECUTED <AAAA-MM-JJ> <sha>` dans les commentaires de la "
+          "ligne, ou laissez " + HW_NOT_TESTED + "."
+    )
+
+
+def test_hardware_matrix_is_still_entirely_unexecuted():
+    """Etat REEL, pin par la CI plutot que par la memoire de quelqu'un.
+
+    Tant que ce test passe, la reponse a "est-ce que ca a ete valide sur
+    materiel ?" est non, en totalite - et elle est verifiee, pas affirmee. Le
+    jour ou un essai est reellement mene, ce test echoue : c'est voulu. Il faut
+    alors venir ici, constater que la ligne porte bien sa preuve, et ajuster le
+    compte en connaissance de cause.
+    """
+    rows = _hardware_matrix_rows()
+    executed = [(rid, status) for rid, status, _c in rows if status != HW_NOT_TESTED]
+    assert not executed, (
+        "Des lignes ne sont plus NOT TESTED : "
+        + ', '.join(f'{r} -> {s}' for r, s in executed)
+        + ". Si l'essai a vraiment eu lieu sur un ESP32 avec ses peripheriques, "
+          "mettez ce test a jour DELIBEREMENT. Sinon, c'est une regression de "
+          "l'honnetete du depot."
+    )
+
