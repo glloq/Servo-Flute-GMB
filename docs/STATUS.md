@@ -115,6 +115,15 @@ The earlier 2026 firmware audit introduced or reinforced:
 
 These software protections do not replace electrical protection, a physical emergency stop, appropriate fusing, correct power sizing, or physical verification.
 
+## Before connecting real hardware
+
+A four-axis hardware audit found defects that could destroy actuators, and three
+risks that **cannot be fixed in software** because they live in the window
+between reset and the firmware's first instruction. The staged power-on
+procedure, with a cut-off criterion at each step, is in
+[Bring-up procedure](BRINGUP.md). Do not skip step 0: it is the measurement that
+decides whether the coil and the servos can be connected at all.
+
 ## Known General-Midi-Boop limitation
 
 `timing.excite.latency_ms` is the delay between the MIDI order and the note
