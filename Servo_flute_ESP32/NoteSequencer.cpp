@@ -139,6 +139,56 @@ void NoteSequencer::handlePlaying() {
   if (_pendingStopAfterMinDuration && (int32_t)(millis() - (_noteSoundStartTime + cfg.minNoteDurationMs)) >= 0) {
     _pendingStopAfterMinDuration = false;
     stopCurrentNote();
+    return;   // la note est deja partie en STOPPING : pas de plafond a tester
+  }
+
+  /*--------------------------------------------------------------------------
+   * PLAFOND DE DUREE DE NOTE
+   *
+   * Le defaut qu'il repare : il n'existait AUCUNE limite de duree de note.
+   * Un Note Off qui n'arrive jamais laissait indefiniment la valve ouverte, la
+   * bobine a son PWM de maintien et la pompe en regime. Le cas reproduit est un
+   * MIDI DIN dont la source n'emet pas d'Active Sensing : SerialMidiHandler ne
+   * peut alors rien detecter (sa perte de lien est conditionnee a la reception
+   * d'un 0xFE), et cfg.timeUnpower ne coupe l'OE que lorsque le sequenceur est
+   * DEJA au repos - donc jamais pendant une note tenue. Aucun autre garde-fou
+   * ne couvrait ce cas : la BLE, la rtpMIDI et le Wi-Fi ont leurs propres
+   * detections de deconnexion, le DIN muet n'en a pas.
+   *
+   * Le chronometre part de _noteSoundStartTime, l'instant ou la note SONNE
+   * reellement (valve commandee) : c'est celui ou les actionneurs sont
+   * reellement sollicites, et c'est deja la reference de cfg.minNoteDurationMs.
+   * STATE_POSITIONING n'a pas besoin de plafond : il se termine tout seul apres
+   * cfg.servoToSolenoidDelayMs, valeur bornee par le validateur. La duree
+   * maximale de sollicitation est donc NOTE_HOLD_CEILING_MS + ce delai.
+   *
+   * POURQUOI stop() ET PAS stopCurrentNote(). stopCurrentNote() passe par
+   * shouldCloseValveBetweenNotes(), qui peut decider de LAISSER LA VALVE
+   * OUVERTE quand un Note On attend a moins de cfg.minNoteIntervalForValveCloseMs.
+   * Or, quand ce plafond est atteint, plus rien ne prouve que le lien qui a
+   * depose ces evenements est encore vivant : leur faire confiance rouvrirait
+   * la valve dans la foulee et le plafond serait defait dans le tour suivant.
+   * stop() est le chemin d'arret COMPLET que le projet possede deja (celui de
+   * l'All Sound Off) et il ne se negocie pas : file videe - donc epoque
+   * incrementee, aucun evenement anterieur ne peut encore etre joue -, valve
+   * fermee sans condition, souffle et angle rendus au repos, note relachee
+   * notifiee aux observateurs, retour a STATE_IDLE. Ce retour a STATE_IDLE est
+   * ce qui rend enfin effectif cfg.timeUnpower (managePower() coupe alors l'OE,
+   * donc les servos de doigts aussi) et ce que InstrumentManager lit comme une
+   * fin de note pour ramener la pompe / le ventilateur a leur repos.
+   *
+   * Cout assume : un bourdon tenu VOLONTAIREMENT au-dela du plafond est coupe
+   * et ne repart pas tout seul - il faut un nouveau Note On. C'est le choix
+   * "materiel d'abord" : on ne distingue pas, de l'exterieur, une pedale tenue
+   * d'un cable debranche.
+   *------------------------------------------------------------------------*/
+  if ((int32_t)(millis() - (_noteSoundStartTime + NOTE_HOLD_CEILING_MS)) >= 0) {
+    if (DEBUG) {
+      Serial.print("DEBUG: NoteSequencer - PLAFOND de duree atteint sur la note ");
+      Serial.print(_currentNote);
+      Serial.println(" -> extinction complete");
+    }
+    stop();
   }
 }
 

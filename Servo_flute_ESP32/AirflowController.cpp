@@ -510,8 +510,64 @@ void AirflowController::setAirflowLivePercent(uint8_t percent) {
   setAirflowServoAngle(angle);
 }
 
+/*----------------------------------------------------------------------------
+ * Bornes des commandes de reglage manuel
+ *
+ * Ce que ces deux fonctions empechent : les commandes de reglage venues du
+ * reseau (test_air, test_angle) ne bornaient qu'a SERVO_MAX_ANGLE, c'est-a-dire
+ * a la course ELECTRIQUE du servo. Sur la configuration expediee
+ * (servoAirflowOff 20, min 60, max 100), un curseur glisse jusqu'au bout
+ * commandait 180 deg : 80 deg au-dela du dernier angle que l'utilisateur a
+ * declare mecaniquement atteignable. Le servo finissait contre sa butee et y
+ * restait, a son courant de calage - donc en chauffe.
+ *
+ * Le firmware borne EN PREMIER, et non l'interface : POST /api/config comme le
+ * WebSocket sont ouverts a n'importe quel client, pas seulement a la page
+ * servie. L'interface ne fait que ne plus PROPOSER ce que le firmware refuse.
+ *--------------------------------------------------------------------------*/
+
+// Etend [lo,hi] par v.
+static void widenSpan(int32_t v, int32_t& lo, int32_t& hi) {
+  if (v < lo) lo = v;
+  if (v > hi) hi = v;
+}
+
+// Ramene `angle` dans [lo,hi] elargi de SERVO_TEST_MARGIN_DEG, sans jamais
+// sortir de la course electrique du servo. Les bornes sont reordonnees si
+// besoin : une configuration ou min > max est refusee par le validateur, mais
+// un /config.json ecrit a la main peut la porter, et un intervalle vide
+// bloquerait le servo sur une valeur arbitraire au lieu de le proteger.
+static uint16_t clampToTestEnvelope(uint16_t angle, int32_t lo, int32_t hi) {
+  if (lo > hi) { int32_t t = lo; lo = hi; hi = t; }
+  lo -= SERVO_TEST_MARGIN_DEG;
+  hi += SERVO_TEST_MARGIN_DEG;
+  if (lo < SERVO_MIN_ANGLE) lo = SERVO_MIN_ANGLE;
+  if (hi > SERVO_MAX_ANGLE) hi = SERVO_MAX_ANGLE;
+  if ((int32_t)angle < lo) return (uint16_t)lo;
+  if ((int32_t)angle > hi) return (uint16_t)hi;
+  return angle;
+}
+
+uint16_t AirflowController::clampAirflowTestAngle(uint16_t angle) const {
+  // Course declaree du servo de souffle : les trois angles que la configuration
+  // lui donne. servoAirflowOff est inclus parce qu'il est HORS de [min,max]
+  // dans les modes sans valve physique (c'est lui qui coupe l'air), et c'est
+  // bien une position que le mecanisme atteint a chaque note off.
+  int32_t lo = (int32_t)cfg.servoAirflowOff, hi = lo;
+  widenSpan((int32_t)cfg.servoAirflowMin, lo, hi);
+  widenSpan((int32_t)cfg.servoAirflowMax, lo, hi);
+  return clampToTestEnvelope(angle, lo, hi);
+}
+
+uint16_t AirflowController::clampAngleServoTestAngle(uint16_t angle) const {
+  int32_t lo = (int32_t)cfg.servoAngleOff, hi = lo;
+  widenSpan((int32_t)cfg.servoAngleMin, lo, hi);
+  widenSpan((int32_t)cfg.servoAngleMax, lo, hi);
+  return clampToTestEnvelope(angle, lo, hi);
+}
+
 void AirflowController::testAirflowAngle(uint16_t angle) {
-  if (angle > SERVO_MAX_ANGLE) angle = SERVO_MAX_ANGLE;
+  angle = clampAirflowTestAngle(angle);
   setAirflowServoAngle(angle);
 
   if (DEBUG) {
@@ -522,8 +578,20 @@ void AirflowController::testAirflowAngle(uint16_t angle) {
 
 void AirflowController::testSolenoid(bool open) {
   if (open) {
+    // GARDE DE RE-IMPULSION. openValve() reecrit solenoidPwmActivation (pleine
+    // tension) et REARME _solenoidOpenTime. Un client qui repete
+    // {"t":"test_sol","o":1} plus vite que solenoidActivationTimeMs repoussait
+    // donc indefiniment la retombee au PWM de maintien : la bobine restait a
+    // pleine tension tant que le flot durait, sans qu'aucune duree maximale ne
+    // s'applique. La valve est deja ouverte, il n'y a rien a faire - et ne rien
+    // faire est precisement ce qui laisse la retombee arriver.
+    if (isValveOpen()) return;
     openSolenoid();
   } else {
+    // La FERMETURE reste inconditionnelle. Elle va dans le sens sur (PWM 0,
+    // valve close) et doit aboutir meme si _solenoidOpen avait derive de l'etat
+    // reel du materiel : la symetriser avec la garde ci-dessus transformerait un
+    // desaccord d'etat en valve bloquee ouverte.
     closeSolenoid();
   }
 }
@@ -640,7 +708,7 @@ void AirflowController::setAngleLivePercent(uint8_t percent) {
 
 void AirflowController::testAngleServoAngle(uint16_t angle) {
   if (!isTravEmbouchure()) return;
-  if (angle > SERVO_MAX_ANGLE) angle = SERVO_MAX_ANGLE;
+  angle = clampAngleServoTestAngle(angle);
   setAngleServoAngle(angle);
   if (DEBUG) {
     Serial.print("DEBUG: AngleServo - Test angle: ");

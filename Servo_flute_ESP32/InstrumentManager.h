@@ -72,6 +72,31 @@ public:
 
   void allSoundOff();
 
+  // Nombre de paniques survenues depuis le demarrage. Monotone croissant, il ne
+  // redescend jamais et ne se remet pas a zero : un consommateur memorise la
+  // derniere valeur vue et compare. Sert a ce qu'un observateur exterieur
+  // (le calibrateur) apprenne qu'une panique a eu lieu, quel que soit le chemin
+  // qui l'a declenchee - y compris un transport MIDI, qui ne passe par aucun
+  // code web.
+  //
+  // Le defaut qu'il repare : requestCalibrationCancel() n'existe que dans
+  // WebConfigurator et n'est appelee que par les chemins WEB. La deconnexion
+  // BLE, la deconnexion rtpMIDI, la chute du lien Wi-Fi STA, le timeout Active
+  // Sensing du MIDI serie et les CC120/123 recus par n'importe quel transport
+  // declenchaient bien le panic, mais l'auto-calibration continuait : elle
+  // rouvrait la valve ~740 ms plus tard et la mise en securite etait defaite.
+  //
+  // uint32_t deborde apres 4 milliards de paniques : sans objet, mais le
+  // consommateur compare par INEGALITE, pas par ordre, donc meme un
+  // debordement se comporte correctement.
+  //
+  // Une panique est comptee une seule fois, a l'endroit ou elle est REELLEMENT
+  // executee (executePanic), pas a chaque DEMANDE : requestPanic() venue d'une
+  // autre tache est coalescee par CommandQueue et ne compte qu'une fois, a la
+  // consommation. Tous les incrementations ont lieu sur la tache proprietaire
+  // des actionneurs (loop()), celle qui lit aussi ce compteur.
+  uint32_t panicCount() const;
+
   // --- File de commandes inter-taches (voir CommandQueue.h) -------------------
   // Tout appelant qui n'est PAS la tache loop() (callbacks AsyncTCP/WebSocket,
   // callbacks de connexion NimBLE) doit passer par ici : la commande est appliquee
@@ -214,8 +239,19 @@ private:
   // CC121 Reset All Controllers poste depuis une autre tache : drapeau dedie pour
   // qu'il ne puisse jamais etre perdu par saturation de la file.
   volatile bool _resetControllersRequested;
+  // Compteur de paniques REELLEMENT executees (voir panicCount()).
+  uint32_t _panicCount;
 
   void managePower();
+  // Execute REELLEMENT une panique : compte puis eteint tout.
+  //
+  // Ce passage obligatoire est ce qui distingue une panique des autres appels a
+  // allSoundOff(). allSoundOff() est aussi le "mettre en securite" ordinaire du
+  // firmware : le lecteur MIDI l'appelle sur pause et sur fin de morceau, et le
+  // serveur web avant un redemarrage controle (reset, reset usine, formatage).
+  // Aucun de ces cas n'est une panique et aucun ne doit annuler une calibration
+  // en cours ; compter dans allSoundOff() elle-meme les aurait tous comptes.
+  void executePanic();
   // Applique une commande deja retiree de la file (tache loop() uniquement).
   void applyCommand(const ActuatorCommand& cmd);
   void processCommands();

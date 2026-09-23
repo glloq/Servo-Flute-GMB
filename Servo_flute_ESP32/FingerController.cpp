@@ -102,9 +102,46 @@ void FingerController::setServoAngle(int fingerIndex, uint16_t angle) {
   _writePwm(pcaChannel, 0, pwmValue);
 }
 
+/*----------------------------------------------------------------------------
+ * Borne de la commande de reglage manuel d'un doigt
+ *
+ * Ce qu'elle empeche : {"t":"test_finger","i":0,"a":180} ne passait que par
+ * SERVO_MAX_ANGLE, c'est-a-dire par la course ELECTRIQUE du servo. Sur la
+ * configuration expediee (closedAngle 90, direction -1, fingerAngleOpen 30),
+ * la course mecanique du doigt va de 60 a 90 deg : le curseur "Closed angle"
+ * de l'interface, qui envoie sa valeur a chaque mouvement, commandait jusqu'a
+ * 90 deg au-dela de la butee. Le servo y restait, a son courant de calage.
+ *
+ * La marge d'exploration existe parce que regler closedAngle sert justement a
+ * TROUVER la bonne position, donc a sortir de celle qui est enregistree ; son
+ * dimensionnement est argumente sur SERVO_TEST_MARGIN_DEG dans settings.h.
+ *
+ * Le firmware borne EN PREMIER : le WebSocket est ouvert a n'importe quel
+ * client, pas seulement a la page servie par la carte.
+ *--------------------------------------------------------------------------*/
+uint16_t FingerController::clampFingerTestAngle(int fingerIndex, uint16_t angle) const {
+  const FingerConfig& f = cfg.fingers[fingerIndex];
+  // La course declaree : du doigt ferme au doigt pleinement ouvert. `direction`
+  // vaut +-1 (le validateur le garantit), donc l'ouverture peut etre au-dessus
+  // comme au-dessous de la position fermee.
+  int32_t closed = (int32_t)f.closedAngle;
+  int32_t opened = closed + (int32_t)cfg.fingerAngleOpen * (int32_t)f.direction;
+  int32_t lo = closed < opened ? closed : opened;
+  int32_t hi = closed < opened ? opened : closed;
+
+  lo -= SERVO_TEST_MARGIN_DEG;
+  hi += SERVO_TEST_MARGIN_DEG;
+  if (lo < SERVO_MIN_ANGLE) lo = SERVO_MIN_ANGLE;
+  if (hi > SERVO_MAX_ANGLE) hi = SERVO_MAX_ANGLE;
+
+  if ((int32_t)angle < lo) return (uint16_t)lo;
+  if ((int32_t)angle > hi) return (uint16_t)hi;
+  return angle;
+}
+
 void FingerController::testFingerAngle(int fingerIndex, uint16_t angle) {
   if (fingerIndex < 0 || fingerIndex >= cfg.numFingers) return;
-  if (angle > SERVO_MAX_ANGLE) angle = SERVO_MAX_ANGLE;
+  angle = clampFingerTestAngle(fingerIndex, angle);
   setServoAngle(fingerIndex, angle);
 
   if (DEBUG) {

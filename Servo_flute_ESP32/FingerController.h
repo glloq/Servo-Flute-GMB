@@ -32,6 +32,15 @@ private:
 
   uint16_t calculateServoAngle(int fingerIndex, uint8_t openState);
   void setServoAngle(int fingerIndex, uint16_t angle);
+
+  // Borne d'une commande de REGLAGE MANUEL (testFingerAngle). Ramene l'angle
+  // demande dans la course que la configuration DECLARE pour ce doigt
+  // (closedAngle .. closedAngle + fingerAngleOpen * direction), elargie de
+  // SERVO_TEST_MARGIN_DEG (voir settings.h). Le chemin de JEU ne passe pas par
+  // elle et n'en a pas besoin : closeAllFingers() ecrit closedAngle et
+  // calculateServoAngle() rend closedAngle + une fraction de la course, donc
+  // les deux sont a l'interieur par construction.
+  uint16_t clampFingerTestAngle(int fingerIndex, uint16_t angle) const;
 };
 
 #endif

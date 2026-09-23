@@ -137,17 +137,46 @@ void setup() {
   }
 
   // Charger et valider la configuration depuis LittleFS avant tout mouvement servo.
+  // La decision "cette configuration autorise-t-elle les actionneurs" vit dans
+  // bootConfigMayDriveActuators() (ConfigStorage.h) pour etre testable sur hote :
+  // en resume, seule une configuration que l'utilisateur a reellement ecrite
+  // autorise a piloter, et les valeurs d'usine ne le font PAS.
   ConfigLoadStatus configStatus = ConfigStorage::loadWithStatus();
   ConfigValidationResult bootValidation = validateAndNormalizeConfig(cfg);
-  bool bootConfigSafe = fsMounted && configStatus != CONFIG_INVALID_FALLBACK &&
-                        configStatus != CONFIG_STORAGE_ERROR && bootValidation.valid &&
-                        (configStatus == CONFIG_DEFAULTS || configStatus == CONFIG_LOADED);
+  bool bootConfigSafe = fsMounted &&
+                        bootConfigMayDriveActuators(fsMounted, configStatus, bootValidation.valid);
   if (!bootConfigSafe) {
-    if (DEBUG) {
-      Serial.print("ERREUR: configuration invalide au boot: ");
-      Serial.println(ConfigStorage::lastLoadError().length() ? ConfigStorage::lastLoadError() : bootValidation.error);
-    }
     digitalWrite(PIN_SERVOS_OFF, HIGH);
+    // Message TOUJOURS imprime, pas seulement sous DEBUG : c'est la seule
+    // explication que recoit l'utilisateur d'un appareil qui refuse de bouger, et
+    // le port serie est de toute facon toujours ouvert (voir plus haut). Sans
+    // elle, un instrument neuf est indiscernable d'un instrument casse.
+    Serial.println("ATTENTION: actionneurs DESACTIVES (mode recovery).");
+    if (!fsMounted) {
+      Serial.println("  Cause: LittleFS non monte.");
+      Serial.println("  Action: passer l'interrupteur en mode WiFi, ouvrir la page web,");
+      Serial.println("          puis formater LittleFS depuis les diagnostics (destructif).");
+    } else {
+      switch (configStatus) {
+        case CONFIG_DEFAULTS:
+          Serial.println("  Cause: aucune configuration enregistree (/config.json absent).");
+          Serial.println("  Les valeurs d'usine ne decrivent pas forcement le materiel branche :");
+          Serial.println("  les piloter reviendrait a lancer sept servos vers des angles qui");
+          Serial.println("  peuvent etre hors de la course reelle de cette mecanique.");
+          Serial.println("  Action: passer l'interrupteur en mode WiFi, ouvrir la page web et");
+          Serial.println("          terminer l'assistant de configuration. Le redemarrage qui");
+          Serial.println("          suit rend les actionneurs.");
+          break;
+        case CONFIG_INVALID_FALLBACK:
+        case CONFIG_STORAGE_ERROR:
+        case CONFIG_LOADED:
+          Serial.print("  Cause: configuration de demarrage refusee: ");
+          Serial.println(ConfigStorage::lastLoadError().length() ? ConfigStorage::lastLoadError() : bootValidation.error);
+          Serial.println("  Action: passer l'interrupteur en mode WiFi, ouvrir la page web et");
+          Serial.println("          corriger la configuration (modifiable en recovery).");
+          break;
+      }
+    }
   }
 
   if (DEBUG) {
