@@ -352,7 +352,20 @@ inline int getNoteIndex(uint8_t midiNote) {
 
 class ConfigStorage {
 public:
-  // Initialise cfg avec les valeurs par defaut de settings.h
+  // Remplit `out` avec la configuration d'usine. NE TOUCHE RIEN D'AUTRE - en
+  // particulier pas le `cfg` global. C'est ce qui permet a reset/factory-reset de
+  // preparer une configuration par defaut SANS muter la configuration ACTIVE, qui
+  // decrit le materiel reellement initialise (canaux PCA, broches, angles).
+  // Deterministe : `out` est integralement remis a zero avant remplissage, donc
+  // deux appels rendent le meme contenu octet pour octet.
+  // Defini dans ConfigDefaults.cpp - sans ArduinoJson ni LittleFS, donc
+  // compilable et testable sur hote.
+  static void makeDefaultConfig(RuntimeConfig& out);
+
+  // Initialise cfg avec les valeurs par defaut de settings.h.
+  // RESERVE AU CHEMIN DE BOOT : c'est le seul moment ou ecrire la configuration
+  // active est sans danger (rien ne pilote encore, personne ne lit `cfg` en
+  // parallele). Partout ailleurs, passer par makeDefaultConfig(candidat).
   static void initDefaults();
 
   // Charge la config depuis LittleFS (surcharge les defauts)
@@ -377,13 +390,23 @@ public:
   // appele automatiquement ; reserve au mode recovery declenche par l'utilisateur.
   static bool formatFilesystem();
 
-  // Remet cfg aux valeurs par defaut et sauvegarde
+  // PERSISTE la configuration d'usine ; la configuration ACTIVE `cfg` n'est PAS
+  // touchee. L'activation se fait au REDEMARRAGE (l'appelant en programme un),
+  // parce que `cfg` decrit le materiel reellement initialise : l'ecraser en RAM
+  // pendant que loop() tourne ferait piloter les actionneurs avec une description
+  // qui ne correspond plus au montage cable.
+  // Retourne true si la PERSISTANCE a reussi.
   static bool resetToDefaults();
 
-  // Reset usine: remet cfg aux defauts et supprime le fichier config
+  // Reset usine : supprime la configuration persistee (et ses residus .tmp/.bak,
+  // sans quoi le prochain demarrage les promouvrait et ressusciterait la
+  // configuration effacee). Ne touche pas non plus `cfg` : le redemarrage
+  // programme par l'appelant repart en premier demarrage.
+  // Retourne true si le stockage est REELLEMENT revenu a l'etat vierge.
   static bool factoryReset();
 
-  // Verifie si c'est le premier demarrage (pas de config sauvegardee)
+  // Verifie si c'est le premier demarrage (aucune configuration recuperable :
+  // ni /config.json, ni un .tmp/.bak que le boot promouvrait).
   static bool isFirstBoot();
 };
 
