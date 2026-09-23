@@ -34,11 +34,62 @@ min/max window, produced by microphone auto-calibration or edited manually.
 - The central `RuntimeConfig` validator rejects any note where
   `nominal < min` or `nominal > max`.
 
-## Microphone auto-calibration constants
+## Microphone, acoustic analysis and auto-calibration constants
 
-`settings.h` exposes the microphone and auto-calibration parameters
-(`MIC_SAMPLE_RATE`, `MIC_RMS_ABSOLUTE_MIN`, `MIC_YIN_CONFIDENCE_MIN`,
-`MIC_FRAME_STALE_MS`, `AUTOCAL_NOISE_RATIO`, `AUTOCAL_NOISE_MEASURE_MS`,
+### Where a parameter lives, and who may touch it
+
+The acoustic parameters are **deliberately not all in `settings.h`**, and the
+split tells you who owns what:
+
+| Family | Where | What it is |
+|---|---|---|
+| **Firmware** | `settings.h`, 44 `MIC_*` macros | the hardware and the processing chain: sample rate, frame and hop size, DMA, filter cutoffs, FFT size and decimation. Changing one changes *the measurement itself*. |
+| **Instrument** | `AcousticQuality.h`, 34 `AQ_*` constants | the thresholds that decide whether a note is good, breathy, unstable, overblown. Each one is **calibrated**, and carries above it the measurement that justifies it. |
+| **Learned** | runtime only | the seven per-machine-state noise profiles. **Lost on reboot** — persistence does not exist yet. |
+
+The `MIC_*` macros group by role: acquisition and analysis rate
+(`MIC_SAMPLE_RATE`, `MIC_BUFFER_SIZE`, `MIC_ANALYSIS_FRAME_SIZE`,
+`MIC_ANALYSIS_HOP_SIZE`, `MIC_RING_CAPACITY`, `MIC_DRAIN_INTERVAL_MS`,
+`MIC_FRAME_STALE_MS`); pitch detection (`MIC_PITCH_MIN_HZ`/`MAX_HZ`,
+`MIC_YIN_*`, `MIC_PITCH_HISTORY`); spectral analysis (`MIC_FFT_ENABLED`,
+`MIC_FFT_SIZE`, `MIC_SPECTRAL_DECIMATION`, `MIC_HNR_MAX_DB`); stream filtering
+(`MIC_FILTER_HP_HZ`, `MIC_FILTER_LP_HZ`, `MIC_FILTER_DC_POLE`); and the noise
+model (`MIC_NOISE_*`, `MIC_SNR_MAX_DB`).
+
+`MIC_SPECTRAL_DECIMATION` has a consequence users see: the FFT runs on one frame
+in N, so every spectral verdict — flatness, centroid, the spectral HNR — exists
+at a quarter of the frame rate. That is why quality and breathiness publish the
+weight they were computed on, and why two values with different weights must not
+be averaged. See [Web API](API_WEB.md).
+
+### Changing a filter cutoff invalidates the acoustic thresholds
+
+This is not a precaution, it is an incident that already happened. The filter
+chain is applied to the **stream**, before analysis, so the FFT never sees
+anything but a filtered signal. A spectral statistic computed as though the full
+spectrum were still there measures the filter as much as the signal: an audit
+found **+14 dB of error** on the harmonic-to-noise ratio, which silently
+annulled an entire threshold recalibration, and a flatness threshold that had
+become *unreachable* — pure white noise, the flattest signal there is, read 0.39
+against a 0.70 bound.
+
+The `AQ_*` thresholds are therefore calibrated on synthetic PCM **passed through
+the production filter chain**. Change `MIC_FILTER_HP_HZ` or `MIC_FILTER_LP_HZ`
+and they must be re-measured, not carried over. The calibration tests fail on
+purpose if those cutoffs move, so the re-measurement cannot be skipped by
+accident.
+
+"Calibrated on filtered synthetic PCM" is **not** "acoustically validated": no
+INMP441 has ever been connected to this project. The thresholds with the
+thinnest margins, and the ones most likely to move on a real microphone, are
+listed in
+[`AUDIO_ARCHITECTURE.md`](../Servo_flute_ESP32/docs/AUDIO_ARCHITECTURE.md)
+(PHASE 6 and the audit section).
+
+### Auto-calibration constants
+
+`settings.h` also exposes the auto-calibration parameters
+(`AUTOCAL_NOISE_RATIO`, `AUTOCAL_NOISE_MEASURE_MS`,
 `AUTOCAL_PITCH_TOLERANCE_ONSET_CENTS`, `AUTOCAL_PITCH_TOLERANCE_STABLE_CENTS`,
 `AUTOCAL_AIR_SETTLE_MS`, `AUTOCAL_AUDIO_FRAMES_PER_STEP`,
 `AUTOCAL_REQUIRED_VALID_FRAMES`, `AUTOCAL_COARSE_STEP_PERCENT`,

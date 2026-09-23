@@ -91,9 +91,25 @@ SET_AIRFLOW → WAIT_AIRFLOW_SETTLE → COLLECT_AUDIO → EVALUATE_AUDIO
 1. **PREPARE** — position the fingers for the note; close the valve; airflow at
    rest.
 2. **NOISE** — after the finger servos settle, measure the background noise RMS
-   for `AUTOCAL_NOISE_MEASURE_MS` (valve closed, air at rest). The adaptive gate
-   is `soundThreshold = max(MIC_RMS_ABSOLUTE_MIN, noiseRms × AUTOCAL_NOISE_RATIO)`.
-   This is done **per note** so pump/fan/servo noise is accounted for.
+   for `AUTOCAL_NOISE_MEASURE_MS`. The adaptive gate is
+   `soundThreshold = max(MIC_RMS_ABSOLUTE_MIN, noiseRms × AUTOCAL_NOISE_RATIO)`.
+
+   The air source is first re-asserted at full demand and the valve kept
+   **closed**: the floor is therefore measured with the pump or fan *running*,
+   in the acoustic state the note will actually be played in. Measuring it with
+   the machinery at rest would underrate the floor and overrate every note's
+   SNR — the machinery is part of the noise, and its level depends on the
+   operating point. Re-asserting the supply here also catches a pump stall or
+   fan fault as its own failure reason rather than as a misleading "no sound".
+   This is done **per note**.
+
+   A **separate** mechanism serves the live monitor and the diagnostics: seven
+   noise profiles captured per machine state (ambient, pump idle/medium/high,
+   fan idle/medium/high), against which the published SNR is measured. Those
+   profiles live in RAM and are lost on reboot. They are described in
+   [`AUDIO_ARCHITECTURE.md`](../Servo_flute_ESP32/docs/AUDIO_ARCHITECTURE.md)
+   and captured through the WebSocket commands documented in
+   [Web API](API_WEB.md#noise-profile-capture).
 3. **COARSE** — sweep airflow 0→100 % in `AUTOCAL_COARSE_STEP_PERCENT` steps to
    bracket where the correct note appears and where it decays / overblows.
 4. **FINE_MIN / FINE_MAX** — refine `airMin` and `airMax` in
