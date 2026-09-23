@@ -1165,6 +1165,10 @@ void WebConfigurator::executeWebOp(WebOp& op) {
         resp["ok"] = true;
         resp["saved"] = true;
         resp["applied"] = res.applied;
+        // `activated` porte litteralement l'invariant du commit : la
+        // configuration ACTIVE a-t-elle ete remplacee ? Le client le deduisait
+        // de `applied` + `restart_required` ; l'exposer evite la deduction.
+        resp["activated"] = res.activated;
         resp["restart_required"] = res.restartRequired;
         resp["corrected"] = res.corrected;
         JsonArray reinit = resp["reinitialized"].to<JsonArray>();
@@ -1258,13 +1262,28 @@ void WebConfigurator::executeWebOp(WebOp& op) {
       resp["ok"] = res.saved;
       if (!res.saved) {
         resp["error"] = res.valid ? "storage_failed" : res.error;
+      } else if (!res.activated) {
+        // Persiste mais PAS actif : le verrou de configuration a ete refuse,
+        // donc `cfg` porte encore les ANCIENS identifiants. Ne PAS basculer le
+        // reseau ici, pour deux raisons d'inegale gravite :
+        //  - connectToNetwork() partirait sur les nouveaux identifiants pendant
+        //    que la configuration active en decrit d'autres ;
+        //  - surtout, le prochain POST /api/config construit son candidat a
+        //    partir de `cfg`. Il reecrirait donc en flash les ANCIENS
+        //    identifiants, effacant en silence ceux qu'on vient d'enregistrer.
+        //    Une perte de donnees silencieuse, pas une incoherence d'affichage.
+        // Le redemarrage controle recharge la flash et remet RAM et flash
+        // d'accord ; la bascule reseau se fera au boot sur les bons.
+        resp["msg"] = "Saved, restarting";
+        resp["restart_required"] = true;
+        scheduleControlledRestart();
       } else {
         resp["msg"] = "Connecting...";
       }
       serializeJson(resp, op.json);
       op.ok = res.saved;
       op.httpStatus = res.saved ? 200 : 500;
-      if (res.saved && _wirelessManager) {
+      if (res.saved && res.activated && _wirelessManager) {
         _wirelessManager->getWifiMidi().connectToNetwork(op.strA.c_str(), op.strB.c_str());
       }
       break;

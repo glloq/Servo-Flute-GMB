@@ -54,6 +54,7 @@ SOURCES = [
     "tests/test_native/test_hw_note.cpp",
     "tests/test_native/test_hw_servo.cpp",
     "tests/test_native/test_hw_boot.cpp",
+    "tests/test_native/test_harden_commit.cpp",
     "tests/test_native/test_harden_memory.cpp",
     "tests/test_native/test_behavior.cpp",
 ]

@@ -2532,3 +2532,42 @@ def test_hardware_matrix_is_still_entirely_unexecuted():
           "l'honnetete du depot."
     )
 
+
+def test_p1_wifi_commit_never_treats_saved_as_activated():
+    """`saved` ne veut pas dire "la RAM est a jour".
+
+    Depuis que le commit refuse d'ecrire la configuration active sans le verrou,
+    un commit peut finir `saved=true, activated=false`. Le chemin WiFi lisait
+    UNIQUEMENT `saved` : il repondait "Connecting...", lancait la bascule reseau,
+    et surtout laissait `cfg` porter les ANCIENS identifiants.
+
+    La consequence n'est pas cosmetique. Le prochain POST /api/config construit
+    son candidat a partir de `cfg` : il aurait reecrit en flash les anciens
+    identifiants, effacant en silence ceux que l'utilisateur venait
+    d'enregistrer. Une perte de donnees, declenchee par un simple timeout de
+    verrou.
+    """
+    src = code_only(read('Servo_flute_ESP32/WebConfigurator.cpp'))
+    case = src.split('case WEBOP_WIFI_CONNECT:', 1)[1].split('case WEBOP_', 1)[0]
+    assert 'res.activated' in case, (
+        "Le chemin WiFi ne regarde plus `activated` : il retraite `saved` comme "
+        "s'il voulait dire que la configuration active a change."
+    )
+    assert norm('if (res.saved && res.activated && _wirelessManager)') in norm(case), (
+        "La bascule reseau n'est plus conditionnee a l'activation : elle "
+        "partirait sur des identifiants que la configuration active ignore."
+    )
+    assert 'scheduleControlledRestart();' in case, (
+        "Aucun redemarrage n'est programme quand la flash est en avance sur la "
+        "RAM : la divergence resterait ouverte jusqu'au prochain ecrasement."
+    )
+    # La reponse doit porter l'information, sinon le client croit la bascule faite.
+    assert 'resp["restart_required"] = true;' in case
+
+
+def test_p1_commit_response_exposes_activation_not_just_application():
+    """Le client doit pouvoir distinguer "sauvegardee" de "activee" sans le deduire."""
+    src = code_only(read('Servo_flute_ESP32/WebConfigurator.cpp'))
+    commit = src.split('case WEBOP_COMMIT_CONFIG', 1)[1].split('case WEBOP_', 1)[0]
+    assert 'resp["activated"] = res.activated;' in commit
+
