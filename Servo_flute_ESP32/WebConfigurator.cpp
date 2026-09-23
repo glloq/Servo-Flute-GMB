@@ -696,7 +696,15 @@ void WebConfigurator::update() {
       // applyResults() only overwrites notes whose new calibration is valid (a
       // failed note keeps its previous configuration) and restores RAM on a
       // storage failure, reporting exactly what happened.
-      AutoCalApplyResult ap = _autoCal->applyResults();
+      // Le calibrateur passe desormais par le MEME commit transactionnel que le
+      // chemin web. Il faut donc lui donner le verrou de configuration : sans
+      // garde, le commit remplace les 5132 octets de la configuration active
+      // hors verrou, pendant qu'une tache AsyncTCP peut la lire. Les arguments
+      // sont optionnels, donc cet oubli compilerait sans un mot - c'est
+      // exactement pour cela qu'il est ecrit ici plutot que sous-entendu.
+      const ConfigCommitGuard cfgGuard{ &WebConfigurator::cfgGuardLock,
+                                        &WebConfigurator::cfgGuardUnlock, this };
+      AutoCalApplyResult ap = _autoCal->applyResults(_instrument, &cfgGuard);
       const char* names[] = {"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
       // "ok" reflects the PERSISTED outcome: values must be both applied AND saved.
       // A storage failure rolls the RAM config back (applied==false), so a client
@@ -712,6 +720,14 @@ void WebConfigurator::update() {
       dj += ",\"applied\":" + String(ap.applied ? "true" : "false");
       dj += ",\"saved\":" + String(ap.saved ? "true" : "false");
       if (ap.validCount > 0 && !ap.saved) dj += ",\"error\":\"storage_failed\"";
+      else if (ap.saved && !ap.applied) {
+        // Persiste mais PAS actif : le verrou a expire. La flash porte la
+        // nouvelle calibration, la RAM l'ancienne. On programme le redemarrage
+        // controle qui les remet d'accord, plutot que de laisser l'instrument
+        // jouer sur une calibration que la flash contredit.
+        dj += ",\"error\":\"config_busy\",\"restart_required\":true";
+        scheduleControlledRestart();
+      }
       dj += ",\"validCount\":" + String(ap.validCount);
       dj += ",\"failedCount\":" + String(ap.failedCount);
       dj += ",\"results\":[";
@@ -1499,7 +1515,9 @@ void WebConfigurator::executeWebOp(WebOp& op) {
     case WEBOP_AUTOCAL_APPLY_RANGE: {
       if (!_autoCal || !_autoCal->isRangeFinderComplete()) { op.ok = false; break; }
       bool hadValid = _autoCal->getRangeFinderMin() >= 0 && _autoCal->getRangeFinderMax() >= 0;
-      RangeApplyResult ra = _autoCal->applyRangeResults();
+      // Meme raison qu'a la fin de la calibration d'air : le commit doit se
+      // faire sous le verrou de configuration.
+      RangeApplyResult ra = _autoCal->applyRangeResults(_instrument, &cfgGuard);
       JsonDocument resp;
       resp["t"] = "rf_applied";
       if (ra.applied && ra.saved) {
@@ -1511,7 +1529,15 @@ void WebConfigurator::executeWebOp(WebOp& op) {
         op.ok = true;
       } else {
         resp["ok"] = false;
-        resp["error"] = hadValid ? "storage_failed" : "no_valid_range";
+        if (ra.saved && !ra.applied) {
+          // Persiste sans etre actif : verrou refuse. Voir le commentaire
+          // symetrique a la fin de la calibration d'air.
+          resp["error"] = "config_busy";
+          resp["restart_required"] = true;
+          scheduleControlledRestart();
+        } else {
+          resp["error"] = hadValid ? "storage_failed" : "no_valid_range";
+        }
         op.ok = false;
       }
       serializeJson(resp, op.json);

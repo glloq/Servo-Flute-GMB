@@ -23,6 +23,7 @@ static_assert(SERVO_TEST_MARGIN_DEG >= AUTOCAL_RF_EXPLORE_MARGIN_DEG,
 #include "IAudioSource.h"
 #include "ICalibrationAirSupply.h"
 #include "ConfigStorage.h"
+#include "ConfigCommit.h"   // commit transactionnel : le SEUL chemin d'ecriture de `cfg`
 #include "PitchMath.h"
 
 using AutoCalMath::AudioFrame;
@@ -916,8 +917,49 @@ const char* AutoCalibrator::airSupplyErrorName(CalAirSupplyError err) {
 }
 
 // ----------------------------------------------------------------- persistence -
+//
+// UNE SEULE DISCIPLINE POUR MUTER `cfg`, la meme que le reste du firmware :
+// construire un CANDIDAT, le VALIDER, le PERSISTER, puis l'ACTIVER sous verrou.
+//
+// Ce que faisait le calibrateur, et qui est corrige ici : il ecrivait le `cfg`
+// global champ par champ AVANT toute validation et AVANT l'ecriture flash, puis
+// defaisait ces champs si la sauvegarde ratait. Trois consequences, toutes
+// reproduites sur hote (tests/test_native/test_harden_autocal.cpp) :
+//   - un resultat aberrant (airMin > airMax) partait tel quel dans `cfg` et en
+//     flash : rien ne garantissait que la configuration obtenue passerait
+//     ConfigValidator, alors que ces champs pilotent le servo de souffle ;
+//   - les champs etaient vus UN PAR UN par les autres taches, pendant toute la
+//     sauvegarde LittleFS - le sequenceur lit `airflowNominalPercent` a chaque
+//     note, et une fenetre inversee donne un angle de souffle faux ;
+//   - la restauration ne couvrait que les trois champs de note et que le chemin
+//     "echec de sauvegarde" : tout autre echec laissait `cfg` modifie.
+// Ce qui est CONSERVE de l'ancienne version : une note ratee n'ecrase jamais sa
+// calibration precedente, et rien n'est ni sauvegarde ni annonce applique quand
+// aucun resultat n'est valide. La restauration champ a champ, elle, disparait :
+// elle n'a plus d'objet, puisque `cfg` n'est plus ecrit avant l'activation.
 
-AutoCalApplyResult AutoCalibrator::applyResults() {
+RuntimeConfig* AutoCalibrator::newCandidate() {
+  return new (std::nothrow) RuntimeConfig();
+}
+
+AutoCalibrator::CommitOutcome AutoCalibrator::commitCandidate(RuntimeConfig& candidate,
+                                                              InstrumentManager* instrument,
+                                                              const ConfigCommitGuard* guard) {
+  // SEUL POINT DE COUPLAGE AVEC ConfigCommit. Le reste du calibrateur ne connait
+  // que CommitOutcome : une evolution de ConfigCommitResult ne touche que ces
+  // quelques lignes.
+  ConfigCommitResult res = commitCandidateConfig(cfg, candidate, instrument,
+                                                 &ConfigStorage::saveFrom, guard);
+  CommitOutcome out{res.saved, res.activated};
+  if (DEBUG && !res.saved) {
+    Serial.print("ERREUR: AutoCalibrator - commit refuse: ");
+    Serial.println(res.error.length() > 0 ? res.error : String("storage_failed"));
+  }
+  return out;
+}
+
+AutoCalApplyResult AutoCalibrator::applyResults(InstrumentManager* instrument,
+                                                const ConfigCommitGuard* guard) {
   AutoCalApplyResult out{false, false, 0, 0};
 
   int n = (_numNotes < (int)cfg.numNotes) ? _numNotes : (int)cfg.numNotes;
@@ -932,42 +974,58 @@ AutoCalApplyResult AutoCalibrator::applyResults() {
     return out;
   }
 
-  // Back up the three fields we may change so we can restore RAM on a save error.
-  uint8_t bMin[MAX_NOTES], bMax[MAX_NOTES], bNom[MAX_NOTES];
-  for (int i = 0; i < n; i++) {
-    bMin[i] = cfg.notes[i].airflowMinPercent;
-    bMax[i] = cfg.notes[i].airflowMaxPercent;
-    bNom[i] = cfg.notes[i].airflowNominalPercent;
+  RuntimeConfig* candidate = newCandidate();
+  if (candidate == nullptr) {
+    // Pas de memoire pour construire le candidat : on abandonne sans rien
+    // ecrire. Muter `cfg` "en attendant" est exactement le defaut corrige ici.
+    if (DEBUG) Serial.println("ERREUR: AutoCalibrator - memoire insuffisante pour le candidat, rien applique");
+    return out;
   }
+  *candidate = cfg;
 
   // Never overwrite a previously valid calibration with a failed new one.
   for (int i = 0; i < n; i++) {
     if (_results[i].valid) {
-      cfg.notes[i].airflowMinPercent = _results[i].airMin;
-      cfg.notes[i].airflowMaxPercent = _results[i].airMax;
-      cfg.notes[i].airflowNominalPercent = _results[i].airNominal;
+      candidate->notes[i].airflowMinPercent = _results[i].airMin;
+      candidate->notes[i].airflowMaxPercent = _results[i].airMax;
+      candidate->notes[i].airflowNominalPercent = _results[i].airNominal;
     }
   }
-  out.saved = ConfigStorage::save();
 
-  if (!out.saved) {
-    // Storage failed: roll the configuration back in RAM. The values are NOT in
-    // effect, so applied must be false too - the caller must not report success.
-    for (int i = 0; i < n; i++) {
-      cfg.notes[i].airflowMinPercent = bMin[i];
-      cfg.notes[i].airflowMaxPercent = bMax[i];
-      cfg.notes[i].airflowNominalPercent = bNom[i];
+  // Validation AVANT toute persistance, sur le candidat. Deux refus distincts :
+  // une configuration invalide, et une configuration que la normalisation a
+  // DEPLACEE - une valeur corrigee en silence n'est plus ce qui a ete mesure, et
+  // c'est elle qui piloterait le servo. Meme exigence que pour le range finder.
+  ConfigValidationResult validation = validateAndNormalizeConfig(*candidate);
+  bool resultsSurvived = validation.valid;
+  for (int i = 0; resultsSurvived && i < n; i++) {
+    if (!_results[i].valid) continue;
+    resultsSurvived = candidate->notes[i].airflowMinPercent == _results[i].airMin &&
+                      candidate->notes[i].airflowMaxPercent == _results[i].airMax &&
+                      candidate->notes[i].airflowNominalPercent == _results[i].airNominal;
+  }
+  if (!resultsSurvived) {
+    if (DEBUG) {
+      Serial.print("ERREUR: AutoCalibrator - resultats refuses par la validation: ");
+      Serial.println(validation.error);
     }
-    out.applied = false;
-    if (DEBUG) Serial.println("ERREUR: AutoCalibrator - Sauvegarde echouee, config restauree en RAM");
-  } else {
-    out.applied = true;
-    if (DEBUG) Serial.println("DEBUG: AutoCalibrator - Resultats appliques et sauvegardes");
+    delete candidate;
+    return out;   // `cfg` intact, rien n'a ete offert a la flash
+  }
+
+  CommitOutcome commit = commitCandidate(*candidate, instrument, guard);
+  delete candidate;
+  out.saved = commit.saved;
+  out.applied = commit.activated;
+  if (DEBUG) {
+    Serial.println(out.applied ? "DEBUG: AutoCalibrator - Resultats appliques et sauvegardes"
+                               : "ERREUR: AutoCalibrator - Resultats non appliques, config active inchangee");
   }
   return out;
 }
 
-RangeApplyResult AutoCalibrator::applyRangeResults() {
+RangeApplyResult AutoCalibrator::applyRangeResults(InstrumentManager* instrument,
+                                                   const ConfigCommitGuard* guard) {
   RangeApplyResult out{false, false, -1, -1};
 
   // Refuse an invalid / failed range-finder result: change nothing.
@@ -983,9 +1041,16 @@ RangeApplyResult AutoCalibrator::applyRangeResults() {
   // servo, min strictement inferieur a max) ou que la normalisation DEPLACE n'est
   // pas ce qui a ete mesure : dans les deux cas on refuse plutot que d'ecrire une
   // valeur que le prochain demarrage rejetterait, ou une valeur differente de la
-  // mesure. La validation porte sur une COPIE : la configuration active n'est
-  // modifiee qu'une fois le resultat accepte, et seulement sur ces deux champs.
-  RuntimeConfig* candidate = new (std::nothrow) RuntimeConfig();
+  // mesure. La validation porte sur le CANDIDAT, et c'est ce meme candidat -
+  // normalise - qui est ensuite persiste puis active : ce qui a ete valide, ce
+  // qui part en flash et ce qui devient actif sont un seul et meme objet.
+  //
+  // Auparavant le candidat etait valide puis JETE : `cfg` etait modifie sur ces
+  // deux champs, puis ConfigStorage::save() persistait `cfg`. La configuration
+  // validee et la configuration persistee n'etaient donc pas la meme, et les deux
+  // champs les plus dangereux du fichier (la course du servo de souffle) etaient
+  // visibles par les autres taches pendant toute l'ecriture flash.
+  RuntimeConfig* candidate = newCandidate();
   if (candidate == nullptr) {
     if (DEBUG) Serial.println("ERREUR: RangeFinder - memoire insuffisante pour valider, rien applique");
     _rfFailReason = ACAL_FAIL_RANGE_INVALID;
@@ -998,27 +1063,22 @@ RangeApplyResult AutoCalibrator::applyRangeResults() {
   bool anglesSurvived = validation.valid &&
                         candidate->servoAirflowMin == (uint16_t)_rfMinAngle &&
                         candidate->servoAirflowMax == (uint16_t)_rfMaxAngle;
-  delete candidate;
   if (!anglesSurvived) {
     if (DEBUG) {
       Serial.print("ERREUR: RangeFinder - angles refuses par la validation: ");
       Serial.println(validation.error);
     }
+    delete candidate;
     _rfFailReason = ACAL_FAIL_RANGE_INVALID;
     return out;
   }
 
-  const uint16_t bMin = cfg.servoAirflowMin;
-  const uint16_t bMax = cfg.servoAirflowMax;
-  cfg.servoAirflowMin = _rfMinAngle;
-  cfg.servoAirflowMax = _rfMaxAngle;
-
-  out.saved = ConfigStorage::save();
-  if (!out.saved) {
-    // Storage failed: restore the previous angles; nothing is in effect.
-    cfg.servoAirflowMin = bMin;
-    cfg.servoAirflowMax = bMax;
-    if (DEBUG) Serial.println("ERREUR: RangeFinder - Sauvegarde echouee, angles restaures en RAM");
+  CommitOutcome commit = commitCandidate(*candidate, instrument, guard);
+  delete candidate;
+  out.saved = commit.saved;
+  if (!commit.activated) {
+    // Rien n'est en vigueur : `cfg` est reste exactement ce qu'il etait.
+    if (DEBUG) Serial.println("ERREUR: RangeFinder - angles non appliques, config active inchangee");
     return out;
   }
 

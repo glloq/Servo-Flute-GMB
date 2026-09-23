@@ -2571,3 +2571,35 @@ def test_p1_commit_response_exposes_activation_not_just_application():
     commit = src.split('case WEBOP_COMMIT_CONFIG', 1)[1].split('case WEBOP_', 1)[0]
     assert 'resp["activated"] = res.activated;' in commit
 
+
+def test_p1_autocal_apply_commits_under_the_configuration_lock():
+    """Les deux `apply*` du calibrateur passent le verrou de configuration.
+
+    Depuis que AutoCalibrator emprunte le commit transactionnel, il remplace la
+    configuration active - 5132 octets - par le meme chemin que la voie web.
+    Sans garde, ce remplacement se fait HORS verrou pendant qu'une tache
+    AsyncTCP peut lire `cfg` : precisement le dechirement que le verrou existe
+    pour empecher.
+
+    Ce test existe a cause de la forme de l'API : les deux parametres sont
+    OPTIONNELS, donc les oublier compile sans un avertissement et sans le
+    moindre symptome visible. Un defaut qui ne se manifeste qu'a la course
+    entre taches ne sera pas trouve par la relecture ; il doit etre epingle
+    ici.
+    """
+    src = code_only(read('Servo_flute_ESP32/WebConfigurator.cpp'))
+    assert norm('_autoCal->applyResults(_instrument, &cfgGuard)') in norm(src), (
+        "applyResults() est appelee sans garde : le commit ecrirait la "
+        "configuration active hors verrou."
+    )
+    assert norm('_autoCal->applyRangeResults(_instrument, &cfgGuard)') in norm(src), (
+        "applyRangeResults() est appelee sans garde."
+    )
+    assert 'applyResults();' not in src and 'applyRangeResults();' not in src, (
+        "Un appel sans argument subsiste : il compilerait, et perdrait le verrou."
+    )
+    # Persiste sans etre actif = divergence RAM/flash : elle doit etre resolue,
+    # pas seulement constatee.
+    assert src.count('scheduleControlledRestart();') >= 6
+    assert 'ra.saved && !ra.applied' in src
+    assert 'ap.saved && !ap.applied' in src
