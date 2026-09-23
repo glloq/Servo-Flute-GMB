@@ -2427,6 +2427,74 @@ def test_audio_diagnostics_keeps_each_measure_next_to_what_qualifies_it():
             "(rejected_events) passe pour un defaut de jeu." % f)
 
 
+def _firmware_translation_units():
+    """Les sources reellement compilees pour l'ESP32.
+
+    `web_content.h` est exclu : il ne contient pas de C++ mais l'interface web
+    en JavaScript, dans une chaine litterale brute, ou `new Headers(...)`,
+    `new Set(...)` et `new WebSocket(...)` sont parfaitement normaux.
+    """
+    import re
+    root = ROOT / 'Servo_flute_ESP32'
+    skip = {'web_content.h'}
+    out = []
+    for pattern in ('*.cpp', '*.h', '*.ino', 'gmb/*.cpp', 'gmb/*.h'):
+        for path in sorted(root.glob(pattern)):
+            if path.name in skip:
+                continue
+            text = path.read_text(encoding='utf-8')
+            # code_only() ne retire que les lignes `//`. Il faut aussi retirer
+            # les blocs /* */ : les en-tetes de ce depot sont abondamment
+            # commentes et plusieurs parlent d'une "new configuration".
+            text = re.sub(r'/\*.*?\*/', ' ', text, flags=re.DOTALL)
+            # ... et les commentaires de FIN de ligne, que code_only() laisse
+            # passer : `bool applied;  // new angles are persisted in cfg` etait
+            # compte comme une allocation.
+            text = re.sub(r'//[^\n]*', '', text)
+            out.append((path.relative_to(ROOT).as_posix(), code_only(text)))
+    return out
+
+
+def test_p2_no_bare_new_in_firmware_sources():
+    """Toute allocation du firmware passe par `new (std::nothrow)`.
+
+    Sur ESP32, exceptions desactivees, un `new` ORDINAIRE qui echoue ne rend pas
+    nullptr : il abandonne et la carte redemarre. Plusieurs allocations etaient
+    pourtant suivies d'une gestion d'echec soignee - un test de nullite, un mode
+    degrade, un code HTTP 500 - qui ne pouvait donc jamais s'executer. Le cas le
+    plus net etait `new RuntimeConfig(cfg)` dans WebConfigurator, suivi
+    immediatement de `if (candidatePtr == nullptr)` : une protection ecrite,
+    relue en revue, et morte.
+
+    Un `new` nu est donc interdit ici, non par style, mais parce qu'il rend
+    INATTEIGNABLE le code de repli ecrit juste en dessous - et qu'un repli
+    inatteignable est indiscernable, a la lecture, d'un repli qui marche.
+    """
+    import re
+    offenders = []
+    # `new` suivi d'un type, sans placement : on ignore `new (std::nothrow)` et
+    # les autres formes a placement, qui sont explicites par construction.
+    bare = re.compile(r'\bnew\s+(?!\()[A-Za-z_]')
+    # EXCLUSION RAISONNEE, par categorie et non par liste de lignes (une liste
+    # de lignes se perime en silence) : la construction d'un conteneur ou d'une
+    # chaine de la bibliotheque standard. `new std::string(GmbDescriptor::toJson(...))`
+    # en est le seul cas ici, et y mettre std::nothrow donnerait une FAUSSE
+    # assurance : toJson() construit deja une std::string, donc elle a deja
+    # alloue - et abandonne en cas d'echec - avant que ce `new` ne s'execute. La
+    # rendre "sure" ferait croire a un chemin de repli qui n'existe pas en
+    # amont. Ces allocations sont hors du chemin d'actionneur : elles servent le
+    # descripteur General-Midi-Boop.
+    stdlib = re.compile(r'\bnew\s+std::')
+    for rel, src in _firmware_translation_units():
+        for i, line in enumerate(src.splitlines(), 1):
+            if bare.search(line) and not stdlib.search(line):
+                offenders.append(f'{rel}:{i}: {line.strip()}')
+    assert not offenders, (
+        "Allocations sans std::nothrow - la gestion d'echec ecrite en dessous ne "
+        "pourra pas se declencher :\n  " + "\n  ".join(offenders)
+    )
+
+
 def test_p2_config_lock_fails_closed_when_the_mutex_could_not_be_created():
     """lockConfig() ne doit plus confondre "rien a serialiser" et "plus rien
     pour serialiser".

@@ -2685,6 +2685,11 @@ void WebConfigurator::handleApiDiagnostics(AsyncWebServerRequest* request) {
     doc["hardware_status"] = (int)_instrument->hardwareInitStatus();
     doc["actuator_session_active"] = _instrument->isActuatorSessionActive();
     doc["dropped_commands"] = _instrument->droppedCommandCount();
+    // Une file dont l'allocation a echoue refuse tout, sans planter. La file de
+    // COMMANDES se trahit deja par dropped_commands qui grimpe ; la file
+    // d'EVENEMENTS, elle, n'etait visible nulle part : l'instrument paraissait
+    // simplement ne plus jouer. Ce drapeau la rend diagnosticable.
+    doc["queues_ok"] = _instrument->queuesStorageAvailable();
 
     if (!probed) {
       addCheck("pca0", "warning", "Hardware probe not run yet");
@@ -2714,6 +2719,7 @@ void WebConfigurator::handleApiDiagnostics(AsyncWebServerRequest* request) {
     doc["hardware_status"] = -1;
     doc["actuator_session_active"] = false;
     doc["dropped_commands"] = 0;
+    doc["queues_ok"] = false;
     addCheck("pca0", "error", "Instrument not initialised (boot configuration or filesystem unsafe)");
     addCheck("pca1", "error", "Instrument not initialised");
     addCheck("hardware", "error", "Actuators disabled: hardware_not_ready");

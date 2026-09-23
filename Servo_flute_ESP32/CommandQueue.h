@@ -23,6 +23,16 @@
  * la file : c'est un drapeau dedie, donc il ne peut jamais etre perdu par
  * saturation. Le poser vide aussi la file : aucune commande anterieure au panic
  * n'est appliquee apres lui.
+ *
+ * DEUX ETAGES, ET C'EST DELIBERE
+ * ------------------------------
+ * L'anneau (`_items`) est alloue sur le tas ; le panic et les Note Off, eux,
+ * vivent dans des champs de l'objet (un booleen et un bitmap de 128 bits). Si
+ * l'allocation de l'anneau echoue, la file entre en mode degrade SUR - push()
+ * et pop() refusent, count() vaut 0, rien n'est dereference - mais les deux
+ * chemins non perdables continuent de fonctionner. Une carte dont le tas est
+ * fragmente au point de refuser 24 commandes peut encore s'arreter et relacher
+ * ses notes : voir storageAvailable().
  ***********************************************************************************************/
 #ifndef COMMAND_QUEUE_H
 #define COMMAND_QUEUE_H
@@ -101,6 +111,20 @@ public:
   uint8_t count() const;
   uint16_t droppedCount() const;
   void resetDroppedCount();
+
+  // Vrai si l'anneau a REELLEMENT ete alloue. Faux = allocation refusee (ou
+  // capacite nulle) : push() et pop() refusent proprement, count() vaut 0, et
+  // aucun pointeur nul n'est dereference. La panne est aussi visible sans cet
+  // accesseur, car chaque push refuse incremente droppedCount(), que les
+  // diagnostics web remontent deja.
+  //
+  // Le panic et les Note Off ne sont PAS concernes : ils ne vivent pas dans
+  // l'anneau. Ils restent operationnels, c'est le peu de securite qui doit
+  // survivre a un tas mort.
+  //
+  // Sans verrou : `_items` est fixe par le constructeur et ne change plus
+  // jamais ; il n'y a donc rien a serialiser ici.
+  bool storageAvailable() const { return _items != nullptr; }
 
 private:
   ActuatorCommand* _items;

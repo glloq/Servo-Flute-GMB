@@ -40,6 +40,54 @@ struct ConfigApplyResult {
   String warnings;
 };
 
+/*------------------------------------------------------------------------------
+ * BORNES DU TRAVAIL APPLIQUE PAR PASSE D'update()
+ *
+ * processCommands() drainait la file ENTIEREMENT a chaque passe. Or chaque
+ * commande appliquee peut emettre plusieurs transactions I2C vers les PCA9685 :
+ * sous saturation (un client WebSocket qui pousse en rafale), une seule passe
+ * executait des dizaines d'ecritures d'affilee, le MIDI n'etait plus servi, les
+ * notes partaient en retard et le chien de garde pouvait mordre.
+ *
+ * La borne DIFFERE, elle ne PERD rien : ce qui reste est repris a la passe
+ * suivante. L'anneau est FIFO et pop() sert toujours la plus ancienne, donc une
+ * file constamment pleine continue d'ecouler ses plus vieilles commandes : pas
+ * de famine. Le panic, lui, n'est jamais soumis a la borne (drapeau dedie,
+ * consomme en tete de passe).
+ *
+ * Ces constantes vivent ICI et pas dans settings.h : elles decrivent le rythme
+ * interne de l'ordonnanceur de commandes, pas une option d'instrument.
+ *----------------------------------------------------------------------------*/
+
+// COMMAND_QUEUE_SIZE vaut 24 : une file pleine s'ecoule en 4 passes de 6 au lieu
+// d'une seule rafale de 24, donc le pire cas d'UNE passe est divise par quatre.
+// Le cout paye en echange est de 3 tours de loop() sur la derniere commande
+// d'une file pleine - et loop() ne contient aucune temporisation (voir
+// Servo_flute_ESP32.ino), donc un tour vaut le temps du travail lui-meme, pas
+// une periode fixe. Descendre la borne plus bas allongerait ce delai sans
+// reduire davantage le pire cas, deja domine par UNE commande (l'ouverture de
+// tous les doigts ecrit un canal PCA9685 par doigt).
+static const uint8_t INSTRUMENT_MAX_COMMANDS_PER_UPDATE = 6;
+
+// Les Note Off en attente ne vivent pas dans l'anneau mais dans un bitmap de
+// 128 bits (voir CommandQueue.h) : ils ne peuvent pas etre perdus. Leur borne
+// empeche une rafale de 128 relachements d'enfiler d'un coup plus d'evenements
+// que l'EventQueue n'en tient (EVENT_QUEUE_SIZE = 16) : au-dela, l'enfilement
+// FORCE evince le plus ancien, donc une rafale non bornee se mangerait
+// elle-meme. 8 = la moitie de la file d'evenements, ce qui laisse de la place
+// aux Note On deja programmes.
+static const uint8_t INSTRUMENT_MAX_NOTE_OFFS_PER_UPDATE = 8;
+
+// Les Note Off en attente sont appliques APRES l'anneau (l'ordre et sa raison
+// sont expliques dans processCommands()). Sous saturation PERMANENTE, l'anneau
+// n'est jamais vide : sans garde, le relachement attendrait indefiniment et la
+// note resterait bloquee, valve et souffle ouverts. Passe ce nombre de passes
+// consecutives de report, les relachements passent sans attendre que l'anneau
+// soit vide. Deux tours de loop() de retard sur un relachement, contre une note
+// bloquee : c'est l'arbitrage deja retenu par le firmware (au pire on perd une
+// note, jamais on n'en bloque une).
+static const uint8_t INSTRUMENT_MAX_NOTE_OFF_DEFERRAL_PASSES = 2;
+
 class InstrumentManager {
 public:
   InstrumentManager();
@@ -108,6 +156,16 @@ public:
   void requestPanic();
   const CommandQueue& commandQueue() const { return _commands; }
   uint16_t droppedCommandCount() const { return _commands.droppedCount(); }
+  // Vrai si les DEUX files inter-taches ont obtenu leur stockage au demarrage.
+  // Faux = tas trop fragmente a l'initialisation : l'instrument tourne en mode
+  // degrade SUR - commandes et evenements refuses au lieu d'un pointeur nul
+  // dereference - et les deux chemins non perdables (panic, Note Off) restent
+  // operationnels. La file d'evenements n'etant exposee nulle part ailleurs,
+  // c'est le seul point d'observation de sa panne : a remonter par les
+  // diagnostics web, a cote de dropped_commands.
+  bool queuesStorageAvailable() const {
+    return _commands.storageAvailable() && _eventQueue.storageAvailable();
+  }
   // Vrai si la commande touche physiquement un actionneur : refusee tant que le
   // hardware n'est pas pret (voir isHardwareReady()).
   static bool commandDrivesActuators(uint8_t type);
@@ -157,6 +215,20 @@ public:
   void powerOnServos();
   void ensureServosPowered();
   void registerActuatorActivity();
+
+  // --- Demandes differees a drapeau dedie (voir _requestMux) ------------------
+  // MEME motif que CommandQueue::requestPanic() / takePanicRequest() : la prise
+  // LIT ET EFFACE sous une seule section critique. Une demande deposee par une
+  // autre tache apres la prise est donc conservee pour la passe suivante au lieu
+  // d'etre effacee sans avoir ete traitee.
+  //
+  // `take...()` est reserve a la tache proprietaire des actionneurs (loop()) :
+  // c'est une CONSOMMATION. Les observer sans consommer se fait avec les
+  // predicats `...Pending()`.
+  bool takePowerOnRequest();
+  bool takeResetControllersRequest();
+  bool powerOnRequestPending() const;
+  bool resetControllersRequestPending() const;
   // While true, the idle power-down is inhibited and the servos are kept powered
   // (used by the auto-calibrator / range finder, which drive actuators and read
   // audio outside the MIDI sequencer that managePower() watches).
@@ -232,13 +304,39 @@ private:
   // note soufflee alors que le controleur a deja demande zero.
   bool _cc2Pending;
   byte _cc2PendingValue;
+  // --- Demandes deposees par une autre tache ---------------------------------
+  // Ces deux drapeaux etaient `volatile`. `volatile` N'EST PAS une primitive de
+  // synchronisation : il interdit au compilateur de mettre la variable en cache,
+  // rien de plus - ni atomicite, ni barriere. La sequence "si le drapeau est
+  // pose, l'effacer" tenait donc en deux acces distincts, et une demande deposee
+  // par la tache AsyncTCP ENTRE les deux etait effacee sans avoir ete traitee :
+  // un CC121 "Reset All Controllers" disparaissait en silence, ou les servos
+  // restaient non alimentes.
+  //
+  // Ils sont maintenant poses et PRIS sous `_requestMux` (voir takePowerOnRequest
+  // et takeResetControllersRequest), ce qui rend la lecture-puis-effacement
+  // atomique, exactement comme CommandQueue le fait deja pour le panic.
+  //
+  // Verrou PROPRE, et non celui de CommandQueue : registerActuatorActivity() est
+  // appelee depuis setPWM(), c'est-a-dire a CHAQUE ecriture de servo. Faire
+  // passer ce chemin brulant par le verrou de la file le mettrait en concurrence
+  // avec tous les push() de la tache AsyncTCP, pour deux etats qui n'ont rien a
+  // voir. Sur ESP32, portENTER_CRITICAL desactive les interruptions : ces
+  // sections doivent rester minuscules - ici, l'ecriture ou la lecture d'un seul
+  // booleen, jamais un appel de controleur.
+  //
   // Demande d'alimentation servo differee : registerActuatorActivity() peut etre
   // appelee hors de la tache loop() ; l'ecriture GPIO de l'OE est faite par
   // managePower() sur la tache proprietaire.
-  volatile bool _powerOnRequested;
+  bool _powerOnRequested;
   // CC121 Reset All Controllers poste depuis une autre tache : drapeau dedie pour
   // qu'il ne puisse jamais etre perdu par saturation de la file.
-  volatile bool _resetControllersRequested;
+  bool _resetControllersRequested;
+  mutable portMUX_TYPE _requestMux = portMUX_INITIALIZER_UNLOCKED;
+  // Nombre de passes consecutives pendant lesquelles les Note Off en attente ont
+  // cede le pas a l'anneau non draine (voir INSTRUMENT_MAX_NOTE_OFF_DEFERRAL_PASSES).
+  // Lu et ecrit par la seule tache loop().
+  uint8_t _noteOffDeferrals;
   // Compteur de paniques REELLEMENT executees (voir panicCount()).
   uint32_t _panicCount;
 

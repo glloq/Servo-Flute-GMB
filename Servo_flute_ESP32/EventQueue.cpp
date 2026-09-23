@@ -1,9 +1,20 @@
 #include "EventQueue.h"
+#include <new>   // std::nothrow : une allocation ratee doit rendre nullptr, pas lever
 
 EventQueue::EventQueue(int capacity)
-  : _capacity(capacity < 1 ? 1 : capacity), _head(0), _tail(0), _count(0),
+  : _events(nullptr), _capacity(capacity > 0 ? capacity : 0), _head(0), _tail(0), _count(0),
     _referenceTime(0), _hasReference(false), _epoch(0) {
-  _events = new MidiEvent[_capacity];
+  if (_capacity > 0) {
+    // std::nothrow : sur un tas ESP32 fragmente, un `new` nu leve une exception
+    // qui, sans gestionnaire, redemarre la carte ; et le pointeur nul rendu par
+    // une allocation ratee serait ensuite dereference a chaque enfilement.
+    _events = new (std::nothrow) MidiEvent[_capacity];
+  }
+  // Allocation refusee (ou capacite nulle/negative demandee) : UN SEUL etat
+  // degrade. L'ancien `capacity < 1 ? 1 : capacity` evitait le modulo par zero ;
+  // les methodes sortent desormais AVANT tout calcul d'index quand le stockage
+  // n'existe pas, ce qui couvre en plus l'allocation ratee.
+  if (!_events) _capacity = 0;
 }
 
 EventQueue::~EventQueue() {
@@ -23,7 +34,8 @@ bool EventQueue::enqueueScheduledEvent(EventType type, byte note, byte velocity,
   // (tache AsyncTCP) alors que loop() defile en parallele.
   portENTER_CRITICAL(&_mux);
 
-  if (_count >= _capacity) {  // isFull() sans reprendre le verrou
+  // Stockage absent (allocation refusee) : refus propre, jamais de deref.
+  if (_events == nullptr || _count >= _capacity) {  // isFull() sans reprendre le verrou
     portEXIT_CRITICAL(&_mux);
     return false;
   }
@@ -48,6 +60,14 @@ bool EventQueue::enqueueLiveEventForced(EventType type, byte note, byte velocity
 
 bool EventQueue::enqueueScheduledEventForced(EventType type, byte note, byte velocity, unsigned long executeAtMs) {
   portENTER_CRITICAL(&_mux);
+
+  // Stockage absent : meme une insertion FORCEE doit repondre false. Il n'y a
+  // aucun emplacement a evincer et il n'est pas question d'ecrire dans le vide ;
+  // l'appelant (un Note Off) voit l'echec au lieu de croire la note relachee.
+  if (_events == nullptr) {
+    portEXIT_CRITICAL(&_mux);
+    return false;
+  }
 
   if (_count >= _capacity) {
     // File pleine : evincer le plus ancien pour faire de la place. La section
@@ -80,7 +100,7 @@ void EventQueue::popLocked() {
 
 bool EventQueue::peekCopy(MidiEvent& out) const {
   portENTER_CRITICAL(&_mux);
-  if (_count == 0) {
+  if (_events == nullptr || _count == 0) {
     portEXIT_CRITICAL(&_mux);
     return false;
   }
@@ -93,7 +113,7 @@ bool EventQueue::tryPopDueEvent(unsigned long now, unsigned long noteOnLeadMs, M
                                 uint32_t* epochOut) {
   portENTER_CRITICAL(&_mux);
 
-  if (_count == 0) {
+  if (_events == nullptr || _count == 0) {
     portEXIT_CRITICAL(&_mux);
     return false;
   }
@@ -125,7 +145,9 @@ bool EventQueue::tryPopDueEvent(unsigned long now, unsigned long noteOnLeadMs, M
 
 void EventQueue::dequeue() {
   portENTER_CRITICAL(&_mux);
-  if (_count == 0) {  // isEmpty() sans reprendre le verrou
+  // popLocked() calcule un index modulo _capacity : sans stockage, _capacity
+  // vaut 0 et il ne doit jamais etre atteint.
+  if (_events == nullptr || _count == 0) {  // isEmpty() sans reprendre le verrou
     portEXIT_CRITICAL(&_mux);
     return;
   }
