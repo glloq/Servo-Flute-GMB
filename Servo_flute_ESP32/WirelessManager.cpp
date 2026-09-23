@@ -1,4 +1,6 @@
 #include "WirelessManager.h"
+
+#include <new>   // std::nothrow : une allocation ratee doit rendre nullptr, pas abandonner
 #include "InstrumentManager.h"
 #include "ConfigStorage.h"
 #include "gmb/GmbRuntime.h"
@@ -44,14 +46,30 @@ void WirelessManager::begin(InstrumentManager* instrument) {
       _led.setPattern(LED_TRIPLE_FLASH);  // Mode AP
     }
 
-    // Initialiser le lecteur MIDI
-    _midiPlayer = new MidiFilePlayer();
-    _midiPlayer->begin(instrument);
+    // Initialiser le lecteur MIDI.
+    //
+    // `std::nothrow` partout dans ce bloc : un `new` ordinaire qui echoue sur
+    // ESP32 ne rend pas nullptr, il abandonne et la carte redemarre - et un
+    // redemarrage en boucle sur un tas serre est indiscernable d'une carte
+    // morte. update() teste DEJA ces deux pointeurs (voir plus bas) : le mode
+    // degrade existe, il lui manquait seulement de pouvoir se produire.
+    _midiPlayer = new (std::nothrow) MidiFilePlayer();
+    if (_midiPlayer != nullptr) {
+      _midiPlayer->begin(instrument);
+    } else if (DEBUG) {
+      Serial.println("ERREUR: WirelessManager - tas insuffisant pour le lecteur MIDI");
+    }
 
-    // Initialiser le serveur web (apres WiFi pour que le reseau soit pret)
-    _webConfig = new WebConfigurator();
-    _webConfig->setWirelessManager(this);
-    _webConfig->begin(instrument, _midiPlayer);
+    // Initialiser le serveur web (apres WiFi pour que le reseau soit pret).
+    // Il recoit _midiPlayer tel quel : nullptr est une valeur admise cote
+    // WebConfigurator, dont chaque usage de `_player` est garde.
+    _webConfig = new (std::nothrow) WebConfigurator();
+    if (_webConfig != nullptr) {
+      _webConfig->setWirelessManager(this);
+      _webConfig->begin(instrument, _midiPlayer);
+    } else if (DEBUG) {
+      Serial.println("ERREUR: WirelessManager - tas insuffisant pour le serveur web");
+    }
 
     if (DEBUG) {
       Serial.println("DEBUG: WirelessManager - Serveur web + lecteur MIDI initialises");

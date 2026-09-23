@@ -206,6 +206,11 @@ private:
   // voir un struct a moitie recopie. Le commit et les gros lecteurs prennent
   // donc ce mutex, tenu le temps d'une copie de structure.
   SemaphoreHandle_t _cfgMutex;
+  // Vrai si la CREATION du mutex a echoue (tas epuise), par opposition au
+  // simple fait qu'il n'existe pas encore avant begin(). Sans cette
+  // distinction, lockConfig() confondait "rien a serialiser" et "plus rien
+  // pour serialiser" - voir lockConfig().
+  bool _cfgMutexFailed = false;
   bool lockConfig(uint32_t timeoutMs = WEB_CONFIG_LOCK_MS);
   void unlockConfig();
   // Adaptateurs passes a commitCandidateConfig() : le verrou n'entoure que

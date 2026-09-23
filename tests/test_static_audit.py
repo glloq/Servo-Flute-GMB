@@ -905,7 +905,7 @@ def test_config_commit_is_transactional():
     assert src.count('active = candidate;') == 1
     assert 'active.' not in src.split('active = candidate;', 1)[1].split('out.activated', 1)[0]
     # The candidate is built from a copy of the active configuration.
-    assert 'RuntimeConfig* candidatePtr = new RuntimeConfig(cfg);' in web
+    assert 'RuntimeConfig* candidatePtr = new (std::nothrow) RuntimeConfig(cfg);' in web
     # Persisting a candidate does not go through the global cfg.
     assert 'static bool saveFrom(const RuntimeConfig& source);' in read('Servo_flute_ESP32/ConfigStorage.h')
 
@@ -963,7 +963,7 @@ def test_littlefs_is_never_formatted_automatically():
     # A failed mount keeps the actuators disabled (no InstrumentManager at all).
     assert 'bool fsMounted = ConfigStorage::beginFilesystem();' in ino
     assert 'bool bootConfigSafe = fsMounted &&' in ino
-    assert ino.index('bootConfigSafe') < ino.index('instrument = new InstrumentManager();')
+    assert ino.index('bootConfigSafe') < ino.index('instrument = new (std::nothrow) InstrumentManager();')
     # Nothing is written to an unmounted filesystem.
     for fn in ('ConfigLoadStatus ConfigStorage::loadWithStatus()',
                'bool ConfigStorage::saveFrom(', 'bool ConfigStorage::factoryReset()'):
@@ -2425,3 +2425,31 @@ def test_audio_diagnostics_keeps_each_measure_next_to_what_qualifies_it():
             "modes de panne de la chronometrie : sans lui, un releve vide ou immobile ne "
             "se distingue pas d'une absence de jeu, et un cablage d'appels errone "
             "(rejected_events) passe pour un defaut de jeu." % f)
+
+
+def test_p2_config_lock_fails_closed_when_the_mutex_could_not_be_created():
+    """lockConfig() ne doit plus confondre "rien a serialiser" et "plus rien
+    pour serialiser".
+
+    `xSemaphoreCreateMutex()` alloue, donc elle peut rendre NULL sur un tas
+    epuise. lockConfig() rendait alors `true` - c'est-a-dire annoncait un verrou
+    acquis - et laissait ecrire `cfg` sans aucune protection pendant que les
+    taches AsyncTCP tournaient. Un verrou qui ment est pire qu'un verrou absent :
+    l'appelant cesse de se mefier. C'est aussi exactement ce que
+    commitCandidateConfig() interroge via son garde.
+    """
+    src = code_only(read('Servo_flute_ESP32/WebConfigurator.cpp'))
+    hdr = code_only(read('Servo_flute_ESP32/WebConfigurator.h'))
+    assert '_cfgMutexFailed' in hdr, (
+        "L'echec de CREATION du mutex n'est plus distingue de son absence avant "
+        "begin() : lockConfig() ne peut plus echouer en fermeture."
+    )
+    assert norm('_cfgMutexFailed = (_cfgMutex == nullptr);') in norm(src)
+    body = src.split('bool WebConfigurator::lockConfig', 1)[1].split('\n}', 1)[0]
+    assert 'return !_cfgMutexFailed;' in body, (
+        "lockConfig() ne rend plus false quand la creation du mutex a echoue."
+    )
+    assert 'if (_cfgMutex == nullptr) return true;' not in body, (
+        "Le retour inconditionnel `true` sur mutex absent est revenu."
+    )
+

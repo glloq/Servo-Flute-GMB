@@ -1,4 +1,6 @@
 #include "WebConfigurator.h"
+
+#include <new>   // std::nothrow : une allocation ratee doit rendre nullptr, pas abandonner
 #include "gmb/GmbRuntime.h"
 #include "InstrumentManager.h"
 #include "FanController.h"
@@ -202,6 +204,10 @@ void WebConfigurator::begin(InstrumentManager* instrument, MidiFilePlayer* playe
   _wsOpMutex = xSemaphoreCreateMutex();
   // Coherence de `cfg` entre le commit (tache loop) et les lecteurs AsyncTCP.
   _cfgMutex = xSemaphoreCreateMutex();
+  // xSemaphoreCreateMutex() alloue : sur un tas epuise elle rend NULL. On retient
+  // l'echec, parce qu'apres begin() un mutex absent ne veut PAS dire la meme
+  // chose qu'avant - voir lockConfig().
+  _cfgMutexFailed = (_cfgMutex == nullptr);
   _calCancelRequested = false;
 
   // Sessions web : jeton aleatoire tire du RNG materiel, expiration glissante.
@@ -232,11 +238,18 @@ void WebConfigurator::begin(InstrumentManager* instrument, MidiFilePlayer* playe
   gmb::runtime::setHttpDescriptorAvailable(true);
 
 #if MIC_ENABLED
-  // Initialize microphone (INMP441 via I2S)
-  _audio = new AudioAnalyzer();
-  bool micOk = _audio->begin();
+  // Initialize microphone (INMP441 via I2S).
+  //
+  // `std::nothrow` sur les deux : tout le reste de ce fichier teste deja
+  // `_audio` et `_autoCal` avant de les dereferencer (une douzaine de gardes
+  // chacun), donc le mode "pas de micro, pas de calibration" est ecrit, teste,
+  // et c'etait la seule chose qui ne pouvait pas l'atteindre. `micOk` reste
+  // faux si l'analyseur n'a pas pu etre alloue, ce qui neutralise du meme coup
+  // les deux observateurs poses plus bas.
+  _audio = new (std::nothrow) AudioAnalyzer();
+  bool micOk = (_audio != nullptr) && _audio->begin();
   if (micOk && _instrument) {
-    _autoCal = new AutoCalibrator(
+    _autoCal = new (std::nothrow) AutoCalibrator(
       _instrument->getFingerCtrl(),
       _instrument->getAirflowCtrl(),
       *_audio,
@@ -924,9 +937,24 @@ void WebConfigurator::clearWsAuthentication(uint32_t clientId) {
 }
 
 bool WebConfigurator::lockConfig(uint32_t timeoutMs) {
-  // Avant begin(), un seul contexte touche `cfg` : rien a serialiser.
-  if (_cfgMutex == nullptr) return true;
-  return xSemaphoreTake(_cfgMutex, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
+  if (_cfgMutex != nullptr) {
+    return xSemaphoreTake(_cfgMutex, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
+  }
+  // Pas de mutex : deux situations tres differentes, qu'il ne faut pas
+  // confondre comme le faisait la version precedente.
+  //
+  //  - AVANT begin() : un seul contexte touche `cfg`, il n'y a rien a
+  //    serialiser, et repondre "verrouille" est exact.
+  //  - APRES begin() : la creation du semaphore a ECHOUE faute de tas, et
+  //    pourtant les taches AsyncTCP, elles, tournent. Repondre "verrouille"
+  //    laissait alors ecrire `cfg` sans aucune protection TOUT EN ANNONCANT le
+  //    contraire a ConfigCommit - un verrou qui ment est pire qu'un verrou
+  //    absent, parce que l'appelant cesse de se mefier.
+  //
+  // On echoue donc en FERMETURE : lockConfig() rend false, l'appelant HTTP
+  // repond une erreur et le commit refuse d'activer plutot que d'ecrire `cfg`
+  // a l'aveugle.
+  return !_cfgMutexFailed;
 }
 
 void WebConfigurator::unlockConfig() {
@@ -1228,8 +1256,11 @@ void WebConfigurator::executeWebOp(WebOp& op) {
                                 &cfgGuard);
       JsonDocument resp;
       resp["ok"] = res.saved;
-      if (!res.saved) resp["error"] = res.valid ? "storage_failed" : res.error;
-      else resp["msg"] = "Connecting...";
+      if (!res.saved) {
+        resp["error"] = res.valid ? "storage_failed" : res.error;
+      } else {
+        resp["msg"] = "Connecting...";
+      }
       serializeJson(resp, op.json);
       op.ok = res.saved;
       op.httpStatus = res.saved ? 200 : 500;
@@ -1341,7 +1372,13 @@ void WebConfigurator::executeWebOp(WebOp& op) {
 
       // Recharger depuis la destination definitive pour que le lecteur pointe sur
       // le fichier final (et non sur le temporaire qui vient de disparaitre).
-      bool loaded = _player->loadFile(destPath.c_str());
+      //
+      // `_player` est teste : le meme gestionnaire le teste deja plus haut
+      // (chemin du temporaire), mais pas ici. L'asymetrie etait sans
+      // consequence tant qu'un lecteur absent faisait redemarrer la carte a
+      // l'allocation ; maintenant qu'un tas insuffisant le laisse a nullptr,
+      // c'est un dereferencement atteignable depuis une requete web.
+      bool loaded = _player && _player->loadFile(destPath.c_str());
       resp["ok"] = loaded;
       resp["file"] = _upload.fileName;
       if (loaded) {
@@ -1350,7 +1387,7 @@ void WebConfigurator::executeWebOp(WebOp& op) {
         resp["channels"] = _player->getActiveChannels();
       } else {
         resp["error"] = "invalid_midi";
-        resp["reason"] = _player->getLoadErrorCode();
+        resp["reason"] = _player ? _player->getLoadErrorCode() : "no_player";
       }
       resp["storage_used"] = getMidiStorageUsed();
       resp["storage_limit"] = limitBytes;
@@ -2240,7 +2277,12 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
     // controleurs ne peuvent donc jamais observer un etat intermediaire.
     // NB: le candidat est alloue sur le tas car la pile de la tache AsyncTCP est
     // trop etroite pour un RuntimeConfig complet (notes + doigts).
-    RuntimeConfig* candidatePtr = new RuntimeConfig(cfg);
+    // `std::nothrow` : le test de nullite ci-dessous etait MORT. Un `new`
+    // ordinaire ne rend jamais nullptr - il leve, ou, exceptions desactivees
+    // comme ici, il abandonne et la carte redemarre. La protection etait ecrite,
+    // relue, et ne pouvait pas se declencher : une requete web sur un tas serre
+    // rebootait l'instrument au lieu de recevoir le 500 prevu juste en dessous.
+    RuntimeConfig* candidatePtr = new (std::nothrow) RuntimeConfig(cfg);
     if (candidatePtr == nullptr) {
       request->send(500, "application/json", "{\"ok\":false,\"error\":\"out_of_memory\"}");
       return;

@@ -437,7 +437,7 @@ void hw_boot_sketch_uses_the_boot_predicate() {
   assert(ino.find("bootConfigMayDriveActuators(") != std::string::npos);
   size_t gate = ino.find("bool bootConfigSafe = fsMounted &&");
   assert(gate != std::string::npos);
-  size_t build = ino.find("instrument = new InstrumentManager();");
+  size_t build = ino.find("instrument = new (std::nothrow) InstrumentManager();");
   assert(build != std::string::npos && gate < build);
   // Le diagnostic est imprime hors de tout if (DEBUG).
   assert(ino.find("actionneurs DESACTIVES") != std::string::npos);
