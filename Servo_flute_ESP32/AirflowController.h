@@ -155,6 +155,17 @@ private:
   void setSolenoidPWM(uint8_t pwmValue);
   void setValveServoAngle(bool open);
 
+  // Bornes des commandes de REGLAGE MANUEL (testAirflowAngle /
+  // testAngleServoAngle). Elles ramenent l'angle demande dans la course
+  // mecanique que la configuration DECLARE pour ce servo, elargie de
+  // SERVO_TEST_MARGIN_DEG (voir settings.h). Le chemin de JEU ne passe pas par
+  // elles et n'en a pas besoin : setAirflowVelocity(), computeAirflow(),
+  // setAngleForNote() et setAngleLivePercent() interpolent tous ENTRE les
+  // memes bornes de configuration, donc ils sont a l'interieur par
+  // construction.
+  uint16_t clampAirflowTestAngle(uint16_t angle) const;
+  uint16_t clampAngleServoTestAngle(uint16_t angle) const;
+
   // --- Angle servo (trav) ---
   void setAngleServoAngle(uint16_t angle);
   bool isTravEmbouchure() const;

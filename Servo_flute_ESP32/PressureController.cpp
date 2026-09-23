@@ -8,12 +8,13 @@
 // "initialise", "mesure valide" et "en erreur".
 
 PressureController::PressureController()
-  : _sensorDetected(false), _sensorType(0),
+  : _sensorDetected(false), _sensorPresence(SENSOR_PRESENCE_ABSENT), _sensorType(0),
     _distanceMm(0), _hallValue(0), _endstopActive(false), _fillPercent(0),
     _tofRangeStartTime(0), _measurementValid(false),
-    _lastValidReadTime(0), _tofErrorCount(0),
+    _lastValidReadTime(0), _everMeasured(false), _tofErrorCount(0),
     _targetPercent(0), _currentPumpPwm(0),
-    _enabled(true), _testPumpIndex(-1), _testPumpPercent(0),
+    _enabled(true), _testPumpIndex(-1), _testPumpPercent(0), _testPumpStart(0),
+    _runawayLatched(false), _pumpRunSince(0), _pumpRunRefFill(0), _runawayFill(0),
     _activePumpCount(0), _bangbangPumpOn(false),
     _pidIntegral(0),
     _lastPidTime(0), _lastReadTime(0) {
@@ -25,6 +26,11 @@ PressureController::PressureController()
 
 bool PressureController::begin() {
   _sensorType = cfg.sensorType;
+  // Un redemarrage repart d'un etat neuf : aucune mesure acceptee, aucun verrou.
+  _everMeasured = false;
+  _measurementValid = false;
+  _lastValidReadTime = 0;
+  clearPumpRunawayFault();
 
   // Configurer pins pompes
   if (cfg.airMode >= AIR_MODE_PUMP_VALVE) {
@@ -52,8 +58,21 @@ bool PressureController::begin() {
 
   // Mode reservoir: configurer selon type de capteur
   if (_sensorType == SENSOR_TYPE_ENDSTOP_MECH || _sensorType == SENSOR_TYPE_ENDSTOP_OPT) {
-    // Endstop mecanique ou optique: entree digitale
-    pinMode(cfg.endstopPin, INPUT_PULLUP);
+    // Endstop mecanique ou optique: entree digitale.
+    //
+    // Le rappel interne suit la polarite DECLAREE et produit le niveau INACTIF :
+    // un contact sec n'impose qu'un seul des deux niveaux, l'autre vient du
+    // rappel. L'ancien INPUT_PULLUP inconditionnel contredisait le defaut du
+    // firmware (DEFAULT_ENDSTOP_ACTIVE_HIGH = true) : sur un capteur actif-HIGH
+    // il lisait "actif" en permanence, donc "reservoir plein" en permanence.
+    //
+    // Ce choix n'est PAS une securite et ne doit jamais etre pris pour telle :
+    // une entree debranchee est electriquement identique a un contact relache,
+    // aucune polarite ne les distingue. La securite qui couvre les deux est le
+    // chien de garde de marche (PUMP_MAX_RUN_MS), qui ne regarde aucun drapeau.
+    pinMode(cfg.endstopPin, endstopPinModeFor(cfg.endstopActiveHigh));
+    // Une entree logique ne s'identifie pas : "presume", jamais "detecte".
+    _sensorPresence = SENSOR_PRESENCE_PRESUMED;
     _sensorDetected = true;
     if (DEBUG) {
       Serial.print("DEBUG: PressureController - ");
@@ -66,16 +85,37 @@ bool PressureController::begin() {
   }
 
   if (_sensorType == SENSOR_TYPE_HALL_KY024) {
-    // Capteur effet Hall KY-024: entree analogique
+    // Capteur effet Hall KY-024: entree analogique.
+    //
+    // Rien sur une entree ADC ne dit "KY-024" : il n'existe aucune identification
+    // possible, donc l'etat honnete est PRESUME, jamais DETECTE. Ce qui est
+    // verifiable, en revanche, c'est qu'une lecture est une MESURE : on sonde la
+    // broche au demarrage et on refuse ce qui ne peut pas venir d'un capteur
+    // ratiometrique alimente (rail bas = fil coupe/masse, rail haut = court-circuit).
     pinMode(cfg.hallPin, INPUT);
+    _sensorPresence = SENSOR_PRESENCE_PRESUMED;
     _sensorDetected = true;
+    bool plausible = false;
+    unsigned long probeTime = millis();
+    for (uint8_t i = 0; i < HALL_PROBE_SAMPLES && !plausible; i++) {
+      plausible = acceptHallReading((uint16_t)analogRead(cfg.hallPin), probeTime);
+    }
+    if (plausible) _lastReadTime = probeTime;
+    // Sonde negative : on ne declare pas le capteur absent pour autant (sur une
+    // broche ADC2 une lecture nulle peut aussi vouloir dire "le WiFi a pris le
+    // convertisseur", et un module peut s'alimenter apres le microcontroleur).
+    // Mais AUCUNE mesure n'est acceptee : isMeasurementStale() reste vrai et la
+    // pompe ne demarrera pas tant qu'une lecture plausible n'arrivera pas. C'est
+    // la difference avec l'ancien code, qui posait _sensorDetected = true sans
+    // rien sonder et laissait le PID pousser la pompe a 255 indefiniment.
     if (DEBUG) {
       Serial.print("DEBUG: PressureController - Hall KY-024 GPIO ");
       Serial.print(cfg.hallPin);
       Serial.print(" seuils ");
       Serial.print(cfg.hallThresholdLow);
       Serial.print("-");
-      Serial.println(cfg.hallThresholdHigh);
+      Serial.print(cfg.hallThresholdHigh);
+      Serial.println(plausible ? " (presume present)" : " (AUCUNE lecture plausible : pompe bloquee)");
     }
     return true;
   }
@@ -88,6 +128,8 @@ bool PressureController::begin() {
   bool initialized = _tof.begin(_sensorType == SENSOR_TYPE_TOF_VL6180X ? TOF_MODEL_VL6180X
                                                                        : TOF_MODEL_VL53L0X);
   _sensorDetected = initialized;
+  // Seule famille reellement identifiable : le Model ID repond ou il ne repond pas.
+  _sensorPresence = initialized ? SENSOR_PRESENCE_DETECTED : SENSOR_PRESENCE_ABSENT;
   if (!initialized && DEBUG) {
     Serial.print("ERREUR: PressureController - capteur ToF inutilisable (");
     Serial.print(_tof.stateName());
@@ -101,10 +143,161 @@ bool PressureController::usesTofSensor() const {
 }
 
 bool PressureController::isMeasurementStale() const {
-  // "Perimee" = aucune mesure VALIDE depuis TOF_STALE_MS, que la derniere
-  // tentative ait echoue ou que le capteur se soit simplement fige.
-  if (!usesTofSensor()) return false;
-  return (millis() - _lastValidReadTime) >= TOF_STALE_MS;
+  // "Perimee" = aucune mesure ACCEPTEE depuis le delai de la famille de capteur,
+  // que la derniere tentative ait echoue ou que le capteur se soit simplement fige.
+  //
+  // Cette garde ne depend PLUS du type de capteur. Elle commencait par
+  // `if (!usesTofSensor()) return false;` : elle se declarait donc "pas perimee"
+  // d'office sur un Hall ou une fin de course, c'est-a-dire qu'elle desactivait
+  // la seule securite de mesure pour deux familles de capteurs sur trois.
+  if (cfg.airMode != AIR_MODE_PUMP_RESERVOIR) return false;  // aucune mesure attendue
+  // Rien n'a JAMAIS ete mesure : l'epoque (_lastValidReadTime = 0) n'est pas une
+  // mesure. Sans ce cas, la pompe pouvait reguler pendant tout le premier delai
+  // suivant le boot sur un capteur qui n'a jamais rien rendu.
+  if (!_everMeasured) return true;
+  if (usesTofSensor()) return (millis() - _lastValidReadTime) >= TOF_STALE_MS;
+  return (millis() - _lastValidReadTime) >= RESERVOIR_STALE_MS;
+}
+
+const char* PressureController::sensorStateName() const {
+  // "no_effect" : le capteur repond peut-etre, mais la pompe a tourne sans que
+  // la mesure bouge. Distinguer ce cas d'un capteur absent evite d'envoyer
+  // l'operateur changer un capteur alors que c'est une fuite ou une valve fermee.
+  if (_runawayLatched) return "no_effect";
+  if (usesTofSensor()) return _tof.stateName();
+  switch (_sensorPresence) {
+    // "presumed" : broche configuree et lecture acceptee, mais AUCUNE
+    // identification possible - ne jamais afficher "detecte" pour ces familles.
+    case SENSOR_PRESENCE_PRESUMED: return _everMeasured ? "presumed" : "presumed_no_reading";
+    case SENSOR_PRESENCE_DETECTED: return "ready";
+    default: return "absent";
+  }
+}
+
+void PressureController::clearPumpRunawayFault() {
+  _runawayLatched = false;
+  _pumpRunSince = 0;
+  _pumpRunRefFill = 0;
+  _runawayFill = 0;
+}
+
+bool PressureController::isHallReadingPlausible(uint16_t raw) const {
+  // Une bande degeneree n'est pas une echelle : tout se lirait "0 %", donc
+  // "reservoir vide", donc pompe au maximum pour toujours. Sans mesure
+  // interpretable, il n'y a pas de mesure.
+  if (cfg.hallThresholdHigh <= cfg.hallThresholdLow) return false;
+  // Entree collee a un rail : fil coupe / masse (bas) ou court-circuit a
+  // l'alimentation (haut). La sortie d'un Hall lineaire alimente vit autour de
+  // VCC/2 et ne peut pas s'y trouver ; en plus l'ADC de l'ESP32 n'est pas
+  // lineaire dans ces quelques comptes. Ce n'est pas une mesure basse, c'est
+  // une absence de mesure - et c'est precisement ce que l'ancien code lisait
+  // comme "reservoir vide".
+  if (raw <= HALL_RAW_STUCK_LOW || raw >= HALL_RAW_STUCK_HIGH) return false;
+  return true;
+}
+
+bool PressureController::acceptHallReading(uint16_t raw, unsigned long now) {
+  // Un SEUL endroit accepte une lecture Hall : le sondage de begin() et la
+  // lecture periodique passent par ici. Deux chemins separes finiraient par
+  // diverger - par exemple en horodatant une mesure "fraiche" sans mettre a jour
+  // le remplissage, ce qui ferait reguler le PID sur un 0 % jamais mesure.
+  _hallValue = raw;              // toujours expose au diagnostic, meme refuse
+  if (!isHallReadingPlausible(raw)) {
+    // Refusee : on ne remplace pas la mesure manquante par la derniere connue.
+    // _lastValidReadTime n'avance pas -> peremption -> pompe coupee.
+    _measurementValid = false;
+    return false;
+  }
+  _measurementValid = true;
+  _everMeasured = true;
+  _lastValidReadTime = now;
+  if (raw <= cfg.hallThresholdLow) {
+    _fillPercent = 0;
+  } else if (raw >= cfg.hallThresholdHigh) {
+    _fillPercent = 100;
+  } else {
+    uint16_t hallSpan = cfg.hallThresholdHigh - cfg.hallThresholdLow;
+    _fillPercent = (hallSpan == 0) ? 0 : (uint8_t)(((uint32_t)(raw - cfg.hallThresholdLow) * 100) / hallSpan);
+  }
+  return true;
+}
+
+void PressureController::serviceHallMeasurement(unsigned long now) {
+  if (now - _lastReadTime < PRESSURE_READ_INTERVAL_MS) return;
+  _lastReadTime = now;
+  acceptHallReading((uint16_t)analogRead(cfg.hallPin), now);
+}
+
+void PressureController::serviceEndstopMeasurement(unsigned long now) {
+  // Une entree logique ne peut pas etre "invraisemblable" : elle rend toujours un
+  // niveau, et un fil coupe rend le niveau du rappel interne. La seule chose
+  // verifiable ici est la FRAICHEUR : si la boucle principale se fige, la mesure
+  // vieillit et la garde de peremption coupe la pompe au reveil. Que la valeur
+  // lue soit vraie, seul le chien de garde de marche peut le contredire.
+  _endstopActive = (digitalRead(cfg.endstopPin) == (cfg.endstopActiveHigh ? HIGH : LOW));
+  _fillPercent = _endstopActive ? 100 : 0;
+  _measurementValid = true;
+  _everMeasured = true;
+  _lastValidReadTime = now;
+  _lastReadTime = now;
+}
+
+bool PressureController::fillProgressedFrom(uint8_t ref) const {
+  // Sens attendu : la pompe remplit, sauf en mode "vidage" sur fin de course.
+  const bool endstopFamily = (_sensorType == SENSOR_TYPE_ENDSTOP_MECH ||
+                              _sensorType == SENSOR_TYPE_ENDSTOP_OPT);
+  const int16_t fill = (int16_t)_fillPercent;
+  const int16_t from = (int16_t)ref;
+  if (endstopFamily && cfg.endstopPumpOn) return fill <= from - (int16_t)PUMP_PROGRESS_MIN_PERCENT;
+  return fill >= from + (int16_t)PUMP_PROGRESS_MIN_PERCENT;
+}
+
+void PressureController::serviceRunawayWatchdog(unsigned long now) {
+  // POURQUOI : une pompe qui tourne sans que la mesure bouge ne remplit rien.
+  // Capteur mort lu comme "vide", fin de course figee dans le sens "remplir",
+  // fuite, valve fermee : le code precedent n'avait AUCUNE limite de duree, donc
+  // n'importe laquelle de ces pannes laissait la pompe a 255 indefiniment - sans
+  // note, sans client web, depuis la seule mise sous tension. Cette fenetre est
+  // la seule securite qui ne depende ni du type de capteur ni de sa polarite.
+  if (_currentPumpPwm == 0) {
+    _pumpRunSince = 0;
+    // Rearmement : la mesure qui BOUGE alors que la pompe est arretee prouve que
+    // le capteur vit encore (le reservoir se vide en jouant). C'est la seule
+    // chose qui rearme automatiquement ; un capteur mort ne bouge jamais, donc
+    // le verrou tient. Rearmer sur un simple arret rendrait la limite inutile :
+    // la pompe repartirait pour une fenetre, indefiniment.
+    if (_runawayLatched && _everMeasured) {
+      int16_t moved = (int16_t)_fillPercent - (int16_t)_runawayFill;
+      if (moved < 0) moved = -moved;
+      if (moved >= (int16_t)PUMP_PROGRESS_MIN_PERCENT) clearPumpRunawayFault();
+    }
+    return;
+  }
+  if (_pumpRunSince == 0) {                 // la pompe vient de demarrer
+    _pumpRunSince = now;
+    _pumpRunRefFill = _fillPercent;
+    return;
+  }
+  if (fillProgressedFrom(_pumpRunRefFill)) {
+    // La pompe agit : on repart pour une fenetre depuis le nouveau niveau. La
+    // reference est un cliquet (elle ne redescend pas) pour que le bruit de
+    // mesure ne puisse pas relancer la fenetre indefiniment.
+    _pumpRunSince = now;
+    _pumpRunRefFill = _fillPercent;
+    return;
+  }
+  if (now - _pumpRunSince >= PUMP_MAX_RUN_MS) {
+    _runawayLatched = true;
+    _runawayFill = _fillPercent;
+  }
+}
+
+void PressureController::cutPumpForSafety() {
+  setPumpPwm(0);
+  _bangbangPumpOn = false;
+  // L'integrateur accumule pendant que la mesure est douteuse : conserve, il se
+  // dechargerait d'un coup a plein regime des le retour de la mesure.
+  _pidIntegral = 0;
 }
 
 bool PressureController::serviceTofMeasurement() {
@@ -125,6 +318,7 @@ bool PressureController::serviceTofMeasurement() {
   if (_tof.pollMeasurement()) {
     _distanceMm = _tof.distanceMm();
     _measurementValid = true;
+    _everMeasured = true;
     _lastValidReadTime = now;
     _tofErrorCount = 0;
     return true;
@@ -161,6 +355,14 @@ void PressureController::update() {
   // Manual single-pump test overrides normal control: drive ONLY the tested pump
   // so a per-pump test never commands the others.
   if (_testPumpIndex >= 0) {
+    // Un test manuel est BORNE DANS LE TEMPS. Il est lance par une commande web
+    // et arrete par une autre : si l'onglet se ferme, si le WiFi tombe ou si
+    // l'operateur s'en va, plus personne n'envoie l'arret et la pompe tourne
+    // indefiniment. Un banc de test ne doit pas pouvoir devenir une panne.
+    if (millis() - _testPumpStart >= PUMP_TEST_MAX_MS) {
+      stopSinglePumpTest();
+      return;
+    }
     uint8_t raw = (uint16_t)_testPumpPercent * 255 / 100;
     _activePumpCount = 0;
     for (uint8_t i = 0; i < cfg.numPumps && i < MAX_PUMPS; i++) {
@@ -198,42 +400,82 @@ void PressureController::update() {
   }
 
   // --- Mode reservoir avec capteur ---
+  //
+  // Trois etapes, dans cet ordre, pour TOUTES les familles de capteur :
+  //   1. acquisition : une mesure n'est retenue que si elle est plausible ;
+  //   2. gardes communes : peremption, emballement, cible nulle ;
+  //   3. controle : bang-bang ou PID selon le type de moteur.
+  // L'ORDRE EST LA CORRECTION : les branches Hall et fin de course rendaient la
+  // main (return) AVANT les gardes, qui n'existaient que sur le chemin ToF. Un
+  // capteur Hall debranche, lu ~0, passait donc pour "reservoir vide" et le PID
+  // poussait la pompe a 255 pour toujours. Ne jamais remettre un `return` de
+  // branche avant ce bloc de gardes.
+
+  // 1) Acquisition (par famille)
+  if (_sensorType == SENSOR_TYPE_ENDSTOP_MECH || _sensorType == SENSOR_TYPE_ENDSTOP_OPT) {
+    serviceEndstopMeasurement(now);
+  } else if (_sensorType == SENSOR_TYPE_HALL_KY024) {
+    serviceHallMeasurement(now);
+  } else if (serviceTofMeasurement()) {
+    // ToF (VL53L0X / VL6180X): lecture I2C NON bloquante. _fillPercent n'est mis
+    // a jour que sur une mesure fraiche et valide (jamais sur un timeout).
+    if (_distanceMm <= cfg.sensorMinMm) {
+      _fillPercent = 100;
+    } else if (_distanceMm >= cfg.sensorMaxMm) {
+      _fillPercent = 0;
+    } else {
+      uint16_t sensorSpan = cfg.sensorMaxMm - cfg.sensorMinMm;
+      _fillPercent = (sensorSpan == 0) ? 0 : 100 - (uint8_t)(((uint32_t)(_distanceMm - cfg.sensorMinMm) * 100) / sensorSpan);
+    }
+  }
+
+  // 2) Gardes communes A TOUTES les familles de capteur
+  serviceRunawayWatchdog(now);
+
+  // Securite mesure perimee (§20): sans mesure valide recente, on ne peut plus
+  // reguler en securite -> couper la pompe plutot que de piloter sur une donnee
+  // obsolete (un timeout lu comme distance 0 aurait sinon fait croire au reservoir plein).
+  // Le critere est l'age de la DERNIERE mesure acceptee : un capteur fige qui ne
+  // rend plus rien laisserait sinon la pompe reguler indefiniment sur l'avant-derniere.
+  if (isMeasurementStale()) {
+    cutPumpForSafety();
+    return;
+  }
+
+  // Emballement : la pompe a tourne sans effet mesurable. On ne repart pas tout
+  // seul, sinon la limite de duree ne serait qu'un rapport cyclique.
+  if (_runawayLatched) {
+    cutPumpForSafety();
+    return;
+  }
+
+  if (_targetPercent == 0) {
+    setPumpPwm(0);
+    _bangbangPumpOn = false;
+    _pidIntegral = 0;
+    return;
+  }
+
+  // 3) Controle (par famille)
 
   // Endstop (mecanique ou optique): controle ON/OFF simple
   // endstopPumpOn: false = pompe ON quand capteur inactif (remplir), true = pompe ON quand capteur actif (vider)
   if (_sensorType == SENSOR_TYPE_ENDSTOP_MECH || _sensorType == SENSOR_TYPE_ENDSTOP_OPT) {
-    _endstopActive = (digitalRead(cfg.endstopPin) == (cfg.endstopActiveHigh ? HIGH : LOW));
     bool shouldPump = cfg.endstopPumpOn ? _endstopActive : !_endstopActive;
-    if (_targetPercent == 0 || !shouldPump) {
+    if (!shouldPump) {
       setPumpPwm(0);
       _bangbangPumpOn = false;
-      _fillPercent = _endstopActive ? 100 : 0;
     } else {
       _bangbangPumpOn = true;
       setPumpPwm(255);
-      _fillPercent = cfg.endstopPumpOn ? 100 : 0;
     }
     return;
   }
 
-  // Hall effect: lecture analogique periodique
+  // Hall effect: controle selon type moteur (la lecture a eu lieu en 1)
   if (_sensorType == SENSOR_TYPE_HALL_KY024) {
-    if (now - _lastReadTime >= PRESSURE_READ_INTERVAL_MS) {
-      _hallValue = analogRead(cfg.hallPin);
-      _lastReadTime = now;
-      if (_hallValue <= cfg.hallThresholdLow) {
-        _fillPercent = 0;
-      } else if (_hallValue >= cfg.hallThresholdHigh) {
-        _fillPercent = 100;
-      } else {
-        uint16_t hallSpan = cfg.hallThresholdHigh - cfg.hallThresholdLow;
-        _fillPercent = (hallSpan == 0) ? 0 : (uint8_t)(((uint32_t)(_hallValue - cfg.hallThresholdLow) * 100) / hallSpan);
-      }
-    }
-    // Controle selon type moteur
     if (now - _lastPidTime >= PRESSURE_PID_INTERVAL_MS) {
       _lastPidTime = now;
-      if (_targetPercent == 0) { setPumpPwm(0); _bangbangPumpOn = false; return; }
 
       if (cfg.motorType == MOTOR_TYPE_ONOFF) {
         // Bang-bang avec hysteresis pour moteurs On/Off
@@ -275,39 +517,10 @@ void PressureController::update() {
     return;
   }
 
-  // ToF (VL53L0X / VL6180X): lecture I2C NON bloquante. _fillPercent n'est mis a
-  // jour que sur une mesure fraiche et valide (jamais sur un timeout).
-  if (serviceTofMeasurement()) {
-    if (_distanceMm <= cfg.sensorMinMm) {
-      _fillPercent = 100;
-    } else if (_distanceMm >= cfg.sensorMaxMm) {
-      _fillPercent = 0;
-    } else {
-      uint16_t sensorSpan = cfg.sensorMaxMm - cfg.sensorMinMm;
-      _fillPercent = (sensorSpan == 0) ? 0 : 100 - (uint8_t)(((uint32_t)(_distanceMm - cfg.sensorMinMm) * 100) / sensorSpan);
-    }
-  }
-
-  // Securite mesure perimee (§20): sans mesure ToF valide recente, on ne peut plus
-  // reguler en securite -> couper la pompe plutot que de piloter sur une donnee
-  // obsolete (un timeout lu comme distance 0 aurait sinon fait croire au reservoir plein).
-  // Le critere est l'age de la DERNIERE mesure valide : un capteur fige qui ne
-  // rend plus rien laisserait sinon la pompe reguler indefiniment sur l'avant-derniere.
-  if (isMeasurementStale()) {
-    setPumpPwm(0);
-    _bangbangPumpOn = false;
-    return;
-  }
-
-  // Controle pompe selon type moteur
+  // ToF (VL53L0X / VL6180X): controle pompe selon type moteur (la mesure et les
+  // gardes communes ont eu lieu plus haut).
   if (now - _lastPidTime >= PRESSURE_PID_INTERVAL_MS) {
     _lastPidTime = now;
-
-    if (_targetPercent == 0) {
-      setPumpPwm(0);
-      _bangbangPumpOn = false;
-      return;
-    }
 
     // Securite : distance > 300mm = capteur hors portee
     if (_distanceMm > PUMP_SAFETY_MAX_DIST_MM) {
@@ -383,10 +596,14 @@ void PressureController::testSinglePump(uint8_t index, uint8_t percent) {
   if (percent > 100) percent = 100;
   _testPumpIndex = (int8_t)index;
   _testPumpPercent = percent;
+  // Depart du compte a rebours du test : un ordre repete le prolonge, l'absence
+  // d'ordre l'arrete (cf. PUMP_TEST_MAX_MS dans update()).
+  _testPumpStart = millis();
 }
 
 void PressureController::stopSinglePumpTest() {
   _testPumpIndex = -1;
+  _testPumpStart = 0;
   setPumpPwm(0);
 }
 

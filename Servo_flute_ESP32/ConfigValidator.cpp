@@ -175,6 +175,29 @@ ConfigValidationResult validateAndNormalizeConfig(RuntimeConfig& config, const R
   r.corrected |= normalizeRangeU8(config.airVelocityResponse, 0, 100);
   r.corrected |= normalizeRangeU8(config.solenoidPwmActivation, 0, 255);
   r.corrected |= normalizeRangeU8(config.solenoidPwmHolding, 0, 255);
+  // LA RETOMBEE THERMIQUE DE LA BOBINE DOIT RESTER UNE RETOMBEE.
+  // Les deux champs etaient bornes chacun de son cote a 0..255, sans AUCUNE
+  // contrainte entre eux. sol_hold = 255 etait donc accepte et persiste : la
+  // bascule d'AirflowController::update() s'executait bien, mais ecrivait 255 -
+  // le seul mecanisme anti-chauffe du firmware devenait un no-op et la bobine
+  // restait a pleine tension toute la duree d'une note tenue, des ~13 s d'un
+  // balayage de calibration, des 30 s d'une session de test. Aucun champ de
+  // l'interface n'expose sol_hold, mais POST /api/config l'accepte : c'est ici
+  // que cela se refuse, pas dans l'interface.
+  // On CORRIGE au lieu de refuser : ce validateur tourne aussi sur la
+  // configuration relue en flash au demarrage, et un refus y laisserait
+  // l'ancienne valeur dangereuse en place au lieu de la ramener au plafond.
+  {
+    const uint16_t holdCeiling = (uint16_t)(((uint32_t)config.solenoidPwmActivation *
+                                             SOLENOID_HOLD_MAX_PERCENT + 50) / 100);
+    if (config.solenoidPwmHolding > holdCeiling) {
+      config.solenoidPwmHolding = (uint8_t)holdCeiling;
+      r.corrected = true;
+      appendIssue(r.warnings, "solenoidPwmHolding capped to " + String(holdCeiling) +
+                              " (max " + String(SOLENOID_HOLD_MAX_PERCENT) +
+                              "% of solenoidPwmActivation)");
+    }
+  }
   r.corrected |= normalizeRangeU8(config.kbdMode, 0, 1);
 
   // --- Valeurs par defaut des CC (7 bits MIDI) ---
@@ -203,12 +226,39 @@ ConfigValidationResult validateAndNormalizeConfig(RuntimeConfig& config, const R
 
   // --- Durees / timings (uint16_t) : bornes anti-delai absurde ---
   r.corrected |= normalizeRangeU16(config.minNoteIntervalForValveCloseMs, 0, CONFIG_MAX_INTERVAL_MS);
-  r.corrected |= normalizeRangeU16(config.solenoidActivationTimeMs, 0, CONFIG_MAX_SOLENOID_PULSE_MS);
+  // Le plus SERRE des deux plafonds s'applique. CONFIG_MAX_SOLENOID_PULSE_MS
+  // (5000) bornait deja la valeur, mais 5 s de pleine tension a CHAQUE
+  // ouverture de valve n'est pas une duree d'appel d'electrovanne : c'est une
+  // duree de chauffe, dix fois la duree d'une croche a 120 BPM. Voir
+  // SOLENOID_PULSE_MAX_MS dans settings.h pour le dimensionnement.
+  {
+    const uint16_t pulseCeiling = SOLENOID_PULSE_MAX_MS < CONFIG_MAX_SOLENOID_PULSE_MS
+                                    ? (uint16_t)SOLENOID_PULSE_MAX_MS
+                                    : (uint16_t)CONFIG_MAX_SOLENOID_PULSE_MS;
+    r.corrected |= normalizeRangeU16(config.solenoidActivationTimeMs, 0, pulseCeiling);
+  }
   r.corrected |= normalizeRangeU16(config.cc2TimeoutMs, 0, CONFIG_MAX_CC2_TIMEOUT_MS);
   r.corrected |= normalizeRangeU16(config.airAttackMs, CONFIG_MIN_ATTACK_MS, CONFIG_MAX_ATTACK_MS);
   r.corrected |= normalizeRangeU16(config.fanIdleTimeoutMs, 0, CONFIG_MAX_FAN_IDLE_TIMEOUT_MS);
   r.corrected |= normalizeRangeU16(config.pumpStaggerMs, 0, CONFIG_MAX_PUMP_STAGGER_MS);
   r.corrected |= normalizeRangeU16(config.timeUnpower, 0, CONFIG_MAX_UNPOWER_MS);
+  // timeUnpower = 0 reste ACCEPTE, mais plus en silence.
+  // managePower() lit 0 comme "servos alimentes en permanence", et c'est une
+  // demande legitime sur certains montages : un tampon qui doit rester plaque
+  // sur son trou, un palonnier lourd dont la recherche de position a chaque
+  // remise sous tension fait un bruit audible. C'est aussi, et en meme temps,
+  // la DERNIERE protection contre un calage : a 200 ms l'OE retombe et un servo
+  // bloque est desalimente ; a 0 le calage est definitif.
+  // L'interdire ne supprimerait pas le danger, seulement son nom : qui veut
+  // tenir une position mettrait 60000, soit une minute de calage - autant dire
+  // toujours, pour un servo qui chauffe deja. Ce qui reduit reellement le
+  // risque est de borner les COMMANDES (voir SERVO_TEST_MARGIN_DEG) ; ce qui
+  // reste a faire ici est de rendre le choix visible, et a tout client, pas
+  // seulement au navigateur.
+  if (config.timeUnpower == 0) {
+    appendIssue(r.warnings, "timeUnpower=0 holds servo power permanently: "
+                            "a stalled servo is never de-energised");
+  }
 
   // --- Capteurs : bornes physiques + anti division par zero ---
   r.corrected |= normalizeRangeU16(config.sensorTargetMm, 0, CONFIG_MAX_SENSOR_MM);

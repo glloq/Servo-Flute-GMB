@@ -1,8 +1,23 @@
 #include "AutoCalibrator.h"
 
+// INVARIANT ENTRE DEUX CORRECTIFS, verrouille a la compilation.
+// Le range finder explore la course declaree elargie de
+// AUTOCAL_RF_EXPLORE_MARGIN_DEG, et commande ses angles par
+// AirflowController::testAirflowAngle(), qui borne desormais a la course
+// declaree elargie de SERVO_TEST_MARGIN_DEG. Si la seconde marge passait sous
+// la premiere, le controleur tronquerait la consigne SANS LE DIRE et le
+// calibrateur attribuerait le resultat acoustique a l'angle COMMANDE, pas a
+// l'angle APPLIQUE : la plage persistee serait fausse, et fausse en silence.
+// Les deux constantes ont ete introduites par deux correctifs distincts, qui
+// ne pouvaient pas voir cette jonction.
+static_assert(SERVO_TEST_MARGIN_DEG >= AUTOCAL_RF_EXPLORE_MARGIN_DEG,
+              "SERVO_TEST_MARGIN_DEG doit rester >= AUTOCAL_RF_EXPLORE_MARGIN_DEG : "
+              "sinon le bornage de test tronque le balayage du range finder en silence");
+
 #if MIC_ENABLED
 
 #include <math.h>
+#include <new>   // std::nothrow : une allocation ratee doit rendre nullptr, pas lever
 #include "FingerController.h"
 #include "AirflowController.h"
 #include "IAudioSource.h"
@@ -37,7 +52,9 @@ AutoCalibrator::AutoCalibrator(FingerController& fingers, AirflowController& air
     _nominalCount(0), _nominalIndex(0),
     _bestValidFound(false), _bestPercent(-1), _bestScore(-1), _bestCents(0), _bestStability(0), _bestSnr(0), _bestConfPct(0),
     _currentAngle(0), _rfMinAngle(-1), _rfMaxAngle(-1), _rfFoundMin(false), _rfLossCount(0),
-    _rfFailReason(ACAL_FAIL_NONE) {
+    _rfFailReason(ACAL_FAIL_NONE),
+    _rfSweepStart(AUTOCAL_RF_MIN_SAFE_ANGLE), _rfSweepEnd(AUTOCAL_RF_MIN_SAFE_ANGLE),
+    _rfOutOfRangeMs(0), _rfPosStartTime(0) {
   memset(_results, 0, sizeof(_results));
   memset(_nominalCandidates, 0, sizeof(_nominalCandidates));
   memset(_frames, 0, sizeof(_frames));
@@ -80,6 +97,8 @@ void AutoCalibrator::start(AutoCalMode mode) {
   _rfFoundMin = false;
   _rfLossCount = 0;
   _rfFailReason = ACAL_FAIL_NONE;
+  _rfOutOfRangeMs = 0;
+  _rfPosStartTime = _startTime;
   _lastAirError = CAL_AIR_OK;
   _currentAngle = cfg.servoAirflowOff;
   _phase = PH_PREPARE;
@@ -217,6 +236,17 @@ void AutoCalibrator::updateStateMachine(unsigned long now) {
     return;
   }
 
+  // Exposition hors plage : verifiee a CHAQUE tour, pas seulement a la fin d'une
+  // position. Le servo de souffle est alimente en continu pendant la calibration
+  // (la session d'actionneurs court-circuite la coupure d'alimentation apres
+  // inactivite) : tant qu'il est commande au-dela de la course declaree, il peut
+  // etre en train de pousser contre une butee, sans que rien ne le signale. Un
+  // depassement du budget arrete le balayage plutot que de le poursuivre.
+  if (_phase == PH_RF_SWEEP && rangeExposureBudgetSpent(now)) {
+    failCurrentNote(ACAL_FAIL_RANGE_EXPOSURE);
+    return;
+  }
+
   switch (_phase) {
     case PH_PREPARE:
       prepareNote(now);
@@ -341,8 +371,15 @@ void AutoCalibrator::runNoise(unsigned long now) {
     // Open the air path, then start the appropriate sweep.
     _airflow.testSolenoid(true);
     if (_mode == ACAL_MODE_RANGE_FIND) {
+      if (!computeRangeSweepWindow()) {
+        // La plage declaree ne laisse aucune fenetre a explorer a l'interieur des
+        // bornes absolues : il n'y a rien a mesurer, et surtout rien a inventer.
+        finalizeRangeFinderFailure(ACAL_FAIL_RANGE_NOT_BOUNDED);
+        return;
+      }
       _phase = PH_RF_SWEEP;
-      beginAnglePosition(AUTOCAL_RF_MIN_SAFE_ANGLE, now);
+      _rfOutOfRangeMs = 0;
+      beginAnglePosition(_rfSweepStart, now);
     } else {
       _phase = PH_COARSE;
       beginPosition(0, now);
@@ -367,6 +404,45 @@ void AutoCalibrator::beginPosition(int percent, unsigned long now) {
   _stateTimer = now;
 }
 
+// Derive la fenetre de balayage de ce que la CONFIGURATION declare, pas d'une
+// constante fixe.
+//
+// La fenetre etait AUTOCAL_RF_MIN_SAFE_ANGLE..AUTOCAL_RF_MAX_SAFE_ANGLE, soit
+// 30..150 : un #define, aucune relation avec la mecanique reellement installee.
+// Sur une plage configuree 60..100, cela faisait 27 positions sur 41 hors plage,
+// dont une seconde de maintien au-dela de servoAirflowMax par tranche de trois
+// positions - le servo poussant contre une butee eventuelle, alimentation tenue
+// par la session d'actionneurs. Le range finder garde sa raison d'etre (trouver
+// une plage qu'on ne connait pas PRECISEMENT), mais il l'explore autour de ce que
+// l'installateur a declare, pas au hasard : servoAirflowMin/Max elargis de
+// AUTOCAL_RF_EXPLORE_MARGIN_DEG, le tout reste rogne par les bornes absolues.
+// Une plage franchement fausse se corrige alors en plusieurs passes (chaque passe
+// reussie elargit la plage declaree d'au plus une marge), chacune bornee.
+bool AutoCalibrator::computeRangeSweepWindow() {
+  int lo = (int)cfg.servoAirflowMin - AUTOCAL_RF_EXPLORE_MARGIN_DEG;
+  int hi = (int)cfg.servoAirflowMax + AUTOCAL_RF_EXPLORE_MARGIN_DEG;
+  if (lo < AUTOCAL_RF_MIN_SAFE_ANGLE) lo = AUTOCAL_RF_MIN_SAFE_ANGLE;
+  if (hi > AUTOCAL_RF_MAX_SAFE_ANGLE) hi = AUTOCAL_RF_MAX_SAFE_ANGLE;
+  _rfSweepStart = lo;
+  _rfSweepEnd = hi;
+  return hi > lo;
+}
+
+bool AutoCalibrator::angleOutsideConfiguredRange(int angle) const {
+  return angle < (int)cfg.servoAirflowMin || angle > (int)cfg.servoAirflowMax;
+}
+
+// La fenetre borne les ANGLES ; ce budget borne la DUREE. Une position dont la
+// source audio se fige peut tenir AUTOCAL_AUDIO_FRAME_TIMEOUT_MS, donc le nombre
+// de pas hors plage ne suffit pas a majorer le temps ou le servo est maintenu au
+// dela de la course declaree. Le compte inclut la position en cours, sinon un
+// blocage sur un seul pas ne serait vu qu'a sa fin.
+bool AutoCalibrator::rangeExposureBudgetSpent(unsigned long now) const {
+  unsigned long spent = _rfOutOfRangeMs;
+  if (angleOutsideConfiguredRange(_stepAngle)) spent += (now - _rfPosStartTime);
+  return spent >= (unsigned long)AUTOCAL_RF_OUT_OF_RANGE_BUDGET_MS;
+}
+
 void AutoCalibrator::beginAnglePosition(int angle, unsigned long now) {
   if (angle < 0) angle = 0;
   if (angle > 180) angle = 180;
@@ -375,6 +451,7 @@ void AutoCalibrator::beginAnglePosition(int angle, unsigned long now) {
   _step = ST_SET;
   _frameCount = 0;
   _stateTimer = now;
+  _rfPosStartTime = now;
 }
 
 void AutoCalibrator::sampleFrame(AudioFrame& f) {
@@ -639,13 +716,18 @@ void AutoCalibrator::onPositionEvaluated(unsigned long now) {
     }
 
     case PH_RF_SWEEP: {
+      // Comptabiliser le temps passe a la position qui vient d'etre evaluee, si
+      // elle etait hors de la plage declaree.
+      if (angleOutsideConfiguredRange(_stepAngle)) {
+        _rfOutOfRangeMs += (now - _rfPosStartTime);
+      }
       // Range finder: multi-frame, noise-thresholded, exact-note validation at
       // each angle; first valid = min, confirmed loss over several positions = max.
       if (!_rfFoundMin) {
         if (valid && !over) {
           _rfFoundMin = true;
           _rfMinAngle = _stepAngle - AUTOCAL_RF_MARGIN_DEG;
-          if (_rfMinAngle < AUTOCAL_RF_MIN_SAFE_ANGLE) _rfMinAngle = AUTOCAL_RF_MIN_SAFE_ANGLE;
+          if (_rfMinAngle < _rfSweepStart) _rfMinAngle = _rfSweepStart;
           _rfLossCount = 0;
         }
       } else {
@@ -656,7 +738,7 @@ void AutoCalibrator::onPositionEvaluated(unsigned long now) {
           if (over || _rfLossCount >= AUTOCAL_LOSS_CONFIRM_STEPS) {
             int lastValid = _stepAngle - _rfLossCount * AUTOCAL_RF_STEP_DEG;
             _rfMaxAngle = lastValid + AUTOCAL_RF_MARGIN_DEG;
-            if (_rfMaxAngle > AUTOCAL_RF_MAX_SAFE_ANGLE) _rfMaxAngle = AUTOCAL_RF_MAX_SAFE_ANGLE;
+            if (_rfMaxAngle > _rfSweepEnd) _rfMaxAngle = _rfSweepEnd;
             safeHardware();
             _state = ACAL_RF_COMPLETE;
             return;
@@ -664,10 +746,18 @@ void AutoCalibrator::onPositionEvaluated(unsigned long now) {
         }
       }
       int next = _stepAngle + AUTOCAL_RF_STEP_DEG;
-      if (next > AUTOCAL_RF_MAX_SAFE_ANGLE) {
-        if (_rfFoundMin && _rfMaxAngle < 0) _rfMaxAngle = AUTOCAL_RF_MAX_SAFE_ANGLE;
-        safeHardware();
-        _state = ACAL_RF_COMPLETE;
+      if (next > _rfSweepEnd) {
+        // Bout de la fenetre autorisee sans perte de son confirmee : la limite
+        // HAUTE n'a pas ete mesuree. Elle etait alors inventee - le bord de la
+        // fenetre etait ecrit dans servoAirflowMax puis sauve, et chaque note
+        // forte du jeu normal commandait ensuite cet angle. C'est exactement la
+        // signature d'un servo arrive en butee avant le bout de la fenetre : il
+        // ne bouge plus, donc le son ne change plus, donc aucune perte n'est
+        // detectee. Le seul capteur disponible ici est le microphone : il n'y a
+        // pas de retour de position sur ces servos, et un son qui ne change plus
+        // ne prouve rien. On ne mesure pas, donc on ne retient rien.
+        finalizeRangeFinderFailure(_rfFoundMin ? ACAL_FAIL_RANGE_NOT_BOUNDED
+                                               : ACAL_FAIL_NO_SOUND);
         return;
       }
       beginAnglePosition(next, now);
@@ -807,6 +897,9 @@ const char* AutoCalibrator::failureReasonName(uint8_t reason) {
     case ACAL_FAIL_GLOBAL_TIMEOUT:    return "global_timeout";
     case ACAL_FAIL_AIR_SUPPLY:        return "air_supply";
     case ACAL_FAIL_STORAGE:           return "storage";
+    case ACAL_FAIL_RANGE_NOT_BOUNDED: return "range_not_bounded";
+    case ACAL_FAIL_RANGE_EXPOSURE:    return "range_exposure";
+    case ACAL_FAIL_RANGE_INVALID:     return "range_invalid";
   }
   return "unknown";
 }
@@ -880,6 +973,38 @@ RangeApplyResult AutoCalibrator::applyRangeResults() {
   // Refuse an invalid / failed range-finder result: change nothing.
   if (_rfMinAngle < 0 || _rfMaxAngle < 0 || _rfMaxAngle < _rfMinAngle) {
     if (DEBUG) Serial.println("DEBUG: RangeFinder - resultat invalide, rien a appliquer");
+    return out;
+  }
+
+  // Les angles decouverts passent par la VALIDATION DE CONFIGURATION avant d'etre
+  // ecrits. Ils ne la voyaient pas : le seul controle etait min >= 0, max >= 0 et
+  // max >= min, alors que ces deux champs commandent directement le servo de
+  // souffle a chaque note. Un couple qui ne survit pas a la validation (bornes
+  // servo, min strictement inferieur a max) ou que la normalisation DEPLACE n'est
+  // pas ce qui a ete mesure : dans les deux cas on refuse plutot que d'ecrire une
+  // valeur que le prochain demarrage rejetterait, ou une valeur differente de la
+  // mesure. La validation porte sur une COPIE : la configuration active n'est
+  // modifiee qu'une fois le resultat accepte, et seulement sur ces deux champs.
+  RuntimeConfig* candidate = new (std::nothrow) RuntimeConfig();
+  if (candidate == nullptr) {
+    if (DEBUG) Serial.println("ERREUR: RangeFinder - memoire insuffisante pour valider, rien applique");
+    _rfFailReason = ACAL_FAIL_RANGE_INVALID;
+    return out;
+  }
+  *candidate = cfg;
+  candidate->servoAirflowMin = (uint16_t)_rfMinAngle;
+  candidate->servoAirflowMax = (uint16_t)_rfMaxAngle;
+  ConfigValidationResult validation = validateAndNormalizeConfig(*candidate);
+  bool anglesSurvived = validation.valid &&
+                        candidate->servoAirflowMin == (uint16_t)_rfMinAngle &&
+                        candidate->servoAirflowMax == (uint16_t)_rfMaxAngle;
+  delete candidate;
+  if (!anglesSurvived) {
+    if (DEBUG) {
+      Serial.print("ERREUR: RangeFinder - angles refuses par la validation: ");
+      Serial.println(validation.error);
+    }
+    _rfFailReason = ACAL_FAIL_RANGE_INVALID;
     return out;
   }
 

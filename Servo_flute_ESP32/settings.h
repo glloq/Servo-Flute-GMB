@@ -327,6 +327,22 @@ Set MIC_ENABLED to false if no mic is connected.
 #define AUTOCAL_RF_MIN_SAFE_ANGLE 30    // Lowest airflow servo angle the sweep visits
 #define AUTOCAL_RF_MAX_SAFE_ANGLE 150   // Highest airflow servo angle the sweep visits
 #define AUTOCAL_RF_STEP_DEG       3     // Angle step between evaluated positions
+// Le balayage du range finder ne part PAS d'une fenetre arbitraire : il explore
+// ce que la configuration DECLARE (servoAirflowMin..servoAirflowMax), elargi de
+// cette marge. Pousser un servo des dizaines de degres au-dela de la course
+// declaree, c'est le pousser contre une butee inconnue, alimentation maintenue.
+#define AUTOCAL_RF_EXPLORE_MARGIN_DEG 15  // Marge d'exploration hors plage configuree
+// Budget de temps CUMULE que le balayage peut passer hors de la plage configuree.
+// La fenetre borne les ANGLES ; ce budget borne la DUREE, qui n'en decoule pas :
+// une position dont la source audio ralentit tient jusqu'a
+// AUTOCAL_AUDIO_FRAME_TIMEOUT_MS, servo maintenu au-dela de la course declaree.
+// Valeur derivee, pas choisie : deux fois le cout NOMINAL de toutes les positions
+// hors plage que la fenetre peut contenir (2 * marge / pas, de chaque cote, a
+// settle + frames * periode chacune). Un balayage sain reste loin du budget ; un
+// balayage qui traine hors plage est arrete.
+#define AUTOCAL_RF_OUT_OF_RANGE_BUDGET_MS \
+  (2UL * (2UL * AUTOCAL_RF_EXPLORE_MARGIN_DEG / AUTOCAL_RF_STEP_DEG) * \
+   (AUTOCAL_AIR_SETTLE_MS + AUTOCAL_AUDIO_FRAMES_PER_STEP * AUTOCAL_FRAME_SAMPLE_MS))
 
 /*******************************************************************************
 ---------------------------   TIMING SETTINGS (ms)    ------------------------
@@ -338,6 +354,37 @@ Set MIC_ENABLED to false if no mic is connected.
 #define MIN_NOTE_INTERVAL_FOR_VALVE_CLOSE_MS  50
 
 #define MIN_NOTE_DURATION_MS    10
+
+// PLAFOND DE DUREE D'UNE NOTE TENUE (NoteSequencer::handlePlaying).
+// Il n'existait AUCUNE limite de duree de note dans le firmware. Scenario
+// reproduit : MIDI DIN, source qui n'emet pas d'Active Sensing (beaucoup de
+// claviers et de stations d'entree de gamme n'en emettent jamais), Note On
+// recu, cable debranche. SerialMidiHandler ne detecte rien - sa detection de
+// perte de lien est conditionnee a la reception d'un 0xFE - donc la valve
+// restait ouverte, la bobine a son PWM de maintien et la pompe en regime
+// pendant des heures, sans surveillance. cfg.timeUnpower ne pouvait pas aider :
+// il ne coupe l'OE que lorsque le sequenceur est DEJA au repos, donc jamais
+// pendant une note tenue.
+//
+// 30 s est repris des deux plafonds que le projet s'est DEJA donnes :
+//  - TEST_SESSION_MAX_MS (30 s) borne deja une session de test manuelle, le
+//    seul autre chemin ou des actionneurs restent tenus par un ordre dont
+//    l'arret peut ne jamais arriver. Avec la meme valeur ici, plus aucun
+//    chemin ne tient les actionneurs au-dela de 30 s sans ordre frais ;
+//  - AcousticTimingCfg::kNoteMaxDurationMs (60 s) borne le suivi de
+//    chronometrie. Rester STRICTEMENT en dessous garantit que la chaine
+//    d'actionneurs relache TOUJOURS avant que l'observateur n'abandonne :
+//    celui-ci voit un vrai noteReleased() au lieu d'atteindre son plafond.
+//
+// Ce que 30 s laisse passer : tout ce qui se note. Une ronde a 40 BPM dure 6 s,
+// une breve avec point d'orgue une vingtaine de secondes, et un souffleur
+// humain tient 20-25 s au mieux sur une expiration. Ce que 30 s REFUSE : le
+// bourdon (pedale, drone, note de reglage) tenu volontairement au-dela ; il
+// faut alors le re-attaquer par un nouveau Note On.
+//
+// Volontairement NON configurable : un plafond de surete qu'une page web peut
+// mettre a 0 ou a 65535 n'est plus un plafond.
+#define NOTE_HOLD_CEILING_MS 30000
 
 /*******************************************************************************
 ---------------------------   EVENT QUEUE SETTINGS    ------------------------
@@ -360,6 +407,36 @@ Set MIC_ENABLED to false if no mic is connected.
 #define SOLENOID_PWM_ACTIVATION 255
 #define SOLENOID_PWM_HOLDING    128
 #define SOLENOID_ACTIVATION_TIME_MS 50
+
+// PLAFONDS DE VALIDATION DE LA BOBINE (appliques par ConfigValidator). Les
+// trois valeurs ci-dessus ne sont que des valeurs PAR DEFAUT : POST /api/config
+// accepte et persiste sol_act / sol_hold / sol_time, meme si aucun champ de
+// l'interface ne les expose. Ce sont ces deux plafonds qui disent ce que le
+// reseau a le droit d'y ecrire.
+//
+// Ce que SOLENOID_HOLD_MAX_PERCENT empeche : la bascule vers le PWM de maintien
+// est le SEUL mecanisme du firmware qui empeche la bobine de chauffer, et
+// AirflowController::update() l'ecrit sans regarder sa valeur. Les deux champs
+// etant bornes chacun de son cote a 0..255, sol_hold = 255 etait accepte : la
+// retombee s'executait et ecrivait 255, soit un no-op. La bobine restait a
+// pleine tension toute la duree d'une note tenue, des ~13 s d'un balayage de
+// calibration, des 30 s d'une session de test.
+// 50 % n'est pas une mesure du cuivre : c'est le rapport que ce projet EXPEDIE
+// et fait tourner (SOLENOID_PWM_HOLDING 128 sur SOLENOID_PWM_ACTIVATION 255).
+// Le plafond est arrondi au superieur, donc la configuration par defaut reste
+// exactement a la limite et n'est jamais corrigee. Une bobine mesuree au banc
+// comme exigeant davantage se traite en relevant CETTE constante, pas en
+// rouvrant le champ.
+#define SOLENOID_HOLD_MAX_PERCENT 50
+
+// Duree maximale de la phase de PLEINE puissance, quelle que soit la valeur
+// postee. CONFIG_MAX_SOLENOID_PULSE_MS (5000) laissait passer 5 s de pleine
+// tension a CHAQUE ouverture de valve : ce n'est plus une duree d'appel, c'est
+// une duree de chauffe - dix fois la duree d'une croche a 120 BPM, donc une
+// note sur deux jouee bobine a fond. 500 ms garde dix fois la marge du defaut
+// expedie (50 ms), ce qui couvre l'appel d'une grosse electrovanne lente, et
+// borne la dissipation a une demi-seconde par ouverture.
+#define SOLENOID_PULSE_MAX_MS 500
 
 /*******************************************************************************
 ---------------------------   AIR FLOW SERVO          ------------------------
@@ -458,6 +535,16 @@ Modes modulaires de gestion d'air. L'interface s'adapte au mode choisi.
 #define TOF_RANGE_TIMEOUT_MS        60     // Abandon d'une mesure single-shot au-dela de ce delai
 #define TOF_STALE_MS                500    // Sans mesure valide depuis ce delai => pompe coupee (securite)
 #define TOF_MAX_CONSEC_ERRORS       10     // Erreurs consecutives avant d'invalider le capteur
+// --- Securite pompe INDEPENDANTE du type de capteur (audit materiel) ---
+// Ces trois familles (ToF / Hall / fin de course) partagent desormais les memes
+// gardes : sans mesure acceptee et fraiche, la pompe est coupee.
+#define RESERVOIR_STALE_MS          1000   // Hall/fin de course: sans lecture acceptee depuis ce delai => pompe coupee
+#define HALL_RAW_STUCK_LOW          32     // ADC 12 bits colle au rail bas (fil coupe / masse) : pas une mesure
+#define HALL_RAW_STUCK_HIGH         4063   // ADC 12 bits colle au rail haut (court-circuit VCC) : pas une mesure
+#define HALL_PROBE_SAMPLES          4      // Lectures de sondage au demarrage avant de conclure
+#define PUMP_MAX_RUN_MS             60000  // Marche continue max SANS progression mesuree => arret verrouille
+#define PUMP_PROGRESS_MIN_PERCENT   5      // Progression (%) qui prouve que la pompe agit (> bruit de mesure)
+#define PUMP_TEST_MAX_MS            30000  // Duree max d'un test manuel mono-pompe (arret si personne ne l'arrete)
 
 /*******************************************************************************
 ---------------------------   POWER MANAGEMENT        ------------------------
@@ -544,6 +631,41 @@ const DefaultNoteConfig DEFAULT_NOTES[DEFAULT_NUM_NOTES] = {
 const uint16_t SERVO_PULSE_MIN = 550;
 const uint16_t SERVO_PULSE_MAX = 2450;
 const uint16_t SERVO_FREQUENCY = 50;
+// Au-dela de cette valeur, l'argument de servoAngleToPWM() ne peut plus etre un
+// angle issu d'un calcul d'angle (deux fois la course mecanique) : c'est un
+// negatif enroule par une conversion non signee, ou une valeur corrompue. Un tel
+// argument NE DOIT PAS etre sature vers la course maximale. Voir ServoMath.h.
+#define SERVO_ANGLE_SANE_LIMIT 360
+
+// MARGE D'EXPLORATION AUTOUR DE LA COURSE MECANIQUE DECLAREE (degres).
+//
+// SERVO_MIN_ANGLE / SERVO_MAX_ANGLE decrivent la course ELECTRIQUE du servo,
+// pas celle du mecanisme qu'il pousse. Les trois commandes de reglage
+// (test_finger, test_air, test_angle) ne bornaient qu'a cette course-la : un
+// curseur glisse jusqu'au bout commandait 180 deg a un doigt dont la course
+// reelle fait 30 deg. Le servo poussait alors contre sa butee et y restait, a
+// son courant de calage. C'est le mode de destruction le plus courant de ce
+// genre de montage.
+//
+// La course mecanique reellement declaree est deja dans la configuration
+// (closedAngle +- fingerAngleOpen ; servoAirflowOff..Max ; servoAngleOff..Max).
+// Y borner EXACTEMENT rendrait l'ecran de reglage inutilisable : on regle
+// justement closedAngle pour TROUVER la bonne position, donc pour sortir de
+// celle qui est enregistree. Cette marge est le compromis : on explore au-dela
+// de ce qui est declare, mais d'une quantite bornee et connue.
+//
+// 20 deg, parce que :
+//  - c'est plus d'une dent de cannelure d'un palonnier 25 dents (14,4 deg), le
+//    plus gros quantum mecanique du montage : un palonnier remonte d'un cran de
+//    travers reste atteignable sans repasser par un enregistrement ;
+//  - c'est les deux tiers d'ANGLE_OPEN (30 deg), la course de travail d'un
+//    doigt : on peut appuyer nettement plus fort ou lever nettement plus haut
+//    que la normale, jamais d'une course de trou entiere en plus.
+//
+// Ce qu'il en coute : une geometrie reelle eloignee de plus de 20 deg de la
+// configuration enregistree se rejoint en deux ou trois enregistrements
+// successifs, au lieu d'un seul glissement de curseur.
+#define SERVO_TEST_MARGIN_DEG 20
 
 /*******************************************************************************
 -------------------------     MIDI SETTINGS           ------------------------
@@ -645,6 +767,20 @@ const uint16_t SERVO_FREQUENCY = 50;
 #define WS_MAX_CLIENTS 4              // Max clients WebSocket simultanes
 #define WS_CLEANUP_INTERVAL_MS 1000   // Intervalle nettoyage clients deconnectes
 #define WS_STATUS_INTERVAL_MS 500     // Intervalle envoi status aux clients
+
+// Limitation de debit des commandes WebSocket qui commandent un MOUVEMENT
+// SUPPLEMENTAIRE. Les CC MIDI avaient deja la leur (CC_RATE_LIMIT_PER_SECOND) ;
+// le WebSocket n'en avait aucune, et n'importe quel client pouvait saturer la
+// file de commandes et le bus I2C aussi vite qu'il ecrit.
+// 40/s est choisi au-dessus de ce que l'interface produit reellement : ses
+// curseurs de reglage sont temporises a 30 ms, soit 33 evenements par seconde
+// au plus pendant un glissement, un seul curseur pouvant etre glisse a la fois.
+// A NE PAS CONFONDRE avec une protection de la bobine : a 40/s un flot de
+// test_sol passerait encore. Ce qui protege la bobine est la garde de
+// re-impulsion d'AirflowController::testSolenoid() et le plafond ABSOLU de
+// session de test (TEST_SESSION_MAX_MS), pas ce limiteur.
+#define WS_ACTUATOR_RATE_LIMIT_PER_SECOND 40
+#define WS_ACTUATOR_RATE_WINDOW_MS 1000
 
 // Hand-off AsyncTCP -> loop() : duree maximale d'attente d'un callback web pour
 // qu'une operation (commit de configuration, LittleFS, calibration) soit

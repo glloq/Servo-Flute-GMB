@@ -20,9 +20,14 @@
  * firmware timeout. On stop / timeout / error the hardware is returned to a safe
  * state.
  *
- * Range-finder mode sweeps the airflow servo across a bounded safe angle window
- * (AUTOCAL_RF_MIN_SAFE_ANGLE..AUTOCAL_RF_MAX_SAFE_ANGLE, never a blind 0-180 deg
- * sweep) on a middle note to discover the usable servo travel.
+ * Range-finder mode sweeps the airflow servo on a middle note to discover the
+ * usable servo travel. The sweep window is derived from what the configuration
+ * DECLARES - servoAirflowMin/Max widened by AUTOCAL_RF_EXPLORE_MARGIN_DEG - and
+ * then clipped to the absolute safe window AUTOCAL_RF_MIN_SAFE_ANGLE..
+ * AUTOCAL_RF_MAX_SAFE_ANGLE. It is never a blind 0-180 deg sweep, and never a
+ * fixed window that ignores the mechanism actually installed. Reaching the end
+ * of that window without ever seeing the note stop is a FAILURE (the upper limit
+ * was not measured), not a result.
  *
  * The calibrator depends on IAudioSource (not the concrete I2S driver) so it can be
  * unit-tested with simulated audio.
@@ -69,7 +74,19 @@ enum AutoCalFailureReason {
   ACAL_FAIL_NOTE_TIMEOUT,      // per-note timeout elapsed
   ACAL_FAIL_GLOBAL_TIMEOUT,    // global timeout elapsed
   ACAL_FAIL_AIR_SUPPLY,        // air supply not ready / lost
-  ACAL_FAIL_STORAGE            // reserved: persistence failure
+  ACAL_FAIL_STORAGE,           // reserved: persistence failure
+  // Range finder only: the sweep reached the end of the window it is allowed to
+  // explore without the note ever stopping. The upper limit was therefore NOT
+  // measured. It used to be invented (the window edge was written to
+  // servoAirflowMax), which is exactly what a servo stuck against a mechanical
+  // stop looks like: the sound no longer changes, so no loss is ever detected.
+  ACAL_FAIL_RANGE_NOT_BOUNDED,
+  // Range finder only: the cumulative time spent commanding angles OUTSIDE the
+  // configured airflow range exceeded AUTOCAL_RF_OUT_OF_RANGE_BUDGET_MS.
+  ACAL_FAIL_RANGE_EXPOSURE,
+  // Range finder only: the discovered angles did not survive configuration
+  // validation, so nothing was written.
+  ACAL_FAIL_RANGE_INVALID
 };
 
 // Per-note calibration result (also broadcast to the web UI and persisted).
@@ -153,6 +170,10 @@ public:
   // Range finder results
   int getRangeFinderMin() const { return _rfMinAngle; }
   int getRangeFinderMax() const { return _rfMaxAngle; }
+  // Angle window the current run is allowed to visit (derived from the configured
+  // airflow range, widened and clipped). Exposed so the bound can be asserted.
+  int getRangeSweepStart() const { return _rfSweepStart; }
+  int getRangeSweepEnd() const { return _rfSweepEnd; }
   // Writes the discovered angles into cfg and persists; on a storage failure the
   // previous angles are restored in RAM and applied/saved report false.
   RangeApplyResult applyRangeResults();
@@ -274,6 +295,14 @@ private:
   bool _rfFoundMin;
   int _rfLossCount;
   uint8_t _rfFailReason;   // AutoCalFailureReason for a failed range-finder run
+  // Sweep window actually used by the current run: the configured airflow range
+  // widened by AUTOCAL_RF_EXPLORE_MARGIN_DEG, clipped to the absolute safe window.
+  int _rfSweepStart;
+  int _rfSweepEnd;
+  // Exposure accounting: cumulative time already spent at angles outside the
+  // configured airflow range, and the start time of the position being held.
+  unsigned long _rfOutOfRangeMs;
+  unsigned long _rfPosStartTime;
 
   AutoCalNoteResult _results[MAX_NOTES];
 
@@ -294,6 +323,14 @@ private:
   // Terminal state for a failed range-finder run: safe hardware, invalid angles,
   // ACAL_RF_COMPLETE, never touches finalizeNote()/advanceNote().
   void finalizeRangeFinderFailure(uint8_t reason);
+  // Derives the sweep window from the configured airflow range; false when the
+  // configuration leaves no explorable window inside the absolute safe bounds.
+  bool computeRangeSweepWindow();
+  // True when `angle` is outside the airflow range the configuration declares,
+  // i.e. in the part of the travel whose mechanical end is not known.
+  bool angleOutsideConfiguredRange(int angle) const;
+  // Aborts the sweep once the cumulative out-of-range exposure budget is spent.
+  bool rangeExposureBudgetSpent(unsigned long now) const;
   // True (and records _lastAirError) when the shared air source has dropped out.
   bool airSupplyLost();
   float currentToleranceCents() const;

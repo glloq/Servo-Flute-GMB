@@ -142,8 +142,8 @@ note:
   9 global-timeout, 10 air-supply-not-ready, …) and a textual `reasonName`
   (e.g. `"audio_stale"`).
 - On a global-timeout abort the server sends `{"t":"acal_error","msg":"..."}`.
-- The audio monitor stream (`{"t":"audio",...}`) additionally carries `conf`
-  (0–100) and `valid`.
+- The audio monitor stream (`{"t":"audio",...}`) carries much more than the
+  calibration fields — see **Acoustic analysis stream** below.
 
 **Ownership / concurrency.** A calibration is owned by the WS client that
 started it. A second `auto_cal` start returns `{"t":"acal_error","msg":
@@ -166,6 +166,100 @@ the microphone without rebooting and replies `{"t":"mic_reset","ok":...,
 Each `notes[]` entry in `GET/POST /api/config` includes `anm` (nominal airflow
 percent) next to `amn`/`amx`; it is derived from min/max when absent
 (backward-compatible migration) and validated as `0 ≤ amn ≤ anm ≤ amx ≤ 100`.
+
+## Acoustic analysis stream and diagnostics
+
+The microphone chain publishes through **two deliberately asymmetric channels**.
+The split is not an oversight: this firmware forbids a permanent audio stream
+over WebSocket on an ESP32-WROOM. Sending the full timing block and the named
+`missing` flags on the periodic push would add ~403 bytes per message — a 2.6×
+larger message and about +16 kB/s towards four clients — so they go only to the
+on-demand diagnostics. An 11-byte bitmask carries the essential part live.
+
+### `{"t":"audio", ...}` — periodic push (~100 ms, short keys)
+
+Fields are **omitted when not measured**; an absent key means "unknown", never
+zero.
+
+| Key | Meaning | Emitted when |
+|---|---|---|
+| `rms`, `rms_dbfs`, `peak_dbfs` | frame level (linear, and dBFS — *digital* full scale, never dB SPL) | always |
+| `clip`, `clip_ratio` | clipping, measured on the **raw** block before filtering | always |
+| `snd` | sound above the monitoring gate | always |
+| `hz`, `midi`, `cents`, `conf`, `valid` | pitch, nearest note, deviation, YIN confidence, and the **pitch detector's** verdict | a pitch was found |
+| `stab` | pitch stability 0..1 | **only once measured** — see the trap below |
+| `snr`, `snr_fb` | signal-to-noise against the machine-state profile, and whether a fallback profile was used | a noise profile exists |
+| `centroid`, `flatness` | spectral shape | the FFT ran on *this* frame |
+| `hnr`, `hnr_sp` | harmonic-to-noise ratio **and the scale it was measured on** | a spectrum is available |
+| `h2`, `h3` | harmonic ratios | idem |
+| `overblow` | octave-above pitch detected | when set |
+| `st` | acoustic state name | the frame was classified |
+| `miss` | bitmask of what the classification lacked | non-zero only |
+| `q`, `qw` | quality score **and the weight it was computed on** | the score is valid |
+| `br`, `brw` | breathiness **and its weight** | the value is valid |
+| `squeak` | a *confirmed* squeak (candidates are not announced) | when confirmed |
+
+`miss` bits: 0 pitch, 1 SNR, 2 spectrum, 3 expected note, 4 stability,
+5 squeak history, 6 SNR fallback.
+
+### `GET /api/diagnostics` → `audio` — full contract (long names)
+
+Everything above, named rather than packed: `acoustic_state`,
+`acoustic_classified`, `quality_score`, `quality_weight_used`, `quality_valid`,
+`breathiness`, `breathiness_weight_used`, `breathiness_valid`, `hnr_valid`,
+`hnr_db`, `hnr_is_spectral`, `snr_valid`, `snr_db`, `snr_fallback`, plus the
+sub-objects `missing` (`pitch`, `snr`, `spectrum`, `expected_note`, `stability`,
+`squeak_history`, `snr_fallback`) and `timing`.
+
+`timing` carries `has_last`, `outcome`, `baseline_valid`, the two diagnostic
+counters `rejected_frames` / `rejected_events`, and five measures —
+`command_to_sound`, `air_to_sound`, `attack`, `pitch_stabilization`, `release` —
+each as `{"valid":bool,"ms":float}`.
+
+### Four traps a client must not walk into
+
+These are not style notes. Each one has already produced a wrong verdict in this
+project, and each was found by an audit rather than by the tests.
+
+1. **Never average two scores with different `weightUsed`.** The score is a
+   weighted mean renormalised over the criteria *actually* measured, and the
+   harmonic component only exists on one frame in `MIC_SPECTRAL_DECIMATION`. In
+   the nominal configuration `quality_weight_used` alternates between **0.90**
+   (FFT frame) and **0.75** (decimated frame); `breathiness_weight_used` swings
+   further, 1.00 to 0.30. A naive one-second mean would blend ~15 complete
+   scores with ~47 partial ones and produce a number that means nothing. Group
+   by the weight, or plot only the complete frames. (0.75 / 0.60 is the same
+   alternation with no noise profile captured — a degraded configuration the
+   diagnostics flags with a warning of its own.)
+2. **Never read the HNR without its scale flag.** Two incomparable scales can
+   fill the same field: a spectral measurement over the full analysis band, and
+   a four-line Goertzel approximation used as a fallback. They differ by more
+   than 30 dB on the *same* note and rank notes the wrong way round. `hnr_sp` /
+   `hnr_is_spectral` says which one filled it. Comparing the raw number to a
+   threshold makes the verdict flicker at 15.6 Hz.
+3. **`valid` is the pitch detector's flag, not the stability flag.** They sit
+   next to each other and mean different things. `stab` is emitted *only* when
+   stability has actually been measured, which needs a full pitch history —
+   about 112 ms. Zero would otherwise mean "not measured yet" just as much as
+   "wildly unstable", and a consumer would mark the first 100 ms of every note
+   as a defect.
+4. **A timing measure without its `valid` is meaningless.** An `attack` of
+   `{"ms":0}` read without the flag says "instantaneous attack". Every duration
+   goes through a single emitter that cannot produce a bare `ms`.
+
+`acoustic_state` takes the values of the acoustic-state enumeration — `silence`,
+`good`, `weak`, `breathy`, `unstable`, `wrong_note`, `overblow`, `squeak`,
+`clipping` — **plus `unclassified`**, which is not a state but the absence of
+one, published when nothing could be classified. `acoustic_classified` carries
+the same information as a boolean.
+
+### Validation level
+
+Everything this section describes is exercised on **synthetic PCM**, now passed
+through the production filter chain. No INMP441 and no flute have ever been
+connected to this project. See
+[`Servo_flute_ESP32/docs/AUDIO_ARCHITECTURE.md`](../Servo_flute_ESP32/docs/AUDIO_ARCHITECTURE.md)
+for the per-phase validation levels and for what the audit found still wrong.
 
 ## 2026 runtime safety and validation update
 
@@ -260,9 +354,17 @@ shows a sign-in overlay when a 401 comes back.
 ```
 {"t":"noise_cal","mode":"start"}   -> {"t":"noise","ok":true,"capturing":"pump_high"}
 {"t":"noise_cal","mode":"stop"}    -> {"t":"noise","ok":true,"profile":"pump_high",
-                                       "frames":48,"rms_dbfs":-52.3,"flatness":0.61}
+                                       "frames":48,"rms_dbfs":-52.3,"flatness":0.85}
 {"t":"noise_cal","mode":"reset"}   -> {"t":"noise","ok":true}
 ```
+
+`flatness` is a *measured* value and the figure above is only an order of
+magnitude: a broadband machinery profile reads around 0.85, a profile dominated
+by one mechanical line far lower. It was ~0.37 in an earlier firmware — spectral
+flatness was then computed over the whole spectrum of a signal whose filter
+chain empties 56 % of the bins, so it measured the filter as much as the signal.
+It is now measured inside the analysis band, and **a stored profile is only
+comparable to another profile captured by the same firmware**.
 
 The flute's machinery is part of the noise and its level depends on the
 operating point, so the SNR is measured against a profile of the **current**

@@ -33,6 +33,7 @@ InstrumentManager::InstrumentManager()
     _cc2PendingValue(0),
     _powerOnRequested(false),
     _resetControllersRequested(false),
+    _panicCount(0),
     _prevSequencerState(STATE_IDLE),
     _prevNoteSounding(false),
     _timingObserver(nullptr),
@@ -494,7 +495,10 @@ void InstrumentManager::handleControlChange(byte ccNumber, byte ccValue) {
       case 125:                              // Omni On
       case MIDI_CC_MONO_ON:                  // 126
       case 127:                              // Poly On
-        allSoundOff();
+        // Panique a part entiere : ces CC sont les commandes d'arret de la
+        // norme MIDI et peuvent arriver par N'IMPORTE QUEL transport (BLE,
+        // rtpMIDI, DIN, fichier), dont aucun ne traverse le moindre code web.
+        executePanic();
         break;
       case MIDI_CC_RESET_ALL_CONTROLLERS:    // 121
         resetAllControllers();
@@ -655,8 +659,13 @@ void InstrumentManager::requestPanic() {
 
 void InstrumentManager::processCommands() {
   // Le panic prime sur tout : il a deja vide la file cote CommandQueue.
+  // CONSOMMATION du panic : c'est ici qu'il est reellement execute, donc ici
+  // qu'il se compte. requestPanic() peut etre appelee dix fois depuis une tache
+  // BLE avant que loop() ne reprenne la main ; CommandQueue les coalesce en un
+  // seul drapeau et une seule panique est comptee - une par panique, pas une
+  // par demande.
   if (_commands.takePanicRequest()) {
-    allSoundOff();
+    executePanic();
   }
   if (_resetControllersRequested) {
     _resetControllersRequested = false;
@@ -669,7 +678,7 @@ void InstrumentManager::processCommands() {
     // Un panic arrive pendant le drainage annule les commandes restantes.
     if (_commands.panicPending()) {
       _commands.takePanicRequest();
-      allSoundOff();
+      executePanic();
       return;
     }
   }
@@ -684,7 +693,7 @@ void InstrumentManager::processCommands() {
     noteOff(pendingNote);
     if (_commands.panicPending()) {
       _commands.takePanicRequest();
-      allSoundOff();
+      executePanic();
       return;
     }
   }
@@ -708,7 +717,7 @@ void InstrumentManager::applyCommand(const ActuatorCommand& cmd) {
     case ACMD_NOTE_OFF:          noteOff(cmd.a); break;
     case ACMD_CONTROL_CHANGE:    handleControlChange(cmd.a, cmd.b); break;
     case ACMD_RESET_CONTROLLERS: resetAllControllers(); break;
-    case ACMD_ALL_SOUND_OFF:     allSoundOff(); break;
+    case ACMD_ALL_SOUND_OFF:     executePanic(); break;
 
     case ACMD_TEST_FINGER:
       if (cmd.a < cfg.numFingers) _fingerCtrl.testFingerAngle(cmd.a, cmd.c);
@@ -798,6 +807,22 @@ ConfigApplyResult InstrumentManager::applyRuntimeConfig(const RuntimeConfig& old
   return result;
 }
 
+uint32_t InstrumentManager::panicCount() const {
+  return _panicCount;
+}
+
+void InstrumentManager::executePanic() {
+  // L'INCREMENT VIENT EN PREMIER, avant l'extinction. allSoundOff() touche le
+  // bus I2C et les GPIO d'actionneurs ; si l'une de ces ecritures bloque ou
+  // qu'un chien de garde redemarre la carte au milieu, la panique aura quand
+  // meme ete comptee pour tout observateur qui lit le compteur d'ici la. Un
+  // compteur en avance fait annuler une calibration de trop ; un compteur en
+  // retard la laisserait rouvrir la valve juste apres la mise en securite -
+  // exactement le defaut qu'on repare. Entre les deux, on choisit le materiel.
+  _panicCount++;
+  allSoundOff();
+}
+
 void InstrumentManager::allSoundOff() {
   // clear() incremente l'epoque de la file : une salve d'evenements en cours de
   // traitement dans NoteSequencer::processDueEvents() est abandonnee, donc aucun
@@ -838,7 +863,11 @@ void InstrumentManager::allSoundOff() {
 void InstrumentManager::handleTransportLost() {
   // A live MIDI link dropped mid-note: the matching Note Off will never arrive,
   // so silence everything to avoid a stuck valve/blow/pump/fan.
-  allSoundOff();
+  // Panique a part entiere, et c'est LE chemin que le compteur existe pour
+  // rendre visible : deconnexion BLE, deconnexion rtpMIDI, chute du lien
+  // Wi-Fi STA, timeout Active Sensing du MIDI serie. Aucun ne passe par le
+  // code web, donc aucun n'appelait requestCalibrationCancel().
+  executePanic();
   if (DEBUG) {
     Serial.println("DEBUG: InstrumentManager - Transport perdu -> panic (allSoundOff)");
   }

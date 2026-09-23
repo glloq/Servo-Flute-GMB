@@ -686,7 +686,7 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
     </div>
     <div id="airTargetHint" style="font-size:.6em;color:#667;margin:-4px 0 4px;display:none"></div>
     <div class="cfg-row"><label>Flow opening</label>
-      <input type="range" min="0" max="180" value="10" id="airFlowTest" oninput="testServoFlow(this.value)">
+      <input type="range" min="20" max="100" value="20" id="airFlowTest" oninput="testServoFlow(this.value)">
       <span id="airFlowTestVal" style="min-width:36px;text-align:right">0%</span>
       <button class="btn btn-s" onclick="sweepServoFlow()" title="Sweeps from min to max and back" style="padding:4px 8px;font-size:.7em">Sweep</button>
     </div>
@@ -918,8 +918,9 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
         </div>
         <div id="airValveSolParams">
           <div class="cfg-row"><label>GPIO Pin</label><select id="cfgSolPin" title="GPIO pin connected to the solenoid MOSFET/relay"></select></div>
-          <div class="cfg-row"><label>PWM activation</label><input type="number" id="cfgSolAct" min="0" max="255" title="PWM to open the valve (180-255 typique)" oninput="updPwmPct(this)"><span class="pwm-pct" style="font-size:.65em;color:#888;min-width:30px;text-align:right"></span></div>
-          <div class="cfg-row"><label>Hold PWM</label><input type="number" id="cfgSolHold" min="0" max="255" title="PWM to keep open (60-120 typique, economise courant)" oninput="updPwmPct(this)"><span class="pwm-pct" style="font-size:.65em;color:#888;min-width:30px;text-align:right"></span></div>
+          <div class="cfg-row"><label>PWM activation</label><input type="number" id="cfgSolAct" min="0" max="255" title="PWM to open the valve (180-255 typique)" oninput="updPwmPct(this);syncSolHoldCeiling()"><span class="pwm-pct" style="font-size:.65em;color:#888;min-width:30px;text-align:right"></span></div>
+          <div class="cfg-row"><label>Hold PWM</label><input type="number" id="cfgSolHold" min="0" max="128" title="PWM to keep open (60-120 typique, economise courant). Capped at half the activation PWM: the drop to hold is the only thing that stops the coil heating, so it has to be a real reduction." oninput="updPwmPct(this);syncSolHoldCeiling()"><span class="pwm-pct" style="font-size:.65em;color:#888;min-width:30px;text-align:right"></span></div>
+          <div style="font-size:.65em;color:#666;margin:-4px 0 6px 0" id="solHoldNote">Hold PWM is capped at 50% of the activation PWM.</div>
           <div class="cfg-row"><label>Active time before hold (ms)</label><input type="number" id="cfgSolTime" min="0" max="500" title="Duration in ms for the activation phase before switching to hold (20-50 typical)"></div>
           <div style="font-size:.65em;color:#888;padding:2px 0">Activation: strong pulse to open. Hold: reduced current to stay open.</div>
           <button class="btn btn-s" onclick="wsSend({t:'test_sol',o:1});setTimeout(()=>wsSend({t:'test_sol',o:0}),500)" style="font-size:.65em;padding:2px 8px;margin-top:4px" title="Opens the solenoid for 0.5s">Test solenoid</button>
@@ -968,10 +969,10 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
       <div class="air-block-body">
         <p style="font-size:.72em;color:#888;margin:0 0 8px">Air-jet angle relative to the edge. Visible only for transverse flutes. CC74 (Brightness) modulates the angle in real time.</p>
         <div class="cfg-row"><label>Channel PCA angle</label><select id="cfgAngPca" style="max-width:80px" onchange="syncAngPca(this.value);checkPca()"></select></div>
-        <div class="cfg-row"><label>Rest angle</label><input type="number" id="cfgAngOff" min="0" max="180" title="Rest position (center)"></div>
-        <div class="cfg-row"><label>Angle min</label><input type="number" id="cfgAngMin" min="0" max="180" title="Calibrated minimum angle"></div>
-        <div class="cfg-row"><label>Angle max</label><input type="number" id="cfgAngMax" min="0" max="180" title="Calibrated maximum angle"></div>
-        <div class="cfg-row"><label>Test angle</label><input type="range" min="0" max="180" value="90" id="testAngSlider" oninput="$('testAngVal').textContent=this.value+'&deg;';wsSend({t:'test_angle',a:parseInt(this.value)})"><span id="testAngVal" style="min-width:30px;font-size:.8em">90&deg;</span></div>
+        <div class="cfg-row"><label>Rest angle</label><input type="number" id="cfgAngOff" min="0" max="180" title="Rest position (center)" oninput="updateAngleSliderRange()"></div>
+        <div class="cfg-row"><label>Angle min</label><input type="number" id="cfgAngMin" min="0" max="180" title="Calibrated minimum angle" oninput="updateAngleSliderRange()"></div>
+        <div class="cfg-row"><label>Angle max</label><input type="number" id="cfgAngMax" min="0" max="180" title="Calibrated maximum angle" oninput="updateAngleSliderRange()"></div>
+        <div class="cfg-row"><label>Test angle</label><input type="range" min="40" max="140" value="90" id="testAngSlider" title="Drives the angle servo live. Bounded by the three angles above plus an exploration margin - the firmware enforces the same bound." oninput="testAngleServo(this.value)"><span id="testAngVal" style="min-width:30px;font-size:.8em">90&deg;</span></div>
       </div>
     </div>
 
@@ -1064,8 +1065,15 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
   </div>
 
   <div class="section"><h3>Power saving</h3>
-    <div class="cfg-row"><label>Power off servos after (ms)</label><input type="number" id="cfgUnpower" min="0" max="60000"></div>
+    <div class="cfg-row"><label>Power off servos after (ms)</label><input type="number" id="cfgUnpower" min="0" max="60000" oninput="updUnpowerWarning()"></div>
     <div style="font-size:.7em;color:#666;margin:-4px 0 6px 148px">Cuts servo power after inactivity (0 = always active)</div>
+    <div id="unpowerWarn" style="display:none;font-size:.72em;color:#e94560;background:rgba(233,69,96,.08);border:1px solid rgba(233,69,96,.25);border-radius:6px;padding:8px 10px;margin:0 0 6px 148px">
+      <b>0 keeps the servos powered permanently.</b> Cutting power after inactivity is the last thing that saves a servo
+      pushing against a mechanical stop: it stops drawing stall current a few hundred milliseconds later. At 0, a stalled
+      servo stays stalled until you cut the supply, and stall current is what burns these motors out.
+      Set 0 only if the mechanism has to hold its position with power on &mdash; a pad that must stay pressed on its hole,
+      or a heavy lever whose re-seek on every power-up is audible &mdash; and keep an eye on the servos.
+    </div>
   </div>
 
   <div class="section"><h3>MIDI file storage</h3>
@@ -1234,6 +1242,19 @@ function doLogin(){
 // --- Constants (mirrored from settings.h) ---
 const MIDI_CC_MAX=127,MIDI_VEL_MAX=127,MAX_FINGERS=31;
 const WEB_DEF_VEL=100,TEST_SOL_MS=2000,VU_SCALE=500,PITCH_OK_CT=15;
+// SERVO_TEST_MARGIN_DEG de settings.h. Marge d'exploration autorisee de part et
+// d'autre de la course mecanique qu'une configuration DECLARE pour un servo.
+// Sert uniquement a ne pas PROPOSER une commande que le firmware refusera : le
+// bornage qui protege le materiel est celui d'AirflowController et de
+// FingerController, parce que le WebSocket est ouvert a n'importe quel client,
+// pas seulement a cette page. Si les deux divergent, c'est le firmware qui
+// gagne, et le curseur s'arrete simplement plus tot que sa graduation.
+const SERVO_TEST_MARGIN=20;
+// Ramene [lo,hi] elargi de la marge dans la course electrique du servo.
+function servoTestBounds(lo,hi){
+  if(lo>hi){const t=lo;lo=hi;hi=t}
+  return{lo:Math.max(0,lo-SERVO_TEST_MARGIN),hi:Math.min(180,hi+SERVO_TEST_MARGIN)}
+}
 
 const N=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
 const STATES=['IDLE','POSITIONING','PLAYING','STOPPING'];
@@ -1552,16 +1573,82 @@ function testServoFlow(v){
   if(_servoFlowTimer)clearTimeout(_servoFlowTimer);
   _servoFlowTimer=setTimeout(()=>{wsSend({t:'test_air',a:a});_servoFlowTimer=null},30);
 }
+// Lit un champ numerique. Un champ VIDE (efface pour etre retape) est une
+// absence de mesure, pas une autorisation : on retombe sur la derniere valeur
+// CONNUE, jamais sur une valeur inventee. Le repli `||180` qui etait ici
+// rouvrait silencieusement le curseur de test sur toute la course electrique du
+// servo - exactement ce que ce curseur ne doit pas proposer - des qu'on effacait
+// le champ "Angle max" pour le retaper.
+function numOr(id,fallback){const v=parseInt($(id).value);return isNaN(v)?fallback:v}
+
 function updateFlowSliderRange(){
   const sl=$('airFlowTest');if(!sl)return;
   const m=getAirMode();const needsOff=(m===2||m===3);
-  const off=needsOff?(parseInt($('cfgAirOff').value)||0):0;
-  const mn=parseInt($('cfgAirMin').value)||0,mx=parseInt($('cfgAirMax').value)||180;
-  const lo=needsOff?Math.min(off,mn):mn;
-  sl.min=lo;sl.max=mx;
-  const cur=parseInt(sl.value)||0;
-  if(cur<lo){sl.value=lo;testServoFlow(lo)}
-  else if(cur>mx){sl.value=mx;testServoFlow(mx)}
+  const k=CFG||{};
+  const mn=numOr('cfgAirMin',k.air_min!=null?k.air_min:parseInt(sl.min)||0);
+  const mx=numOr('cfgAirMax',k.air_max!=null?k.air_max:parseInt(sl.max)||0);
+  const off=needsOff?numOr('cfgAirOff',k.air_off!=null?k.air_off:mn):mn;
+  const lo=Math.min(off,mn,mx),hi=Math.max(off,mn,mx);
+  sl.min=lo;sl.max=hi;
+  const cur=parseInt(sl.value);
+  if(isNaN(cur)||cur<lo){sl.value=lo;testServoFlow(lo)}
+  else if(cur>hi){sl.value=hi;testServoFlow(hi)}
+}
+
+// Curseur de test du servo d'angle. Il COMMANDE le servo, donc il ne propose
+// que la course declaree par les trois champs au-dessus de lui, elargie de
+// SERVO_TEST_MARGIN. Les champs, eux, restent en 0..180 : y saisir un nombre
+// DECLARE une course mecanique, cela ne commande rien.
+function updateAngleSliderRange(){
+  const sl=$('testAngSlider');if(!sl)return;
+  const k=CFG||{};
+  const off=numOr('cfgAngOff',k.ang_off!=null?k.ang_off:90);
+  const mn=numOr('cfgAngMin',k.ang_min!=null?k.ang_min:60);
+  const mx=numOr('cfgAngMax',k.ang_max!=null?k.ang_max:120);
+  const b=servoTestBounds(Math.min(off,mn,mx),Math.max(off,mn,mx));
+  sl.min=b.lo;sl.max=b.hi;
+  const cur=parseInt(sl.value);
+  if(isNaN(cur)||cur<b.lo){sl.value=b.lo;testAngleServo(b.lo)}
+  else if(cur>b.hi){sl.value=b.hi;testAngleServo(b.hi)}
+}
+let _angTestTimer=null;
+function testAngleServo(v){
+  const sl=$('testAngSlider');
+  const lo=sl?parseInt(sl.min):0,hi=sl?parseInt(sl.max):180;
+  let a=parseInt(v);if(isNaN(a))a=lo;
+  a=Math.max(lo,Math.min(hi,a));
+  const lbl=$('testAngVal');if(lbl)lbl.textContent=a+'°';
+  // Meme temporisation de 30 ms que le curseur de souffle : `oninput` peut
+  // tirer a chaque rafraichissement d'ecran, et le serveur limite desormais le
+  // debit des commandes d'actionneur. Sans cela, c'est la DERNIERE position -
+  // celle ou l'on s'arrete - qui risquerait d'etre celle qu'on jette.
+  if(_angTestTimer)clearTimeout(_angTestTimer);
+  _angTestTimer=setTimeout(()=>{wsSend({t:'test_angle',a:a});_angTestTimer=null},30);
+}
+
+// Plafond du PWM de maintien de la bobine, recopie de SOLENOID_HOLD_MAX_PERCENT.
+// Le passage au maintien est le seul mecanisme qui empeche la bobine de
+// chauffer, et AirflowController l'ecrit sans regarder sa valeur : un maintien
+// egal a l'activation execute la retombee et ne retombe pas. Le firmware
+// ramene la valeur au plafond de toute facon ; ici on evite seulement de
+// proposer un reglage qui sera corrige dans le dos de l'utilisateur.
+const SOL_HOLD_MAX_PCT=50;
+function syncSolHoldCeiling(){
+  const sa=$('cfgSolAct'),sh=$('cfgSolHold');if(!sa||!sh)return;
+  const act=numOr('cfgSolAct',255);
+  const ceil=Math.round(act*SOL_HOLD_MAX_PCT/100);
+  sh.max=ceil;
+  const note=$('solHoldNote');
+  if(note)note.textContent='Hold PWM is capped at '+SOL_HOLD_MAX_PCT+'% of the activation PWM ('+ceil+' here).';
+  const cur=parseInt(sh.value);
+  if(!isNaN(cur)&&cur>ceil){sh.value=ceil;updPwmPct(sh)}
+}
+
+// Avertissement affiche LA OU la valeur se saisit : 0 supprime la seule
+// protection qui desalimente un servo cale.
+function updUnpowerWarning(){
+  const w=$('unpowerWarn');if(!w)return;
+  w.style.display=(parseInt($('cfgUnpower').value)===0)?'':'none';
 }
 function applyServoPreset(mn,mx){
   const m=getAirMode();const needsOff=(m===2||m===3);
@@ -2135,6 +2222,7 @@ function resetAirDefaults(){
   $('cfgVlvClose').value=0;$('cfgVlvOpen').value=90;$('cfgVlvDir').value='0';
   // Solenoid defaults
   $('cfgSolPin').value=13;$('cfgSolAct').value=255;$('cfgSolHold').value=80;$('cfgSolTime').value=30;
+  syncSolHoldCeiling();
   if(layout===1){
     // Fan defaults
     $('cfgAirOff').value=5;
@@ -2156,6 +2244,7 @@ function resetAirDefaults(){
   const ao=$('cfgAngOff');if(ao)ao.value=90;
   const an=$('cfgAngMin');if(an)an.value=60;
   const ax=$('cfgAngMax');if(ax)ax.value=120;
+  updateAngleSliderRange();
   toggleValveParams();syncAirModeFromToggles();markDirty();
   showToast('Default values applied','success');
 }
@@ -2243,6 +2332,7 @@ function fillAirSettings(){
   sa.value=CFG.sol_act!=null?CFG.sol_act:255;updPwmPct(sa);
   sh.value=CFG.sol_hold!=null?CFG.sol_hold:80;updPwmPct(sh);
   $('cfgSolTime').value=CFG.sol_time!=null?CFG.sol_time:30;
+  syncSolHoldCeiling();
   // Servo valve settings
   $('cfgVlvClose').value=CFG.vlv_close!=null?CFG.vlv_close:0;
   $('cfgVlvOpen').value=CFG.vlv_open!=null?CFG.vlv_open:90;
@@ -2257,6 +2347,7 @@ function fillAirSettings(){
       const ao=$('cfgAngOff');if(ao)ao.value=CFG.ang_off!=null?CFG.ang_off:90;
       const an=$('cfgAngMin');if(an)an.value=CFG.ang_min!=null?CFG.ang_min:60;
       const ax=$('cfgAngMax');if(ax)ax.value=CFG.ang_max!=null?CFG.ang_max:120;
+      updateAngleSliderRange();
       const aOn=!!CFG.angle_on;
       const tg=$('airBlockAngleToggle');
       if(tg){tg.classList.toggle('on',aOn);tg.setAttribute('aria-checked',aOn?'true':'false')}
@@ -3172,6 +3263,9 @@ function acalErrText(e){const M={
   no_sound:'No sound detected',wrong_note:'Wrong note',low_confidence:'Confidence too low',
   no_stable_nominal:'No stable nominal',audio_stale:'Audio stream frozen',note_timeout:'Note timeout exceeded',
   global_timeout:'Global timeout exceeded',air_supply:'Air supply not ready',
+  range_not_bounded:'Upper limit never confirmed - the servo may have reached a stop. Widen the declared range and retry',
+  range_exposure:'Sweep spent too long outside the declared travel - stopped for safety',
+  range_invalid:'Measured range refused by validation',
   sensor_fault:'Reservoir sensor missing/faulty',none:'OK'};
   return M[e]||e}
 
@@ -3200,6 +3294,7 @@ function updateTravVisibility(){
     if(e('cfgAngOff'))e('cfgAngOff').value=CFG.ang_off!=null?CFG.ang_off:90;
     if(e('cfgAngMin'))e('cfgAngMin').value=CFG.ang_min!=null?CFG.ang_min:60;
     if(e('cfgAngMax'))e('cfgAngMax').value=CFG.ang_max!=null?CFG.ang_max:120;
+    updateAngleSliderRange();
   }
 }
 
@@ -3743,9 +3838,21 @@ function buildFingerCards(){
       '</div></div>';
     if(i===0&&CFG.embouchure!=='oca') html+='<div class="cfg-row"><label>Thumb (back)</label><input type="checkbox" id="fth'+i+'"'+(f.th?' checked':'')+
       ' style="width:auto;flex:0" onchange="CFG.fingers['+i+'].th=this.checked?1:0;buildFlute(CFG,\'calFluteSvg\',true);markDirty()"></div>';
+    // Bornes du curseur "Closed angle". Il COMMANDE le servo en direct a chaque
+    // mouvement : en min=0/max=180 il commandait toute la course ELECTRIQUE du
+    // servo, alors que la course mecanique d'un doigt fait une trentaine de
+    // degres. Le servo finissait contre sa butee, a son courant de calage.
+    // La fenetre est la course declaree (ferme .. ouvert) elargie de
+    // SERVO_TEST_MARGIN, et elle est FIGEE a la construction de la carte, a
+    // partir de la valeur ENREGISTREE : si elle se recalculait a chaque
+    // mouvement, elle glisserait avec le curseur et il n'y aurait plus de borne
+    // du tout. Elle se recentre au prochain chargement de la configuration -
+    // c'est ce qui permet de rejoindre en plusieurs enregistrements une
+    // geometrie eloignee de plus d'une marge.
+    const _fOpen=f.a+(CFG.angle_open||30)*f.d,_fB=servoTestBounds(f.a,_fOpen);
     html+='<div style="margin:6px 0"><div style="display:flex;justify-content:space-between;font-size:.75em;color:#888;margin-bottom:2px">'+
       '<span>Closed angle</span><span id="fav'+i+'">'+f.a+'&deg;</span></div>'+
-      '<input type="range" min="0" max="180" value="'+f.a+'" id="fa'+i+'" style="width:100%"'+
+      '<input type="range" min="'+_fB.lo+'" max="'+_fB.hi+'" value="'+f.a+'" id="fa'+i+'" style="width:100%"'+
         ' oninput="CFG.fingers['+i+'].a=parseInt(this.value);$(\'fav'+i+'\').textContent=this.value+\'&deg;\';testFinger('+i+',parseInt(this.value))"></div>'+
       '<div class="btn-row"><button class="btn btn-s" onclick="testPulse(this);testFinger('+i+',CFG.fingers['+i+'].a)">Close</button>'+
         '<button class="btn btn-s" onclick="testPulse(this);testFinger('+i+',CFG.fingers['+i+'].a+(CFG.angle_open||30)*CFG.fingers['+i+'].d)">Ouvrir</button>'+
@@ -3786,8 +3893,21 @@ function selectInstrument(val){
   showToast(p.n+' - '+p.h+' holes'+(p.th>=0?' (thumb)':''),'success')
 }
 
-function testFinger(i,a){wsSend({t:'test_finger',i:i,a:parseInt(a)});
-  const el=$('fh_calFluteSvg_'+i);if(el){const closed=CFG.fingers[i].a;const open=Math.abs(a-closed)>(CFG.angle_open||30)/2;
+let _fingerTimer=null,_fingerPend=null;
+function testFinger(i,a){
+  // Temporisation de 30 ms, comme le curseur de souffle. `oninput` d'un curseur
+  // peut tirer a chaque rafraichissement d'ecran ; le serveur limite desormais
+  // le debit des commandes d'actionneur, et sans temporisation c'est la
+  // DERNIERE position - celle ou le doigt s'arrete - qui risquerait d'etre
+  // celle qu'on jette. Un mouvement sur un AUTRE doigt vide d'abord l'attente
+  // en cours : deux doigts ne doivent jamais s'annuler l'un l'autre.
+  const v=parseInt(a);
+  if(_fingerTimer&&_fingerPend&&_fingerPend.i!==i){
+    clearTimeout(_fingerTimer);wsSend({t:'test_finger',i:_fingerPend.i,a:_fingerPend.a});_fingerTimer=null}
+  _fingerPend={i:i,a:v};
+  if(_fingerTimer)clearTimeout(_fingerTimer);
+  _fingerTimer=setTimeout(()=>{wsSend({t:'test_finger',i:_fingerPend.i,a:_fingerPend.a});_fingerTimer=null},30);
+  const el=$('fh_calFluteSvg_'+i);if(el){const closed=CFG.fingers[i].a;const open=Math.abs(v-closed)>(CFG.angle_open||30)/2;
     el.setAttribute('class','flute-hole '+(open?'open':'closed')+(CFG.fingers[i].th?' thumb':''))}}
 function testFingerHalf(i){const f=CFG.fingers[i];const hp=f.hp||CFG.half_hole_pct||50;
   const a=f.a+Math.round((CFG.angle_open||30)*f.d*hp/100);testFinger(i,a);
@@ -3911,8 +4031,21 @@ function buildAirflowRows(){
   })
 }
 
-function testCalNote(midi){wsSend({t:'test_note',n:midi});wsSend({t:'test_sol',o:1});
-  setTimeout(()=>wsSend({t:'test_sol',o:0}),TEST_SOL_MS)}
+// Une note de test est une NOTE, pas une valve forcee.
+// Cette fonction envoyait test_note PUIS test_sol o:1, et refermait par un
+// setTimeout du navigateur. Deux defauts dans une ligne :
+//  - la fermeture dependait d'un minuteur du navigateur. Onglet suspendu,
+//    machine en veille, page fermee : la valve restait ouverte jusqu'au filet
+//    de securite du serveur, soit jusqu'a 30 s ;
+//  - le test_sol forcait la valve ouverte MEME quand la note ne devait pas
+//    sonner. C'est exactement ce que la valeur rendue par setAirflowForNote()
+//    existe pour empecher : sous CC2 bas ou velocite nulle, le sequenceur
+//    laisse la valve fermee, et ce forcage la rouvrait.
+// test_note suffit : le serveur joue une vraie note temporisee a travers le
+// sequenceur, qui ouvre la valve seulement si la note doit sonner et la referme
+// sur son note-off automatique (TEST_NOTE_DURATION_MS), cote CARTE. Ce qu'on y
+// perd : l'apercu dure la duree d'une note de test et non TEST_SOL_MS (2 s).
+function testCalNote(midi){wsSend({t:'test_note',n:midi})}
 
 function startRangeFinder(){$('btnRfStart').style.display='none';$('btnRfStop').style.display='';
   $('btnAcalStart').style.display='none';
@@ -4031,7 +4164,7 @@ function fillSettings(){
   $('cfgCCVol').value=CFG.cc_vol!=null?CFG.cc_vol:127;$('cfgCCExpr').value=CFG.cc_expr!=null?CFG.cc_expr:127;
   $('cfgCCMod').value=CFG.cc_mod!=null?CFG.cc_mod:0;$('cfgCCBreath').value=CFG.cc_breath!=null?CFG.cc_breath:127;
   $('cfgCCBright').value=CFG.cc_bright!=null?CFG.cc_bright:64;
-  $('cfgUnpower').value=CFG.time_unpower;
+  $('cfgUnpower').value=CFG.time_unpower;updUnpowerWarning();
   $('cfgMidiLimit').value=CFG.midi_limit||500;
   $('cfgColor').value=CFG.color||'#D4B044';
   $('cfgHideCalib').checked=!!CFG.hide_calib;

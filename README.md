@@ -158,7 +158,7 @@ Everything announced comes from the active, validated configuration: the playabl
 
 Saving a configuration that really changes what the instrument can play increments a persistent revision counter, rebuilds the descriptor, and notifies General-Midi-Boop. A reboot alone never increments it.
 
-A field the firmware has not measured is left out rather than guessed — an absent field means "unknown" in GMB. The acoustic excitation latency (`timing.excite.latency_ms`) is therefore not announced: measuring it needs a real flute and the microphone, and announcing `0` would tell General-Midi-Boop the instrument speaks instantly. See [Project status](docs/STATUS.md#known-general-midi-boop-limitation).
+A field the firmware has not measured is left out rather than guessed — an absent field means "unknown" in GMB. The acoustic excitation latency (`timing.excite.latency_ms`) is therefore not announced, and announcing `0` would tell General-Midi-Boop the instrument speaks instantly. The firmware now *measures* this latency — that is what the timing phase of the acoustic chain does — but the measurement only runs while the analysis is active, has never been checked against a real microphone or flute, and carries a bias that does not cancel. Announcing a figure that has been measured but not verified would be worse than announcing none. See [Project status](docs/STATUS.md#known-general-midi-boop-limitation).
 
 See [General-Midi-Boop protocol](docs/GMB_PROTOCOL.md).
 
@@ -244,7 +244,7 @@ When station credentials are saved, the interface is normally available through 
 | Double press within 500 ms | Open all fingers, unless an actuator session owns the hardware |
 | Long press for 3 seconds | Force Wi-Fi access-point mode |
 
-## Optional microphone auto-calibration
+## Optional microphone: auto-calibration and acoustic analysis
 
 An INMP441 I2S microphone can measure the sounding result while the firmware sweeps airflow. For each note, the calibration system can determine:
 
@@ -253,7 +253,11 @@ An INMP441 I2S microphone can measure the sounding result while the firmware swe
 - maximum airflow before instability or overblow;
 - confidence, tuning error, stability, and signal-to-noise information.
 
-The software pipeline is covered by host tests, but physical microphone and flute validation is still required. See [Auto-calibration](docs/AUTO_CALIBRATION.md).
+Beyond calibration, the same microphone feeds an acoustic analysis chain built in phases: ring-buffered acquisition with overlap, YIN pitch detection, Goertzel and optional FFT spectral analysis, stream filtering, a noise model **per machine state** (a pump at 90 % is not the same noise floor as a pump at rest, so one global floor would overrate every note played), acoustic classification with a quality score, and note timing — the latency between the order and the audible sound.
+
+**Read the validation level before trusting any of it.** Nothing in this chain is above *simulated audio validated*: every figure comes from synthetic PCM, now passed through the production filter chain, and **no INMP441 and no flute have ever been connected**. The reference document defines five levels explicitly and marks each phase, and carries an audit section listing what is still wrong after correction — including up to +8.4 dB of optimism on a strongly low-frequency-weighted noise floor, which is exactly the pump case.
+
+See [Audio and acoustic architecture](Servo_flute_ESP32/docs/AUDIO_ARCHITECTURE.md) and [Auto-calibration](docs/AUTO_CALIBRATION.md).
 
 ## Project status
 

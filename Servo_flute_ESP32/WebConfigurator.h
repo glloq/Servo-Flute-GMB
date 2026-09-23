@@ -228,6 +228,27 @@ private:
   // Commande WebSocket qui met physiquement un actionneur en mouvement.
   static bool isPhysicalWsCommand(const char* type);
 
+  // --- Limiteur de debit des commandes d'actionneur ------------------------
+  // Les CC MIDI avaient deja le leur (CC_RATE_LIMIT_PER_SECOND) ; le WebSocket
+  // n'en avait aucun. Fenetre glissante par SERVEUR, pas par client : ce qu'on
+  // protege est partage (file de commandes, bus I2C), et une session de test
+  // manuelle n'a de toute facon qu'un seul proprietaire. Touche uniquement
+  // depuis la tache AsyncTCP (tous les callbacks WebSocket y tournent), donc
+  // sans verrou.
+  unsigned long _wsActuatorWindowStart = 0;
+  uint16_t _wsActuatorCount = 0;
+  bool allowActuatorCommand(unsigned long now);
+
+  // --- Observation des paniques -------------------------------------------
+  // Derniere valeur de InstrumentManager::panicCount() vue par update(). Une
+  // panique venue d'un transport MIDI (deconnexion BLE / rtpMIDI, CC120/123 en
+  // serie) ne passe par aucun code web : sans cette observation, elle coupait
+  // les actionneurs mais l'auto-calibration continuait et rouvrait la valve au
+  // pas suivant. _panicCountSeen distingue "jamais observe" de "observe a 0" :
+  // la premiere valeur est seulement memorisee, elle n'annule rien.
+  uint32_t _lastPanicCount = 0;
+  bool _panicCountSeen = false;
+
   // Handlers HTTP
   void handleRoot(AsyncWebServerRequest* request);
   void handleApiStatus(AsyncWebServerRequest* request);

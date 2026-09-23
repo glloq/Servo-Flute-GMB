@@ -42,6 +42,14 @@ public:
   byte getCurrentVelocity() const { return _currentVelocity; }
 
   // Arrete immediatement toute lecture (pour All Sound Off)
+  //
+  // C'est AUSSI le chemin qu'emprunte le plafond de duree de note
+  // (NOTE_HOLD_CEILING_MS, voir handlePlaying) : une note dont le Note Off
+  // n'arrive jamais - cable MIDI DIN debranche cote source muette d'Active
+  // Sensing - tenait sinon la valve, la bobine et la pompe indefiniment. Seul
+  // ce chemin-ci garantit l'extinction COMPLETE et inconditionnelle ; l'arret
+  // de note ordinaire, lui, peut legitimement garder la valve ouverte pour la
+  // note suivante.
   void stop();
 
   // --- PHASE 7 : observateur de chronometrie (OPTIONNEL) ---------------------

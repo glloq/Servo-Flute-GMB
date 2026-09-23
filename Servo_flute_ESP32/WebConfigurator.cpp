@@ -101,6 +101,26 @@ static bool isManualTestCommand(const char* type) {
   return false;
 }
 
+// WS commands submitted to the actuator rate limiter. Each one asks for MORE
+// motion and losing one is harmless: the next slider event resends the position,
+// and a dropped CC is exactly what the MIDI CC limiter already does.
+//
+// No STOPPING command is in this list, and that is the point. "nof", "panic",
+// "stop", "pump_stop", "fan_stop", "auto_stop" - and "test_sol", whose o:0 is a
+// valve close - always get through: throwing away an order to stop would be the
+// exact opposite of what a rate limiter is for. The open direction of test_sol
+// is not protected here either; it is protected at the source, by the re-pulse
+// guard in AirflowController::testSolenoid() and by the absolute test-session
+// ceiling, both of which hold at any message rate.
+static bool isRateLimitedWsCommand(const char* type) {
+  static const char* kLimited[] = {
+    "non", "cc", "air_live", "angle_live", "test_finger", "test_air",
+    "test_angle", "test_note", "pump_target", "fan_target"
+  };
+  for (const char* t : kLimited) if (strcmp(type, t) == 0) return true;
+  return false;
+}
+
 // Reduit un nom de fichier recu du reseau a un nom simple et sur : pas de
 // chemin, pas de "..", caracteres limites, extension .mid/.midi obligatoire.
 static bool sanitizeMidiFileName(const String& raw, String& out) {
@@ -273,6 +293,43 @@ void WebConfigurator::update() {
   // lecteur MIDI ou le calibrateur.
   serviceWsOps();      // commandes WebSocket (non bloquantes)
   servicePendingOp();  // requete HTTP en attente de sa reponse
+
+  // UNE PANIQUE ANNULE L'AUTO-CALIBRATION, QUEL QU'EN SOIT LE CHEMIN.
+  // requestCalibrationCancel() n'etait appelee que depuis des chemins WEB. Une
+  // deconnexion BLE ou rtpMIDI, un CC120/123 recu en MIDI serie, un timeout
+  // d'Active Sensing declenchent bien le panic d'InstrumentManager - les
+  // actionneurs sont coupes - mais AutoCalibrator, qui ne passe par aucun code
+  // web, reappliquait ses commandes au pas suivant (~740 ms) et defaisait la
+  // mise en securite : valve rouverte, souffle relance, alors que plus aucun
+  // transport ne repond.
+  //
+  // panicCount() est monotone. On compare par INEGALITE et non par ordre : un
+  // debordement de uint32_t (sans objet en pratique) se comporte alors comme
+  // n'importe quel autre changement, au lieu de rendre le compteur muet pour
+  // toujours. La PREMIERE valeur vue est seulement memorisee : elle ne prouve
+  // aucune panique recente (le compteur peut deja etre non nul quand le serveur
+  // demarre) et aucune calibration ne tourne a cet instant.
+  //
+  // Place ici, AVANT la consommation de _calCancelRequested juste en dessous,
+  // pour que l'annulation prenne effet dans le meme tour de update() - donc
+  // avant _autoCal->update().
+  if (_instrument) {
+    const uint32_t panics = _instrument->panicCount();
+    if (!_panicCountSeen) {
+      _panicCountSeen = true;
+      _lastPanicCount = panics;
+    } else if (panics != _lastPanicCount) {
+      _lastPanicCount = panics;
+#if MIC_ENABLED
+      requestCalibrationCancel();
+#endif
+      // La session de test manuelle ne possede plus rien : la panique a deja
+      // remis les actionneurs au repos. `false` parce qu'en redemander un
+      // second n'ajouterait rien - et parce que endTestSession() annule aussi
+      // le note-off differe d'une note de test, qui n'a plus lieu d'etre.
+      endTestSession(false);
+    }
+  }
 
 #if MIC_ENABLED
   // Annulation de calibration NON PERDABLE. Elle transitait par postWebOp(), qui
@@ -1537,9 +1594,34 @@ bool WebConfigurator::beginTestSession(uint32_t clientId) {
   if (_testActive && _testOwnerClientId != 0 && clientId != _testOwnerClientId) {
     return false;
   }
+  // PLAFOND ABSOLU, PAS GLISSANT. _testStartTime etait repose a CHAQUE commande
+  // de test : le filet de securite de TEST_SESSION_MAX_MS etait donc repousse
+  // par le flot qu'il est cense arreter. Un client qui envoie test_sol toutes
+  // les 40 ms - ce qu'un simple glissement de curseur produit deja, et ce qu'un
+  // client malveillant produit a volonte - ne voyait JAMAIS la coupure des 30 s.
+  // L'horodatage n'est pose qu'a l'OUVERTURE de la session : 30 s apres la
+  // premiere commande, update() remet le materiel en securite, quoi qu'il
+  // arrive ensuite.
+  // Ce que cela coute : un reglage qui dure plus de 30 s d'affilee est
+  // interrompu une fois par ce retour au repos, et la commande suivante ouvre
+  // simplement une nouvelle session. C'est le compromis voulu - un mode degrade
+  // doit etre sur, pas pratique.
+  if (!_testActive) _testStartTime = millis();
   _testOwnerClientId = clientId;
-  _testStartTime = millis();
   _testActive = true;
+  return true;
+}
+
+bool WebConfigurator::allowActuatorCommand(unsigned long now) {
+  // Fenetre fixe, comme le limiteur de CC d'InstrumentManager : au premier
+  // message hors fenetre on repart a zero. La soustraction non signee rend le
+  // repliement de millis() inoffensif.
+  if (now - _wsActuatorWindowStart >= WS_ACTUATOR_RATE_WINDOW_MS) {
+    _wsActuatorWindowStart = now;
+    _wsActuatorCount = 0;
+  }
+  if (_wsActuatorCount >= WS_ACTUATOR_RATE_LIMIT_PER_SECOND) return false;
+  _wsActuatorCount++;
   return true;
 }
 
@@ -3320,6 +3402,15 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
   // While a calibration owns the actuators, refuse concurrent actuator commands.
   if (actuatorCommandBlockedDuringCalibration(client, type)) return;
 #endif
+
+  // Limitation de debit des commandes qui commandent un mouvement de plus. Sans
+  // elle, un client pouvait remplir la file de commandes et saturer le bus I2C
+  // aussi vite qu'il ecrivait, alors que les CC MIDI etaient deja limites depuis
+  // toujours. Le rejet est SILENCIEUX : repondre a chaque message jete
+  // amplifierait le flot au lieu de le contenir.
+  if (isRateLimitedWsCommand(type) && !allowActuatorCommand(millis())) {
+    return;
+  }
 
   // A manual actuator test starts/refreshes a bounded, owner-tracked session so the
   // server (not just the browser) returns the hardware to safe on loss of contact.

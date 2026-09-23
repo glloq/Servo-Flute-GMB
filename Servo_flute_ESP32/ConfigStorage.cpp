@@ -1,5 +1,7 @@
 #include "ConfigStorage.h"
 
+#include <new>   // std::nothrow : une allocation ratee doit rendre nullptr, pas lever
+
 static ConfigLoadStatus s_lastLoadStatus = CONFIG_DEFAULTS;
 static String s_lastLoadError;
 static FilesystemStatus s_fsStatus = FS_NOT_MOUNTED;
@@ -509,6 +511,10 @@ ConfigLoadStatus ConfigStorage::loadWithStatus() {
   return s_lastLoadStatus;
 }
 
+// Serialisation atomique du candidat DEJA valide (definie apres saveFrom, qui est
+// son seul appelant : la validation precede toujours l'ecriture).
+static bool writeConfigFile(const RuntimeConfig& source);
+
 // Persiste la configuration DONNEE (et non forcement la configuration active).
 // Le commit transactionnel de POST /api/config ecrit ainsi le candidat AVANT de
 // le rendre actif : si l'ecriture echoue, rien n'a bouge ni en RAM ni en flash.
@@ -517,12 +523,41 @@ bool ConfigStorage::saveFrom(const RuntimeConfig& source) {
   // un echec franc (et donc annuler sa transaction) plutot qu'une ecriture perdue.
   if (!isFilesystemMounted()) return false;
 
-  ConfigValidationResult validation = validateAndNormalizeConfig(cfg);
-  if (!validation.valid) {
-    if (DEBUG) { Serial.print("ERREUR: ConfigStorage - sauvegarde refusee: "); Serial.println(validation.error); }
+  // La validation porte sur SOURCE, jamais sur la configuration active.
+  //
+  // Elle portait sur `cfg`. Deux consequences, toutes deux reproduites :
+  //  - un /config.json semantiquement invalide (deux doigts sur le meme canal PCA)
+  //    laisse `cfg` invalide en RAM apres le passage en recovery. L'utilisateur
+  //    corrigeait alors la configuration depuis l'interface web, le candidat etait
+  //    bien valide par ConfigCommit... et saveFrom revalidait l'ANCIENNE `cfg`
+  //    toujours invalide, echouait, et rendait storage_failed. Une configuration
+  //    cassee n'etait donc plus reparable depuis le seul outil disponible ;
+  //  - validateAndNormalizeConfig ECRIT dans son argument : `cfg` etait modifie
+  //    hors du verrou de configuration pendant que la tache web peut le lire.
+  // La copie de travail est sur le TAS : RuntimeConfig fait ~5 Ko et cette
+  // fonction construit deja un JsonDocument de plusieurs kilo-octets ; 5 Ko de
+  // plus sur la pile d'une tache Arduino/async suffisent a la faire deborder.
+  RuntimeConfig* candidate = new (std::nothrow) RuntimeConfig();
+  if (candidate == nullptr) {
+    // Pas de memoire pour verifier : on refuse d'ecrire plutot que d'ecrire sans
+    // avoir verifie. Un /config.json non valide condamne le prochain demarrage.
+    if (DEBUG) { Serial.println("ERREUR: ConfigStorage - memoire insuffisante pour valider avant sauvegarde"); }
     return false;
   }
+  ConfigValidationResult validation = validateCandidateConfig(source, *candidate);
+  if (!validation.valid) {
+    if (DEBUG) { Serial.print("ERREUR: ConfigStorage - sauvegarde refusee: "); Serial.println(validation.error); }
+    delete candidate;
+    return false;
+  }
+  // C'est le candidat NORMALISE qui part en flash : ce que le prochain demarrage
+  // relira est exactement ce qui vient d'etre valide, sans derive.
+  bool ok = writeConfigFile(*candidate);
+  delete candidate;
+  return ok;
+}
 
+static bool writeConfigFile(const RuntimeConfig& source) {
   JsonDocument doc;
 
   // --- Instrument ---

@@ -25,7 +25,7 @@ This document centralizes the validation state and known limitations of Servo Fl
 | Serial MIDI DIN | Implemented | NOT TESTED — requires hardware |
 | MIDI file playback | Implemented | Software tested; acoustic validation required |
 | Embedded web interface | Implemented | Software tested |
-| INMP441 audio analysis | Implemented | Software tested; microphone validation required |
+| INMP441 acoustic analysis (8 phases) | Implemented | **Simulated audio validated** — no microphone, no flute; see below |
 | Per-note automatic airflow calibration | Implemented | Software tested; flute validation required |
 | Pumps, reservoir, fan, and sensors | Implemented | NOT TESTED — requires hardware |
 | General-Midi-Boop v2 recognition (blocks 1 / 0x10 / 0x11) | Implemented | Software tested; recognition by a real controller over BLE / rtpMIDI requires hardware |
@@ -115,6 +115,15 @@ The earlier 2026 firmware audit introduced or reinforced:
 
 These software protections do not replace electrical protection, a physical emergency stop, appropriate fusing, correct power sizing, or physical verification.
 
+## Before connecting real hardware
+
+A four-axis hardware audit found defects that could destroy actuators, and three
+risks that **cannot be fixed in software** because they live in the window
+between reset and the firmware's first instruction. The staged power-on
+procedure, with a cut-off criterion at each step, is in
+[Bring-up procedure](BRINGUP.md). Do not skip step 0: it is the measurement that
+decides whether the coil and the servos can be connected at all.
+
 ## Known General-Midi-Boop limitation
 
 `timing.excite.latency_ms` is the delay between the MIDI order and the note
@@ -122,18 +131,44 @@ being **audible**. General-Midi-Boop uses it to line several instruments up on
 the same beat, so a figure the firmware has not measured is worse than no figure
 at all — and the GMB rule is that an absent field means unknown.
 
-Nothing in this firmware measures the acoustic onset, so the field is **not
-announced**, and in particular is never announced as `0`, which GMB would read as
-"this flute speaks instantly". `solenoidActivationTimeMs` is not that figure
-either: it is the full-power drive window of the solenoid coil before the PWM
-drops to its holding level, an electrical parameter of the valve.
+The field is **not announced**, and in particular is never announced as `0`,
+which GMB would read as "this flute speaks instantly".
+`solenoidActivationTimeMs` is not that figure either: it is the full-power drive
+window of the solenoid coil before the PWM drops to its holding level, an
+electrical parameter of the valve.
 
-Measuring it needs hardware: a flute, the INMP441, and an onset detection on the
-existing microphone path (`AudioAnalyzer` + `AutoCalibrator`). The firmware side
-is ready for it — `gmb::measuredExciteLatencyMs()` (`Servo_flute_ESP32/gmb/Capabilities.h`)
-is the single seam the value goes through, and the descriptor, the capability
-signature and the block 0x11 notification already carry it end to end, so the
-announcement and the revision bump follow on their own.
+**What blocks it has changed — the mechanism now exists.** This page used to say
+that nothing in the firmware measured the acoustic onset. That stopped being
+true with PHASE 7: `Servo_flute_ESP32/AcousticTiming.{h,cpp}` measures exactly
+this quantity — `commandToSoundLatency`, from the accepted MIDI order to audible
+sound — fed on the signal side by `AudioAnalyzer` and on the order side by hooks
+in `NoteSequencer` and `AirflowController`, each measure carrying its own
+validity flag.
+
+Three things still stand between that and an announcement, and none of them is a
+missing mechanism:
+
+1. **It only runs while the analysis is active** — the microphone monitor or a
+   calibration. In ordinary MIDI playback the analyser is idle and no frame
+   arrives; the timing machine now *refuses* to open a cycle in that case,
+   precisely so it cannot manufacture a verdict.
+2. **Nothing has been validated on a real microphone or a real flute.** Every
+   figure in the acoustic chain comes from synthetic PCM.
+3. **The measurement carries a bias that is not constant.** Instants are dated
+   at the end of a 32 ms analysis window, and the onset bias depends on the
+   margin between the note's level and the applied threshold — so it does not
+   cancel in a difference. See PHASE 7 in
+   [`AUDIO_ARCHITECTURE.md`](../Servo_flute_ESP32/docs/AUDIO_ARCHITECTURE.md)
+   for the measured values.
+
+Announcing a figure the firmware has measured but never verified would be worse
+than announcing none, which is the rule this whole section rests on.
+
+The seam is unchanged and still ready: `gmb::measuredExciteLatencyMs()`
+(`Servo_flute_ESP32/gmb/Capabilities.h`) is the single point the value goes
+through, and the descriptor, the capability signature and the block 0x11
+notification already carry it end to end, so the announcement and the revision
+bump follow on their own once a real measurement exists.
 
 ## Network access model
 

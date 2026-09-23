@@ -202,6 +202,48 @@ enum ConfigLoadStatus {
   CONFIG_STORAGE_ERROR
 };
 
+// Decide si la configuration presente au demarrage autorise les actionneurs.
+//
+// UNE CONFIGURATION D'USINE N'EST PAS UNE CONFIGURATION SURE POUR PILOTER.
+// CONFIG_DEFAULTS - LittleFS monte, /config.json absent - comptait comme sure.
+// Sur une carte vierge, sept servos partaient donc ensemble vers les angles d'un
+// preset arbitraire, a pleine vitesse, sur une mecanique qui n'est pas forcement
+// celle-la. C'est la contradiction interne que ce predicat supprime : le refus du
+// formatage automatique de LittleFS (voir FilesystemStatus, juste en dessous) est
+// justifie par le fait qu'une configuration par defaut « ne correspond pas
+// forcement au cablage reel » - le firmware identifiait le danger, puis traitait
+// cette meme situation comme sure. Canaux PCA, angles fermes, sens de rotation,
+// course du souffle sont propres au montage : un preset qui se trompe de sens de
+// rotation ou d'angle ferme arrache une tringlerie avant qu'on puisse couper.
+//
+// Seule une configuration que l'utilisateur a REELLEMENT ecrite (CONFIG_LOADED,
+// validee) autorise donc les actionneurs. Tout le reste demarre en mode recovery,
+// ou l'interface web reste entierement disponible - diagnostics, lecture et
+// ECRITURE de configuration, assistant de premier demarrage (first_boot),
+// reinitialisation, recovery reseau, redemarrage controle. Refuser de piloter ne
+// bloque donc pas l'utilisateur : c'est exactement le chemin par lequel il
+// configure l'instrument, et le redemarrage qui suit rend les actionneurs.
+inline bool bootConfigMayDriveActuators(bool filesystemMounted,
+                                        ConfigLoadStatus status,
+                                        bool validationOk) {
+  if (!filesystemMounted) return false;
+  switch (status) {
+    case CONFIG_LOADED:
+      // Ecrite par l'utilisateur : elle decrit le cablage reel.
+      return validationOk;
+    case CONFIG_DEFAULTS:
+      // Valeurs d'usine : coherentes entre elles, sans rapport connu avec la
+      // mecanique installee. Bonnes pour configurer, pas pour piloter.
+      return false;
+    case CONFIG_INVALID_FALLBACK:
+    case CONFIG_STORAGE_ERROR:
+      // Fichier illisible ou rejete : les defauts actifs en RAM sont, la aussi,
+      // une configuration que personne n'a validee contre ce materiel.
+      return false;
+  }
+  return false;
+}
+
 // Etat du systeme de fichiers LittleFS.
 //
 // FAIL-SAFE : le firmware ne monte JAMAIS avec formatage automatique. Un
@@ -252,6 +294,30 @@ bool configurationUsesFan(const RuntimeConfig& config);
 bool configurationUsesPumps(const RuntimeConfig& config);
 bool configurationUsesReservoirSensor(const RuntimeConfig& config);
 ConfigValidationResult validateAndNormalizeConfig(RuntimeConfig& config, const RuntimeConfig* previousConfig = nullptr);
+
+// Valide un CANDIDAT sans jamais toucher la configuration active.
+//
+// POURQUOI CETTE FONCTION EXISTE
+// ------------------------------
+// validateAndNormalizeConfig() prend une reference NON const et normalise SUR
+// PLACE. Appelee sur `cfg` pour juger d'un candidat, elle fait deux degats :
+//   1. elle juge la mauvaise configuration. Un `cfg` actif invalide (celui qu'un
+//      /config.json semantiquement faux a laisse en RAM apres un passage en
+//      recovery) faisait echouer la persistance d'un candidat pourtant correct :
+//      l'utilisateur ne pouvait plus REPARER sa configuration depuis l'interface
+//      web, le seul chemin dont il dispose pour sortir du mode recovery ;
+//   2. elle ECRIT dans `cfg` hors du verrou de configuration, depuis la tache
+//      qui persiste, pendant que la tache web peut lire `cfg` sous ce verrou.
+// Passer par une copie de travail supprime les deux d'un coup.
+//
+// `work` est fourni par l'appelant : RuntimeConfig fait ~5 Ko, c'est a l'appelant
+// de decider tas ou pile en connaissance de cause. En sortie `work` contient le
+// candidat NORMALISE (c'est lui qu'il faut persister/appliquer, pas `source`).
+inline ConfigValidationResult validateCandidateConfig(const RuntimeConfig& source,
+                                                      RuntimeConfig& work) {
+  work = source;
+  return validateAndNormalizeConfig(work);
+}
 
 // Config globale accessible depuis tout le projet
 extern RuntimeConfig cfg;

@@ -50,6 +50,10 @@ SOURCES = [
     "tests/test_native/test_spectral_hnr.cpp",
     "tests/test_native/test_quality.cpp",
     "tests/test_native/test_timing.cpp",
+    "tests/test_native/test_hw_pump.cpp",
+    "tests/test_native/test_hw_note.cpp",
+    "tests/test_native/test_hw_servo.cpp",
+    "tests/test_native/test_hw_boot.cpp",
     "tests/test_native/test_behavior.cpp",
 ]
 
