@@ -6,7 +6,14 @@ ConfigCommitResult commitCandidateConfig(RuntimeConfig& active,
                                          InstrumentManager* instrument,
                                          ConfigSaveFn save,
                                          const ConfigCommitGuard* guard) {
-  ConfigCommitResult out{false, false, false, false, false, false, "", "", ""};
+  // PAS d'initialisation par accolades positionnelle ici. La structure porte
+  // desormais des initialiseurs de membre par defaut ; en C++11 - le dialecte
+  // que le firmware recoit REELLEMENT, voir la note de platformio.ini sur le
+  // -std=gnu++11 ajoute apres nos options par le builder Arduino - cela lui
+  // retire la qualite d'agregat, et la liste ne compile pas. La construction
+  // par defaut applique exactement les memes valeurs, et surtout elle ne se
+  // decale pas silencieusement le jour ou un champ est ajoute au milieu.
+  ConfigCommitResult out;
 
   // --- 1. Validation complete du CANDIDAT (la config active n'a pas bouge) ---
   ConfigValidationResult validation = validateAndNormalizeConfig(candidate, &active);
