@@ -3263,6 +3263,9 @@ function acalErrText(e){const M={
   no_sound:'No sound detected',wrong_note:'Wrong note',low_confidence:'Confidence too low',
   no_stable_nominal:'No stable nominal',audio_stale:'Audio stream frozen',note_timeout:'Note timeout exceeded',
   global_timeout:'Global timeout exceeded',air_supply:'Air supply not ready',
+  range_not_bounded:'Upper limit never confirmed - the servo may have reached a stop. Widen the declared range and retry',
+  range_exposure:'Sweep spent too long outside the declared travel - stopped for safety',
+  range_invalid:'Measured range refused by validation',
   sensor_fault:'Reservoir sensor missing/faulty',none:'OK'};
   return M[e]||e}
 

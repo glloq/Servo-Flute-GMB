@@ -1,5 +1,19 @@
 #include "AutoCalibrator.h"
 
+// INVARIANT ENTRE DEUX CORRECTIFS, verrouille a la compilation.
+// Le range finder explore la course declaree elargie de
+// AUTOCAL_RF_EXPLORE_MARGIN_DEG, et commande ses angles par
+// AirflowController::testAirflowAngle(), qui borne desormais a la course
+// declaree elargie de SERVO_TEST_MARGIN_DEG. Si la seconde marge passait sous
+// la premiere, le controleur tronquerait la consigne SANS LE DIRE et le
+// calibrateur attribuerait le resultat acoustique a l'angle COMMANDE, pas a
+// l'angle APPLIQUE : la plage persistee serait fausse, et fausse en silence.
+// Les deux constantes ont ete introduites par deux correctifs distincts, qui
+// ne pouvaient pas voir cette jonction.
+static_assert(SERVO_TEST_MARGIN_DEG >= AUTOCAL_RF_EXPLORE_MARGIN_DEG,
+              "SERVO_TEST_MARGIN_DEG doit rester >= AUTOCAL_RF_EXPLORE_MARGIN_DEG : "
+              "sinon le bornage de test tronque le balayage du range finder en silence");
+
 #if MIC_ENABLED
 
 #include <math.h>
