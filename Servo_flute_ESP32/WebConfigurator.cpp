@@ -6,6 +6,10 @@
 #include "FanController.h"
 #include "WirelessManager.h"
 #include "ConfigCommit.h"
+// Remplacement de fichier NON DESTRUCTIF (C-6 / Contrat 3). Module pur, ses
+// operations de systeme de fichiers sont injectees : les vraies (LittleFS) sont
+// les fsTx* de ce fichier.
+#include "FileTransaction.h"
 #include "DeviceSecrets.h"
 #include "web_content.h"
 #include "WebValueParsers.h"
@@ -151,10 +155,9 @@ WebConfigurator::WebConfigurator(uint16_t port)
   : _server(port), _ws("/ws"),
     _instrument(nullptr), _player(nullptr), _wirelessManager(nullptr),
     _webVelocity(WEB_DEFAULT_VELOCITY), _lastStatusBroadcast(0), _lastWsCleanup(0),
-    _opPending(false), _opAbandoned(false), _opDoneSeq(0), _opSeqCounter(0),
     _opMutex(nullptr), _opDone(nullptr),
     _wsOpHead(0), _wsOpTail(0), _wsOpCount(0), _wsOpMutex(nullptr),
-    _calCancelRequested(false), _cfgMutex(nullptr),
+    _cfgMutex(nullptr),
     _uploadSequence(0)
 #if MIC_ENABLED
     , _audio(nullptr), _autoCal(nullptr), _micMonitorEnabled(false), _lastAudioBroadcast(0), _lastAcalBroadcast(0)
@@ -194,10 +197,31 @@ void WebConfigurator::begin(InstrumentManager* instrument, MidiFilePlayer* playe
   _player = player;
 
   // Hand-off vers la tache loop() : un mutex serialise les producteurs AsyncTCP,
-  // un semaphore binaire signale la fin de l'execution cote loop().
+  // un semaphore binaire signale la fin de l'execution cote loop(), et une
+  // section critique protege les transitions d'etat du canal.
   _opMutex = xSemaphoreCreateMutex();
   _opDone = xSemaphoreCreateBinary();
-  _opPending = false;
+  {
+    WebOpChannelOps chanOps;
+    chanOps.lockProducer   = &WebConfigurator::chanLockProducer;
+    chanOps.unlockProducer = &WebConfigurator::chanUnlockProducer;
+    chanOps.enterState     = &WebConfigurator::chanEnterState;
+    chanOps.exitState      = &WebConfigurator::chanExitState;
+    chanOps.waitDone       = &WebConfigurator::chanWaitDone;
+    chanOps.signalDone     = &WebConfigurator::chanSignalDone;
+    chanOps.drainDone      = &WebConfigurator::chanDrainDone;
+    chanOps.nowMs          = &WebConfigurator::chanNowMs;
+    chanOps.yieldMs        = &WebConfigurator::chanYieldMs;
+    chanOps.ctx            = this;
+    // Un semaphore absent (tas epuise) laisse le canal INUTILISABLE : chaque
+    // runOnLoop() rendra false et les routes HTTP repondront "busy". C'est le
+    // meme choix qu'ailleurs dans ce fichier - echouer en fermeture plutot que
+    // de faire croire a une serialisation qui n'existe pas.
+    if (_opMutex == nullptr || _opDone == nullptr) {
+      chanOps.lockProducer = nullptr;
+    }
+    _opChannel.begin(chanOps, WEBOP_TIMEOUT_MS);
+  }
   // File des commandes WebSocket : un MUTEX, pas un spinlock. Copier une WebOp
   // copie ses String, donc alloue sur le tas ; faire cela dans une section
   // critique (interruptions coupees) est interdit.
@@ -208,7 +232,9 @@ void WebConfigurator::begin(InstrumentManager* instrument, MidiFilePlayer* playe
   // l'echec, parce qu'apres begin() un mutex absent ne veut PAS dire la meme
   // chose qu'avant - voir lockConfig().
   _cfgMutexFailed = (_cfgMutex == nullptr);
-  _calCancelRequested = false;
+  // Drapeau d'annulation NON PERDABLE : sa section critique est injectee ici.
+  _calCancelRequested.begin(&WebConfigurator::calCancelEnter,
+                            &WebConfigurator::calCancelExit, this);
 
   // Sessions web : jeton aleatoire tire du RNG materiel, expiration glissante.
   DeviceSecrets::begin();
@@ -225,6 +251,12 @@ void WebConfigurator::begin(InstrumentManager* instrument, MidiFilePlayer* playe
   if (!LittleFS.exists(MIDI_DIR)) {
     LittleFS.mkdir(MIDI_DIR);
   }
+
+  // Reparer une installation de fichier MIDI coupee par une panne de courant,
+  // AVANT que la premiere requete ne puisse lister le repertoire. Voir C-6 et
+  // FileTransaction.h : un .bak orphelin signifie que la destination a peut-etre
+  // disparu, et lui seul peut la remettre.
+  recoverInterruptedMidiInstalls();
 
   // Configurer les routes HTTP
   setupRoutes();
@@ -337,9 +369,13 @@ void WebConfigurator::update() {
       requestCalibrationCancel();
 #endif
       // La session de test manuelle ne possede plus rien : la panique a deja
-      // remis les actionneurs au repos. `false` parce qu'en redemander un
+      // ete EXECUTEE (c'est le compteur `panicCount()` qui a bouge, et il ne
+      // compte que les paniques reellement appliquees par loop()), donc les
+      // actionneurs sont deja au repos. `false` parce qu'en redemander un
       // second n'ajouterait rien - et parce que endTestSession() annule aussi
       // le note-off differe d'une note de test, qui n'a plus lieu d'etre.
+      // C'est le seul endTestSession(false) dont la mise en securite est
+      // PASSEE et non demandee ; les autres la demandent juste avant.
       endTestSession(false);
     }
   }
@@ -351,8 +387,10 @@ void WebConfigurator::update() {
   // cycle suivant. Le drapeau, lui, ne peut pas etre perdu. Il est consomme ICI,
   // apres les operations web (un "start" poste avant l'annulation est donc bien
   // annule) et AVANT _autoCal->update() plus bas.
-  if (_calCancelRequested) {
-    _calCancelRequested = false;
+  // Lecture ET effacement indivisibles : une annulation deposee pendant que
+  // cancelActiveActuatorSession() s'execute survit a ce traitement (elle sera
+  // prise au tour suivant) au lieu d'etre effacee par lui.
+  if (takeCalibrationCancel()) {
     cancelActiveActuatorSession();
   }
 #endif
@@ -369,15 +407,27 @@ void WebConfigurator::update() {
   // Server-side safety net for manual actuator tests: if the owning client stops
   // refreshing the session (tab suspended, browser crash, Wi-Fi lost, stop lost),
   // return the actuators to a safe state regardless of any browser-side timeout.
-  if (_testActive && (now - _testStartTime) >= TEST_SESSION_MAX_MS) {
+  // Les deux champs sont lus dans la meme section critique : `_testActive` vu a
+  // vrai avec un `_testStartTime` deja remis a zero par l'autre tache faisait
+  // se declencher le filet a contretemps.
+  if (testSessionExpired(now)) {
     endTestSession(true);
     _ws.textAll("{\"t\":\"test_expired\"}");
   }
 
   // Auto-stop a "test note" preview once its bounded duration has elapsed.
-  if (_testNoteOffTime != 0 && (int32_t)(now - _testNoteOffTime) >= 0) {
-    if (_instrument) _instrument->postCommand(ACMD_NOTE_OFF, _testNoteMidi);
-    _testNoteOffTime = 0;
+  // Lecture ET effacement indivisibles : sinon un `test_note` recu entre la
+  // lecture de la note et l'effacement de l'echeance faisait eteindre la
+  // MAUVAISE note et effacait l'echeance de la nouvelle, qui restait alors a
+  // sonner indefiniment - air ouvert, plus aucune extinction programmee.
+  {
+    uint8_t dueNote = 0;
+    if (takeDueTestNoteOff(now, dueNote) && _instrument) {
+      // L'extinction est deja consommee : si l'anneau la refuse, elle serait
+      // perdue. On escalade comme pour tout autre ordre qui RETIRE de
+      // l'energie (C-1).
+      postStopCommand(ACMD_NOTE_OFF, dueNote);
+    }
   }
 
   // Nettoyage periodique des clients WS deconnectes
@@ -794,59 +844,109 @@ void WebConfigurator::releaseWebOp(WebOp& op) {
   }
 }
 
+// --- Adaptateurs FreeRTOS injectes dans WebOpChannel -------------------------
+// Le module reste PUR (ni FreeRTOS, ni Arduino) pour etre testable sur hote ;
+// les vraies primitives sont ici, et nulle part ailleurs.
+bool WebConfigurator::chanLockProducer(void* ctx, uint32_t timeoutMs) {
+  WebConfigurator* self = static_cast<WebConfigurator*>(ctx);
+  if (self->_opMutex == nullptr) return false;
+  return xSemaphoreTake(self->_opMutex, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
+}
+void WebConfigurator::chanUnlockProducer(void* ctx) {
+  WebConfigurator* self = static_cast<WebConfigurator*>(ctx);
+  if (self->_opMutex) xSemaphoreGive(self->_opMutex);
+}
+void WebConfigurator::chanEnterState(void* ctx) {
+  portENTER_CRITICAL(&static_cast<WebConfigurator*>(ctx)->_opStateMux);
+}
+void WebConfigurator::chanExitState(void* ctx) {
+  portEXIT_CRITICAL(&static_cast<WebConfigurator*>(ctx)->_opStateMux);
+}
+bool WebConfigurator::chanWaitDone(void* ctx, uint32_t timeoutMs) {
+  WebConfigurator* self = static_cast<WebConfigurator*>(ctx);
+  if (self->_opDone == nullptr) return false;
+  return xSemaphoreTake(self->_opDone, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
+}
+void WebConfigurator::chanSignalDone(void* ctx) {
+  WebConfigurator* self = static_cast<WebConfigurator*>(ctx);
+  if (self->_opDone) xSemaphoreGive(self->_opDone);
+}
+void WebConfigurator::chanDrainDone(void* ctx) {
+  WebConfigurator* self = static_cast<WebConfigurator*>(ctx);
+  if (self->_opDone) xSemaphoreTake(self->_opDone, 0);
+}
+uint32_t WebConfigurator::chanNowMs(void* ctx) {
+  (void)ctx;
+  return (uint32_t)millis();
+}
+void WebConfigurator::chanYieldMs(void* ctx, uint32_t ms) {
+  (void)ctx;
+  vTaskDelay(pdMS_TO_TICKS(ms));
+}
+
 bool WebConfigurator::runOnLoop(WebOp& op) {
-  if (_opMutex == nullptr || _opDone == nullptr) return false;
-  if (xSemaphoreTake(_opMutex, pdMS_TO_TICKS(WEBOP_TIMEOUT_MS)) != pdTRUE) return false;
-
-  // Ne JAMAIS ecraser une operation que loop() serait encore en train d'executer :
-  // l'emplacement est unique et il serait lu et ecrit en meme temps.
-  unsigned long spinDeadline = millis() + WEBOP_TIMEOUT_MS;
-  while (_opPending && (int32_t)(millis() - spinDeadline) < 0) {
-    vTaskDelay(pdMS_TO_TICKS(1));
-  }
-  if (_opPending) {
-    xSemaphoreGive(_opMutex);
-    return false;   // l'appelant garde la propriete de ce qu'il portait
+  // ETAPE 1 - prendre la propriete de l'emplacement. Tant que beginPublish()
+  // n'a pas rendu true, `_op` ne nous appartient pas et nous n'y touchons pas.
+  WebOpTicket ticket;
+  if (!_opChannel.beginPublish(ticket)) {
+    // Rien n'a ete pris, rien n'est a relacher, et l'appelant garde la
+    // propriete de ce qu'il portait (son candidat de configuration).
+    return false;
   }
 
-  uint32_t seq = ++_opSeqCounter;
-  if (seq == 0) seq = ++_opSeqCounter;   // 0 est reserve a "aucune operation"
-
-  // Vider un eventuel signal de fin laisse par une operation abandonnee, sinon
-  // l'attente ci-dessous retournerait immediatement avec un resultat etranger.
-  xSemaphoreTake(_opDone, 0);
-
+  // ETAPE 2 - ecrire la charge utile, PUIS la publier. L'ordre compte : la
+  // publication est ce qui la rend visible pour loop().
   _op = op;
-  _op.seq = seq;
+  _op.seq = ticket.seq;
   _op.ok = false;
   _op.httpStatus = 200;
   _op.json = "";
-  _opAbandoned = false;
-  _opPending = true;
-  // Propriete transferee : l'appelant ne doit plus liberer le candidat.
+  // Propriete transferee : l'appelant ne doit plus liberer le candidat, c'est
+  // loop() qui le fera - qu'elle applique ou abandonne l'operation.
   op.candidate = nullptr;
+  _opChannel.publish(ticket);
 
-  bool done = false;
-  unsigned long deadline = millis() + WEBOP_TIMEOUT_MS;
-  while (true) {
-    int32_t remaining = (int32_t)(deadline - millis());
-    if (remaining <= 0) break;
-    if (xSemaphoreTake(_opDone, pdMS_TO_TICKS(remaining)) != pdTRUE) break;
-    // Ne retenir que la fin de NOTRE operation (une operation precedemment
-    // abandonnee peut avoir signale sa fin entre-temps).
-    if (_opDoneSeq == seq) { done = true; break; }
-  }
+  // ETAPE 3 - attendre NOTRE resultat (le numero de sequence est verifie par le
+  // canal : un resultat etranger ne peut pas etre pris pour le notre).
+  const bool done = _opChannel.awaitResult(ticket);
+  if (done) op = _op;
 
-  if (done) {
-    op = _op;
-  } else {
-    // loop() n'a pas repondu a temps. On marque l'operation abandonnee : si elle
-    // n'a pas encore demarre, loop() la liberera sans l'appliquer ; si elle a
-    // demarre, elle ira a son terme mais personne n'attendra son resultat.
-    _opAbandoned = true;
-  }
-  xSemaphoreGive(_opMutex);
+  // ETAPE 4 - relacher. Si le resultat a ete recupere, l'emplacement redevient
+  // libre ici ; sinon l'operation est marquee abandonnee et c'est loop() qui le
+  // liberera, une fois qu'elle aura fini d'en disposer.
+  _opChannel.endPublish(ticket);
   return done;
+}
+
+/*******************************************************************************
+ * Annulation de calibration NON PERDABLE (C-3)
+ *
+ * Le drapeau etait `volatile`. `volatile` interdit la mise en cache par le
+ * compilateur - rien de plus : ni atomicite, ni barriere, ni exclusion. La
+ * sequence "si le drapeau est pose, l'effacer" tenait en DEUX acces distincts,
+ * et une annulation deposee par AsyncTCP entre les deux disparaissait sans
+ * avoir ete traitee. Consequence concrete : apres un panic, AutoCalibrator
+ * restait "running" et reappliquait ses commandes au pas suivant (~740 ms) -
+ * valve rouverte, souffle relance, alors que plus aucun transport ne repond.
+ *
+ * Meme motif que CommandQueue::takePanicRequest() et que
+ * InstrumentManager::takeResetControllersRequest() : lecture ET effacement dans
+ * UNE section critique. Les sections sont minuscules (un booleen), ce qui est
+ * la condition pour utiliser un portMUX - il masque les interruptions.
+ ******************************************************************************/
+void WebConfigurator::calCancelEnter(void* ctx) {
+  portENTER_CRITICAL(&static_cast<WebConfigurator*>(ctx)->_calCancelMux);
+}
+void WebConfigurator::calCancelExit(void* ctx) {
+  portEXIT_CRITICAL(&static_cast<WebConfigurator*>(ctx)->_calCancelMux);
+}
+
+void WebConfigurator::requestCalibrationCancel() {
+  _calCancelRequested.request();
+}
+
+bool WebConfigurator::takeCalibrationCancel() {
+  return _calCancelRequested.take();
 }
 
 // Cette file etait protegee par un portMUX (spinlock + interruptions coupees).
@@ -892,15 +992,22 @@ void WebConfigurator::serviceWsOps() {
 }
 
 void WebConfigurator::servicePendingOp() {
-  if (!_opPending) return;
-  bool abandoned = _opAbandoned;
-  if (!abandoned) executeWebOp(_op);
+  // claim() fait passer l'emplacement de ARMED a RUNNING dans UNE section
+  // critique : une operation publiee est prise exactement une fois, et
+  // l'emplacement nous appartient jusqu'a complete().
+  WebOpClaim taken;
+  if (!_opChannel.claim(taken)) return;
+
+  // `execute` est faux quand l'appelant a deja renonce : on ne l'applique pas,
+  // mais on libere quand meme ce qu'elle portait - le candidat de
+  // configuration lui a ete transfere, personne d'autre ne le liberera.
+  if (taken.execute) executeWebOp(_op);
   releaseWebOp(_op);
-  uint32_t seq = _op.seq;
-  _opPending = false;
-  _opDoneSeq = seq;
-  // Ne signaler que si quelqu'un attend encore ce resultat.
-  if (!abandoned && _opDone) xSemaphoreGive(_opDone);
+
+  // complete() publie le resultat et reveille l'appelant, OU libere
+  // l'emplacement tout de suite s'il a renonce entre-temps. Les deux cas sont
+  // decides dans la meme section critique que l'abandon : jamais les deux.
+  _opChannel.complete(taken);
 }
 
 /*******************************************************************************
@@ -1121,6 +1228,112 @@ void WebConfigurator::releaseUploadLock(AsyncWebServerRequest* request) {
   _upload.errorCode = "";
 }
 
+/*******************************************************************************
+ * Remplacement MIDI transactionnel - adaptateurs LittleFS (C-6)
+ *
+ * FileTransaction reste PUR : il ne connait que quatre pointeurs de fonction.
+ * Les voici. `ctx` n'est pas utilise - LittleFS est un singleton global - mais
+ * la signature le porte parce que le faux systeme de fichiers des tests, lui,
+ * y met son etat.
+ ******************************************************************************/
+
+// Prefixe des sauvegardes de transaction, a la RACINE : ni handleMidiList() ni
+// getMidiStorageUsed() ne parcourent la racine, donc un .bak survivant a une
+// coupure de courant n'apparait jamais dans /api/midi/list et n'est jamais
+// compte dans le quota. Le nom du fichier de destination est conserve dans le
+// nom du .bak : c'est ce qui permet a recoverInterruptedMidiInstalls() de
+// savoir, au demarrage, OU remettre la sauvegarde.
+static const char* const kMidiBakPrefix = "/.mbk_";
+
+String WebConfigurator::midiBackupPathFor(const String& fileName) {
+  // BUDGET DE LONGUEUR : sanitizeMidiFileName() plafonne le nom a 48
+  // caracteres ; avec le prefixe on reste a 54, sous la limite de nom de
+  // LittleFS sur ESP32 (64). Si cette limite venait a baisser, l'ouverture du
+  // .bak echouerait - et fileTxInstall() rendrait false SANS avoir touche a la
+  // destination, donc l'utilisateur garderait son fichier. L'echec de ce cote
+  // est deja le bon.
+  return String(kMidiBakPrefix) + fileName;
+}
+
+bool WebConfigurator::fsTxExists(void* ctx, const char* path) {
+  (void)ctx;
+  return path != nullptr && LittleFS.exists(path);
+}
+
+bool WebConfigurator::fsTxRemove(void* ctx, const char* path) {
+  (void)ctx;
+  return path != nullptr && LittleFS.remove(path);
+}
+
+bool WebConfigurator::fsTxRename(void* ctx, const char* from, const char* to) {
+  (void)ctx;
+  return from != nullptr && to != nullptr && LittleFS.rename(from, to);
+}
+
+bool WebConfigurator::fsTxCopy(void* ctx, const char* from, const char* to) {
+  (void)ctx;
+  if (from == nullptr || to == nullptr) return false;
+  // Repli pour les versions de LittleFS ESP32 dont le rename echoue. La copie
+  // ratee est effacee : un fichier tronque a la destination serait PIRE qu'une
+  // absence, puisque fileTxInstall() le prendrait pour une installation reussie.
+  File src = LittleFS.open(from, "r");
+  if (!src) return false;
+  File dst = LittleFS.open(to, "w");
+  if (!dst) { src.close(); return false; }
+  bool ok = true;
+  uint8_t buf[512];
+  while (src.available()) {
+    const size_t n = src.read(buf, sizeof(buf));
+    if (n == 0) break;
+    if (dst.write(buf, n) != n) { ok = false; break; }
+  }
+  dst.close();
+  src.close();
+  if (!ok) LittleFS.remove(to);
+  return ok;
+}
+
+void WebConfigurator::recoverInterruptedMidiInstalls() {
+  // Appelee depuis begin(), sur la tache loop(), AVANT que la premiere requete
+  // ne puisse lister le repertoire MIDI.
+  //
+  // Un .bak a la racine signifie qu'une installation a ete coupee entre
+  // "dest -> bak" et "tmp -> dest" : la destination est peut-etre absente, et
+  // ce .bak est alors la DERNIERE copie du morceau. fileTxRecover() tranche :
+  // destination presente -> le .bak est perime et part ; destination absente ->
+  // le .bak est promu.
+  FileTxOps fsOps;
+  fsOps.exists = &WebConfigurator::fsTxExists;
+  fsOps.remove = &WebConfigurator::fsTxRemove;
+  fsOps.rename = &WebConfigurator::fsTxRename;
+  fsOps.copy   = &WebConfigurator::fsTxCopy;
+  fsOps.ctx    = nullptr;
+
+  const unsigned int prefixLen = (unsigned int)strlen(kMidiBakPrefix);
+  // Les noms sont collectes AVANT d'agir : renommer pendant qu'on itere sur le
+  // repertoire ferait manquer des entrees sur certaines implementations.
+  String pending[8];
+  uint8_t count = 0;
+  File root = LittleFS.open("/");
+  if (root && root.isDirectory()) {
+    File f = root.openNextFile();
+    while (f && count < 8) {
+      if (!f.isDirectory()) {
+        String name = String(f.name());
+        if (!name.startsWith("/")) name = String("/") + name;
+        if (name.startsWith(kMidiBakPrefix) && name.length() > prefixLen) {
+          pending[count++] = name;
+        }
+      }
+      f = root.openNextFile();
+    }
+  }
+  for (uint8_t i = 0; i < count; i++) {
+    const String destPath = String(MIDI_DIR) + "/" + pending[i].substring(prefixLen);
+    fileTxRecover(fsOps, destPath.c_str(), pending[i].c_str());
+  }
+}
+
 void WebConfigurator::abandonStaleUpload(unsigned long now) {
   // Transfert interrompu (onglet ferme, Wi-Fi coupe) : le slot serait sinon
   // bloque pour toujours et le fichier temporaire resterait sur LittleFS.
@@ -1142,6 +1355,21 @@ bool WebConfigurator::cfgGuardLock(void* ctx) {
 }
 void WebConfigurator::cfgGuardUnlock(void* ctx) {
   static_cast<WebConfigurator*>(ctx)->unlockConfig();
+}
+
+// MEMES primitives, vues par ConfigSnapshot. Un seul verrou pour un seul objet
+// protege : le commit et toutes les lectures AsyncTCP de la configuration
+// active se serialisent entre eux.
+ConfigLockOps WebConfigurator::configLockOps() {
+  ConfigLockOps ops;
+  ops.lock = &WebConfigurator::cfgGuardLock;
+  ops.unlock = &WebConfigurator::cfgGuardUnlock;
+  ops.ctx = this;
+  return ops;
+}
+
+bool WebConfigurator::snapshotActiveConfig(RuntimeConfig& dst) {
+  return snapshotConfig(configLockOps(), cfg, dst);
 }
 
 void WebConfigurator::executeWebOp(WebOp& op) {
@@ -1373,32 +1601,42 @@ void WebConfigurator::executeWebOp(WebOp& op) {
       if (!LittleFS.exists(MIDI_DIR)) LittleFS.mkdir(MIDI_DIR);
 
       // Le contenu est valide : on peut maintenant remplacer la destination.
-      if (LittleFS.exists(destPath)) LittleFS.remove(destPath);
-      bool moved = LittleFS.rename(_upload.tmpPath, destPath);
+      //
+      // REMPLACEMENT NON DESTRUCTIF (C-6). L'ancienne sequence etait
+      //     if (exists(dest)) remove(dest);        // ancien EFFACE
+      //     moved = rename(tmp, dest);             // ... et si ca rate ?
+      // suivie d'un repli par copie. Quand le rename ET le repli echouaient
+      // (LittleFS plein, secteur fatigue), l'ancien fichier etait deja detruit
+      // et le nouveau n'arrivait jamais : l'utilisateur perdait un morceau EN
+      // TELEVERSANT un morceau, c'est-a-dire au moment ou il croyait en gagner
+      // un. fileTxInstall() met l'ancien DE COTE (dest -> bak) au lieu de le
+      // supprimer, et le remet en place si l'installation echoue ; le .bak
+      // n'est efface qu'apres succes.
+      //
+      // Le .bak vit a la RACINE, hors de MIDI_DIR, comme le .tmp d'upload :
+      // ni handleMidiList() ni getMidiStorageUsed() ne parcourent la racine,
+      // donc aucun residu de transaction ne peut apparaitre dans
+      // /api/midi/list ni etre compte dans le quota.
+      const String bakPath = midiBackupPathFor(_upload.fileName);
+      FileTxOps fsOps;
+      fsOps.exists = &WebConfigurator::fsTxExists;
+      fsOps.remove = &WebConfigurator::fsTxRemove;
+      fsOps.rename = &WebConfigurator::fsTxRename;
+      fsOps.copy   = &WebConfigurator::fsTxCopy;
+      fsOps.ctx    = nullptr;   // LittleFS est un singleton global
+      const bool moved = fileTxInstall(fsOps, _upload.tmpPath.c_str(),
+                                       destPath.c_str(), bakPath.c_str());
       if (!moved) {
-        // Repli : copie manuelle (certaines versions de LittleFS ESP32).
-        File src = LittleFS.open(_upload.tmpPath, "r");
-        File dst = LittleFS.open(destPath, "w");
-        if (src && dst) {
-          uint8_t buf[512];
-          moved = true;
-          while (src.available()) {
-            size_t n = src.read(buf, sizeof(buf));
-            if (dst.write(buf, n) != n) { moved = false; break; }
-          }
-          dst.close();
-          src.close();
-          if (moved) LittleFS.remove(_upload.tmpPath);
-          else LittleFS.remove(destPath);
-        } else {
-          if (src) src.close();
-          if (dst) dst.close();
-        }
-      }
-      if (!moved) {
+        // L'ANCIEN FICHIER EST TOUJOURS LA (restaure depuis le .bak par
+        // fileTxInstall, ou jamais deplace). Le lecteur pointe en revanche sur
+        // le temporaire, qu'on vient de valider : on le fait revenir sur la
+        // destination si elle existe, pour ne pas laisser un lecteur charge sur
+        // un fichier que releaseUploadLock() va supprimer.
+        if (_player && LittleFS.exists(destPath)) _player->loadFile(destPath.c_str());
         resp["ok"] = false;
         resp["error"] = "storage_error";
         resp["msg"] = "MIDI file storage error";
+        resp["preserved"] = LittleFS.exists(destPath);
         serializeJson(resp, op.json);
         op.ok = false;
         op.httpStatus = 500;
@@ -1673,9 +1911,7 @@ bool WebConfigurator::beginTestSession(uint32_t clientId) {
   // Ownership cannot be stolen: while a manual test is active and owned by another
   // client, refuse a competing client's test command so two browsers can never
   // fight over the actuators. The owner may keep refreshing its own session.
-  if (_testActive && _testOwnerClientId != 0 && clientId != _testOwnerClientId) {
-    return false;
-  }
+  //
   // PLAFOND ABSOLU, PAS GLISSANT. _testStartTime etait repose a CHAQUE commande
   // de test : le filet de securite de TEST_SESSION_MAX_MS etait donc repousse
   // par le flot qu'il est cense arreter. Un client qui envoie test_sol toutes
@@ -1688,10 +1924,56 @@ bool WebConfigurator::beginTestSession(uint32_t clientId) {
   // interrompu une fois par ce retour au repos, et la commande suivante ouvre
   // simplement une nouvelle session. C'est le compromis voulu - un mode degrade
   // doit etre sur, pas pratique.
-  if (!_testActive) _testStartTime = millis();
-  _testOwnerClientId = clientId;
-  _testActive = true;
-  return true;
+  // La decision et la prise sont faites dans UNE section critique. Separees,
+  // deux clients pouvaient toutes deux voir "libre" et se croire proprietaires.
+  const unsigned long now = millis();
+  bool granted;
+  portENTER_CRITICAL(&_sessionMux);
+  if (_testActive && _testOwnerClientId != 0 && clientId != _testOwnerClientId) {
+    granted = false;
+  } else {
+    if (!_testActive) _testStartTime = now;
+    _testOwnerClientId = clientId;
+    _testActive = true;
+    granted = true;
+  }
+  portEXIT_CRITICAL(&_sessionMux);
+  return granted;
+}
+
+bool WebConfigurator::testSessionExpired(unsigned long now) const {
+  portENTER_CRITICAL(&_sessionMux);
+  const bool expired = _testActive && (now - _testStartTime) >= TEST_SESSION_MAX_MS;
+  portEXIT_CRITICAL(&_sessionMux);
+  return expired;
+}
+
+bool WebConfigurator::isTestOwner(uint32_t clientId) const {
+  portENTER_CRITICAL(&_sessionMux);
+  const bool owner = _testActive && _testOwnerClientId == clientId;
+  portEXIT_CRITICAL(&_sessionMux);
+  return owner;
+}
+
+void WebConfigurator::armTestNoteOff(uint8_t note, unsigned long offTime) {
+  // La note et son echeance forment un COUPLE : posees ensemble, prises
+  // ensemble. Les ecrire separement laissait update() lire la note d'une
+  // extinction et l'echeance d'une autre.
+  portENTER_CRITICAL(&_sessionMux);
+  _testNoteMidi = note;
+  _testNoteOffTime = offTime;
+  portEXIT_CRITICAL(&_sessionMux);
+}
+
+bool WebConfigurator::takeDueTestNoteOff(unsigned long now, uint8_t& note) {
+  portENTER_CRITICAL(&_sessionMux);
+  const bool due = (_testNoteOffTime != 0) && (int32_t)(now - _testNoteOffTime) >= 0;
+  if (due) {
+    note = _testNoteMidi;
+    _testNoteOffTime = 0;
+  }
+  portEXIT_CRITICAL(&_sessionMux);
+  return due;
 }
 
 bool WebConfigurator::allowActuatorCommand(unsigned long now) {
@@ -1711,10 +1993,35 @@ void WebConfigurator::endTestSession(bool safeHardware) {
   // Le panic est POSTE : endTestSession() est appelee aussi bien depuis update()
   // (tache loop()) que depuis un evenement WebSocket (tache AsyncTCP), et seul
   // loop() a le droit de piloter les actionneurs.
+  //
+  // ORDRE ESSENTIEL (C-1) : la mise en securite est demandee AVANT que la
+  // session ne soit declaree terminee. La session EST le filet - son plafond
+  // TEST_SESSION_MAX_MS et l'extinction differee de la note de test. Effacer le
+  // filet d'abord ouvrirait une fenetre, si courte soit-elle, ou plus rien ne
+  // ramenera le materiel au repos. requestPanic() ne peut pas echouer : c'est
+  // un drapeau dedie, hors anneau, qui vide aussi les commandes en attente.
   if (safeHardware && _instrument) _instrument->requestPanic();
+  portENTER_CRITICAL(&_sessionMux);
   _testActive = false;
   _testOwnerClientId = 0;
   _testNoteOffTime = 0;   // cancel any pending test-note auto-stop
+  portEXIT_CRITICAL(&_sessionMux);
+}
+
+bool WebConfigurator::postStopCommand(uint8_t cmdType, uint8_t a) {
+  if (_instrument == nullptr) {
+    // Pas d'instrument : il n'y a aucun actionneur alimente a arreter. La
+    // session peut etre declaree terminee sans rien cacher.
+    return true;
+  }
+  if (_instrument->postCommand(cmdType, a)) return true;
+
+  // L'anneau a REFUSE l'ordre d'arret. C'est precisement le cas que l'ancien
+  // code ignorait - il jetait la valeur de retour puis retirait le filet de
+  // securite, et la pompe restait alimentee sans limite de temps. On escalade
+  // donc vers le seul chemin qui ne peut pas etre perdu.
+  _instrument->requestPanic();
+  return false;
 }
 
 void WebConfigurator::scheduleControlledRestart() {
@@ -1936,7 +2243,23 @@ void WebConfigurator::setupRoutes() {
       doc["state"] = (int)wm.getState();
       doc["ip"] = wm.getIPAddress();
       doc["ap"] = wm.isAPMode();
-      doc["ssid"] = cfg.wifiSsid;   // echappe par ArduinoJson
+      // LECTURE SOUS VERROU, et pas seulement par principe : `cfg.wifiSsid` est
+      // un char[33]. Le remplacer est une copie d'octets ; un lecteur AsyncTCP
+      // qui la traverse peut n'en voir que la moitie, et RIEN ne garantit alors
+      // qu'un '\0' se trouve encore dans le tableau - le serialiseur JSON lirait
+      // au-dela. snapshotConfigString() borne la copie et pose le terminateur :
+      // le pire cas devient un SSID tronque.
+      char ssid[sizeof(cfg.wifiSsid)];
+      ssid[0] = '\0';
+      const bool ssidOk = snapshotConfigString(configLockOps(), cfg.wifiSsid,
+                                               ssid, sizeof(ssid));
+      // `ssid` est un char* non const : ArduinoJson en DUPLIQUE le contenu dans
+      // le document, il ne garde pas le pointeur sur ce tampon de pile.
+      doc["ssid"] = ssid;   // echappe par ArduinoJson
+      // Verrou refuse (un commit est en cours) : le champ part vide et le
+      // client sait pourquoi. Cette route est purement informative, elle ne
+      // merite pas un 503 comme GET /api/config.
+      if (!ssidOk) doc["ssid_busy"] = true;
       if (wm.getState() == WIFI_STATE_STA_CONNECTED) doc["rssi"] = WiFi.RSSI();
     }
     String json;
@@ -2327,9 +2650,28 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
     // comme ici, il abandonne et la carte redemarre. La protection etait ecrite,
     // relue, et ne pouvait pas se declencher : une requete web sur un tas serre
     // rebootait l'instrument au lieu de recevoir le 500 prevu juste en dessous.
-    RuntimeConfig* candidatePtr = new (std::nothrow) RuntimeConfig(cfg);
+    //
+    // DEUX TEMPS, ET C'EST LA CORRECTION (C-2). L'allocation est faite HORS
+    // verrou - `new` prend le verrou de l'allocateur, ce qui n'a rien a faire
+    // sous le verrou de configuration -, puis le contenu est pris sous verrou
+    // par snapshotActiveConfig(). L'ancienne ligne construisait le candidat par
+    // COPIE de `cfg` depuis la tache AsyncTCP sans prendre `_cfgMutex`, pendant
+    // que loop() pouvait etre en train de remplacer `cfg` : 5132 octets recopies
+    // sous le nez d'un commit, donc un candidat mi-ancien mi-nouveau - par
+    // exemple `numNotes` de la nouvelle avec `notes[]` de l'ancienne - qui etait
+    // ensuite valide, sauvegarde et active comme s'il etait coherent.
+    RuntimeConfig* candidatePtr = new (std::nothrow) RuntimeConfig();
     if (candidatePtr == nullptr) {
       request->send(500, "application/json", "{\"ok\":false,\"error\":\"out_of_memory\"}");
+      return;
+    }
+    if (!snapshotActiveConfig(*candidatePtr)) {
+      // Verrou refuse : un commit est en cours. Le candidat n'a RIEN de valide
+      // dedans (snapshotConfig() ne copie rien de partiel), donc on n'essaie pas
+      // de continuer avec. Meme reponse que les deux gros lecteurs deja en
+      // place, GET /api/config et GET /api/diagnostics.
+      delete candidatePtr;
+      request->send(503, "application/json", "{\"ok\":false,\"error\":\"config_busy\"}");
       return;
     }
     RuntimeConfig& candidate = *candidatePtr;
@@ -3250,8 +3592,25 @@ void WebConfigurator::handleMidiUploadComplete(AsyncWebServerRequest* request) {
   WebOp op;
   op.type = WEBOP_MIDI_FINALIZE;
   bool done = runOnLoop(op);
-  releaseUploadLock(request);
-  if (!done) {
+  if (done) {
+    // L'operation est terminee : loop() ne touche plus a `_upload`, la tache
+    // AsyncTCP en reprend la propriete et peut liberer le slot.
+    releaseUploadLock(request);
+  } else {
+    // PAS DE LIBERATION ICI (C-5). Un `false` peut vouloir dire deux choses :
+    // l'operation n'a jamais ete publiee, ou l'echeance est tombee pendant que
+    // loop() l'EXECUTAIT. Dans ce second cas, releaseUploadLock() remettrait
+    // `_upload.tmpPath` et `_upload.fileName` - des String, donc un tas libere -
+    // a vide pendant que loop() les lit : une lecture apres liberation,
+    // declenchable par un simple timeout de 3 s sur une requete d'upload.
+    //
+    // La liberation revient donc a loop(). On rend seulement le slot
+    // immediatement perime pour qu'elle le reprenne des la passe suivante :
+    // abandonStaleUpload() s'execute APRES servicePendingOp() dans update(),
+    // donc jamais pendant l'execution de l'operation. La soustraction
+    // debordante est volontaire et correcte en arithmetique modulaire - c'est
+    // deja la convention de comparaison de ce fichier.
+    _upload.lastActivity = millis() - UPLOAD_LOCK_TIMEOUT_MS - 1;
     request->send(503, "application/json", "{\"ok\":false,\"error\":\"busy\"}");
     return;
   }
@@ -3299,6 +3658,14 @@ void WebConfigurator::handleMidiList(AsyncWebServerRequest* request) {
     }
   }
   doc["used"] = getMidiStorageUsed();
+  // LECTURE D'UN SEUL CHAMP, LAISSEE SIMPLE - choix documente, pas oubli.
+  // `midiStorageLimitKb` est un uint16_t aligne : sa lecture est indivisible
+  // sur Xtensa, donc on voit l'ancienne OU la nouvelle valeur, jamais un
+  // melange. Cette valeur n'est ici qu'un affichage de quota ; elle n'est
+  // comparee a rien dans cette reponse. Prendre le verrou ferait attendre un
+  // commit pour afficher un nombre qui aura peut-etre change avant que le
+  // navigateur ne le dessine. (Le quota qui DECIDE, lui, est relu par loop()
+  // dans WEBOP_MIDI_FINALIZE, ou `cfg` appartient a loop().)
   doc["limit"] = (size_t)cfg.midiStorageLimitKb * 1024;
   if (_player && _player->isFileLoaded()) {
     doc["loaded"] = _player->getFileName();
@@ -3416,7 +3783,11 @@ void WebConfigurator::onWsEvent(AsyncWebSocket* server, AsyncWebSocketClient* cl
         // Outside calibration, only the OWNER of an active manual test triggers a
         // safe state on disconnect. A status-only client (or the client that
         // merely started MIDI playback) leaving must not stop the instrument.
-        if (_testActive && client->id() == _testOwnerClientId) {
+        // Lecture coherente du couple (actif, proprietaire) : lus separement,
+        // ils pouvaient decrire deux instants differents.
+        if (isTestOwner(client->id())) {
+          // `true` : endTestSession() demande le panic AVANT de retirer le
+          // filet, donc la mise en securite est garantie a ce point.
           endTestSession(true);
         }
       }
@@ -3559,13 +3930,24 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
     // Drapeau non perdable : un panic ne doit jamais laisser _autoCal "running".
     requestCalibrationCancel();
 #endif
-    endTestSession(false);   // hardware is safed just below by the panic request
+    // ORDRE : le panic D'ABORD, la fin de session ENSUITE. L'inverse retirait le
+    // filet (plafond de session, extinction differee de la note de test) avant
+    // d'avoir demande quoi que ce soit au materiel - une fenetre, si breve
+    // soit-elle, sans aucun retour au repos garanti.
     // Le panic n'occupe pas une place de la file : il ne peut pas etre perdu et
     // il annule toutes les commandes deja en attente.
     _instrument->requestPanic();
+    endTestSession(false);   // hardware already safed by the panic request above
   } else if (strcmp(type, "test_finger") == 0) {
     int fi = doc["i"] | -1;
     int angle = getServoAngle(doc, "a", 0);
+    // LECTURE D'UN SEUL CHAMP, LAISSEE SIMPLE - choix documente, pas oubli.
+    // `numFingers` est un uint8_t : sa lecture est indivisible, on voit
+    // l'ancienne OU la nouvelle valeur. Ce n'est de toute facon qu'un
+    // pre-filtrage de confort : la borne qui PROTEGE est appliquee par loop(),
+    // qui possede `cfg` et les controleurs, au moment ou la commande est
+    // reellement executee. Verrouiller ici ne rendrait pas le filtre plus vrai -
+    // `cfg` peut changer entre ce test et l'execution de toute facon.
     if (fi >= 0 && fi < cfg.numFingers) {
       _instrument->postCommand(ACMD_TEST_FINGER, (uint8_t)fi, 0, (uint16_t)angle);
     }
@@ -3585,8 +3967,10 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
       // and honours the minimum note duration. Schedule an automatic note-off so
       // the preview stops on its own.
       _instrument->postCommand(ACMD_NOTE_ON, note, _webVelocity);
-      _testNoteMidi = note;
-      _testNoteOffTime = millis() + TEST_NOTE_DURATION_MS;
+      // La note et son echeance sont posees ENSEMBLE : c'est ce couple que
+      // update() prend et efface d'un seul tenant, donc aucune note ne peut
+      // rester sans extinction programmee.
+      armTestNoteOff(note, millis() + TEST_NOTE_DURATION_MS);
     }
   } else if (strcmp(type, "pump_enable") == 0) {
     _instrument->postCommand(ACMD_PUMP_ENABLE, (doc["v"] | 1) != 0 ? 1 : 0);
@@ -3599,13 +3983,24 @@ void WebConfigurator::processWsMessage(AsyncWebSocketClient* client, uint8_t* da
     }
   } else if (strcmp(type, "pump_stop") == 0) {
     int pumpIdx = doc["pump"] | -1;
-    _instrument->postCommand(pumpIdx >= 0 ? ACMD_PUMP_STOP_SINGLE : ACMD_PUMP_STOP);
+    // L'INDEX EST TRANSMIS. Il ne l'etait pas : `postCommand(ACMD_PUMP_STOP_SINGLE)`
+    // partait avec a = 0, alors que le routage non perdable du LOT A s'en sert
+    // comme index de pompe (requestPumpStopSingle(cmd.a)). Sans lui, demander
+    // l'arret de la pompe 2 arretait la pompe 0.
+    const bool accepted = (pumpIdx >= 0)
+        ? postStopCommand(ACMD_PUMP_STOP_SINGLE, (uint8_t)pumpIdx)
+        : postStopCommand(ACMD_PUMP_STOP);
+    // La session n'est declaree terminee - donc le filet retire - qu'une fois la
+    // mise en securite GARANTIE : soit l'ordre a ete accepte, soit
+    // postStopCommand() a escalade en panic, qui ne peut pas etre perdu.
     endTestSession(false);
+    if (!accepted) client->text("{\"t\":\"stop_escalated\",\"cmd\":\"pump_stop\"}");
   } else if (strcmp(type, "fan_target") == 0) {
     _instrument->postCommand(ACMD_FAN_TARGET, 0, getPercent(doc, "v", 0));
   } else if (strcmp(type, "fan_stop") == 0) {
-    _instrument->postCommand(ACMD_FAN_STOP);
-    endTestSession(false);
+    const bool accepted = postStopCommand(ACMD_FAN_STOP);
+    endTestSession(false);   // meme garantie qu'au-dessus
+    if (!accepted) client->text("{\"t\":\"stop_escalated\",\"cmd\":\"fan_stop\"}");
 #if MIC_ENABLED
   } else if (strcmp(type, "mic_mon") == 0) {
     WebOp op; op.type = WEBOP_MIC_MONITOR; op.intA = ((doc["on"] | 0) != 0) ? 1 : 0;

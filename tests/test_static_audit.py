@@ -129,11 +129,14 @@ def test_autocal_actuator_ownership_and_locks():
     assert 'postWebOp(op)' not in web.split('auto_stop', 1)[1].split('#endif', 1)[0]
     # The flag is consumed by the loop task, at the very top of update(), before
     # _autoCal->update() can re-apply anything.
-    assert 'volatile bool _calCancelRequested;' in hdr
+    # `volatile` n'a jamais ete une garantie inter-taches : l'epingler ici
+    # verrouillait le defaut. Ce qui compte est que la demande soit PRISE
+    # (lue et effacee indivisiblement), ce que porte LatchedRequest.
+    assert 'LatchedRequest _calCancelRequested;' in hdr
     upd = code_only(web.split('void WebConfigurator::update()', 1)[1].split('\n}\n', 1)[0])
-    assert '_calCancelRequested' in upd
+    assert 'takeCalibrationCancel()' in upd
     assert 'cancelActiveActuatorSession();' in upd
-    assert upd.index('_calCancelRequested') < upd.index('_autoCal->update()')
+    assert upd.index('takeCalibrationCancel()') < upd.index('_autoCal->update()')
     # P0 (2e passe): ownership is taken ONCE at the start of the calibration and
     # released ONCE at the end. The old per-loop re-take ran _sequencer.stop() on
     # every pass, closing the valve the calibrator had just opened.
@@ -392,9 +395,13 @@ def test_manual_test_session_server_side():
     assert 'TEST_SESSION_MAX_MS' in st and 'TEST_SESSION_MAX_MS' in wc
     assert 'beginTestSession' in wc and 'endTestSession' in wc
     assert 'isManualTestCommand' in wc
-    assert 'client->id() == _testOwnerClientId' in wc
+    # Le couple (session active, proprietaire) se lit d'un seul tenant :
+    # le lire a nu laissait deux clients se croire tous deux proprietaires.
+    assert 'isTestOwner(client->id())' in wc
     # the old unconditional allSoundOff() on any disconnect is gone.
-    assert 'if (_testActive && client->id() == _testOwnerClientId)' in wc
+    # Meme raison qu'au-dessus : la deconnexion du proprietaire teste le
+    # couple sous verrou au lieu de le lire a nu.
+    assert 'if (isTestOwner(client->id())) {' in wc
 
 
 def test_audit_p0_boot_and_rest_safety():
@@ -512,7 +519,7 @@ def test_audit_p1_test_note_and_pump_commands():
     test_note = web.split('strcmp(type, "test_note") == 0')[1].split('else if')[0]
     assert 'postCommand(ACMD_NOTE_ON, note, _webVelocity)' in test_note
     assert '_testNoteOffTime' in web and 'TEST_NOTE_DURATION_MS' in web
-    assert 'postCommand(ACMD_NOTE_OFF, _testNoteMidi)' in web
+    assert 'postStopCommand(ACMD_NOTE_OFF, dueNote)' in web
     # §12: pump_enable is handled (no longer Unknown message type).
     assert '"pump_enable"' in web and 'ACMD_PUMP_ENABLE' in web
     # §12: pump_target / pump_stop honour a per-pump index.
@@ -905,7 +912,11 @@ def test_config_commit_is_transactional():
     assert src.count('active = candidate;') == 1
     assert 'active.' not in src.split('active = candidate;', 1)[1].split('out.activated', 1)[0]
     # The candidate is built from a copy of the active configuration.
-    assert 'RuntimeConfig* candidatePtr = new (std::nothrow) RuntimeConfig(cfg);' in web
+    # Copier `cfg` dans le constructeur, c'etait le lire depuis AsyncTCP sans
+    # verrou pendant que loop() peut le remplacer. L'allocation est desormais
+    # vide et le contenu vient d'un instantane PRIS SOUS VERROU.
+    assert 'RuntimeConfig* candidatePtr = new (std::nothrow) RuntimeConfig();' in web
+    assert 'snapshotActiveConfig(*candidatePtr)' in web
     # Persisting a candidate does not go through the global cfg.
     assert 'static bool saveFrom(const RuntimeConfig& source);' in read('Servo_flute_ESP32/ConfigStorage.h')
 
@@ -1058,8 +1069,12 @@ def test_midi_upload_is_single_owner_and_validates_before_replacing():
     # The existing file is only replaced after the upload has been fully validated.
     fin = web.split('case WEBOP_MIDI_FINALIZE', 1)[1].split('case WEBOP_MIDI_LOAD', 1)[0]
     assert 'storage_full' in fin
-    assert fin.index('_player->loadFile(_upload.tmpPath.c_str())') < fin.index('LittleFS.remove(destPath)')
-    assert fin.index('_player->loadFile(_upload.tmpPath.c_str())') < fin.index('LittleFS.rename(')
+    # L'installation est transactionnelle : la destination n'est plus
+    # supprimee avant le remplacement, donc il n'y a plus de remove() ni de
+    # rename() a ordonner - seul l'appel a fileTxInstall() doit suivre la
+    # validation du contenu.
+    assert fin.index('_player->loadFile(_upload.tmpPath.c_str())') < fin.index('fileTxInstall(')
+    assert 'LittleFS.remove(destPath)' not in fin
 
 
 def test_tof_sensor_is_really_initialised_not_just_probed():
