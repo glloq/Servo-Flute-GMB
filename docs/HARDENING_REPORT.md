@@ -200,10 +200,13 @@ mesure.
 
 ## Warnings de compilation — documente, non corrige
 
-Les builds ESP32 sont verts mais emettent des avertissements ArduinoJson 7 sur
-`containsKey()`, deprecie. **118 sites d'appel**, tous dans
-`ConfigStorage.cpp` et `WebConfigurator.cpp` - c'est-a-dire dans les deux
-fichiers qu'AUCUN build hote ne compile.
+Les deux builds ESP32 sont VERTS (100 s, RAM 19,9 %, flash 82,7 %). Le brief
+signale des avertissements ArduinoJson 7 sur `containsKey()`, deprecie ; ce que
+j'ai verifie moi-meme, c'est la cause : **118 sites d'appel** de cette API,
+tous dans `ConfigStorage.cpp` et `WebConfigurator.cpp` - c'est-a-dire dans les
+deux fichiers qu'AUCUN build hote ne compile. Je n'ai pas compte les
+avertissements eux-memes dans le journal de build, et je ne l'ecris donc pas
+comme si je l'avais fait.
 
 Le remplacement n'est pas mecanique : `containsKey("k")` est VRAI pour une cle
 presente valant `null`, la ou `!doc["k"].isNull()` est faux. Le parseur de
