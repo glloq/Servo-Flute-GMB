@@ -41,6 +41,16 @@ border-radius:8px;font-weight:bold;margin-left:8px;vertical-align:middle}
 .gear-btn{background:none;border:none;color:#9aa;font-size:1.3em;cursor:pointer;padding:4px;
 display:flex;align-items:center}
 .gear-btn:hover{color:#e94560}
+.system-pill{border:1px solid #555;background:#222b3e;color:#9aa;border-radius:12px;padding:5px 9px;
+font-size:.68em;font-weight:700;letter-spacing:.03em;cursor:pointer;min-width:72px;text-align:center}
+.system-pill.ready{color:#4ecca3;border-color:#2d6b4f;background:rgba(45,107,79,.18)}
+.system-pill.warn{color:#e9a645;border-color:#8a6429;background:rgba(138,100,41,.18)}
+.system-pill.fault{color:#fff;border-color:#e94560;background:rgba(233,69,96,.35)}
+.system-pill.busy{color:#9fc6ff;border-color:#4a7eca;background:rgba(74,126,202,.2)}
+.system-pill.off{color:#888;border-color:#555;background:#202535}
+.emergency-stop{min-height:40px;padding:0 12px;border:2px solid #ff617a;border-radius:7px;background:#a51f38;
+color:#fff;font-weight:800;font-size:.76em;letter-spacing:.04em;cursor:pointer;box-shadow:0 0 0 1px rgba(0,0,0,.35)}
+.emergency-stop:hover,.emergency-stop:focus{background:#d62f4d;outline:2px solid #fff;outline-offset:2px}
 .tabs{display:flex;background:#16213e;border-bottom:1px solid #0f3460;overflow-x:auto}
 .tabs button{flex:1;background:none;border:none;color:#9aa;padding:12px 8px;font-size:0.85em;
 cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap;min-width:80px;
@@ -280,8 +290,13 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
   #airCtrlSection .cfg-row label{flex:0 0 90px}
   #airSvgFull{max-height:220px}
 }
-@media(max-width:480px){#airLayoutSelect{flex-wrap:wrap}
-  .air-layout-btn{font-size:.7em;padding:5px 8px}
+@media(max-width:480px){
+  .hdr{padding:7px 8px;gap:6px}.hdr h1{font-size:.95em;min-width:0}.hdr-c{display:none}.hdr-r{gap:5px}
+  .system-pill{min-width:64px;padding:5px 6px;font-size:.66em}.emergency-stop{min-height:44px;padding:0 10px}
+  .gear-btn{min-width:40px;min-height:44px;justify-content:center}.tabs button{min-height:44px;font-size:.82em;padding:9px 6px}
+  .btn{min-height:40px}.step-dot{width:32px;height:32px;font-size:.75em}
+  #airLayoutSelect{flex-wrap:wrap}
+  .air-layout-btn{font-size:.82em;padding:8px 9px}
   #airLiveStats{gap:6px !important}#airLiveStats>div{min-width:45px;padding:3px 5px;font-size:.85em}
   #airSvgFull{max-height:180px}
   .air-block .cfg-row label{flex:0 0 90px;font-size:.75em}
@@ -294,12 +309,12 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
   #airMiniChart{height:45px}
   #airMiniChart canvas{height:45px}
   #airAngleShortcuts{padding-left:0;flex-wrap:wrap}
-  #airHelpPanel{font-size:.68em;padding:6px 8px}
-  .air-block h4{font-size:.85em}
-  #tab-air .section>div>button{font-size:.72em;padding:4px 8px}
-  #airDiagMsg{font-size:.68em}
-  #airValidationMsg{font-size:.7em}
-  #airConfigSummary{font-size:.68em}}
+  #airHelpPanel{font-size:.82em;padding:8px 10px}
+  .air-block h4{font-size:.9em}
+  #tab-air .section>div>button{font-size:.82em;padding:8px 10px;min-height:40px}
+  #airDiagMsg{font-size:.82em}
+  #airValidationMsg{font-size:.82em}
+  #airConfigSummary{font-size:.82em}}
 </style>
 </head>
 <body>
@@ -325,8 +340,9 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
   <h1 id="devName">ServoFlute<span class="unsaved-badge" id="unsavedBadge">modified</span></h1>
   <div class="hdr-c" onclick="openSeqModal()" style="cursor:pointer" title="Sequence editor"><span style="color:#e94560">B</span><svg viewBox="0 0 28 28" width="22" height="22"><circle cx="14" cy="14" r="12" fill="none" stroke="#8aa" stroke-width="1.5"/><text x="14" y="19" text-anchor="middle" fill="#e94560" font-size="18" font-weight="bold">&#8734;</text></svg><span style="color:#e94560">P</span></div>
   <div class="hdr-r">
-    <span class="dot off" id="sDot"></span>
-    <button class="gear-btn" onclick="toggleSettings()" title="Settings" id="gearBtn">
+    <button id="systemState" class="system-pill off" type="button" onclick="openHealthModal()" title="Open hardware diagnostics" aria-label="System status: offline">OFFLINE</button>
+    <button id="globalStop" class="emergency-stop" type="button" onclick="globalPanic()" title="Immediately silence and safe all actuators" aria-label="Emergency all sound off">STOP</button>
+    <button class="gear-btn" onclick="toggleSettings()" title="Settings" aria-label="Open settings" id="gearBtn">
       <svg viewBox="0 0 16 16" width="18" height="18"><circle cx="8" cy="8" r="2" fill="currentColor"/><path d="M14.3 6.7l-1.2-.2a5.2 5.2 0 00-.5-1.1l.7-1-1.7-1.7-1 .7c-.3-.2-.7-.4-1.1-.5L9.3 1.7H7.7l-.2 1.2c-.4.1-.8.3-1.1.5l-1-.7L3.7 4.4l.7 1c-.2.3-.4.7-.5 1.1L2.7 6.7v1.6l1.2.2c.1.4.3.8.5 1.1l-.7 1 1.7 1.7 1-.7c.3.2.7.4 1.1.5l.2 1.2h1.6l.2-1.2c.4-.1.8-.3 1.1-.5l1 .7 1.7-1.7-.7-1c.2-.3.4-.7.5-1.1l1.2-.2V6.7z" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
     </button>
   </div>
@@ -410,9 +426,9 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
   </div>
   <div class="section">
     <div class="transport">
-      <button class="btn btn-g" id="btnPlay" onclick="wsSend({t:'play'})" disabled><svg viewBox="0 0 16 16" width="18" height="18"><path d="M4 2l10 6-10 6z" fill="currentColor"/></svg></button>
-      <button class="btn btn-s" id="btnPause" onclick="wsSend({t:'pause'})" disabled><svg viewBox="0 0 16 16" width="18" height="18"><rect x="3" y="2" width="3.5" height="12" rx="1" fill="currentColor"/><rect x="9.5" y="2" width="3.5" height="12" rx="1" fill="currentColor"/></svg></button>
-      <button class="btn btn-p" id="btnStop" onclick="wsSend({t:'stop'})" disabled><svg viewBox="0 0 16 16" width="18" height="18"><rect x="3" y="3" width="10" height="10" rx="1" fill="currentColor"/></svg></button>
+      <button class="btn btn-g" id="btnPlay" onclick="wsSend({t:'play'})" aria-label="Play MIDI file" title="Play" disabled><svg viewBox="0 0 16 16" width="18" height="18"><path d="M4 2l10 6-10 6z" fill="currentColor"/></svg></button>
+      <button class="btn btn-s" id="btnPause" onclick="wsSend({t:'pause'})" aria-label="Pause MIDI file" title="Pause" disabled><svg viewBox="0 0 16 16" width="18" height="18"><rect x="3" y="2" width="3.5" height="12" rx="1" fill="currentColor"/><rect x="9.5" y="2" width="3.5" height="12" rx="1" fill="currentColor"/></svg></button>
+      <button class="btn btn-p" id="btnStop" onclick="wsSend({t:'stop'})" aria-label="Stop MIDI file" title="Stop" disabled><svg viewBox="0 0 16 16" width="18" height="18"><rect x="3" y="3" width="10" height="10" rx="1" fill="currentColor"/></svg></button>
     </div>
     <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
     <div class="file-info" id="progressText">--:-- / --:--</div>
@@ -424,13 +440,13 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
 <!-- TAB: CALIBRATION -->
 <div class="tab" id="tab-calib">
   <div class="steps">
-    <div class="step-dot active" onclick="goStep(1)">1</div>
+    <button type="button" class="step-dot active" onclick="goStep(1)" aria-label="Calibration step 1: Instrument">1</button>
     <div class="step-line"></div>
-    <div class="step-dot" onclick="goStep(2)">2</div>
+    <button type="button" class="step-dot" onclick="goStep(2)" aria-label="Calibration step 2: Fingers">2</button>
     <div class="step-line"></div>
-    <div class="step-dot" onclick="goStep(3)">3</div>
+    <button type="button" class="step-dot" onclick="goStep(3)" aria-label="Calibration step 3: Fingerings">3</button>
     <div class="step-line"></div>
-    <div class="step-dot" onclick="goStep(4)">4</div>
+    <button type="button" class="step-dot" onclick="goStep(4)" aria-label="Calibration step 4: Breath">4</button>
   </div>
   <div class="step-labels">
     <span>Fingers</span><span>Fingerings</span><span>Breath</span><span>Expression</span>
@@ -702,7 +718,7 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
       <button class="btn btn-s" id="btnAirTest" onclick="testAirSystem()" style="display:none">Quick test</button>
       <select id="airTestDur" style="display:none;font-size:.7em;padding:2px;background:#1a1a2e;color:#eee;border:1px solid #333;border-radius:3px" title="Quick test duration">
         <option value="1000">1s</option><option value="2000" selected>2s</option><option value="5000">5s</option><option value="10000">10s</option></select>
-      <button class="btn btn-s" id="btnAirDiag" onclick="runAirDiagnostic()" title="Tests all components in sequence">Diagnostic</button>
+      <button class="btn btn-s" id="btnAirDiag" onclick="runAirDiagnostic()" title="Exercises configured components in sequence; physical confirmation is still required">Test sequence</button>
     </div>
     <div id="airDiagMsg" style="display:none;font-size:.75em;color:#9aa;margin-top:4px;padding:4px 8px;background:rgba(255,255,255,.03);border-radius:4px"></div>
     <div id="airDiagBar" style="display:none;height:3px;background:#1a1a2e;border-radius:2px;margin-top:2px;overflow:hidden"><div id="airDiagFill" style="height:100%;width:0;background:#4ecca3;transition:width .3s ease;border-radius:2px"></div></div>
@@ -720,7 +736,7 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
       1. Choose the mode matching your hardware<br>
       2. Configure the settings in each block<br>
       3. Use the test buttons to verify<br>
-      4. Run the diagnostic to validate everything<br>
+      4. Run the test sequence and physically confirm each component<br>
       5. Save the configuration<br>
       <span style="color:#888">Tip: badges below the mode show the required components</span><br>
       <span style="color:#888">Keyboard shortcuts: <b>Ctrl+S</b>=Save, <b>T</b>=Test, <b>Esc</b>=Stop, <b>H</b>=Help, <b>?</b>=Shortcuts</span>
@@ -1023,8 +1039,9 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
     </div>
     <div class="btn-row" style="margin-top:16px">
       <button class="btn btn-s" onclick="wizNext(1)">Back</button>
-      <button class="btn btn-g" onclick="wizFinish()">Finish</button>
+      <button class="btn btn-g" id="btnWizFinish" onclick="wizFinish()">Finish</button>
     </div>
+    <div id="wizMsg" role="status" aria-live="polite" style="min-height:20px;margin-top:10px;color:#9aa;font-size:.82em"></div>
   </div>
 </div>
 </div>
@@ -1153,6 +1170,25 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
         <button class="btn btn-s" onclick="clearSeq()">Effacer</button>
       </div>
       <div style="margin-top:12px;font-size:.72em;color:#666" id="seqMemInfo"></div>
+    </div>
+  </div>
+</div>
+
+<!-- PASSIVE HARDWARE / COMMISSIONING DIAGNOSTICS -->
+<div class="modal-overlay" id="healthModal" onclick="if(event.target===this)closeHealthModal()">
+  <div class="modal" style="max-width:620px">
+    <div class="modal-hdr">
+      <h3>Hardware diagnostics</h3>
+      <button class="modal-close" type="button" onclick="closeHealthModal()" aria-label="Close hardware diagnostics">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:.82em;color:#9aa;margin:0 0 10px">Passive checks only. This page does not move actuators.</p>
+      <div id="healthSummary" style="font-weight:700;margin-bottom:10px">Loading...</div>
+      <div id="healthChecks"></div>
+      <div class="btn-row">
+        <button class="btn btn-s" type="button" onclick="refreshHealthModal()">Refresh</button>
+        <button class="btn btn-p" type="button" onclick="globalPanic()">ALL SOUND OFF</button>
+      </div>
     </div>
   </div>
 </div>
@@ -1347,10 +1383,38 @@ function showToast(msg,type){type=type||'info';const c=$('toastContainer');
   t.innerHTML=(ic[type]||ic.info)+'<span>'+esc(msg)+'</span>';c.appendChild(t);
   requestAnimationFrame(()=>requestAnimationFrame(()=>t.classList.add('show')));
   setTimeout(()=>{t.classList.remove('show');setTimeout(()=>t.remove(),300)},3000)}
+let _lastHwReady=false;
+function setSystemState(kind,label){
+  const el=$('systemState');if(!el)return;
+  el.className='system-pill '+kind;el.textContent=label;
+  el.setAttribute('aria-label','System status: '+label.toLowerCase());
+}
+function globalPanic(){
+  if(wsSend({t:'panic'})){setSystemState('fault','STOPPED');showToast('ALL SOUND OFF requested','error')}
+}
+function closeHealthModal(){const m=$('healthModal');if(m)m.classList.remove('show')}
+function openHealthModal(){const m=$('healthModal');if(m)m.classList.add('show');refreshHealthModal()}
+function refreshHealthModal(){
+  const box=$('healthChecks'),sum=$('healthSummary');
+  if(box)box.textContent='Loading checks...';if(sum)sum.textContent='Checking hardware...';
+  fetch('/api/diagnostics').then(r=>r.json()).then(d=>{
+    if(sum){sum.textContent=d.hardware_ready?'READY - actuators initialised':'NOT READY - actuator commands are locked';
+      sum.style.color=d.hardware_ready?'#4ecca3':'#e94560'}
+    if(!box)return;box.textContent='';
+    (d.checks||[]).forEach(ch=>{
+      const row=document.createElement('div');row.style.cssText='display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px solid #26334a';
+      const badge=document.createElement('span');badge.textContent=(ch.status||'?').toUpperCase();
+      badge.style.cssText='min-width:66px;font-size:.72em;font-weight:700;padding:3px 6px;border-radius:8px;text-align:center;'+
+        (ch.status==='ok'?'color:#4ecca3;background:rgba(78,204,163,.1)':ch.status==='warning'?'color:#e9a645;background:rgba(233,166,69,.1)':'color:#fff;background:rgba(233,69,96,.25)');
+      const msg=document.createElement('div');msg.textContent=ch.message||ch.id||'';msg.style.cssText='font-size:.82em;line-height:1.35;flex:1';
+      row.appendChild(badge);row.appendChild(msg);box.appendChild(row)
+    })
+  }).catch(e=>{if(sum){sum.textContent='Diagnostics unavailable';sum.style.color='#e94560'}if(box)box.textContent='Check the connection and retry.'})
+}
 var _suppressDirty=false;
 function markDirty(){if(_suppressDirty)return;dirty=true;$('unsavedBadge').classList.add('show');updStepDots();const sb=$('btnAirSave');if(sb)sb.style.boxShadow='0 0 8px #4ecca3';updateConfigSummary()}
 function markClean(){dirty=false;$('unsavedBadge').classList.remove('show');updStepDots();const sb=$('btnAirSave');if(sb)sb.style.boxShadow='';const cs=$('airConfigSummary');if(cs)cs.style.display='none'}
-function handleSaveResponse(j){if(j&&j.restart_required){const b=$('restartRequiredBanner');if(b)b.style.display='block';
+function handleSaveResponse(j){if(j&&j.restart_required){const b=$('restartRequiredBanner');if(b)b.style.display='block';setSystemState('warn','RESTART');
   if(j.restarting){const rb=$('btnRestartNow');if(rb){rb.disabled=true;rb.textContent='Restarting automatically...'}showToast('Hardware change saved - restarting automatically','info')}
   else{showToast('Restart required for hardware changes','info')}}}
 function restartNow(){if(confirm('Put actuators in safe state and restart now?'))fetch('/api/restart',{method:'POST'}).then(()=>showToast('Restarting...','info'))}
@@ -1674,7 +1738,7 @@ function cancelDiagnostic(){
   const dm=$('airDiagMsg'),db=$('btnAirDiag'),dbar=$('airDiagBar');
   if(dm){dm.textContent='Diagnostic annule';dm.style.color='#e9a645';
     setTimeout(()=>{dm.style.opacity='0';setTimeout(()=>{dm.style.display='none';dm.style.opacity='1'},300)},2000)}
-  if(db){db.disabled=false;db.textContent='Diagnostic'}
+  if(db){db.disabled=false;db.textContent='Test sequence'}
   if(dbar)dbar.style.display='none';
   stopAirSource();
 }
@@ -1723,10 +1787,10 @@ function runAirDiagnostic(){
     }});
   }
   const last=steps[steps.length-1];
-  steps.push({t:last.t+800,msg:'Diagnostic termine !',fn:()=>{
-    dm.style.color='#4ecca3';_diagRunning=false;
-    if(db){db.disabled=false;db.textContent='Diagnostic'}
-    setTimeout(()=>{dm.style.opacity='0';setTimeout(()=>{dm.style.display='none';dm.style.opacity='1';if(dbar)dbar.style.display='none'},300)},5000)}});
+  steps.push({t:last.t+800,msg:'Test sequence complete - confirm movement and airflow physically before continuing.',fn:()=>{
+    dm.style.color='#e9a645';_diagRunning=false;
+    if(db){db.disabled=false;db.textContent='Test sequence'}
+    setTimeout(()=>{dm.style.opacity='0';setTimeout(()=>{dm.style.display='none';dm.style.opacity='1';if(dbar)dbar.style.display='none'},300)},8000)}});
   const total=steps.length;
   steps.forEach((s,i)=>{
     const tid=setTimeout(()=>{
@@ -3096,12 +3160,25 @@ function wizFinish(){
     p.d.forEach(nd=>{body.notes.push({midi:nd[0],fp:nd[1],amn:nd[2],amx:nd[3],ang:nd[4]||50})});
     body.num_notes=p.d.length;body.angle_open=30;body.half_hole_pct=50;
   }
+  const wm=$('wizMsg');if(wm){wm.textContent='Saving configuration...';wm.style.color='#9aa'}
+  btnLoad('btnWizFinish',true);
   fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
     .then(r=>r.json()).then(d=>{
-      $('wizardOverlay').classList.remove('open');
-      if(d.ok){showToast('Configuration saved','success');loadConfig()}
-      else{showToast('Save error','error')}
-    }).catch(()=>{$('wizardOverlay').classList.remove('open');showToast('Network error','error')});
+      btnLoad('btnWizFinish',false);
+      if(d.ok){
+        if(wm)wm.textContent='';
+        $('wizardOverlay').classList.remove('open');
+        handleSaveResponse(d);showToast('Configuration saved','success');loadConfig()
+      }else{
+        const err=d.error||d.msg||'Save failed';
+        if(wm){wm.textContent='Configuration not saved: '+err;wm.style.color='#e94560'}
+        showToast('Configuration not saved: '+err,'error')
+      }
+    }).catch(e=>{
+      btnLoad('btnWizFinish',false);
+      if(wm){wm.textContent='Network error - check the connection and retry.';wm.style.color='#e94560'}
+      showToast('Network error - setup was not closed','error')
+    });
 }
 function toggleSettings(){$('settingsOverlay').classList.toggle('open');if($('settingsOverlay').classList.contains('open')&&CFG)fillSettings()}
 function applyCalibVisibility(){
@@ -3116,12 +3193,12 @@ let wsRetry=0;
 function wsConnect(){
   const p=location.protocol==='https:'?'wss:':'ws:';
   ws=new WebSocket(p+'//'+location.host+'/ws');
-  ws.onopen=()=>{wsRetry=0;$('sDot').className='dot on';$('sText').textContent='Connected';addLog('WS connected');
+  ws.onopen=()=>{wsRetry=0;setSystemState('warn','CHECKING');$('sText').textContent='Connected';addLog('WS connected');
     // Premier message obligatoire : le serveur refuse toute commande avant.
     if(AUTH.token)ws.send(JSON.stringify({t:'auth',token:AUTH.token}));
     else AUTH.requireLogin();
     const si=$('airStatusInd');if(si)si.style.outline=''};
-  ws.onclose=()=>{$('sDot').className='dot off';$('sText').textContent='Disconnected';
+  ws.onclose=()=>{setSystemState('off','OFFLINE');$('sText').textContent='Disconnected';
     const si=$('airStatusInd');if(si){si.style.background='#e94560';si.style.outline='2px solid rgba(233,69,96,.3)'}
     const st=$('airStatusText');if(st){st.textContent='Disconnected';st.style.color='#e94560'};
     if(_diagRunning)cancelDiagnostic();
@@ -3138,8 +3215,10 @@ function handleWs(d){
   if(d.t==='auth'){if(d.ok)AUTH.loginDone();else AUTH.requireLogin();return}
   if(d.t==='error'&&d.msg==='unauthorized'){AUTH.requireLogin();return}
   if(d.t==='error'&&d.msg==='hardware_not_ready'){
+    _lastHwReady=false;setSystemState('fault','LOCKED');
     showToast('Hardware not ready - actuator commands are disabled','error');return}
   if(d.t==='status'){
+    if(d.hw_ready!==undefined){_lastHwReady=!!d.hw_ready;if(!autoCalRunning)setSystemState(_lastHwReady?'ready':'fault',_lastHwReady?'READY':'LOCKED')}
     $('monState').textContent=STATES[d.state]||'?';
     $('monState').style.color=d.playing?'#e94560':'#4ecca3';
     if(d.heap){$('monHeap').textContent=(d.heap/1024|0)+'KB';$('heapBar').textContent=(d.heap/1024|0)+'KB';
@@ -3172,6 +3251,7 @@ function handleWs(d){
       $('pitchCents').className='pitch-cents '+(Math.abs(c)<PITCH_OK_CT?'ok':c>0?'sharp':'flat')}
     else{$('pitchNote').textContent='-';$('pitchHz').textContent='- Hz';$('pitchCents').textContent='-'}
   }else if(d.t==='acal_prog'){
+    autoCalRunning=true;setSystemState('busy','CALIBRATING');
     $('acalProgress').style.display='block';$('acalMsg').style.display='none';
     $('acalStep').textContent='Note '+(d.idx+1)+'/'+d.total+' '+(d.note||'');
     $('acalFill').style.width=(((d.idx||0)/(d.total||1))*100)+'%';
@@ -3189,7 +3269,7 @@ function handleWs(d){
     $('acalNoise').textContent=(d.noise!=null?d.noise.toFixed(3):'-');
     $('acalFrames').textContent=(d.validFrames!=null?(d.validFrames+'/'+d.totalFrames):'-');
   }else if(d.t==='acal_done'){
-    autoCalRunning=false;$('btnAcalStart').style.display='';$('btnAcalStop').style.display='none';$('btnRfStart').style.display='';
+    autoCalRunning=false;setSystemState(_lastHwReady?'ready':'fault',_lastHwReady?'READY':'LOCKED');$('btnAcalStart').style.display='';$('btnAcalStop').style.display='none';$('btnRfStart').style.display='';
     $('acalFill').style.width='100%';$('acalAngle').textContent='';$('acalMetrics').style.display='none';
     /* Honour the persisted outcome: only ok (applied AND saved) is a success. */
     if(d.ok){
@@ -3212,7 +3292,7 @@ function handleWs(d){
       h+=';text-align:right">'+detail+'</span></div>'});
       $('acalResults').innerHTML=h;$('acalResults').style.display='block'}
   }else if(d.t==='acal_error'){
-    autoCalRunning=false;$('btnAcalStart').style.display='';$('btnAcalStop').style.display='none';$('btnRfStart').style.display='';
+    autoCalRunning=false;setSystemState(_lastHwReady?'ready':'fault',_lastHwReady?'READY':'LOCKED');$('btnAcalStart').style.display='';$('btnAcalStop').style.display='none';$('btnRfStart').style.display='';
     $('acalMetrics').style.display='none';$('acalState').textContent='Error';
     const am=d.msg?acalErrText(d.msg):'Calibration interrompue';
     $('acalMsg').textContent=am;$('acalMsg').style.display='block';
