@@ -1,4 +1,5 @@
 #include "ConfigStorage.h"
+#include "ConfigPersist.h"   // remplacement atomique .tmp/.bak, pur et teste sur hote
 
 #include <new>   // std::nothrow : une allocation ratee doit rendre nullptr, pas lever
 
@@ -12,160 +13,6 @@ static String s_fsError;
 // Instance globale
 RuntimeConfig cfg;
 
-void ConfigStorage::initDefaults() {
-  // --- Instrument ---
-  cfg.numFingers = DEFAULT_NUM_FINGERS;
-  cfg.numNotes = DEFAULT_NUM_NOTES;
-  cfg.airflowPcaChannel = DEFAULT_AIRFLOW_PCA_CHANNEL;
-  cfg.fingerAngleOpen = ANGLE_OPEN;
-  cfg.halfHolePercent = 50;
-  strncpy(cfg.embouchure, "trav", sizeof(cfg.embouchure));
-
-  // Zero-fill all arrays first
-  memset(cfg.fingers, 0, sizeof(cfg.fingers));
-  memset(cfg.notes, 0, sizeof(cfg.notes));
-
-  // Load default finger configs
-  for (int i = 0; i < DEFAULT_NUM_FINGERS && i < MAX_FINGER_SERVOS; i++) {
-    cfg.fingers[i].pcaChannel = DEFAULT_FINGERS[i].pcaChannel;
-    cfg.fingers[i].closedAngle = DEFAULT_FINGERS[i].closedAngle;
-    cfg.fingers[i].direction = DEFAULT_FINGERS[i].direction;
-    cfg.fingers[i].isThumbHole = DEFAULT_FINGERS[i].isThumbHole;
-    cfg.fingers[i].halfPercent = 0;  // 0 = use global halfHolePercent
-  }
-
-  // Load default note configs
-  for (int i = 0; i < DEFAULT_NUM_NOTES && i < MAX_NOTES; i++) {
-    cfg.notes[i].midiNote = DEFAULT_NOTES[i].midiNote;
-    cfg.notes[i].airflowMinPercent = DEFAULT_NOTES[i].airflowMinPercent;
-    cfg.notes[i].airflowMaxPercent = DEFAULT_NOTES[i].airflowMaxPercent;
-    cfg.notes[i].airflowNominalPercent = DEFAULT_NOTES[i].airflowNominalPercent;
-    cfg.notes[i].anglePercent = DEFAULT_NOTES[i].anglePercent;
-    // Copy finger pattern (default has DEFAULT_NUM_FINGERS, pad rest with 0)
-    for (int f = 0; f < MAX_FINGER_SERVOS; f++) {
-      cfg.notes[i].fingerPattern[f] = (f < DEFAULT_NUM_FINGERS) ? DEFAULT_NOTES[i].fingerPattern[f] : 0;
-    }
-  }
-
-  // --- MIDI ---
-  cfg.midiChannel = MIDI_CHANNEL;
-
-  // --- Serial MIDI ---
-  cfg.serialMidiEnabled = DEFAULT_SERIAL_MIDI_ENABLED;
-  cfg.serialMidiRxPin = DEFAULT_SERIAL_MIDI_RX_PIN;
-
-  // --- Timing ---
-  cfg.servoToSolenoidDelayMs = SERVO_TO_SOLENOID_DELAY_MS;
-  cfg.minNoteIntervalForValveCloseMs = MIN_NOTE_INTERVAL_FOR_VALVE_CLOSE_MS;
-  cfg.minNoteDurationMs = MIN_NOTE_DURATION_MS;
-
-  // --- Airflow ---
-  cfg.servoAirflowOff = SERVO_AIRFLOW_OFF;
-  cfg.servoAirflowMin = SERVO_AIRFLOW_MIN;
-  cfg.servoAirflowMax = SERVO_AIRFLOW_MAX;
-
-  // --- Angle servo (trav) ---
-  cfg.servoAngleOff = SERVO_ANGLE_OFF;
-  cfg.servoAngleMin = SERVO_ANGLE_MIN;
-  cfg.servoAngleMax = SERVO_ANGLE_MAX;
-
-  // --- Vibrato ---
-  cfg.vibratoFrequencyHz = VIBRATO_FREQUENCY_HZ;
-  cfg.vibratoMaxAmplitudeDeg = VIBRATO_MAX_AMPLITUDE_DEG;
-
-  // --- CC defaults ---
-  cfg.ccVolumeDefault = CC_VOLUME_DEFAULT;
-  cfg.ccExpressionDefault = CC_EXPRESSION_DEFAULT;
-  cfg.ccModulationDefault = CC_MODULATION_DEFAULT;
-  cfg.ccBreathDefault = CC_BREATH_DEFAULT;
-  cfg.ccBrightnessDefault = CC_BRIGHTNESS_DEFAULT;
-
-  // --- CC2 ---
-  cfg.cc2Enabled = CC2_ENABLED;
-  cfg.cc2SilenceThreshold = CC2_SILENCE_THRESHOLD;
-  cfg.cc2ResponseCurve = CC2_RESPONSE_CURVE;
-  cfg.cc2TimeoutMs = CC2_TIMEOUT_MS;
-
-  // --- Solenoide ---
-  cfg.solenoidPwmActivation = SOLENOID_PWM_ACTIVATION;
-  cfg.solenoidPwmHolding = SOLENOID_PWM_HOLDING;
-  cfg.solenoidActivationTimeMs = SOLENOID_ACTIVATION_TIME_MS;
-
-  // --- Expression airflow ---
-  cfg.airAttackMode = 0;           // stable par defaut
-  cfg.airAttackOffset = 20;        // 20% d'ecart
-  cfg.airAttackMs = 150;           // 150ms transition
-  cfg.airVelocityResponse = 50;    // 50% d'influence velocite
-
-  // --- WiFi ---
-  memset(cfg.wifiSsid, 0, sizeof(cfg.wifiSsid));
-  memset(cfg.wifiPassword, 0, sizeof(cfg.wifiPassword));
-
-  // --- Device ---
-  strncpy(cfg.deviceName, DEVICE_NAME, sizeof(cfg.deviceName) - 1);
-  cfg.deviceName[sizeof(cfg.deviceName) - 1] = '\0';
-
-  // --- Power ---
-  cfg.timeUnpower = TIMEUNPOWER;
-
-  // --- Air delivery system (modulaire) ---
-  cfg.airMode = DEFAULT_AIR_MODE;
-  cfg.valveType = DEFAULT_VALVE_TYPE;
-  cfg.valveServoPcaChannel = DEFAULT_VALVE_SERVO_CH;
-  cfg.valveServoCloseAngle = 0;
-  cfg.valveServoOpenAngle = 90;
-  cfg.motorType = DEFAULT_MOTOR_TYPE;
-  cfg.fanPin = DEFAULT_FAN_PIN;
-  cfg.fanMinPwm = DEFAULT_FAN_MIN_PWM;
-  cfg.fanMaxPwm = DEFAULT_FAN_MAX_PWM;
-  cfg.fanIdlePercent = DEFAULT_FAN_IDLE_PERCENT;
-  cfg.fanIdleTimeoutMs = DEFAULT_FAN_IDLE_TIMEOUT_MS;
-  cfg.fanDefaultPercent = DEFAULT_FAN_IDLE_PERCENT;
-  cfg.fanMaxNotePercent = 100;
-  cfg.fanFollowAirflow = true;
-  cfg.numPumps = DEFAULT_NUM_PUMPS;
-  cfg.pumpPins[0] = DEFAULT_PUMP_PIN;
-  cfg.pumpPins[1] = 26;
-  cfg.pumpPins[2] = 27;
-  for (uint8_t i = 0; i < MAX_PUMPS; i++) {
-    cfg.pumpMinPwm[i] = DEFAULT_PUMP_MIN_PWM;
-    cfg.pumpMaxPwm[i] = DEFAULT_PUMP_MAX_PWM;
-  }
-  cfg.pumpCascadeThreshold = DEFAULT_PUMP_CASCADE_THRESHOLD;
-  cfg.pumpStaggerMs = DEFAULT_PUMP_STAGGER_MS;
-  cfg.pumpDirectIdlePercent = 0;
-  cfg.pumpDirectMaxPercent = 100;
-  cfg.pumpFollowAirflow = true;
-  cfg.reservoirTargetPercent = 60;
-  cfg.reservoirAutoStart = false;
-  cfg.bangbangHysteresis = DEFAULT_BANGBANG_HYSTERESIS;
-  cfg.sensorType = DEFAULT_SENSOR_TYPE;
-  cfg.sensorTargetMm = DEFAULT_SENSOR_TARGET_MM;
-  cfg.sensorMinMm = DEFAULT_SENSOR_MIN_MM;
-  cfg.sensorMaxMm = DEFAULT_SENSOR_MAX_MM;
-  cfg.pidKp = DEFAULT_PID_KP;
-  cfg.pidKi = DEFAULT_PID_KI;
-  cfg.endstopPin = DEFAULT_ENDSTOP_PIN;
-  cfg.endstopActiveHigh = DEFAULT_ENDSTOP_ACTIVE_HIGH;
-  cfg.endstopPumpOn = false;
-  cfg.hallPin = DEFAULT_HALL_PIN;
-  cfg.hallThresholdLow = DEFAULT_HALL_THRESHOLD_LOW;
-  cfg.hallThresholdHigh = DEFAULT_HALL_THRESHOLD_HIGH;
-  cfg.angleServoEnabled = false;
-  cfg.angleServoPcaChannel = DEFAULT_ANGLE_SERVO_CH;
-  cfg.showAirSystem = DEFAULT_SHOW_AIR_SYSTEM;
-  strlcpy(cfg.resFormat, "balloon", sizeof(cfg.resFormat));
-
-  // --- MIDI Storage ---
-  cfg.midiStorageLimitKb = DEFAULT_MIDI_STORAGE_LIMIT_KB;
-
-  // --- UI ---
-  cfg.hideCalibration = false;
-  cfg.hideAir = false;
-  cfg.solenoidPin = SOLENOID_PIN;
-  strncpy(cfg.instrumentColor, "#D4B044", sizeof(cfg.instrumentColor));
-  cfg.kbdMode = 0;
-}
 
 ConfigLoadStatus ConfigStorage::lastLoadStatus() { return s_lastLoadStatus; }
 const String& ConfigStorage::lastLoadError() { return s_lastLoadError; }
@@ -227,6 +74,29 @@ bool ConfigStorage::formatFilesystem() {
   return true;
 }
 
+/*******************************************************************************
+ * Adaptateurs LittleFS -> FsRenameOps
+ *
+ * La sequence de remplacement (et sa recuperation au demarrage) vit dans
+ * ConfigPersist.cpp, sans LittleFS ni ArduinoJson : c'est ce qui la rend
+ * executable sur hote contre un faux systeme de fichiers qui echoue a volonte.
+ * Ici, on ne fait que brancher les vraies operations.
+ ******************************************************************************/
+static bool littleFsExists(void*, const char* path) { return LittleFS.exists(path); }
+static bool littleFsRemove(void*, const char* path) { return LittleFS.remove(path); }
+static bool littleFsRename(void*, const char* from, const char* to) {
+  return LittleFS.rename(from, to);
+}
+
+static FsRenameOps littleFsRenameOps() {
+  FsRenameOps ops;
+  ops.exists = &littleFsExists;
+  ops.remove = &littleFsRemove;
+  ops.rename = &littleFsRename;
+  ops.ctx = nullptr;   // LittleFS est un singleton global : pas d'etat a porter
+  return ops;
+}
+
 bool ConfigStorage::load() {
   return loadWithStatus() == CONFIG_LOADED;
 }
@@ -246,17 +116,19 @@ ConfigLoadStatus ConfigStorage::loadWithStatus() {
     return s_lastLoadStatus;
   }
 
-  // Recover an interrupted atomic save (§15): a leftover temp file means save()
-  // was interrupted. If the live config is gone, the crash happened after its
-  // removal but before the rename, so promote the (fully written + validated)
-  // temp; otherwise the temp is stale and is discarded.
+  // Recover an interrupted atomic save (§15): a leftover temp or backup file means
+  // writeConfigFile() was interrupted in the middle of its replacement sequence.
+  // La recuperation elle-meme est dans ConfigPersist.cpp (pure, testee sur hote) :
+  // si la configuration finale manque, elle promeut le .tmp (contenu le plus
+  // recent, deja ecrit ET relu avant le remplacement), a defaut le .bak
+  // (configuration precedente mise de cote) ; si elle est en place, les residus
+  // sont perimes et sont effaces.
   const char* tmpPath = CONFIG_FILE_PATH ".tmp";
-  if (LittleFS.exists(tmpPath)) {
-    if (!LittleFS.exists(CONFIG_FILE_PATH)) {
-      LittleFS.rename(tmpPath, CONFIG_FILE_PATH);
-    } else {
-      LittleFS.remove(tmpPath);
-    }
+  const char* bakPath = CONFIG_FILE_PATH ".bak";
+  if (LittleFS.exists(tmpPath) || LittleFS.exists(bakPath)) {
+    // Sans residu il n'y a rien a recuperer : le demarrage nominal ne paie pas
+    // l'appel (l'etat "final present, aucun residu" est exactement son no-op).
+    configRecoverOnBoot(littleFsRenameOps(), tmpPath, CONFIG_FILE_PATH, bakPath);
   }
 
   File file = LittleFS.open(CONFIG_FILE_PATH, "r");
@@ -726,12 +598,19 @@ static bool writeConfigFile(const RuntimeConfig& source) {
     return false;
   }
 
-  // Replace the live config with the validated temp file. If a crash occurs between
-  // the remove and the rename, loadWithStatus() recovers the pending temp on boot.
-  LittleFS.remove(CONFIG_FILE_PATH);
-  if (!LittleFS.rename(tmpPath, CONFIG_FILE_PATH)) {
-    LittleFS.remove(tmpPath);
-    if (DEBUG) { Serial.println("ERREUR: ConfigStorage - Renommage config atomique echoue"); }
+  // Replace the live config with the validated temp file, en trois temps (voir
+  // ConfigPersist.h) : la configuration courante est DEPLACEE vers un .bak, jamais
+  // supprimee, et ce .bak n'est efface qu'une fois la nouvelle en place.
+  //
+  // La sequence precedente etait "remove(config) ; si le rename echoue,
+  // remove(tmp)" : un rename rate detruisait les DEUX copies (la bonne venait
+  // d'etre supprimee, la seule valide restante l'etait juste apres), et la
+  // recuperation au demarrage n'avait plus rien a promouvoir. Desormais un echec
+  // laisse toujours soit la configuration restauree, soit un .tmp/.bak que
+  // loadWithStatus() remet en place au demarrage suivant.
+  const char* bakPath = CONFIG_FILE_PATH ".bak";
+  if (!configAtomicReplace(littleFsRenameOps(), tmpPath, CONFIG_FILE_PATH, bakPath)) {
+    if (DEBUG) { Serial.println("ERREUR: ConfigStorage - Remplacement atomique de la config echoue (ancienne conservee)"); }
     return false;
   }
 
@@ -749,27 +628,72 @@ bool ConfigStorage::save() {
   return saveFrom(cfg);
 }
 bool ConfigStorage::resetToDefaults() {
-  initDefaults();
-  bool ok = save();
+  // NE TOUCHE PAS `cfg`. La configuration active decrit le materiel REELLEMENT
+  // initialise - canaux PCA, broches GPIO, angles fermes, sens de rotation. La
+  // remplacer en RAM pendant que loop() tourne ferait piloter les actionneurs avec
+  // une description qui ne correspond plus au montage cable (c'est exactement le
+  // danger que bootConfigMayDriveActuators() decrit dans ConfigStorage.h).
+  // On persiste donc un CANDIDAT ; l'activation se fait au REDEMARRAGE, que
+  // l'appelant programme quand cette fonction rend true.
+  if (!isFilesystemMounted()) return false;
+
+  // Sur le TAS, pour la raison deja donnee dans saveFrom() : RuntimeConfig fait
+  // ~5 Ko et cet appel vient d'une tache (web/async) a pile courte.
+  RuntimeConfig* candidate = new (std::nothrow) RuntimeConfig();
+  if (candidate == nullptr) {
+    if (DEBUG) { Serial.println("ERREUR: ConfigStorage - memoire insuffisante pour preparer les defauts"); }
+    return false;
+  }
+  makeDefaultConfig(*candidate);
+  bool ok = saveFrom(*candidate);
+  delete candidate;
+
   if (DEBUG) {
-    Serial.println("DEBUG: ConfigStorage - Reset aux valeurs par defaut");
+    if (ok) {
+      Serial.println("DEBUG: ConfigStorage - Defauts persistes ; actifs au redemarrage (config active inchangee)");
+    } else {
+      Serial.println("ERREUR: ConfigStorage - Persistance des defauts echouee ; config active et fichier inchanges");
+    }
   }
   return ok;
 }
 
 bool ConfigStorage::factoryReset() {
   if (!isFilesystemMounted()) return false;
-  initDefaults();
+  // NE TOUCHE PAS `cfg` non plus (meme raison que resetToDefaults) : le materiel
+  // continue d'etre pilote par la configuration qui le decrit jusqu'au
+  // redemarrage, apres quoi la machine repart en premier demarrage.
+  // C'etait le pire des deux cas : factoryReset() detruisait la configuration
+  // active en RAM sans rien persister, donc jusqu'au redemarrage le firmware
+  // pilotait du materiel avec une configuration d'usine arbitraire.
+  const char* tmpPath = CONFIG_FILE_PATH ".tmp";
+  const char* bakPath = CONFIG_FILE_PATH ".bak";
+
   // Supprimer le fichier config pour que isFirstBoot() retourne true
   // Le wizard le recreera via save() apres configuration
   bool ok = LittleFS.remove(CONFIG_FILE_PATH) || !LittleFS.exists(CONFIG_FILE_PATH);
+
+  // Les residus comptent autant que le fichier lui-meme : loadWithStatus() promeut
+  // un .tmp ou un .bak quand la configuration finale manque. En laisser un
+  // ressusciterait au demarrage suivant la configuration que l'utilisateur vient
+  // d'effacer, alors que isFirstBoot() aurait annonce une machine vierge.
+  if (LittleFS.exists(tmpPath)) LittleFS.remove(tmpPath);
+  if (LittleFS.exists(bakPath)) LittleFS.remove(bakPath);
+  ok = ok && !LittleFS.exists(tmpPath) && !LittleFS.exists(bakPath);
+
   if (DEBUG) {
-    Serial.println("DEBUG: ConfigStorage - Reset usine (fichier supprime)");
+    Serial.println("DEBUG: ConfigStorage - Reset usine (fichier + residus supprimes)");
   }
   return ok;
 }
 
 bool ConfigStorage::isFirstBoot() {
   if (!isFilesystemMounted()) return false;
-  return !LittleFS.exists(CONFIG_FILE_PATH);
+  // Premier demarrage = AUCUNE configuration recuperable. Un .tmp ou un .bak
+  // orphelin serait promu par loadWithStatus() au prochain demarrage : annoncer
+  // une machine vierge alors que la configuration precedente va revenir ferait
+  // ecrire l'assistant de premier demarrage par-dessus une config bien vivante.
+  return !LittleFS.exists(CONFIG_FILE_PATH) &&
+         !LittleFS.exists(CONFIG_FILE_PATH ".tmp") &&
+         !LittleFS.exists(CONFIG_FILE_PATH ".bak");
 }

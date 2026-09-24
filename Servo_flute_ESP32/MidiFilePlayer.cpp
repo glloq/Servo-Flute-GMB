@@ -1,4 +1,6 @@
 #include "MidiFilePlayer.h"
+
+#include <new>   // std::nothrow : une allocation ratee doit rendre nullptr, pas abandonner
 #include "InstrumentManager.h"
 
 MidiFilePlayer::MidiFilePlayer()
@@ -15,13 +17,36 @@ MidiFilePlayer::~MidiFilePlayer() {
   }
 }
 
-void MidiFilePlayer::begin(InstrumentManager* instrument) {
+bool MidiFilePlayer::begin(InstrumentManager* instrument) {
   _instrument = instrument;
-  // Pre-allouer le tableau d'evenements
-  _events = new MidiFileEvent[MIDI_FILE_MAX_EVENTS];
+  // Reutiliser une allocation deja faite. begin() n'est appelee qu'une fois par
+  // WirelessManager, mais ecraser `_events` sans le liberer ferait fuir 16 Ko a
+  // chaque appel supplementaire - une fuite d'autant plus desagreable qu'elle
+  // n'apparaitrait que le jour ou quelqu'un rappelle begin().
+  if (_events != nullptr) return true;
+  // Pre-allocation du tableau d'evenements (MIDI_FILE_MAX_EVENTS * 8 octets,
+  // soit 16 Ko d'un seul tenant).
+  //
+  // `std::nothrow` n'est pas cosmetique ici. Sur ESP32, un `new` ordinaire qui
+  // echoue ne rend PAS nullptr : il abandonne et la carte redemarre. Or
+  // loadFile() teste deja `_events == nullptr` et rend false - une protection
+  // ecrite, relue, et jusqu'ici INATTEIGNABLE, parce que le seul chemin qui
+  // pouvait la produire tuait le programme avant. Elle devient atteignable :
+  // un tas insuffisant degrade le lecteur de fichiers au lieu de faire
+  // redemarrer l'instrument, potentiellement en pleine note.
+  _events = new (std::nothrow) MidiFileEvent[MIDI_FILE_MAX_EVENTS];
+  if (_events == nullptr) {
+    if (DEBUG) {
+      Serial.print("ERREUR: MidiFilePlayer - tas insuffisant pour ");
+      Serial.print((uint32_t)(sizeof(MidiFileEvent) * MIDI_FILE_MAX_EVENTS));
+      Serial.println(" octets : lecture de fichiers MIDI indisponible");
+    }
+    return false;
+  }
   if (DEBUG) {
     Serial.println("DEBUG: MidiFilePlayer - Init OK");
   }
+  return true;
 }
 
 bool MidiFilePlayer::loadFile(const char* path) {

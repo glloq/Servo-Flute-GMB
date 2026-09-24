@@ -46,6 +46,13 @@
 class FingerController;
 class AirflowController;
 class IAudioSource;
+// Le calibrateur mute la configuration active par le MEME chemin transactionnel
+// que le reste du firmware (ConfigCommit). Ces deux types ne sont vus que par
+// AutoCalibrator.cpp : l'en-tete n'inclut pas ConfigCommit.h, pour que la forme
+// exacte de ConfigCommitResult reste un detail d'implementation.
+class InstrumentManager;
+struct ConfigCommitGuard;
+struct RuntimeConfig;   // declare par ConfigStorage.h ; une reference suffit ici
 
 enum AutoCalMode {
   ACAL_MODE_AIRFLOW,        // Auto-calibrate airflow per note
@@ -108,8 +115,13 @@ struct AutoCalNoteResult {
 };
 
 // Aggregate outcome of applying results (persistence-aware).
+// `saved` et `applied` sont DEUX choses differentes, exactement comme dans
+// ConfigCommitResult : `saved` dit que le candidat est en flash, `applied` qu'il
+// est REELLEMENT devenu la configuration active. Un candidat persiste mais non
+// active (verrou de configuration refuse) donne saved=true, applied=false : rien
+// n'a ete ecrit dans `cfg`, et c'est un redemarrage controle qui reconcilie.
 struct AutoCalApplyResult {
-  bool applied;        // at least one valid note is persisted in cfg (false if rolled back)
+  bool applied;        // la configuration active porte reellement les resultats
   bool saved;          // persisted to LittleFS successfully
   uint8_t validCount;
   uint8_t failedCount;
@@ -117,7 +129,7 @@ struct AutoCalApplyResult {
 
 // Outcome of applying the range-finder result (persistence-aware).
 struct RangeApplyResult {
-  bool applied;        // new angles are persisted in cfg (false if rolled back / invalid)
+  bool applied;        // la configuration active porte reellement les nouveaux angles
   bool saved;          // persisted to LittleFS successfully
   int minAngle;        // -1 when no valid result
   int maxAngle;
@@ -163,9 +175,22 @@ public:
   // Results after ACAL_COMPLETE
   const AutoCalNoteResult* getResults() const { return _results; }
   AutoCalNoteResult getResult(int idx) const { return _results[idx]; }
-  // Writes only valid results into cfg and persists; reports what happened and,
-  // on a storage failure, restores the previous configuration in RAM.
-  AutoCalApplyResult applyResults();
+  // Construit un CANDIDAT (copie de la configuration active + les seuls
+  // resultats valides), le VALIDE, le PERSISTE, puis l'ACTIVE par le chemin
+  // transactionnel commun. `cfg` n'est ecrit qu'a la derniere etape, en une
+  // seule affectation sous verrou ; si n'importe quelle etape echoue il reste
+  // IDENTIQUE BIT A BIT a ce qu'il etait avant l'appel.
+  //
+  // Auparavant les trois champs de chaque note etaient ecrits un a un dans `cfg`
+  // AVANT toute validation et avant l'ecriture flash : une autre tache lisait ces
+  // champs pendant toute la sauvegarde LittleFS, et rien ne garantissait que la
+  // configuration ainsi obtenue passerait ConfigValidator.
+  //
+  // `instrument` et `guard` sont optionnels : nullptr signifie "pas de materiel a
+  // re-appliquer" et "pas de verrou de configuration" (cas des tests hote). En
+  // production l'appelant passe l'InstrumentManager et le verrou dont il dispose.
+  AutoCalApplyResult applyResults(InstrumentManager* instrument = nullptr,
+                                  const ConfigCommitGuard* guard = nullptr);
 
   // Range finder results
   int getRangeFinderMin() const { return _rfMinAngle; }
@@ -174,9 +199,12 @@ public:
   // airflow range, widened and clipped). Exposed so the bound can be asserted.
   int getRangeSweepStart() const { return _rfSweepStart; }
   int getRangeSweepEnd() const { return _rfSweepEnd; }
-  // Writes the discovered angles into cfg and persists; on a storage failure the
-  // previous angles are restored in RAM and applied/saved report false.
-  RangeApplyResult applyRangeResults();
+  // Meme discipline que applyResults() pour les angles decouverts : candidat,
+  // validation (les angles MESURES doivent survivre a la normalisation, sinon ce
+  // qui serait active ne serait pas ce qui a ete mesure), persistance, puis
+  // activation. Echec a n'importe quelle etape => `cfg` identique bit a bit.
+  RangeApplyResult applyRangeResults(InstrumentManager* instrument = nullptr,
+                                     const ConfigCommitGuard* guard = nullptr);
   // Failure reason for a range-finder run (ACAL_FAIL_NONE when it succeeded).
   uint8_t getRangeFailureReason() const { return _rfFailReason; }
 
@@ -305,6 +333,25 @@ private:
   unsigned long _rfPosStartTime;
 
   AutoCalNoteResult _results[MAX_NOTES];
+
+  // --- transaction de configuration ---------------------------------------
+  // Ce que le calibrateur a besoin de savoir d'un commit. Volontairement reduit
+  // a deux booleens : c'est la seule forme de ConfigCommitResult dont le reste
+  // du calibrateur depend.
+  struct CommitOutcome {
+    bool saved;      // le candidat est en flash
+    bool activated;  // `cfg` a REELLEMENT ete remplace par le candidat
+  };
+  // SEUL endroit du calibrateur qui ecrit la configuration active, et SEUL point
+  // de couplage avec ConfigCommit : valide, persiste, puis active `candidate`.
+  CommitOutcome commitCandidate(RuntimeConfig& candidate,
+                                InstrumentManager* instrument,
+                                const ConfigCommitGuard* guard);
+  // Alloue un candidat sur le TAS. RuntimeConfig fait ~5 Ko : empiler une
+  // seconde copie sur la pile d'une tache FreeRTOS suffit a la faire deborder.
+  // Peut rendre nullptr - l'appelant DOIT le verifier (voir ConfigStorage.cpp,
+  // meme convention).
+  static RuntimeConfig* newCandidate();
 
   // --- helpers ---
   void updateStateMachine(unsigned long now);

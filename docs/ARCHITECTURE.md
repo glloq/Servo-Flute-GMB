@@ -60,6 +60,23 @@ calibration, MIDI player)     ──▶ single WebOp slot ──▶ loop() ─�
   discards every command issued before it.
 - **`InstrumentManager::applyCommand()`** is the single application point, and it
   refuses every physically-acting command while the hardware is not ready.
+- **Requests that are not queue slots** — the deferred servo power-on and the
+  CC121 Reset All Controllers — are taken and cleared in a *single* critical
+  section, like the panic flag. They used to be plain `volatile bool` read and
+  then cleared as two steps; a request posted between the two was silently lost.
+  `volatile` keeps the compiler from caching a variable and gives neither
+  atomicity nor a barrier, so it is never a synchronisation primitive here.
+- **The work applied per `update()` is bounded.** Draining the whole ring in one
+  pass could chain dozens of I2C transactions and starve the rest of `loop()`
+  under a WebSocket burst. Commands over the bound are *deferred*, never
+  dropped, and the ring is FIFO so nothing starves. The panic is outside the
+  bound. Pending Note Offs still come after the ring, but they yield at most two
+  consecutive passes: past that the release goes through, because a permanently
+  saturated ring would otherwise hold a note with the valve and air open.
+- **A queue whose allocation failed is inert, not fatal**: pushes and pops refuse,
+  `count()` is 0, nothing is dereferenced, and `queues_ok` in the diagnostics
+  reports it. The panic flag and the Note Off bitmap keep working, because
+  neither lives in the allocated array.
 - **Web operations** that touch the active configuration, LittleFS, the MIDI
   player or the calibrator are handed to `loop()` in one of two ways:
   - an **HTTP** handler uses the one-slot blocking hand-off: it fills the slot,

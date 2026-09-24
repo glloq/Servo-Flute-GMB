@@ -33,6 +33,7 @@ InstrumentManager::InstrumentManager()
     _cc2PendingValue(0),
     _powerOnRequested(false),
     _resetControllersRequested(false),
+    _noteOffDeferrals(0),
     _panicCount(0),
     _prevSequencerState(STATE_IDLE),
     _prevNoteSounding(false),
@@ -359,8 +360,10 @@ void InstrumentManager::managePower() {
     _lastActivityTime = millis();
     return;
   }
-  if (_powerOnRequested) {
-    _powerOnRequested = false;
+  // Prise ATOMIQUE : lue et effacee sous un seul verrou. Une demande deposee
+  // par une autre tache pendant ensureServosPowered() reste posee et sera
+  // honoree a la passe suivante, au lieu d'etre effacee sans effet.
+  if (takePowerOnRequest()) {
     ensureServosPowered();
   }
   if (cfg.timeUnpower == 0) {
@@ -390,8 +393,52 @@ void InstrumentManager::registerActuatorActivity() {
   // Peut etre appelee depuis une tache productrice (enfilement d'une note). On
   // ne touche donc PAS au GPIO d'OE ici : on note l'activite et on demande
   // l'alimentation ; managePower() (tache loop()) execute l'ecriture.
+  //
+  // CHEMIN BRULANT : setPWM() passe par ici a chaque ecriture de servo. La
+  // section critique se limite donc au depot du drapeau - millis() est lu AVANT,
+  // hors verrou, pour ne pas garder les interruptions masquees pendant la
+  // lecture du compteur.
+  const unsigned long now = millis();
+  portENTER_CRITICAL(&_requestMux);
   _powerOnRequested = true;
-  _lastActivityTime = millis();
+  portEXIT_CRITICAL(&_requestMux);
+  // Horodatage volontairement HORS verrou : ecriture unique d'un mot aligne,
+  // sans lecture-modification-ecriture, et la semantique voulue est "le dernier
+  // qui ecrit gagne". managePower() le relit une seule fois par passe.
+  _lastActivityTime = now;
+}
+
+bool InstrumentManager::takePowerOnRequest() {
+  // Lecture ET effacement en UNE section critique - meme motif que
+  // CommandQueue::takePanicRequest(). C'est ce qui rend impossible la perte
+  // d'une demande deposee entre les deux.
+  portENTER_CRITICAL(&_requestMux);
+  bool requested = _powerOnRequested;
+  _powerOnRequested = false;
+  portEXIT_CRITICAL(&_requestMux);
+  return requested;
+}
+
+bool InstrumentManager::takeResetControllersRequest() {
+  portENTER_CRITICAL(&_requestMux);
+  bool requested = _resetControllersRequested;
+  _resetControllersRequested = false;
+  portEXIT_CRITICAL(&_requestMux);
+  return requested;
+}
+
+bool InstrumentManager::powerOnRequestPending() const {
+  portENTER_CRITICAL(&_requestMux);
+  bool requested = _powerOnRequested;
+  portEXIT_CRITICAL(&_requestMux);
+  return requested;
+}
+
+bool InstrumentManager::resetControllersRequestPending() const {
+  portENTER_CRITICAL(&_requestMux);
+  bool requested = _resetControllersRequested;
+  portEXIT_CRITICAL(&_requestMux);
+  return requested;
 }
 
 void InstrumentManager::setActuatorSessionActive(bool active) {
@@ -639,7 +686,12 @@ bool InstrumentManager::postCommand(const ActuatorCommand& cmd) {
   }
   if (cmd.type == ACMD_CONTROL_CHANGE && isChannelModeControlChange(cmd.a)) {
     if (cmd.a == MIDI_CC_RESET_ALL_CONTROLLERS) {
+      // Depot sous le verrou des demandes : processCommands() PREND le drapeau
+      // (lecture + effacement atomiques), donc une demande posee ici pendant
+      // qu'il traite la precedente n'est jamais effacee sans avoir ete traitee.
+      portENTER_CRITICAL(&_requestMux);
       _resetControllersRequested = true;
+      portEXIT_CRITICAL(&_requestMux);
       return true;
     }
     if (cmd.a == 122) return true;   // Local Control: sans objet
@@ -667,18 +719,29 @@ void InstrumentManager::processCommands() {
   if (_commands.takePanicRequest()) {
     executePanic();
   }
-  if (_resetControllersRequested) {
-    _resetControllersRequested = false;
+  // Meme motif que le panic ci-dessus : le drapeau est PRIS (lu et efface sous
+  // un seul verrou), jamais teste puis efface en deux temps. Une demande deposee
+  // par la tache AsyncTCP pendant resetAllControllers() survit donc et sera
+  // traitee a la passe suivante.
+  if (takeResetControllersRequest()) {
     resetAllControllers();
   }
 
+  // TRAVAIL BORNE (voir INSTRUMENT_MAX_COMMANDS_PER_UPDATE). Chaque
+  // applyCommand() peut emettre plusieurs transactions I2C : drainer toute la
+  // file d'un coup affamait le reste de loop(). Les commandes non traitees
+  // restent EN FILE, dans l'ordre, et passent aux tours suivants - l'anneau est
+  // FIFO, donc les plus anciennes sortent toujours en premier.
   ActuatorCommand cmd;
-  while (_commands.pop(cmd)) {
+  uint8_t appliedThisPass = 0;
+  while (appliedThisPass < INSTRUMENT_MAX_COMMANDS_PER_UPDATE && _commands.pop(cmd)) {
+    appliedThisPass++;
     applyCommand(cmd);
     // Un panic arrive pendant le drainage annule les commandes restantes.
     if (_commands.panicPending()) {
       _commands.takePanicRequest();
       executePanic();
+      _noteOffDeferrals = 0;
       return;
     }
   }
@@ -688,8 +751,27 @@ void InstrumentManager::processCommands() {
   // qui le suivait a ete refuse aussi : le traiter en premier pourrait au
   // contraire le faire preceder un Note On deja en file et laisser la note
   // bloquee. Dans le pire cas on perd une note ; jamais on n'en bloque une.
+  //
+  // La borne ci-dessus ajoute un cas que cet ordre ne prevoyait pas : l'anneau
+  // peut rester non vide parce qu'on s'est arrete, pas parce qu'il se remplit.
+  // Ceder le pas quelques passes preserve l'ordre voulu ; ceder indefiniment
+  // (client qui sature la file en permanence) bloquerait la note, valve et
+  // souffle ouverts. On cede donc au plus
+  // INSTRUMENT_MAX_NOTE_OFF_DEFERRAL_PASSES fois, puis les relachements passent
+  // - meme arbitrage que le paragraphe precedent : perdre une note, jamais en
+  // bloquer une.
+  if (_commands.count() > 0 && _commands.hasPendingNoteOff() &&
+      _noteOffDeferrals < INSTRUMENT_MAX_NOTE_OFF_DEFERRAL_PASSES) {
+    _noteOffDeferrals++;
+    return;
+  }
+  _noteOffDeferrals = 0;
+
+  uint8_t releasedThisPass = 0;
   uint8_t pendingNote;
-  while (_commands.takePendingNoteOff(pendingNote)) {
+  while (releasedThisPass < INSTRUMENT_MAX_NOTE_OFFS_PER_UPDATE &&
+         _commands.takePendingNoteOff(pendingNote)) {
+    releasedThisPass++;
     noteOff(pendingNote);
     if (_commands.panicPending()) {
       _commands.takePanicRequest();

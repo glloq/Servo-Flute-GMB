@@ -40,6 +40,13 @@ struct MidiEvent {
 // evenement obsolete, en perdre un, ou en reordonner deux. Les seules primitives
 // de consommation sont desormais tryPopDueEvent() (lecture + retrait du MEME
 // evenement sous le MEME verrou) et peekCopy() (copie par valeur).
+//
+// ALLOCATION REFUSEE
+// ------------------
+// Le stockage est alloue sur le tas avec std::nothrow. S'il manque, la file
+// entre en mode degrade SUR : tout enfilement (y compris la variante FORCEE)
+// repond false, tout defilement repond false, getCount() vaut 0, et aucun
+// pointeur nul n'est dereference. Voir storageAvailable().
 class EventQueue {
 public:
   explicit EventQueue(int capacity);
@@ -92,6 +99,14 @@ public:
 
   // Obtient le timestamp de reference (premier evenement)
   unsigned long getReferenceTime() const;
+
+  // Vrai si le stockage a REELLEMENT ete alloue. Faux = allocation refusee (ou
+  // capacite nulle) : la file refuse tout au lieu de dereferencer un pointeur
+  // nul, et isFull() repond true - un producteur qui teste deja la saturation
+  // voit donc la panne sans rien changer a son code.
+  //
+  // Sans verrou : `_events` est fixe par le constructeur et ne change plus.
+  bool storageAvailable() const { return _events != nullptr; }
 
 private:
   MidiEvent* _events;

@@ -69,7 +69,11 @@ public:
   MidiFilePlayer();
   ~MidiFilePlayer();
 
-  void begin(InstrumentManager* instrument);
+  // Rend false si le tableau d'evenements n'a pas pu etre alloue. Le lecteur
+  // reste alors utilisable mais INERTE : aucun fichier ne se chargera. Le
+  // savoir permet de le DIRE, au lieu de laisser l'utilisateur constater que
+  // ses fichiers MIDI ne se chargent plus sans jamais apprendre pourquoi.
+  bool begin(InstrumentManager* instrument);
 
   // Charger et parser un fichier MIDI depuis LittleFS
   bool loadFile(const char* path);

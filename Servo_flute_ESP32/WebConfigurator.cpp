@@ -1,4 +1,6 @@
 #include "WebConfigurator.h"
+
+#include <new>   // std::nothrow : une allocation ratee doit rendre nullptr, pas abandonner
 #include "gmb/GmbRuntime.h"
 #include "InstrumentManager.h"
 #include "FanController.h"
@@ -202,6 +204,10 @@ void WebConfigurator::begin(InstrumentManager* instrument, MidiFilePlayer* playe
   _wsOpMutex = xSemaphoreCreateMutex();
   // Coherence de `cfg` entre le commit (tache loop) et les lecteurs AsyncTCP.
   _cfgMutex = xSemaphoreCreateMutex();
+  // xSemaphoreCreateMutex() alloue : sur un tas epuise elle rend NULL. On retient
+  // l'echec, parce qu'apres begin() un mutex absent ne veut PAS dire la meme
+  // chose qu'avant - voir lockConfig().
+  _cfgMutexFailed = (_cfgMutex == nullptr);
   _calCancelRequested = false;
 
   // Sessions web : jeton aleatoire tire du RNG materiel, expiration glissante.
@@ -232,11 +238,18 @@ void WebConfigurator::begin(InstrumentManager* instrument, MidiFilePlayer* playe
   gmb::runtime::setHttpDescriptorAvailable(true);
 
 #if MIC_ENABLED
-  // Initialize microphone (INMP441 via I2S)
-  _audio = new AudioAnalyzer();
-  bool micOk = _audio->begin();
+  // Initialize microphone (INMP441 via I2S).
+  //
+  // `std::nothrow` sur les deux : tout le reste de ce fichier teste deja
+  // `_audio` et `_autoCal` avant de les dereferencer (une douzaine de gardes
+  // chacun), donc le mode "pas de micro, pas de calibration" est ecrit, teste,
+  // et c'etait la seule chose qui ne pouvait pas l'atteindre. `micOk` reste
+  // faux si l'analyseur n'a pas pu etre alloue, ce qui neutralise du meme coup
+  // les deux observateurs poses plus bas.
+  _audio = new (std::nothrow) AudioAnalyzer();
+  bool micOk = (_audio != nullptr) && _audio->begin();
   if (micOk && _instrument) {
-    _autoCal = new AutoCalibrator(
+    _autoCal = new (std::nothrow) AutoCalibrator(
       _instrument->getFingerCtrl(),
       _instrument->getAirflowCtrl(),
       *_audio,
@@ -683,7 +696,15 @@ void WebConfigurator::update() {
       // applyResults() only overwrites notes whose new calibration is valid (a
       // failed note keeps its previous configuration) and restores RAM on a
       // storage failure, reporting exactly what happened.
-      AutoCalApplyResult ap = _autoCal->applyResults();
+      // Le calibrateur passe desormais par le MEME commit transactionnel que le
+      // chemin web. Il faut donc lui donner le verrou de configuration : sans
+      // garde, le commit remplace les 5132 octets de la configuration active
+      // hors verrou, pendant qu'une tache AsyncTCP peut la lire. Les arguments
+      // sont optionnels, donc cet oubli compilerait sans un mot - c'est
+      // exactement pour cela qu'il est ecrit ici plutot que sous-entendu.
+      const ConfigCommitGuard cfgGuard{ &WebConfigurator::cfgGuardLock,
+                                        &WebConfigurator::cfgGuardUnlock, this };
+      AutoCalApplyResult ap = _autoCal->applyResults(_instrument, &cfgGuard);
       const char* names[] = {"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
       // "ok" reflects the PERSISTED outcome: values must be both applied AND saved.
       // A storage failure rolls the RAM config back (applied==false), so a client
@@ -699,6 +720,14 @@ void WebConfigurator::update() {
       dj += ",\"applied\":" + String(ap.applied ? "true" : "false");
       dj += ",\"saved\":" + String(ap.saved ? "true" : "false");
       if (ap.validCount > 0 && !ap.saved) dj += ",\"error\":\"storage_failed\"";
+      else if (ap.saved && !ap.applied) {
+        // Persiste mais PAS actif : le verrou a expire. La flash porte la
+        // nouvelle calibration, la RAM l'ancienne. On programme le redemarrage
+        // controle qui les remet d'accord, plutot que de laisser l'instrument
+        // jouer sur une calibration que la flash contredit.
+        dj += ",\"error\":\"config_busy\",\"restart_required\":true";
+        scheduleControlledRestart();
+      }
       dj += ",\"validCount\":" + String(ap.validCount);
       dj += ",\"failedCount\":" + String(ap.failedCount);
       dj += ",\"results\":[";
@@ -924,9 +953,24 @@ void WebConfigurator::clearWsAuthentication(uint32_t clientId) {
 }
 
 bool WebConfigurator::lockConfig(uint32_t timeoutMs) {
-  // Avant begin(), un seul contexte touche `cfg` : rien a serialiser.
-  if (_cfgMutex == nullptr) return true;
-  return xSemaphoreTake(_cfgMutex, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
+  if (_cfgMutex != nullptr) {
+    return xSemaphoreTake(_cfgMutex, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
+  }
+  // Pas de mutex : deux situations tres differentes, qu'il ne faut pas
+  // confondre comme le faisait la version precedente.
+  //
+  //  - AVANT begin() : un seul contexte touche `cfg`, il n'y a rien a
+  //    serialiser, et repondre "verrouille" est exact.
+  //  - APRES begin() : la creation du semaphore a ECHOUE faute de tas, et
+  //    pourtant les taches AsyncTCP, elles, tournent. Repondre "verrouille"
+  //    laissait alors ecrire `cfg` sans aucune protection TOUT EN ANNONCANT le
+  //    contraire a ConfigCommit - un verrou qui ment est pire qu'un verrou
+  //    absent, parce que l'appelant cesse de se mefier.
+  //
+  // On echoue donc en FERMETURE : lockConfig() rend false, l'appelant HTTP
+  // repond une erreur et le commit refuse d'activer plutot que d'ecrire `cfg`
+  // a l'aveugle.
+  return !_cfgMutexFailed;
 }
 
 void WebConfigurator::unlockConfig() {
@@ -1137,6 +1181,10 @@ void WebConfigurator::executeWebOp(WebOp& op) {
         resp["ok"] = true;
         resp["saved"] = true;
         resp["applied"] = res.applied;
+        // `activated` porte litteralement l'invariant du commit : la
+        // configuration ACTIVE a-t-elle ete remplacee ? Le client le deduisait
+        // de `applied` + `restart_required` ; l'exposer evite la deduction.
+        resp["activated"] = res.activated;
         resp["restart_required"] = res.restartRequired;
         resp["corrected"] = res.corrected;
         JsonArray reinit = resp["reinitialized"].to<JsonArray>();
@@ -1228,12 +1276,30 @@ void WebConfigurator::executeWebOp(WebOp& op) {
                                 &cfgGuard);
       JsonDocument resp;
       resp["ok"] = res.saved;
-      if (!res.saved) resp["error"] = res.valid ? "storage_failed" : res.error;
-      else resp["msg"] = "Connecting...";
+      if (!res.saved) {
+        resp["error"] = res.valid ? "storage_failed" : res.error;
+      } else if (!res.activated) {
+        // Persiste mais PAS actif : le verrou de configuration a ete refuse,
+        // donc `cfg` porte encore les ANCIENS identifiants. Ne PAS basculer le
+        // reseau ici, pour deux raisons d'inegale gravite :
+        //  - connectToNetwork() partirait sur les nouveaux identifiants pendant
+        //    que la configuration active en decrit d'autres ;
+        //  - surtout, le prochain POST /api/config construit son candidat a
+        //    partir de `cfg`. Il reecrirait donc en flash les ANCIENS
+        //    identifiants, effacant en silence ceux qu'on vient d'enregistrer.
+        //    Une perte de donnees silencieuse, pas une incoherence d'affichage.
+        // Le redemarrage controle recharge la flash et remet RAM et flash
+        // d'accord ; la bascule reseau se fera au boot sur les bons.
+        resp["msg"] = "Saved, restarting";
+        resp["restart_required"] = true;
+        scheduleControlledRestart();
+      } else {
+        resp["msg"] = "Connecting...";
+      }
       serializeJson(resp, op.json);
       op.ok = res.saved;
       op.httpStatus = res.saved ? 200 : 500;
-      if (res.saved && _wirelessManager) {
+      if (res.saved && res.activated && _wirelessManager) {
         _wirelessManager->getWifiMidi().connectToNetwork(op.strA.c_str(), op.strB.c_str());
       }
       break;
@@ -1341,7 +1407,13 @@ void WebConfigurator::executeWebOp(WebOp& op) {
 
       // Recharger depuis la destination definitive pour que le lecteur pointe sur
       // le fichier final (et non sur le temporaire qui vient de disparaitre).
-      bool loaded = _player->loadFile(destPath.c_str());
+      //
+      // `_player` est teste : le meme gestionnaire le teste deja plus haut
+      // (chemin du temporaire), mais pas ici. L'asymetrie etait sans
+      // consequence tant qu'un lecteur absent faisait redemarrer la carte a
+      // l'allocation ; maintenant qu'un tas insuffisant le laisse a nullptr,
+      // c'est un dereferencement atteignable depuis une requete web.
+      bool loaded = _player && _player->loadFile(destPath.c_str());
       resp["ok"] = loaded;
       resp["file"] = _upload.fileName;
       if (loaded) {
@@ -1350,7 +1422,7 @@ void WebConfigurator::executeWebOp(WebOp& op) {
         resp["channels"] = _player->getActiveChannels();
       } else {
         resp["error"] = "invalid_midi";
-        resp["reason"] = _player->getLoadErrorCode();
+        resp["reason"] = _player ? _player->getLoadErrorCode() : "no_player";
       }
       resp["storage_used"] = getMidiStorageUsed();
       resp["storage_limit"] = limitBytes;
@@ -1443,7 +1515,9 @@ void WebConfigurator::executeWebOp(WebOp& op) {
     case WEBOP_AUTOCAL_APPLY_RANGE: {
       if (!_autoCal || !_autoCal->isRangeFinderComplete()) { op.ok = false; break; }
       bool hadValid = _autoCal->getRangeFinderMin() >= 0 && _autoCal->getRangeFinderMax() >= 0;
-      RangeApplyResult ra = _autoCal->applyRangeResults();
+      // Meme raison qu'a la fin de la calibration d'air : le commit doit se
+      // faire sous le verrou de configuration.
+      RangeApplyResult ra = _autoCal->applyRangeResults(_instrument, &cfgGuard);
       JsonDocument resp;
       resp["t"] = "rf_applied";
       if (ra.applied && ra.saved) {
@@ -1455,7 +1529,15 @@ void WebConfigurator::executeWebOp(WebOp& op) {
         op.ok = true;
       } else {
         resp["ok"] = false;
-        resp["error"] = hadValid ? "storage_failed" : "no_valid_range";
+        if (ra.saved && !ra.applied) {
+          // Persiste sans etre actif : verrou refuse. Voir le commentaire
+          // symetrique a la fin de la calibration d'air.
+          resp["error"] = "config_busy";
+          resp["restart_required"] = true;
+          scheduleControlledRestart();
+        } else {
+          resp["error"] = hadValid ? "storage_failed" : "no_valid_range";
+        }
         op.ok = false;
       }
       serializeJson(resp, op.json);
@@ -2240,7 +2322,12 @@ void WebConfigurator::handleApiConfigFinalize(AsyncWebServerRequest* request) {
     // controleurs ne peuvent donc jamais observer un etat intermediaire.
     // NB: le candidat est alloue sur le tas car la pile de la tache AsyncTCP est
     // trop etroite pour un RuntimeConfig complet (notes + doigts).
-    RuntimeConfig* candidatePtr = new RuntimeConfig(cfg);
+    // `std::nothrow` : le test de nullite ci-dessous etait MORT. Un `new`
+    // ordinaire ne rend jamais nullptr - il leve, ou, exceptions desactivees
+    // comme ici, il abandonne et la carte redemarre. La protection etait ecrite,
+    // relue, et ne pouvait pas se declencher : une requete web sur un tas serre
+    // rebootait l'instrument au lieu de recevoir le 500 prevu juste en dessous.
+    RuntimeConfig* candidatePtr = new (std::nothrow) RuntimeConfig(cfg);
     if (candidatePtr == nullptr) {
       request->send(500, "application/json", "{\"ok\":false,\"error\":\"out_of_memory\"}");
       return;
@@ -2598,6 +2685,11 @@ void WebConfigurator::handleApiDiagnostics(AsyncWebServerRequest* request) {
     doc["hardware_status"] = (int)_instrument->hardwareInitStatus();
     doc["actuator_session_active"] = _instrument->isActuatorSessionActive();
     doc["dropped_commands"] = _instrument->droppedCommandCount();
+    // Une file dont l'allocation a echoue refuse tout, sans planter. La file de
+    // COMMANDES se trahit deja par dropped_commands qui grimpe ; la file
+    // d'EVENEMENTS, elle, n'etait visible nulle part : l'instrument paraissait
+    // simplement ne plus jouer. Ce drapeau la rend diagnosticable.
+    doc["queues_ok"] = _instrument->queuesStorageAvailable();
 
     if (!probed) {
       addCheck("pca0", "warning", "Hardware probe not run yet");
@@ -2627,6 +2719,7 @@ void WebConfigurator::handleApiDiagnostics(AsyncWebServerRequest* request) {
     doc["hardware_status"] = -1;
     doc["actuator_session_active"] = false;
     doc["dropped_commands"] = 0;
+    doc["queues_ok"] = false;
     addCheck("pca0", "error", "Instrument not initialised (boot configuration or filesystem unsafe)");
     addCheck("pca1", "error", "Instrument not initialised");
     addCheck("hardware", "error", "Actuators disabled: hardware_not_ready");

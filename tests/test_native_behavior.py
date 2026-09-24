@@ -11,6 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCES = [
     "lib/native_stubs/src/arduino_stubs.cpp",
     "lib/native_stubs/src/config_test_stub.cpp",
+    "Servo_flute_ESP32/ConfigDefaults.cpp",
+    "Servo_flute_ESP32/ConfigPersist.cpp",
     "Servo_flute_ESP32/ConfigValidator.cpp",
     "Servo_flute_ESP32/ConfigCommit.cpp",
     "Servo_flute_ESP32/WebAuth.cpp",
@@ -54,6 +56,11 @@ SOURCES = [
     "tests/test_native/test_hw_note.cpp",
     "tests/test_native/test_hw_servo.cpp",
     "tests/test_native/test_hw_boot.cpp",
+    "tests/test_native/test_harden_storage.cpp",
+    "tests/test_native/test_harden_commit.cpp",
+    "tests/test_native/test_harden_autocal.cpp",
+    "tests/test_native/test_harden_memory.cpp",
+    "tests/test_native/test_harden_tasks.cpp",
     "tests/test_native/test_behavior.cpp",
 ]
 

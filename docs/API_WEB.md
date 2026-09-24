@@ -97,9 +97,10 @@ cancels (`stop`), starts a new calibration, or disconnects. `rf_done` reports
 `ok:false` with `reason`/`reasonName` (and `airError` for an air-supply failure)
 when no usable range was found. Applying replies with `{"t":"rf_applied","ok":true,
 "min":…,"max":…}` on success, or `{"t":"rf_applied","ok":false,"error":"…"}`
-(`storage_failed` / `no_valid_range`) when nothing was written — the servo range is
-storage-checked and rolled back on a LittleFS failure, exactly like the per-note
-results.
+(`storage_failed` / `no_valid_range` / `config_busy`) when nothing was activated —
+the servo range goes through the same transactional commit as the per-note
+results. `config_busy` means persisted but not activated (lock refused); the
+reply then carries `restart_required:true` and a controlled reboot is scheduled.
 
 Live progress (`acal_prog`), one per airflow position:
 
@@ -132,10 +133,18 @@ note:
 ```
 
 - `ok` is `true` only when the results were both **applied and saved**
-  (`applied && saved`). On a LittleFS write failure the RAM configuration is
-  rolled back, so `applied` and `saved` are both `false`, `ok` is `false`, and an
-  `"error":"storage_failed"` field is added — a client is never told a partial
-  success while nothing was written.
+  (`applied && saved`). On a LittleFS write failure nothing was ever written to
+  the active configuration in the first place, so `applied` and `saved` are both
+  `false`, `ok` is `false`, and an `"error":"storage_failed"` field is added — a
+  client is never told a partial success while nothing was written.
+- If the calibration was persisted but the configuration lock was refused, the
+  reply carries `saved:true, applied:false`, `"error":"config_busy"` and
+  `"restart_required":true`: the flash holds the new calibration, the RAM the
+  old one, and a controlled reboot is scheduled to reconcile them.
+- The calibrator now goes through the same transactional commit as the web path:
+  it builds a candidate, validates it, persists it, and only then activates it
+  under the lock. A calibration that fails at any step leaves the active
+  configuration bit-for-bit unchanged.
 - A failed note has `ok:false`, keeps its previous calibration, and reports both a
   numeric `reason` (`AutoCalFailureReason`: 0 none, 1 no-sound, 2 wrong-note,
   3 low-confidence, 6 no-stable-nominal, 7 audio-stale, 8 note-timeout,
@@ -274,6 +283,13 @@ Manual hardware tests must always be time-limited and followed by a safe state. 
 
 REST and WebSocket payloads that include user-provided strings are serialized with ArduinoJson so escaping is correct for examples such as `deviceName = Flute "A"`, `SSID = atelier\wifi`, and `fichier = étude "test".mid`.
 
+`GET /api/diagnostics` reports `dropped_commands` (actuator commands refused by a
+full cross-task ring) and `queues_ok` (both internal queues really own their
+storage). A queue whose allocation failed refuses everything instead of
+dereferencing a null pointer; the command ring already showed up through
+`dropped_commands` climbing, but a dead *event* queue was visible nowhere — the
+instrument simply appeared to stop playing.
+
 `GET /api/diagnostics` is passive: it reports `ok`, `warning`, `error`, `not_tested`, or `not_applicable` without moving actuators. `POST /api/diagnostics/run` is reserved for an explicit active, timeout-bounded hardware sequence that announces the tested components, supports stop/panic, returns outputs to a safe state, and keeps physical checks marked `NOT TESTED — requires hardware` until executed on real hardware.
 
 ## Post-audit API safety contract
@@ -286,7 +302,17 @@ serializer so SSIDs, filenames, device names and error text are escaped.
 
 Configuration reset and factory reset report `applied:false` and
 `restart_required:true` after safing the hardware; they do not claim the defaults
-are already active until the controlled reboot has happened.
+are already active until the controlled reboot has happened. They no longer touch
+the active configuration **at all**: it describes the hardware that was actually
+initialised — PCA channels, GPIOs, angles — and overwriting it in RAM while the
+loop runs would drive the actuators from a description that no longer matches the
+wiring. `GET /api/config` therefore still returns the previous configuration
+during the short window before the reboot.
+
+Factory reset also removes the `.tmp` and `.bak` companions of the configuration
+file. Leaving them behind did not make `isFirstBoot()` fail, it made it *lie*: the
+boot path promotes a pending `.tmp` when the final file is missing, so the next
+boot resurrected the configuration that had just been erased.
 
 ### Transactional configuration write
 
@@ -302,9 +328,26 @@ visible from the API:
 | Invalid candidate | `400 {"ok":false,"error":"<reason>"}` | unchanged (configuration and controllers) |
 | Save failed | `500 {"ok":false,"saved":false,"error":"storage_failed"}` | unchanged; keeps running on the previously persisted configuration |
 | Applied | `200 {"ok":true,"saved":true,"applied":true,"restart_required":false}` | new configuration active |
-| Needs a hardware re-init | `200 {"ok":true,"saved":true,"applied":false,"restart_required":true,"restarting":true}` | new configuration saved, **old one still active**, actuators safed, controlled reboot scheduled |
+| Needs a hardware re-init | `200 {"ok":true,"saved":true,"applied":false,"activated":false,"restart_required":true,"restarting":true}` | new configuration saved, **old one still active**, actuators safed, controlled reboot scheduled |
+| Configuration lock refused *during* the commit | `200 {"ok":true,"saved":true,"applied":false,"activated":false,"restart_required":true,"restarting":true}` + `warnings:["config_lock_timeout"]` | new configuration saved, **old one still active and untouched**, controlled reboot scheduled |
 | Loop busy / not answering | `503 {"ok":false,"error":"busy"}` | unchanged |
-| Configuration lock not obtained | `503 {"ok":false,"error":"config_busy"}` | unchanged — only `GET /api/config` and `GET /api/diagnostics` can answer this |
+| Configuration lock not obtained *before* the commit | `503 {"ok":false,"error":"config_busy"}` | unchanged — only `GET /api/config` and `GET /api/diagnostics` can answer this |
+
+`activated` answers the one question the other flags only imply: **was the
+active configuration really replaced?** It is never true unless the
+configuration lock was actually held. The commit refuses to write the active
+configuration without that lock — copying 5 KB while another task reads it is
+exactly what the lock exists to prevent — so a refused lock leaves the flash
+ahead of the RAM. That divergence is not hidden: it is bounded to one commit,
+reported by `saved && !activated`, and resolved by the controlled reboot, which
+reloads the flash with the matching hardware init.
+
+Clients should treat `saved` as "it is in flash", never as "the device is now
+running it". The WiFi credentials endpoint is the cautionary case: it used to
+switch the network on `saved` alone, which left the active configuration
+carrying the previous SSID — and the next `POST /api/config`, building its
+candidate from that configuration, would have written the old credentials back
+to flash.
 
 A configuration change bumps the General-Midi-Boop revision only in the "applied"
 row — validated, saved *and* active. A restart-required change is announced after

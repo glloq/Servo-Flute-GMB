@@ -40,6 +40,7 @@
 #include <esp_task_wdt.h>
 #include <esp_idf_version.h>
 #include <LittleFS.h>
+#include <new>   // std::nothrow : une allocation ratee doit rendre nullptr, pas abandonner
 
 #include "settings.h"
 #include "ConfigStorage.h"
@@ -226,9 +227,18 @@ void setup() {
   // que la configuration chargee est valide : sinon l'OE des PCA9685 reste HAUT
   // et aucun actionneur ne peut etre pilote, quel que soit le chemin (web, MIDI,
   // calibration). Voir InstrumentManager::applyCommand().
+  //
+  // `std::nothrow` : un `new` ordinaire qui echoue sur ESP32 ne rend pas nullptr,
+  // il abandonne et la carte redemarre - donc, au demarrage, elle reboucle. Le
+  // mode "instrument absent" existe deja et est teste (loop() teste
+  // `if (instrument)`, le serveur web repond hardware_not_ready) : une panne de
+  // tas y tombe desormais au lieu de produire une carte qui parait morte.
   if (bootConfigSafe) {
-    instrument = new InstrumentManager();
-    g_actuatorsEnabled = instrument->beginSafe();
+    instrument = new (std::nothrow) InstrumentManager();
+    g_actuatorsEnabled = (instrument != nullptr) && instrument->beginSafe();
+    if (instrument == nullptr && DEBUG) {
+      Serial.println("ERREUR: tas insuffisant pour InstrumentManager - actionneurs desactives");
+    }
   } else {
     instrument = nullptr;
     g_actuatorsEnabled = false;
@@ -236,8 +246,12 @@ void setup() {
 
   // Creer et initialiser le wireless manager
   // (inclut BLE/WiFi + serveur web + lecteur MIDI selon le mode)
-  wireless = new WirelessManager(statusLed, inputs);
-  wireless->begin(instrument);
+  wireless = new (std::nothrow) WirelessManager(statusLed, inputs);
+  if (wireless != nullptr) {
+    wireless->begin(instrument);
+  } else if (DEBUG) {
+    Serial.println("ERREUR: tas insuffisant pour WirelessManager - aucun transport MIDI");
+  }
 
   if (DEBUG) {
     Serial.println("========================================");
@@ -258,7 +272,7 @@ void setup() {
     Serial.print(SERVO_TO_SOLENOID_DELAY_MS);
     Serial.println(" ms");
     Serial.print("  - Mode: ");
-    Serial.println(wireless->getStatusText());
+    Serial.println(wireless ? wireless->getStatusText() : "INDISPONIBLE (tas insuffisant)");
     Serial.print("  - Watchdog: ");
     Serial.print(WATCHDOG_TIMEOUT_MS);
     Serial.println(" ms");

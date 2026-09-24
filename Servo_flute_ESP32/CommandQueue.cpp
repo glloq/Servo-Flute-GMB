@@ -1,9 +1,24 @@
 #include "CommandQueue.h"
+#include <new>   // std::nothrow : une allocation ratee doit rendre nullptr, pas lever
 
 CommandQueue::CommandQueue(uint8_t capacity)
-  : _capacity(capacity < 1 ? 1 : capacity), _head(0), _tail(0), _count(0),
+  : _items(nullptr), _capacity(capacity), _head(0), _tail(0), _count(0),
     _dropped(0), _panic(false) {
-  _items = new ActuatorCommand[_capacity];
+  if (_capacity > 0) {
+    // std::nothrow : sur un tas ESP32 fragmente, un `new` nu leve une exception
+    // qui, sans gestionnaire, redemarre la carte ; et le pointeur nul rendu par
+    // une allocation ratee serait ensuite dereference a chaque push.
+    _items = new (std::nothrow) ActuatorCommand[_capacity];
+  }
+  // Allocation refusee (ou capacite nulle demandee) : UN SEUL etat degrade, ce
+  // qui rend les deux cas identiques et testables.
+  //
+  // PROTECTION REMPLACEE, pas retiree : l'ancien `capacity < 1 ? 1 : capacity`
+  // servait a eviter un modulo par zero dans push()/pop(). Ces deux methodes
+  // sortent desormais AVANT tout calcul d'index quand l'anneau n'existe pas, ce
+  // qui couvre aussi l'allocation ratee - que la clause d'origine ne couvrait
+  // pas du tout.
+  if (!_items) _capacity = 0;
   for (uint8_t i = 0; i < 4; i++) _pendingNoteOff[i] = 0;
 }
 
@@ -13,7 +28,10 @@ CommandQueue::~CommandQueue() {
 
 bool CommandQueue::push(const ActuatorCommand& cmd) {
   portENTER_CRITICAL(&_mux);
-  if (_count >= _capacity) {
+  // Anneau absent (allocation refusee) : on refuse et on COMPTE, exactement
+  // comme une file pleine. La panne devient ainsi visible dans les diagnostics
+  // au lieu d'etre muette - et aucun pointeur nul n'est deref.
+  if (_items == nullptr || _count >= _capacity) {
     if (_dropped < 0xFFFF) _dropped++;
     portEXIT_CRITICAL(&_mux);
     return false;
@@ -27,7 +45,7 @@ bool CommandQueue::push(const ActuatorCommand& cmd) {
 
 bool CommandQueue::pop(ActuatorCommand& out) {
   portENTER_CRITICAL(&_mux);
-  if (_count == 0) {
+  if (_items == nullptr || _count == 0) {
     portEXIT_CRITICAL(&_mux);
     return false;
   }

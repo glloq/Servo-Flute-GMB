@@ -905,7 +905,7 @@ def test_config_commit_is_transactional():
     assert src.count('active = candidate;') == 1
     assert 'active.' not in src.split('active = candidate;', 1)[1].split('out.activated', 1)[0]
     # The candidate is built from a copy of the active configuration.
-    assert 'RuntimeConfig* candidatePtr = new RuntimeConfig(cfg);' in web
+    assert 'RuntimeConfig* candidatePtr = new (std::nothrow) RuntimeConfig(cfg);' in web
     # Persisting a candidate does not go through the global cfg.
     assert 'static bool saveFrom(const RuntimeConfig& source);' in read('Servo_flute_ESP32/ConfigStorage.h')
 
@@ -963,7 +963,7 @@ def test_littlefs_is_never_formatted_automatically():
     # A failed mount keeps the actuators disabled (no InstrumentManager at all).
     assert 'bool fsMounted = ConfigStorage::beginFilesystem();' in ino
     assert 'bool bootConfigSafe = fsMounted &&' in ino
-    assert ino.index('bootConfigSafe') < ino.index('instrument = new InstrumentManager();')
+    assert ino.index('bootConfigSafe') < ino.index('instrument = new (std::nothrow) InstrumentManager();')
     # Nothing is written to an unmounted filesystem.
     for fn in ('ConfigLoadStatus ConfigStorage::loadWithStatus()',
                'bool ConfigStorage::saveFrom(', 'bool ConfigStorage::factoryReset()'):
@@ -2425,3 +2425,249 @@ def test_audio_diagnostics_keeps_each_measure_next_to_what_qualifies_it():
             "modes de panne de la chronometrie : sans lui, un releve vide ou immobile ne "
             "se distingue pas d'une absence de jeu, et un cablage d'appels errone "
             "(rejected_events) passe pour un defaut de jeu." % f)
+
+
+def _firmware_translation_units():
+    """Les sources reellement compilees pour l'ESP32.
+
+    `web_content.h` est exclu : il ne contient pas de C++ mais l'interface web
+    en JavaScript, dans une chaine litterale brute, ou `new Headers(...)`,
+    `new Set(...)` et `new WebSocket(...)` sont parfaitement normaux.
+    """
+    import re
+    root = ROOT / 'Servo_flute_ESP32'
+    skip = {'web_content.h'}
+    out = []
+    for pattern in ('*.cpp', '*.h', '*.ino', 'gmb/*.cpp', 'gmb/*.h'):
+        for path in sorted(root.glob(pattern)):
+            if path.name in skip:
+                continue
+            text = path.read_text(encoding='utf-8')
+            # code_only() ne retire que les lignes `//`. Il faut aussi retirer
+            # les blocs /* */ : les en-tetes de ce depot sont abondamment
+            # commentes et plusieurs parlent d'une "new configuration".
+            text = re.sub(r'/\*.*?\*/', ' ', text, flags=re.DOTALL)
+            # ... et les commentaires de FIN de ligne, que code_only() laisse
+            # passer : `bool applied;  // new angles are persisted in cfg` etait
+            # compte comme une allocation.
+            text = re.sub(r'//[^\n]*', '', text)
+            out.append((path.relative_to(ROOT).as_posix(), code_only(text)))
+    return out
+
+
+def test_p2_no_bare_new_in_firmware_sources():
+    """Toute allocation du firmware passe par `new (std::nothrow)`.
+
+    Sur ESP32, exceptions desactivees, un `new` ORDINAIRE qui echoue ne rend pas
+    nullptr : il abandonne et la carte redemarre. Plusieurs allocations etaient
+    pourtant suivies d'une gestion d'echec soignee - un test de nullite, un mode
+    degrade, un code HTTP 500 - qui ne pouvait donc jamais s'executer. Le cas le
+    plus net etait `new RuntimeConfig(cfg)` dans WebConfigurator, suivi
+    immediatement de `if (candidatePtr == nullptr)` : une protection ecrite,
+    relue en revue, et morte.
+
+    Un `new` nu est donc interdit ici, non par style, mais parce qu'il rend
+    INATTEIGNABLE le code de repli ecrit juste en dessous - et qu'un repli
+    inatteignable est indiscernable, a la lecture, d'un repli qui marche.
+    """
+    import re
+    offenders = []
+    # `new` suivi d'un type, sans placement : on ignore `new (std::nothrow)` et
+    # les autres formes a placement, qui sont explicites par construction.
+    bare = re.compile(r'\bnew\s+(?!\()[A-Za-z_]')
+    # EXCLUSION RAISONNEE, par categorie et non par liste de lignes (une liste
+    # de lignes se perime en silence) : la construction d'un conteneur ou d'une
+    # chaine de la bibliotheque standard. `new std::string(GmbDescriptor::toJson(...))`
+    # en est le seul cas ici, et y mettre std::nothrow donnerait une FAUSSE
+    # assurance : toJson() construit deja une std::string, donc elle a deja
+    # alloue - et abandonne en cas d'echec - avant que ce `new` ne s'execute. La
+    # rendre "sure" ferait croire a un chemin de repli qui n'existe pas en
+    # amont. Ces allocations sont hors du chemin d'actionneur : elles servent le
+    # descripteur General-Midi-Boop.
+    stdlib = re.compile(r'\bnew\s+std::')
+    for rel, src in _firmware_translation_units():
+        for i, line in enumerate(src.splitlines(), 1):
+            if bare.search(line) and not stdlib.search(line):
+                offenders.append(f'{rel}:{i}: {line.strip()}')
+    assert not offenders, (
+        "Allocations sans std::nothrow - la gestion d'echec ecrite en dessous ne "
+        "pourra pas se declencher :\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_p2_config_lock_fails_closed_when_the_mutex_could_not_be_created():
+    """lockConfig() ne doit plus confondre "rien a serialiser" et "plus rien
+    pour serialiser".
+
+    `xSemaphoreCreateMutex()` alloue, donc elle peut rendre NULL sur un tas
+    epuise. lockConfig() rendait alors `true` - c'est-a-dire annoncait un verrou
+    acquis - et laissait ecrire `cfg` sans aucune protection pendant que les
+    taches AsyncTCP tournaient. Un verrou qui ment est pire qu'un verrou absent :
+    l'appelant cesse de se mefier. C'est aussi exactement ce que
+    commitCandidateConfig() interroge via son garde.
+    """
+    src = code_only(read('Servo_flute_ESP32/WebConfigurator.cpp'))
+    hdr = code_only(read('Servo_flute_ESP32/WebConfigurator.h'))
+    assert '_cfgMutexFailed' in hdr, (
+        "L'echec de CREATION du mutex n'est plus distingue de son absence avant "
+        "begin() : lockConfig() ne peut plus echouer en fermeture."
+    )
+    assert norm('_cfgMutexFailed = (_cfgMutex == nullptr);') in norm(src)
+    body = src.split('bool WebConfigurator::lockConfig', 1)[1].split('\n}', 1)[0]
+    assert 'return !_cfgMutexFailed;' in body, (
+        "lockConfig() ne rend plus false quand la creation du mutex a echoue."
+    )
+    assert 'if (_cfgMutex == nullptr) return true;' not in body, (
+        "Le retour inconditionnel `true` sur mutex absent est revenu."
+    )
+
+
+# --- Section 11 : une validation materielle ne se decrete pas --------------
+
+HW_NOT_TESTED = 'NOT TESTED — requires hardware'
+# Convention de preuve : pour qu'une ligne quitte NOT TESTED, la colonne
+# Comments doit porter `EXECUTED <AAAA-MM-JJ> <sha7+>`. Ni la date ni le SHA ne
+# sont verifiables par la CI - c'est normal, ce n'est pas leur role. Leur role
+# est qu'on ne puisse pas changer un statut SANS ECRIRE sur quoi et quand
+# l'essai a tourne. Un statut qu'on ne peut pas retracer ne vaut rien.
+HW_EVIDENCE = __import__('re').compile(r'EXECUTED\s+\d{4}-\d{2}-\d{2}\s+[0-9a-f]{7,40}')
+
+
+def _hardware_matrix_rows():
+    """[(id, statut, commentaires)] pour chaque ligne des tableaux de la
+    matrice - il y en a plusieurs, et ils doivent tous obeir a la regle."""
+    rows = []
+    for line in read('Servo_flute_ESP32/docs/HARDWARE_TEST_MATRIX.md').splitlines():
+        line = line.strip()
+        if not line.startswith('|') or not line.endswith('|'):
+            continue
+        cells = [c.strip() for c in line.strip('|').split('|')]
+        if len(cells) != 8:
+            continue
+        if cells[0] in ('ID',) or set(cells[0]) <= set('- '):
+            continue
+        rows.append((cells[0], cells[6], cells[7]))
+    return rows
+
+
+def test_hardware_matrix_never_claims_pass_without_recorded_evidence():
+    """Aucun statut ne quitte NOT TESTED sans preuve tracable.
+
+    Rien de ce depot n'a tourne sur un ESP32 avec des peripheriques physiques.
+    Une case passee a PASS apres une passe purement logicielle est la pire sortie
+    possible de ce travail : elle transforme une lacune CONNUE en confiance
+    infondee, et c'est precisement ce qu'une longue campagne de corrections rend
+    tentant - on a beaucoup travaille, donc on a envie que ce soit valide.
+
+    Le test n'interdit pas de marquer PASS. Il interdit de le faire sans dire
+    QUAND et SUR QUEL FIRMWARE, via `EXECUTED <AAAA-MM-JJ> <sha>` dans les
+    commentaires de la ligne.
+    """
+    rows = _hardware_matrix_rows()
+    assert len(rows) >= 70, (
+        f"Seulement {len(rows)} lignes lues dans la matrice : l'analyse ne mord "
+        "plus sur le tableau reel, donc elle ne protege plus rien."
+    )
+    faulty = [
+        f'{rid}: statut "{status}" sans preuve EXECUTED dans les commentaires'
+        for rid, status, comments in rows
+        if status != HW_NOT_TESTED and not HW_EVIDENCE.search(comments)
+    ]
+    assert not faulty, (
+        "Statuts materiels revendiques sans trace d'execution :\n  "
+        + "\n  ".join(faulty)
+        + "\nAjoutez `EXECUTED <AAAA-MM-JJ> <sha>` dans les commentaires de la "
+          "ligne, ou laissez " + HW_NOT_TESTED + "."
+    )
+
+
+def test_hardware_matrix_is_still_entirely_unexecuted():
+    """Etat REEL, pin par la CI plutot que par la memoire de quelqu'un.
+
+    Tant que ce test passe, la reponse a "est-ce que ca a ete valide sur
+    materiel ?" est non, en totalite - et elle est verifiee, pas affirmee. Le
+    jour ou un essai est reellement mene, ce test echoue : c'est voulu. Il faut
+    alors venir ici, constater que la ligne porte bien sa preuve, et ajuster le
+    compte en connaissance de cause.
+    """
+    rows = _hardware_matrix_rows()
+    executed = [(rid, status) for rid, status, _c in rows if status != HW_NOT_TESTED]
+    assert not executed, (
+        "Des lignes ne sont plus NOT TESTED : "
+        + ', '.join(f'{r} -> {s}' for r, s in executed)
+        + ". Si l'essai a vraiment eu lieu sur un ESP32 avec ses peripheriques, "
+          "mettez ce test a jour DELIBEREMENT. Sinon, c'est une regression de "
+          "l'honnetete du depot."
+    )
+
+
+def test_p1_wifi_commit_never_treats_saved_as_activated():
+    """`saved` ne veut pas dire "la RAM est a jour".
+
+    Depuis que le commit refuse d'ecrire la configuration active sans le verrou,
+    un commit peut finir `saved=true, activated=false`. Le chemin WiFi lisait
+    UNIQUEMENT `saved` : il repondait "Connecting...", lancait la bascule reseau,
+    et surtout laissait `cfg` porter les ANCIENS identifiants.
+
+    La consequence n'est pas cosmetique. Le prochain POST /api/config construit
+    son candidat a partir de `cfg` : il aurait reecrit en flash les anciens
+    identifiants, effacant en silence ceux que l'utilisateur venait
+    d'enregistrer. Une perte de donnees, declenchee par un simple timeout de
+    verrou.
+    """
+    src = code_only(read('Servo_flute_ESP32/WebConfigurator.cpp'))
+    case = src.split('case WEBOP_WIFI_CONNECT:', 1)[1].split('case WEBOP_', 1)[0]
+    assert 'res.activated' in case, (
+        "Le chemin WiFi ne regarde plus `activated` : il retraite `saved` comme "
+        "s'il voulait dire que la configuration active a change."
+    )
+    assert norm('if (res.saved && res.activated && _wirelessManager)') in norm(case), (
+        "La bascule reseau n'est plus conditionnee a l'activation : elle "
+        "partirait sur des identifiants que la configuration active ignore."
+    )
+    assert 'scheduleControlledRestart();' in case, (
+        "Aucun redemarrage n'est programme quand la flash est en avance sur la "
+        "RAM : la divergence resterait ouverte jusqu'au prochain ecrasement."
+    )
+    # La reponse doit porter l'information, sinon le client croit la bascule faite.
+    assert 'resp["restart_required"] = true;' in case
+
+
+def test_p1_commit_response_exposes_activation_not_just_application():
+    """Le client doit pouvoir distinguer "sauvegardee" de "activee" sans le deduire."""
+    src = code_only(read('Servo_flute_ESP32/WebConfigurator.cpp'))
+    commit = src.split('case WEBOP_COMMIT_CONFIG', 1)[1].split('case WEBOP_', 1)[0]
+    assert 'resp["activated"] = res.activated;' in commit
+
+
+def test_p1_autocal_apply_commits_under_the_configuration_lock():
+    """Les deux `apply*` du calibrateur passent le verrou de configuration.
+
+    Depuis que AutoCalibrator emprunte le commit transactionnel, il remplace la
+    configuration active - 5132 octets - par le meme chemin que la voie web.
+    Sans garde, ce remplacement se fait HORS verrou pendant qu'une tache
+    AsyncTCP peut lire `cfg` : precisement le dechirement que le verrou existe
+    pour empecher.
+
+    Ce test existe a cause de la forme de l'API : les deux parametres sont
+    OPTIONNELS, donc les oublier compile sans un avertissement et sans le
+    moindre symptome visible. Un defaut qui ne se manifeste qu'a la course
+    entre taches ne sera pas trouve par la relecture ; il doit etre epingle
+    ici.
+    """
+    src = code_only(read('Servo_flute_ESP32/WebConfigurator.cpp'))
+    assert norm('_autoCal->applyResults(_instrument, &cfgGuard)') in norm(src), (
+        "applyResults() est appelee sans garde : le commit ecrirait la "
+        "configuration active hors verrou."
+    )
+    assert norm('_autoCal->applyRangeResults(_instrument, &cfgGuard)') in norm(src), (
+        "applyRangeResults() est appelee sans garde."
+    )
+    assert 'applyResults();' not in src and 'applyRangeResults();' not in src, (
+        "Un appel sans argument subsiste : il compilerait, et perdrait le verrou."
+    )
+    # Persiste sans etre actif = divergence RAM/flash : elle doit etre resolue,
+    # pas seulement constatee.
+    assert src.count('scheduleControlledRestart();') >= 6
+    assert 'ra.saved && !ra.applied' in src
+    assert 'ap.saved && !ap.applied' in src

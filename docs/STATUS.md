@@ -104,14 +104,49 @@ The earlier 2026 firmware audit introduced or reinforced:
 - actuator outputs disabled before configuration is loaded and validated;
 - inert behavior when required PCA9685 hardware cannot be initialized safely;
 - centralized validation of GPIO capability, reserved pins, PCA channel conflicts, MIDI limits, fingering values, and sensor ranges;
-- atomic configuration persistence and rollback on failed writes;
+- atomic configuration persistence: the candidate is written to `.tmp` and
+  re-parsed, then the live file is **renamed** to `.bak` — never deleted — before
+  the `.tmp` is promoted, and the `.bak` is restored if that promotion fails. At
+  every instant at least one of the three paths holds a complete configuration.
+  The boot path recovers from either companion. The previous sequence deleted the
+  live file before renaming, so a failed rename destroyed both copies;
 - controlled restart for hardware-routing changes;
 - firmware-side time limits for manual actuator tests;
 - actuator-session ownership for calibration and manual tests;
 - panic and disconnect paths returning hardware to a safe state;
 - non-blocking ToF sensor reads and stale-sensor pump shutdown;
 - pump and fan demand tied to accepted sequencer note transitions;
-- bounded calibration timeouts and preservation of previous values when a note fails calibration.
+- bounded calibration timeouts and preservation of previous values when a note fails calibration;
+- **reset and factory reset no longer touch the active configuration.** It
+  describes the hardware that was actually initialised; overwriting it in RAM
+  while the loop runs would drive the actuators from a description that no
+  longer matches the wiring. Factory reset was the worse of the two: it
+  destroyed the active configuration without persisting anything;
+- **the configuration commit refuses to activate without its lock.** It used to
+  write the active configuration anyway and merely add a `config_lock_timeout`
+  warning — visible, but not prevented, which is the opposite of what a lock
+  does. A refused lock now leaves the active configuration untouched, reports
+  `saved && !activated`, and schedules the controlled reboot that reconciles RAM
+  and flash;
+- **the auto-calibrator goes through that same transactional commit** instead of
+  writing the active configuration field by field: candidate, validate, persist,
+  activate. A calibration that fails at any step leaves it bit-for-bit unchanged;
+- **cross-task requests are taken and cleared atomically**, and the actuator work
+  done per loop pass is bounded so a burst of web commands cannot starve MIDI;
+- **allocation failures reach the degraded paths that were already written for
+  them.** Several `new` calls were followed by careful null handling that could
+  never run, because a plain `new` on this platform aborts instead of returning
+  null. The handling is unchanged; it is now reachable.
+
+The defect-by-defect account — how each one was reproduced before being
+touched, which mutation proves each fix, and what this pass does *not* prove —
+is in [Hardening report](HARDENING_REPORT.md).
+
+Two rules are now enforced by CI rather than by attention: no test function may
+be defined without being reachable from `main()` and without asserting anything
+(two tests had been dead for weeks), and no line of the hardware matrix may
+leave `NOT TESTED — requires hardware` without recording when, and on which
+firmware, the test was actually run.
 
 These software protections do not replace electrical protection, a physical emergency stop, appropriate fusing, correct power sizing, or physical verification.
 
