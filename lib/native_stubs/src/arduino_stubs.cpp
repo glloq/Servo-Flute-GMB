@@ -6,6 +6,7 @@
 unsigned long __test_millis = 0;
 __LittleFS LittleFS;
 SerialClass Serial;
+HardwareSerial Serial2;
 WireClass Wire;
 std::map<uint8_t,int> __analog_writes, __digital_writes, __analog_reads, __digital_reads;
 long map(long x,long in_min,long in_max,long out_min,long out_max){ return (x-in_min)*(out_max-out_min)/(in_max-in_min)+out_min; }

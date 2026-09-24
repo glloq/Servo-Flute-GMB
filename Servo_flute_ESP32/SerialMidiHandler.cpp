@@ -62,9 +62,23 @@ void SerialMidiHandler::stop() {
 void SerialMidiHandler::update() {
   if (!_running || !_serial) return;
 
-  // Read all available MIDI bytes
-  while (_serial->available()) {
+  // Drainage BORNE. Au debit MIDI nominal (31250 bauds, un octet toutes les
+  // 320 us) l'UART ne peut pas alimenter cette boucle plus vite qu'elle ne la
+  // vide : elle se terminait donc d'elle-meme. Mais la broche RX est
+  // CONFIGURABLE (cfg.serialMidiRxPin) et rien ne garantit qu'elle porte du
+  // MIDI : une broche flottante, ou cablee par erreur sur un signal rapide,
+  // produit des octets d'erreur de trame en continu. La boucle tournait alors
+  // sans fin, et avec elle loop() - pression, ventilateur, WebSocket, panic et
+  // chien de garde compris.
+  //
+  // Les octets non lus restent dans le tampon UART et sont repris a la passe
+  // suivante : rien n'est perdu tant que le tampon ne deborde pas, et s'il
+  // deborde c'est que la source emet plus vite que le MIDI, auquel cas perdre
+  // des octets est le comportement voulu plutot que bloquer l'instrument.
+  uint16_t drained = 0;
+  while (drained < MIDI_SERIAL_MAX_BYTES_PER_UPDATE && _serial->available()) {
     uint8_t b = _serial->read();
+    drained++;
     _lastByteMs = millis();
     _linkLost = false;   // des donnees circulent de nouveau
     parseByte(b);

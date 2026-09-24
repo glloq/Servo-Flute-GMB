@@ -27,6 +27,19 @@
 // Forward declaration
 class InstrumentManager;
 
+// Plafond d'octets lus par passe de update(). La constante vit ICI, dans le
+// module qui borne, et non dans settings.h qui est partage.
+//
+// 64 octets, pour deux raisons qui convergent :
+//  - c'est environ 21 messages de 3 octets, soit un peu moins que la capacite
+//    de l'anneau de commandes (COMMAND_QUEUE_SIZE = 24). En lire davantage ne
+//    ferait que remplir un anneau que loop() vide par tranches de 6 ;
+//  - a 31250 bauds c'est environ 20 ms de trafic MIDI nominal, bien plus que
+//    ce qui s'accumule entre deux passes de loop(). Le trafic normal ne
+//    rencontre donc JAMAIS cette borne : elle ne se declenche que face a une
+//    source qui emet plus vite que le MIDI, c'est-a-dire une anomalie.
+#define MIDI_SERIAL_MAX_BYTES_PER_UPDATE 64
+
 class SerialMidiHandler {
 public:
   SerialMidiHandler();

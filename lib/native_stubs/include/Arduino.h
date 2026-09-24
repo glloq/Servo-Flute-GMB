@@ -1,4 +1,5 @@
 #pragma once
+#include <vector>
 #include <cstdint>
 #include <cstring>
 #include <cmath>
@@ -49,3 +50,27 @@ class String: public std::string { public: using std::string::string; String():s
 };
 struct SerialClass { template<class T> void print(const T&){} template<class T, class U> void print(const T&, const U&){} template<class T> void println(const T&){} template<class T, class U> void println(const T&, const U&){} void println(){} };
 extern SerialClass Serial;
+
+// UART matériel, reduit a ce que SerialMidiHandler utilise reellement :
+// begin/end, available(), read(). Le tampon de reception est alimente par le
+// test via __feed(), ce qui permet d'eprouver le drainage MIDI DIN sur hote -
+// il n'avait aucune couverture jusqu'ici.
+class HardwareSerial {
+public:
+  void begin(unsigned long, uint32_t = 0, int8_t = -1, int8_t = -1) {}
+  void end() { __reset(); }
+  int available() { return (int)(_rx.size() - _pos); }
+  int read() { return _pos < _rx.size() ? (int)_rx[_pos++] : -1; }
+  // Helpers de test : alimenter le tampon, et savoir ce qui reste.
+  void __feed(const uint8_t* b, size_t n) { for (size_t i = 0; i < n; i++) _rx.push_back(b[i]); }
+  void __feedByte(uint8_t b) { _rx.push_back(b); }
+  void __reset() { _rx.clear(); _pos = 0; }
+  size_t __remaining() const { return _rx.size() - _pos; }
+private:
+  std::vector<uint8_t> _rx;
+  size_t _pos = 0;
+};
+extern HardwareSerial Serial2;
+#ifndef SERIAL_8N1
+#define SERIAL_8N1 0x800001cU
+#endif
