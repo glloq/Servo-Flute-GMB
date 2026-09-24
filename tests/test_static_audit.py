@@ -2906,9 +2906,11 @@ def test_p1_autocal_apply_commits_under_the_configuration_lock():
 def test_commissioning_ui_safety_and_feedback_contract():
     web = read('Servo_flute_ESP32/web_content.h')
 
-    # A hardware instrument needs an emergency action visible from every tab,
-    # not hidden in Settings > Monitor.
+    # A hardware instrument needs a SOFTWARE ALL SOUND OFF action visible from
+    # every tab, while the UI must not pretend it replaces a physical disconnect.
     assert 'id="globalStop"' in web
+    assert 'Use the physical power disconnect' in web
+    assert 'aria-label="Software all sound off"' in web
     assert 'function globalPanic()' in web
     panic = web.split('function globalPanic()', 1)[1].split('\n}', 1)[0]
     assert "wsSend({t:'panic'})" in panic
