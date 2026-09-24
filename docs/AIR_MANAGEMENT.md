@@ -150,6 +150,27 @@ Reservoir mode still never falls back to direct-pump behavior when the sensor is
 unusable: the pump stays stopped. `pump_stop`, panic, reset and factory-reset
 paths must stop pumps.
 
+That last sentence used to be an intention. It is now enforced: an order that
+*removes* energy from an actuator no longer travels through the bounded
+inter-task command ring, where a saturating WebSocket client could make it
+disappear — `postCommand()` returned `false`, the web layer ignored that value,
+and `endTestSession()` then disarmed the `TEST_SESSION_MAX_MS` net, leaving a
+pump running at its setpoint with no time limit at all. `pump_stop`, `fan_stop`,
+per-pump stop, `pump_enable=false`, closing the valve, **and a `pump_target` or
+`fan_target` of 0** now set a dedicated flag that cannot be full, are applied at
+the head of the next pass ahead of the per-pass work bound, and purge from the
+ring anything that would re-energise the same actuator.
+
+The zero setpoint deliberately keeps a channel of its own rather than being
+folded into the hard stop: `PressureController::stop()` additionally ends a
+running single-pump test and `FanController::stop()` skips the ramp-down, so
+merging them would have changed what the sliders do. Only the loss is gone.
+
+The asymmetry is the point. Commands that *add* energy — `pump_enable=true`,
+opening the valve, any non-zero setpoint — stay in the ordinary ring and may
+still be refused under saturation: losing a start-up is safe, losing a stop is
+not.
+
 Software cannot guarantee a pressure limit. Every rule above acts on the pump
 *command*; none of them measures pressure, and a seized pump driver, a shorted
 MOSFET or a firmware halt leaves the pump powered whatever the code decides. A

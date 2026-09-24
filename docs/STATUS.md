@@ -43,6 +43,9 @@ This document centralizes the validation state and known limitations of Servo Fl
 | WebSocket session expiry and revocation | Implemented | Software tested; end-to-end check on hardware required |
 | Configuration reads serialised with the commit | Implemented | Software tested |
 | Actuator GPIOs driven inactive before the I2C probe | Implemented | Software tested — **a hardware gate pull-down remains the reference protection** |
+| Undroppable actuator stop orders and zero setpoints | Implemented | Software tested; saturation bench check required (`FIN-STOP-*`) |
+| Transactional MIDI file replacement | Implemented | Software tested; flash-failure bench check required (`FIN-MIDI-1`) |
+| Bounded MIDI file playback and UART drain | Implemented | Software tested; dense-burst bench check required (`FIN-MIDI-2`) |
 
 ## Safety and reliability work completed
 
@@ -138,9 +141,54 @@ The earlier 2026 firmware audit introduced or reinforced:
   never run, because a plain `new` on this platform aborts instead of returning
   null. The handling is unchanged; it is now reachable.
 
+The 2026-09 finalisation pass, run on the merged hardening firmware, added:
+
+- **an actuator stop order that cannot be lost.** This was the P0 of the pass:
+  a stop travelled through the bounded command ring, `push()` returned `false`
+  when that ring was full, the web layer ignored the value, and
+  `endTestSession()` then disarmed the `TEST_SESSION_MAX_MS` net — a pump could
+  stay powered at its setpoint with *no time limit*. Stop orders now leave the
+  ring entirely, and so does a `pump_target`/`fan_target` of 0, which is how the
+  interface sliders actually ask for a shutdown;
+- **correct Note On / Note Off ordering.** Every Note Off used to go to the
+  undroppable bitmap, applied after the ring, so a `NOTE_OFF 60` followed by a
+  `NOTE_ON 60` between two passes applied backwards and left the note silent.
+  The bitmap is now a fallback on refusal only — which is what the comment
+  justifying the ordering had always assumed;
+- **a save reported as failed no longer applies itself at the next boot.** Boot
+  recovery promoted the `.tmp` before the `.bak`, but `bak + tmp, no live` is
+  exactly what a *failed* save leaves behind. The user got an error and the
+  reboot applied the rejected configuration anyway — possibly describing wiring
+  that is not the wiring installed;
+- **a factory reset that cannot report failure after destroying the
+  configuration**: residues first, abort on the first refusal with the live file
+  intact, live file last, and success confirmed by `exists()` rather than by
+  what `remove()` claims;
+- **one list of the fields that require a restart**, walked field by field
+  (`ConfigTopology`). The hand-written list it replaces was short by seven
+  fields, including the three passed to `pinMode()` for the endstop and Hall
+  inputs;
+- **web-layer concurrency discipline**: `volatile` removed, the AsyncTCP↔`loop()`
+  hand-off turned into an explicit state machine where abandonment and
+  publication are decided in the same critical section, the configuration
+  candidate taken from a locked snapshot instead of copied live, and two
+  read-after-release/wrong-target defects found in the process;
+- **transactional MIDI file replacement**, with boot repair of an interrupted
+  install and the backup kept outside the listing and the quota;
+- **bounded work** in the MIDI file player and the serial-MIDI UART drain, the
+  last two unbounded loops in the firmware;
+- **an unbuildable GMB descriptor no longer reboots the instrument**, and the
+  counter that says the served descriptor is stale is now visible in
+  `/api/status` and `/api/diagnostics`;
+- **three WebSocket replies the browser was discarding in silence** —
+  `stop_escalated`, `noise` and `mic_reset` — plus a CI guard that compares the
+  replies the firmware emits with the ones the interface handles, in both
+  directions.
+
 The defect-by-defect account — how each one was reproduced before being
 touched, which mutation proves each fix, and what this pass does *not* prove —
-is in [Hardening report](HARDENING_REPORT.md).
+is in [Hardening report](HARDENING_REPORT.md), which now carries one table per
+pass.
 
 Two rules are now enforced by CI rather than by attention: no test function may
 be defined without being reachable from `main()` and without asserting anything
