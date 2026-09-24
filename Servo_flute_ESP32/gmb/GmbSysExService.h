@@ -18,6 +18,12 @@
  * Every MIDI transport that can send SysEx both ways hands complete messages here
  * and writes back whatever bytes are returned; no protocol logic is duplicated
  * per transport.
+ *
+ * The descriptor is DISCOVERY METADATA, never part of playing a note. Nothing on
+ * the actuator path (NoteSequencer / AirflowController / FingerController) reads
+ * it, and a rebuild that cannot complete degrades discovery only: the previously
+ * published document stays in place and the instrument goes on playing. See
+ * setSnapshot() for what that costs and why it is built that way.
  ***********************************************************************************************/
 #ifndef GMB_SYSEX_SERVICE_H
 #define GMB_SYSEX_SERVICE_H
@@ -41,12 +47,25 @@ public:
 
   // Replace the active snapshot and rebuild the cached descriptor. Called only
   // after a configuration has been validated, committed and activated.
+  //
+  // ALL OR NOTHING: the snapshot and the descriptor are the pair the controller
+  // reads (the handshake announces the snapshot's revision and the descriptor's
+  // size, block 0x10 serves the descriptor), so they are published together or
+  // not at all. A rebuild that cannot complete leaves BOTH at their previous,
+  // matching values and counts one descriptorRebuildFailures().
   void setSnapshot(const CapabilitySnapshot& snapshot);
   const CapabilitySnapshot& snapshot() const { return _snapshot; }
 
   // The cached descriptor for the CURRENT snapshot, served over block 0x10 and
   // over GET /gmb/descriptor.json. Both read this same string, so they can never
   // diverge.
+  //
+  // _descriptor is NEVER null, so neither of these can dereference nothing: the
+  // constructor publishes the "instrument present, not configured" document of
+  // section 5.1 before anything else can run, and setSnapshot() only ever
+  // assigns a pointer it has already checked. A constructor that could not build
+  // that first document throws instead of leaving a half-built service behind,
+  // so there is no state in which a GmbSysExService exists without a document.
   const std::string& descriptorJson() const { return *_descriptor; }
   uint32_t descriptorSize() const { return (uint32_t)_descriptor->size(); }
 
@@ -70,12 +89,26 @@ public:
   // Diagnostics.
   uint32_t handledRequests() const { return _handled; }
   uint32_t droppedRequests() const { return _dropped; }
+  // Rebuilds that could not complete and therefore published nothing. Non-zero
+  // means the served descriptor is OLDER than the active configuration: the
+  // instrument plays the new configuration, General-Midi-Boop is still being
+  // told about the previous one. Degraded discovery, never a degraded note.
+  uint32_t descriptorRebuildFailures() const { return _rebuildFailures; }
   // True while a block 0x10 transfer is pinned to a document. Diagnostics and
   // tests only; the protocol never exposes it.
   bool transferInFlight() const { return (bool)_serving; }
 
 private:
   CapabilitySnapshot _snapshot;
+  // Scratch copy of the snapshot being published, kept from one activation to
+  // the next ON PURPOSE. setSnapshot() copies into it and only then swaps it
+  // with _snapshot, which is how the publication can be all-or-nothing without
+  // paying for it: after the swap this member owns the buffers of the PREVIOUS
+  // snapshot, so the next copy into it reuses those buffers instead of
+  // allocating new ones. Costs one CapabilitySnapshot of permanent RAM (~0.4 kB)
+  // and saves every allocation a staging copy would otherwise repeat per
+  // activation. Never read: its contents between two calls are of no interest.
+  CapabilitySnapshot _staged;
   // Shared ownership so a transfer can pin the document it started on without
   // copying it: a rebuild simply publishes a new string and the pinned one is
   // released when the transfer ends.
@@ -91,6 +124,7 @@ private:
   uint8_t _handshakeFlags;
   uint32_t _handled;
   uint32_t _dropped;
+  uint32_t _rebuildFailures;
 
   // A transfer is considered abandoned after this long without a segment request,
   // which releases the pinned document.

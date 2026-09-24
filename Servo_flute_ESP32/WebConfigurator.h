@@ -50,8 +50,10 @@
 #include <freertos/task.h>
 #include "settings.h"
 #include "ConfigStorage.h"
+#include "ConfigSnapshot.h"
 #include "MidiFilePlayer.h"
 #include "WebAuth.h"
+#include "WebOpChannel.h"
 
 #if MIC_ENABLED
 #include "AudioAnalyzer.h"
@@ -137,17 +139,79 @@ private:
   // Setup des routes HTTP
   void setupRoutes();
 
+  /* ==========================================================================
+   * PROPRIETE DES ETATS PARTAGES - a lire avant d'ajouter un membre
+   * ==========================================================================
+   * Deux taches se partagent cet objet. Une troisieme n'existe pas : TOUS les
+   * callbacks d'ESPAsyncWebServer (HTTP et WebSocket) s'executent sur la MEME
+   * tache AsyncTCP, donc deux callbacks web ne sont jamais concurrents entre
+   * eux. La seule concurrence reelle est AsyncTCP <-> loop().
+   *
+   * Plutot qu'un mutex par membre - qui couterait cher sur des chemins
+   * brulants et donnerait surtout l'illusion d'une protection - chaque etat a
+   * un PROPRIETAIRE declare :
+   *
+   *   loop()    : actionneurs, `cfg`, LittleFS, lecteur MIDI, calibrateur.
+   *               _micMonitorEnabled, _micMonitorBeforeCalibration, _rfDoneSent,
+   *               _rfDoneTime, _autoCalOwnerClientId, _pendingRestartTime,
+   *               _lastPanicCount, _panicCountSeen, _lastStatusBroadcast,
+   *               _lastWsCleanup, _lastAudioBroadcast, _lastAcalBroadcast.
+   *               AsyncTCP peut les LIRE : ce sont des scalaires alignes, la
+   *               lecture ne fait jamais de lecture-modification-ecriture, et
+   *               le pire cas d'une valeur d'une passe en retard est documente
+   *               au-dessus du membre concerne.
+   *
+   *   AsyncTCP  : etat de TRANSPORT - _wsSessions, _auth, _upload,
+   *               _webVelocity, _wsActuatorWindowStart, _wsActuatorCount,
+   *               _uploadSequence. loop() n'y touche QUE depuis une operation
+   *               publiee par runOnLoop(), c'est-a-dire pendant que la tache
+   *               AsyncTCP est justement en train d'attendre ce resultat :
+   *               l'exclusion est structurelle, pas accidentelle. Aucune
+   *               operation POSTEE (postWebOp, chemin WebSocket non bloquant)
+   *               n'a le droit d'y toucher - voir executeWebOp().
+   *
+   *   PARTAGE   : _op (propriete tournante, voir WebOpChannel),
+   *               _calCancelRequested (_calCancelMux),
+   *               session de test manuelle et note de test (_sessionMux).
+   *               Chacun passe par une primitive qui rend la sequence
+   *               lire-puis-ecrire indivisible - jamais par `volatile`, qui
+   *               n'est pas une primitive de synchronisation.
+   * ======================================================================== */
+
   // --- Hand-off AsyncTCP -> loop() -----------------------------------------
-  // Un seul emplacement, serialise par _opMutex. Le producteur (tache AsyncTCP)
-  // attend au plus WEBOP_TIMEOUT_MS que loop() execute l'operation, puis lit le
-  // resultat. La boucle principale n'attend jamais AsyncTCP : pas d'interblocage.
+  // PROPRIETE : l'emplacement `_op` n'a pas de proprietaire fixe - il en change
+  // au fil de l'operation, et c'est WebOpChannel qui dit lequel a chaque
+  // instant (IDLE / ARMED / RUNNING / DONE, voir WebOpChannel.h). La regle
+  // tient en une phrase : on n'ecrit ni ne lit `_op` sans tenir le jeton
+  // (WebOpTicket cote producteur, WebOpClaim cote loop()) qui l'autorise.
+  //
+  // Les trois anciens drapeaux `volatile` - _opPending, _opAbandoned,
+  // _opDoneSeq - ont disparu : `volatile` n'apporte ni atomicite ni barriere et
+  // n'est pas une primitive de synchronisation inter-coeur. Les transitions
+  // sont desormais prises dans une section critique, ce qui rend exclusives les
+  // deux decisions qui s'annulent ("j'abandonne" / "je publie le resultat").
   WebOp _op;
-  volatile bool _opPending;
-  volatile bool _opAbandoned;           // l'appelant a renonce : ne pas appliquer
-  volatile uint32_t _opDoneSeq;         // sequence de la derniere operation terminee
-  uint32_t _opSeqCounter;
+  WebOpChannel _opChannel;
+  // Verrou de PRODUCTEUR : serialise les appelants HTTP entre eux, tenu
+  // pendant toute l'operation, bloquant.
   SemaphoreHandle_t _opMutex;
+  // Semaphore binaire : signal de fin publie par loop().
   SemaphoreHandle_t _opDone;
+  // Section critique MINUSCULE des transitions d'etat du canal. Un portMUX, pas
+  // un mutex : on n'y fait que lire/ecrire quelques scalaires, jamais une
+  // allocation ni un appel de controleur (les interruptions y sont masquees).
+  portMUX_TYPE _opStateMux = portMUX_INITIALIZER_UNLOCKED;
+  // Adaptateurs injectes dans WebOpChannel : le module reste pur, les vraies
+  // primitives FreeRTOS vivent ici.
+  static bool chanLockProducer(void* ctx, uint32_t timeoutMs);
+  static void chanUnlockProducer(void* ctx);
+  static void chanEnterState(void* ctx);
+  static void chanExitState(void* ctx);
+  static bool chanWaitDone(void* ctx, uint32_t timeoutMs);
+  static void chanSignalDone(void* ctx);
+  static void chanDrainDone(void* ctx);
+  static uint32_t chanNowMs(void* ctx);
+  static void chanYieldMs(void* ctx, uint32_t ms);
   // Hand-off BLOQUANT, reserve aux handlers HTTP. A ne JAMAIS appeler depuis un
   // callback WebSocket : celui-ci peut detenir le verrou interne d'AsyncWebSocket,
   // que loop() prend a son tour pour diffuser un statut - l'attente croisee
@@ -177,14 +241,40 @@ private:
   // coupait alors les actionneurs mais _autoCal restait "running" et reprenait
   // au cycle suivant en reappliquant ses commandes. Meme principe que le panic :
   // un drapeau dedie, consomme au debut de update().
-  volatile bool _calCancelRequested;
-  void requestCalibrationCancel() { _calCancelRequested = true; }
+  //
+  // PROPRIETE : pose par n'importe quelle tache (AsyncTCP, loop()), consomme
+  // par loop() SEULE. Le drapeau etait `volatile`, ce qui ne donne ni atomicite
+  // ni barriere : la sequence "si pose, l'effacer" tenait en deux acces
+  // distincts et une demande deposee ENTRE les deux etait effacee sans avoir
+  // ete traitee - une annulation perdue, c'est-a-dire des actionneurs qui
+  // repartent apres un panic. Pose ET prise passent maintenant par la meme
+  // section critique, exactement comme CommandQueue::takePanicRequest() et
+  // InstrumentManager::takeResetControllersRequest().
+  // La mecanique elle-meme vit dans LatchedRequest (WebOpChannel.h), PURE et
+  // donc verifiable sur hote : c'est ce qui rend la correction demontrable au
+  // lieu d'etre seulement relue.
+  LatchedRequest _calCancelRequested;
+  portMUX_TYPE _calCancelMux = portMUX_INITIALIZER_UNLOCKED;
+  static void calCancelEnter(void* ctx);
+  static void calCancelExit(void* ctx);
+  void requestCalibrationCancel();
+  // Lecture ET effacement INDIVISIBLES. Rend true si une annulation etait en
+  // attente. Deux demandes coalescent en une seule prise ; une demande deposee
+  // pendant le traitement de la precedente survit a ce traitement.
+  bool takeCalibrationCancel();
   void executeWebOp(WebOp& op);
   // Libere les ressources portees par l'operation (candidat de configuration),
   // qu'elle ait ete appliquee ou abandonnee. Idempotent.
   static void releaseWebOp(WebOp& op);
 
   // --- Authentification ----------------------------------------------------
+  // PROPRIETE : AsyncTCP. loop() n'appelle _auth que depuis
+  // WEBOP_SET_ADMIN_PASSWORD et WEBOP_REGEN_AP_PASSWORD, qui sont publiees par
+  // runOnLoop() (chemin HTTP) et jamais par postWebOp() : la tache AsyncTCP est
+  // donc bloquee dans son attente pendant ces deux operations et ne peut pas
+  // lire la table au meme instant. Cette exclusion est une PROPRIETE DU
+  // CABLAGE, pas une garantie du type : poster l'une de ces operations par
+  // postWebOp() la casserait en silence.
   WebAuth _auth;
   // Clients WebSocket authentifies. On memorise le JETON, pas seulement
   // l'identifiant de client : sinon une socket ouverte restait authentifiee bien
@@ -217,6 +307,15 @@ private:
   // l'affectation atomique `cfg = candidat`, pas la validation ni la flash.
   static bool cfgGuardLock(void* ctx);
   static void cfgGuardUnlock(void* ctx);
+  // MEMES adaptateurs, vus par ConfigSnapshot : toute lecture AsyncTCP qui
+  // porte sur plus d'un champ - ou sur un champ dont une valeur a moitie
+  // remplacee serait visible - passe par ces primitives, jamais par une lecture
+  // directe de `cfg`.
+  ConfigLockOps configLockOps();
+  // Copie coherente de la configuration active. Rend false si le verrou est
+  // refuse : l'appelant HTTP repond alors `config_busy` / 503, comme
+  // GET /api/config et GET /api/diagnostics le font deja.
+  bool snapshotActiveConfig(RuntimeConfig& dst);
   // Extrait le jeton d'une requete (en-tete X-Auth-Token ou parametre ?token=).
   String extractToken(AsyncWebServerRequest* request) const;
   // Renvoie true (et repond 401) si la requete n'est pas authentifiee.
@@ -288,23 +387,82 @@ private:
   // Manual actuator test session (owner + server-side timeout). A manual test
   // (valve/pump/fan/servo) is owned by the WS client that issued it and is bounded
   // by TEST_SESSION_MAX_MS; only the owner's disconnect returns hardware to safe.
+  //
+  // PROPRIETE : etat de SESSION, ecrit par les DEUX taches - AsyncTCP l'ouvre
+  // et le ferme depuis un message WebSocket, loop() le ferme sur expiration ou
+  // sur panic. Il n'a donc pas de proprietaire unique possible sans changer le
+  // protocole (beginTestSession doit repondre oui/non tout de suite au client).
+  // Il est protege par _sessionMux, une section critique minuscule qui rend
+  // INDIVISIBLES les sequences lire-puis-ecrire : "le test est-il libre ? alors
+  // je le prends" et "l'extinction differee est-elle due ? alors je l'efface".
+  // Aucune commande materielle n'est emise sous ce verrou.
   uint32_t _testOwnerClientId = 0;
   unsigned long _testStartTime = 0;
   bool _testActive = false;
+  // `mutable` : testSessionExpired() et isTestOwner() sont const et doivent
+  // pourtant entrer en section critique pour lire DEUX champs d'un coup. Meme
+  // raison que InstrumentManager::_requestMux.
+  mutable portMUX_TYPE _sessionMux = portMUX_INITIALIZER_UNLOCKED;
   // Start/refresh the manual-test window. Returns false (and changes nothing) if a
   // test is already active and owned by a different client, so ownership can't be
   // stolen mid-test.
   bool beginTestSession(uint32_t clientId);
   void endTestSession(bool safeHardware);     // stop it (optionally safing hardware)
 
+  // --- C-1 : un ORDRE D'ARRET ne se perd pas -------------------------------
+  // postCommand() rend false quand l'anneau est plein. Pour "pump_stop" et
+  // "fan_stop", cette valeur etait IGNOREE et endTestSession(false) retirait
+  // juste apres le filet de securite de la session (le plafond
+  // TEST_SESSION_MAX_MS et l'extinction differee) : la pompe restait alimentee
+  // SANS AUCUNE limite de temps. C'est le pire defaut connu de ce fichier.
+  //
+  // INVARIANT TENU ICI : quand une session de test est declaree terminee, la
+  // remise en securite du materiel est DEJA garantie. Cette fonction poste
+  // l'ordre d'arret demande ; s'il est refuse, elle ESCALADE en panic - un
+  // drapeau dedie, hors anneau, qui ne peut pas etre perdu et qui vide les
+  // commandes deja en attente. Dans les deux cas le materiel repart au repos.
+  //
+  // Rend true si l'ordre CIBLE a ete accepte, false s'il a fallu escalader
+  // (l'appelant previent alors le client que tout a ete coupe, pas seulement
+  // l'actionneur vise). Le contrat du LOT A - postCommand() rend toujours true
+  // pour les ordres qui retirent de l'energie - rendra l'escalade inatteignable
+  // en pratique ; la verification reste, c'est une defense en profondeur et non
+  // une delegation.
+  bool postStopCommand(uint8_t cmdType, uint8_t a = 0);
+  // Vrai si une session est ouverte depuis plus de TEST_SESSION_MAX_MS. Les
+  // deux champs sont lus dans la MEME section critique : sinon `_testActive`
+  // pouvait etre vu a vrai avec un `_testStartTime` deja remis a zero par
+  // l'autre tache, et le filet de securite se declenchait a contretemps.
+  bool testSessionExpired(unsigned long now) const;
+  // Vrai si le proprietaire de la session est ce client (lecture coherente).
+  bool isTestOwner(uint32_t clientId) const;
+
   // A "test note" preview plays a real timed note through the sequencer and is
   // stopped automatically after TEST_NOTE_DURATION_MS by update().
+  //
+  // PROPRIETE : meme categorie, meme verrou (_sessionMux). La note et son
+  // echeance forment UN couple : les lire separement permettait a un
+  // `test_note` recu entre les deux de faire eteindre la mauvaise note - et,
+  // pire, d'effacer l'echeance de la nouvelle, donc de laisser une note
+  // SONNER indefiniment (air ouvert, plus aucune extinction programmee).
   uint8_t _testNoteMidi = 0;
   unsigned long _testNoteOffTime = 0;
+  // Arme l'extinction differee d'une note de test (couple pose ensemble).
+  void armTestNoteOff(uint8_t note, unsigned long offTime);
+  // Prend l'extinction differee si elle est due : lecture ET effacement
+  // indivisibles, meme discipline que takeCalibrationCancel().
+  bool takeDueTestNoteOff(unsigned long now, uint8_t& note);
 
   // Controlled restart: after a restart-required config change / reset, safe the
   // hardware and schedule a reboot so the change takes effect cleanly. While set,
   // config-mutating routes are refused so they cannot overwrite the pending config.
+  //
+  // PROPRIETE : ecrit par loop() SEULE (scheduleControlledRestart() n'est
+  // appelee que depuis executeWebOp()), lu par AsyncTCP via restartPending().
+  // Un seul mot aligne, jamais de lecture-modification-ecriture cote lecteur :
+  // le pire cas est une requete de configuration acceptee une passe trop tot,
+  // et cette requete est elle-meme serialisee par le canal vers loop(), donc
+  // executee APRES la programmation du redemarrage.
   unsigned long _pendingRestartTime = 0;
   void scheduleControlledRestart();
   bool restartPending() const { return _pendingRestartTime != 0; }
@@ -332,6 +490,29 @@ private:
   bool acquireUploadLock(AsyncWebServerRequest* request);
   void releaseUploadLock(AsyncWebServerRequest* request);
   void abandonStaleUpload(unsigned long now);
+
+  // --- Remplacement MIDI transactionnel (FileTransaction.h) ------------------
+  // Le remplacement etait DESTRUCTIF : `remove(dest)` puis `rename(tmp, dest)`.
+  // Si le rename ET son repli par copie echouaient (LittleFS plein, secteur
+  // fatigue), l'ancien fichier etait deja detruit et le nouveau n'arrivait
+  // jamais : l'utilisateur perdait un morceau en televersant un morceau.
+  // fileTxInstall() met l'ancien DE COTE au lieu de le supprimer, et le remet
+  // en place si l'installation echoue.
+  //
+  // Le .bak vit a la RACINE, hors de MIDI_DIR, pour les memes raisons que le
+  // .tmp d'upload : ni /api/midi/list ni getMidiStorageUsed() ne parcourent la
+  // racine, donc aucun residu de transaction ne peut apparaitre dans la liste
+  // ni etre compte dans le quota.
+  static String midiBackupPathFor(const String& fileName);
+  // Adaptateurs LittleFS injectes dans FileTransaction (module pur).
+  static bool fsTxExists(void* ctx, const char* path);
+  static bool fsTxRemove(void* ctx, const char* path);
+  static bool fsTxRename(void* ctx, const char* from, const char* to);
+  static bool fsTxCopy(void* ctx, const char* from, const char* to);
+  // Chemin de DEMARRAGE : repare les installations coupees par une panne de
+  // courant (un .bak orphelin a la racine = une destination peut-etre absente)
+  // et balaie les temporaires d'upload que plus personne ne reclame.
+  void recoverInterruptedMidiInstalls();
 
 #if MIC_ENABLED
   // Audio analyzer (INMP441 microphone)

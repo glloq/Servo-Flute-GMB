@@ -669,20 +669,24 @@ bool ConfigStorage::factoryReset() {
   const char* tmpPath = CONFIG_FILE_PATH ".tmp";
   const char* bakPath = CONFIG_FILE_PATH ".bak";
 
-  // Supprimer le fichier config pour que isFirstBoot() retourne true
-  // Le wizard le recreera via save() apres configuration
-  bool ok = LittleFS.remove(CONFIG_FILE_PATH) || !LittleFS.exists(CONFIG_FILE_PATH);
-
-  // Les residus comptent autant que le fichier lui-meme : loadWithStatus() promeut
-  // un .tmp ou un .bak quand la configuration finale manque. En laisser un
-  // ressusciterait au demarrage suivant la configuration que l'utilisateur vient
-  // d'effacer, alors que isFirstBoot() aurait annonce une machine vierge.
-  if (LittleFS.exists(tmpPath)) LittleFS.remove(tmpPath);
-  if (LittleFS.exists(bakPath)) LittleFS.remove(bakPath);
-  ok = ok && !LittleFS.exists(tmpPath) && !LittleFS.exists(bakPath);
+  // La SEQUENCE DE DECISION est dans ConfigPersist.cpp (pure, operations de
+  // systeme de fichiers injectees, eprouvee par injection de panne a chaque
+  // etape). Ce fichier-ci n'est compilable sur aucun build hote (ArduinoJson,
+  // LittleFS) : tout ce qui peut se tromper doit vivre la-bas, pas ici.
+  //
+  // ORDRE : residus (.tmp, .bak) D'ABORD, configuration live EN DERNIER.
+  // L'ordre inverse - celui d'avant - pouvait rendre false APRES avoir supprime
+  // /config.json : l'utilisateur recevait une erreur et avait quand meme perdu sa
+  // configuration. Desormais un residu qui refuse de disparaitre arrete la
+  // sequence avant tout degat, et /config.json est encore la.
+  bool ok = configFactoryErase(littleFsRenameOps(), tmpPath, CONFIG_FILE_PATH, bakPath);
 
   if (DEBUG) {
-    Serial.println("DEBUG: ConfigStorage - Reset usine (fichier + residus supprimes)");
+    if (ok) {
+      Serial.println("DEBUG: ConfigStorage - Reset usine (fichier + residus supprimes)");
+    } else {
+      Serial.println("ERREUR: ConfigStorage - Reset usine impossible ; configuration conservee");
+    }
   }
   return ok;
 }

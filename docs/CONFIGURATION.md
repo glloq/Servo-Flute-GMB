@@ -213,4 +213,28 @@ configuration that matches the hardware actually initialised.
 
 Configuration changes are validated before application. Changes that alter GPIO assignments, PCA9685 channels, counts, air mode, reservoir sensor type, or serial MIDI RX require a restart and must be treated as pending for the next boot rather than as fully active hardware state. Legacy JSON keys are read for compatibility, but obsolete valve timing/direction fields must not be relied on for new configurations.
 
+### Which fields require a restart — one list, and it is not this one
+
+The enumerations above are a *summary*, not the rule. The authoritative list is
+the table in `Servo_flute_ESP32/ConfigTopology.cpp`, walked field by field by
+`configTopologyRequiresRestart()`, of which
+`InstrumentManager::configChangeRequiresRestart()` is now only a relay.
+
+This matters because the hand-written list that used to live in
+`InstrumentManager` was **incomplete by seven fields**, and a prose summary is
+exactly the kind of list that drifts. The three that mattered most were
+`endstopPin`, `endstopActiveHigh` and `hallPin`: all three are passed to
+`pinMode()` in `PressureController::begin()` — the second one choosing PULLUP or
+PULLDOWN — so changing the endstop pin while running left the *old* pin
+configured as an input and the *new* one never initialised, with no restart
+requested. The regulator then read a floating pin. `angleServoEnabled`,
+`valveType` and `motorType` were missing too, and they decide PCA routing, the
+solenoid `pinMode()`, and `digitalWrite` versus `analogWrite` respectively.
+
+Coverage of that table is checked in both directions: adding an entry without a
+test fails, and removing one fails too. Twenty-nine musical, interface and
+regulation fields are separately proven to *not* require a restart, so the
+opposite drift — asking for a reboot on a value that can be applied live —
+fails as well.
+
 GPIO validation must consider active actuators and sensors; microphone builds reserve the INMP441 pins documented by the firmware. Hardware tests are still required before declaring any new wiring safe.

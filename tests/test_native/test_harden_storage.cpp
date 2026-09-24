@@ -326,11 +326,15 @@ void harden_storage_failed_promotion_keeps_a_readable_config() {
     assert(fs.get(kBak) == "OLD");
     assert(fs.get(kTmp) == "NEW");
 
-    // Le demarrage suivant remet une configuration en place (le .tmp, verifie
-    // avant le remplacement, est le contenu le plus recent).
+    // Le demarrage suivant remet une configuration en place : c'est l'ANCIENNE.
+    // configAtomicReplace() vient de rendre false - la sauvegarde a donc ete
+    // ANNONCEE ECHOUEE a l'utilisateur. Promouvoir le .tmp ici appliquerait au
+    // reboot une configuration que l'appareil a refusee : une operation ratee
+    // deviendrait reussie, un redemarrage plus tard. Le .bak n'existe que parce
+    // qu'une configuration COMMITEE y a ete mise de cote : c'est elle qui prime.
     fs.failAllRenames = false;
     assert(configRecoverOnBoot(opsFor(fs), kTmp, kFinal, kBak));
-    assert(fs.get(kFinal) == "NEW");
+    assert(fs.get(kFinal) == "OLD");
     assert(!fs.has(kBak));
     assert(!fs.has(kTmp));
   }
@@ -404,14 +408,16 @@ void harden_storage_recover_on_boot_cases() {
     assert(fs.count() == 1);
   }
 
-  // 3. Les deux residus : le .tmp gagne (contenu le plus recent, deja verifie)
-  //    et le .bak est efface.
+  // 3. Les deux residus : le .bak gagne. Sa seule origine est l'etape 2 de
+  //    configAtomicReplace(), qui y deplace une configuration COMMITEE ; un .tmp
+  //    qui survit a une configuration finale absente est un candidat dont la
+  //    promotion a echoue. Le .tmp est efface avec lui.
   {
     FakeFs fs;
     fs.put(kTmp, "NEW");
     fs.put(kBak, "OLD");
     assert(configRecoverOnBoot(opsFor(fs), kTmp, kFinal, kBak));
-    assert(fs.get(kFinal) == "NEW");
+    assert(fs.get(kFinal) == "OLD");
     assert(fs.count() == 1);
   }
 

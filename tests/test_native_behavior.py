@@ -13,8 +13,12 @@ SOURCES = [
     "lib/native_stubs/src/config_test_stub.cpp",
     "Servo_flute_ESP32/ConfigDefaults.cpp",
     "Servo_flute_ESP32/ConfigPersist.cpp",
+    "Servo_flute_ESP32/ConfigTopology.cpp",
+    "Servo_flute_ESP32/FileTransaction.cpp",
     "Servo_flute_ESP32/ConfigValidator.cpp",
     "Servo_flute_ESP32/ConfigCommit.cpp",
+    "Servo_flute_ESP32/ConfigSnapshot.cpp",
+    "Servo_flute_ESP32/WebOpChannel.cpp",
     "Servo_flute_ESP32/WebAuth.cpp",
     "Servo_flute_ESP32/Sha256.cpp",
     "Servo_flute_ESP32/PressureController.cpp",
@@ -36,6 +40,7 @@ SOURCES = [
     "Servo_flute_ESP32/CalibrationAirSupply.cpp",
     "Servo_flute_ESP32/AutoCalibrator.cpp",
     "Servo_flute_ESP32/PitchDetector.cpp",
+    "Servo_flute_ESP32/SerialMidiHandler.cpp",
     "Servo_flute_ESP32/MidiFilePlayer.cpp",
     # General-Midi-Boop recognition: the pure core (GmbRuntime.cpp is the ESP32
     # glue - eFuse MAC + NVS - and is not part of the host build).
@@ -61,6 +66,12 @@ SOURCES = [
     "tests/test_native/test_harden_autocal.cpp",
     "tests/test_native/test_harden_memory.cpp",
     "tests/test_native/test_harden_tasks.cpp",
+    "tests/test_native/test_fin_actuators.cpp",
+    "tests/test_native/test_fin_gmb.cpp",
+    "tests/test_native/test_fin_serial.cpp",
+    "tests/test_native/test_fin_web.cpp",
+    "tests/test_native/test_fin_midi.cpp",
+    "tests/test_native/test_fin_storage.cpp",
     "tests/test_native/test_behavior.cpp",
 ]
 

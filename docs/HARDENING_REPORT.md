@@ -45,10 +45,11 @@ rapporter a la meme valeur que corriger le reste.
 
 ## Ce que cette passe NE prouve PAS
 
-- **Rien n'a tourne sur un ESP32 avec des peripheriques physiques.** Les 74
-  lignes de `HARDWARE_TEST_MATRIX.md` restent `NOT TESTED — requires hardware`,
-  et une garde de CI interdit desormais d'en changer une sans inscrire quand et
-  sur quel firmware l'essai a eu lieu.
+- **Rien n'a tourne sur un ESP32 avec des peripheriques physiques.** Les 77
+  lignes que `HARDWARE_TEST_MATRIX.md` comptait a la fin de CETTE passe (80
+  depuis la suivante) sont restees `NOT TESTED — requires hardware`, et une
+  garde de CI interdit desormais d'en changer une sans inscrire quand et sur
+  quel firmware l'essai a eu lieu.
 - **La course de H-6 n'a pas ete rejouee.** Un test hote est mono-tache, et
   `portENTER_CRITICAL` est un no-op dans le stub. Ce qui est verrouille est le
   CONTRAT qui rend la course impossible, pas son absence.
@@ -86,3 +87,68 @@ rapporter a la meme valeur que corriger le reste.
 - **Les lectures de `cfg` sans verrou par la machine a etats de calibration** :
   elles s'executent dans la tache `loop()`, la meme qui execute le commit, donc
   elles ne peuvent pas se dechirer contre lui.
+
+---
+
+# Passe de finalisation — rapport de validation
+
+Suite de la passe ci-dessus, apres fusion de la PR #95. Branche
+`claude/serene-allen-loflan`, repartie de `main` = `78f76f6`.
+Suite pytest : **121 → 122**. Le compte bouge peu parce que l'essentiel des
+ajouts sont des points d'entree C++ a l'interieur du binaire comportemental,
+pas des tests pytest : `test_fin_actuators.cpp`, `test_fin_storage.cpp`,
+`test_fin_web.cpp`, `test_fin_midi.cpp`, `test_fin_gmb.cpp` et
+`test_fin_serial.cpp` sont nouveaux.
+
+La meme regle s'applique : reproduire d'abord, corriger ensuite, puis
+reintroduire le defaut et constater que le test redevient rouge. Deux points du
+brief ne se sont pas confirmes et sont rapportes comme tels.
+
+## Tableau de validation
+
+| ID | Gravite | Defaut | Reproduction | Correction | Test ajoute | Resultat |
+|---|---|---|---|---|---|---|
+| **F-1** | **P0** | Un ordre d'arret d'actionneur partait par l'anneau de commandes borne : `push()` rendait `false` sur anneau plein, la couche web ignorait cette valeur, et `endTestSession(false)` desarmait dans la foulee le filet `TEST_SESSION_MAX_MS`. Une pompe pouvait rester alimentee a sa consigne **sans aucune limite de temps** | `pump_stop_reaches_the_pump_even_when_the_ring_is_full` : le PWM reellement ecrit sur la broche reste non nul apres l'arret | Les ordres qui RETIRENT de l'energie quittent l'anneau (drapeau dedie, prise indivisible, hors borne par passe, purge de ce qui realimenterait la cible). `endTestSession()` demande la mise en securite AVANT d'effacer les drapeaux | `test_fin_actuators.cpp` — 12 des 16 tests rouges sur le code d'avant | **Corrige**, 11 mutations tuees |
+| **F-2** | P1 | Tous les Note Off partaient dans le bitmap non perdable, applique APRES l'anneau : un `NOTE_OFF 60` suivi d'un `NOTE_ON 60` avant le tour suivant s'appliquait a l'envers et laissait la note **muette** | `a_note_off_followed_by_a_note_on_leaves_the_note_sounding` | Le Note Off emprunte l'anneau comme tout le monde ; le bitmap ne sert que de repli au REFUS — ce que le commentaire justifiant l'ordre d'application supposait deja, a tort | idem F-1 | **Corrige** |
+| **F-3** | P1 | `configRecoverOnBoot()` promouvait le `.tmp` avant le `.bak`. Or `bak + tmp, pas de live` est exactement l'etat que laisse une sauvegarde ayant rendu **FALSE** : l'utilisateur avait recu une erreur, et le demarrage suivant appliquait quand meme la configuration refusee — qui peut decrire un autre cablage que celui monte | Faux systeme de fichiers en memoire place dans cet etat exact | Le `.bak` prime : il n'existe que parce qu'une configuration COMMITEE y a ete deplacee. Le `.tmp` n'est promu qu'en son absence | `test_fin_storage.cpp` | **Corrige** |
+| **F-4** | P1 | `factoryReset()` supprimait la configuration vivante EN PREMIER. Un residu impossible a effacer faisait rendre `false` **alors qu'elle etait deja detruite** : erreur rendue ET configuration perdue | Injection de panne a chaque etape | Ordre inverse — residus d'abord, abandon au premier refus avec le live INTACT — et le succes n'est annonce qu'apres constat par `exists()`, jamais sur la valeur rendue par `remove()` | idem F-3 | **Corrige** |
+| **F-5** | P1 | `configChangeRequiresRestart()` etait une liste ecrite a la main : **sept** champs manquaient, dont `endstopPin`, `endstopActiveHigh` et `hallPin`, tous trois passes a `pinMode()` dans `PressureController::begin()`. Changer la broche de fin de course a chaud laissait l'ANCIENNE configuree en entree et la NOUVELLE jamais initialisee, sans demande de redemarrage : le regulateur lisait une broche flottante | Un cas par champ manquant | Table centrale `ConfigTopology`, parcourue en boucle ; `configChangeRequiresRestart()` n'en est plus que le relais. Couverture **bidirectionnelle** : une entree ajoutee sans test echoue, une entree retiree aussi | idem F-3, + 29 champs eprouves comme NE devant PAS rebooter | **Corrige** |
+| **F-6** | P1 | Le candidat de `POST /api/config` etait `new RuntimeConfig(cfg)` : 5132 octets recopies depuis la tache AsyncTCP pendant que `loop()` peut remplacer `cfg` | Lecture du chemin, puis extraction du module | Instantane PRIS SOUS VERROU (`ConfigSnapshot`, pur, verrou injecte) ; verrou refuse → `503 config_busy`, code deja existant | `test_fin_web.cpp` | **Corrige** |
+| **F-7** | P1 | `/api/wifi/status` lisait `cfg.wifiSsid`, un `char[33]`, sans verrou. Une recopie partielle peut ne contenir **aucun `\0`**, et le serialiseur JSON lirait hors du tableau | idem | Copie bornee sous verrou qui pose le terminateur ; le pire cas devient un SSID tronque, signale par `ssid_busy` | idem F-6 | **Corrige** |
+| **F-8** | P1 | `volatile` employe comme primitive de synchronisation dans `WebConfigurator`, et un hand-off AsyncTCP↔`loop()` ou l'abandon par l'appelant et la publication du resultat pouvaient se croiser — laissant l'emplacement occupe | idem | `volatile` disparait du fichier ; machine a etats explicite (IDLE/ARMED/RUNNING/DONE), abandon et publication tranches dans LA MEME section critique | idem F-6 | **Corrige** — contrat verrouille, **course non rejouee** |
+| **F-9** | P1 | `releaseUploadLock()` etait appelee **inconditionnellement** apres le delai de 3 s, alors que `loop()` pouvait etre EN TRAIN d'executer la finalisation. AsyncTCP remettait a vide des `String` que `loop()` lisait : lecture apres liberation, declenchable par un simple timeout d'upload | idem | La liberation respecte l'etat de la finalisation | idem F-6 | **Corrige** |
+| **F-10** | P1 | `_testNoteMidi` et `_testNoteOffTime` etaient lus puis effaces en deux temps : un `test_note` recu entre les deux eteignait la **mauvaise** note et effacait l'echeance de la nouvelle — note laissee a sonner, air ouvert, bornee seulement par les 30 s de session | idem | La note et son echeance sont posees et prises comme un COUPLE indivisible | idem F-6 | **Corrige** |
+| **F-11** | P1 | Trouve en corrigeant F-1 : `pump_stop` ne transmettait **pas** l'index de pompe. Le routage par index recevait donc toujours 0 — demander l'arret de la pompe 2 arretait la pompe 0 | Lecture du handler apres integration de F-1 | L'index est transmis | idem F-6 | **Corrige** |
+| **F-12** | P1 | Le remplacement d'un fichier MIDI existant n'etait pas transactionnel : un echec en cours de route pouvait laisser l'instrument sans aucun des deux fichiers | Injection de panne a chaque etape sur un faux systeme de fichiers | `FileTransaction` (pur, operations injectees) : `dest→bak`, `src→dest`, restauration si l'installation echoue, `bak` efface seulement apres succes confirme. Le `.bak` vit hors de `MIDI_DIR`, donc hors listing et hors quota. Un balayage au demarrage repare une installation coupee | `test_fin_midi.cpp` | **Corrige** |
+| **F-13** | P2 | `MidiFilePlayer::update()` traitait tous les evenements echus d'un seul tour (jusqu'a 2000) | Rafale dense, observee de bout en bout sur un vrai `InstrumentManager` | Borne = `EVENT_QUEUE_SIZE` (16), parce que l'aval reel est la file d'evenements et qu'au-dela le travail supplementaire **detruit** des evenements deja emis dans la meme passe. `stop()`, `pause()` et les CC 120-127 restent hors borne | idem F-12 — aucune assertion n'utilise la constante, la mutation qui la porte a 32 les fait tomber | **Corrige**, 5 mutations tuees |
+| **F-14** | P2 | `GmbSysExService::setSnapshot()` publiait l'instantane PUIS reconstruisait le document. Sur les 15 allocations d'une reconstruction, 15 faisaient annoncer une revision que le document servi ne portait pas — et GMB met alors le vieux document en cache sous le nouveau numero, sans jamais le redemander. Les 15 levaient aussi hors de `setSnapshot()`, donc **rebootaient la carte** pour un descripteur de decouverte | Balayage de CHACUNE des 15 allocations, avec contre-epreuve qu'au moins une panne s'est produite | Publication tout-ou-rien : construire d'abord, publier ensuite. Echec → l'ancien couple reste en place et un compteur s'incremente | `test_fin_gmb.cpp` | **Corrige**, 4 mutations tuees |
+| **F-15** | P2 | Trouve en balayant les `while` des sources de production plutot qu'en suivant une liste : `while (_serial->available())` n'etait borne par rien. Au debit MIDI nominal l'UART ne peut pas alimenter la boucle plus vite qu'elle ne la vide — mais la broche RX est **configurable**, et flottante ou cablee sur un signal rapide elle produit des octets d'erreur de trame en continu : `loop()` ne revient plus | Alimentation continue du stub UART | Borne de 64 octets par passe. Le decodeur etant A ETAT, un message a cheval sur deux passes reste reconnu — verifie **avant** d'ecrire la borne | `test_fin_serial.cpp`. Le module entre du meme coup dans le build hote : il n'avait aucune couverture | **Corrige** |
+| **F-16** | P1 | Residu de F-1, repris et corrige : `pump_target` / `fan_target` avec `v = 0` restaient perdables. Or les curseurs de l'interface ne passent **pas** par `pump_stop` / `fan_stop` pour ramener un actionneur a zero. Anneau plein = l'intention de couper est jetee. La borne par passe introduite par la passe precedente rapproche ce cas : 24 emplacements s'ecoulent par tranches de 6 | `a_zero_pump_target_is_not_lost_when_the_ring_is_full` : `postCommand()` rend `false` | Deux bits DISTINCTS de ceux des arrets durs, et le consommateur applique **la commande d'origine** : `stop()` n'est pas `setTargetPercent(0)` (il termine aussi le test mono-pompe et saute la rampe du ventilateur). Le comportement observable ne change pas, seule la perte disparait | 4 points d'entree dans `test_fin_actuators.cpp` | **Corrige**, 5 mutations tuees — la cinquieme seulement apres avoir RENFORCE le test |
+| **F-17** | P2 | Trois reponses WebSocket emises par le firmware et **jetees en silence** par le navigateur : `stop_escalated` (un arret escalade en panic — securite atteinte, mais pas par le chemin demande, et tout le reste coupe avec), `noise` (succes ou refus d'une capture, avec sa raison) et `mic_reset`. Plus `descriptorRebuildFailures()`, incremente par le service GMB et lu par personne | Listes extraites des deux sources et confrontees | Les trois branchements ; le compteur expose dans `/api/status` et `/api/diagnostics`, ou il devient le controle `gmb_descriptor` | `test_every_websocket_reply_has_a_handler_in_the_ui` — les deux listes DERIVEES de leur source et confrontees **dans les deux sens**, donc rien qui puisse se perimer | **Corrige**, 3 mutations tuees |
+| **F-18** | — | **Deux points du brief NON CONFIRMES**, sur `GmbSysExService` : `descriptorJson()`/`descriptorSize()` ne peuvent pas dereferencer un pointeur nul (le constructeur publie un document avant tout, et une garde de nullite y serait inatteignable — le reproche meme que ces passes font aux protections mortes) ; et reutiliser le tampon du document en place aurait transforme une fenetre benigne en **document dechire**, la route HTTP s'executant sur AsyncTCP | — | Aucune | — | **Pas des defauts** |
+| **F-19** | — | **Residu de F-1 laisse ouvert, verifie puis ecarte** : `ACMD_SET_ACTUATOR_SESSION` avec `a == 0` reste perdable. Verification : cette commande n'a **aucun producteur** — les six sites appellent `setActuatorSessionActive()` en direct, tous sur `loop()`. Son seul effet materiel est de toute facon garde a la source (`powerOnServos()` refuse tant que `_hardwareInitStatus != HW_INIT_OK`) | Rien a reproduire | Aucune : ajouter un canal imperdable pour un chemin que personne n'emprunte serait du mecanisme sans defaut | — | **Latent, non vivant** |
+
+## Ce que cette passe NE prouve PAS
+
+Tout ce qui est ecrit dans la section homonyme de la passe precedente reste
+vrai, et en particulier :
+
+- **Rien n'a tourne sur un ESP32 avec des peripheriques physiques.** Les 80
+  lignes de `HARDWARE_TEST_MATRIX.md` restent integralement
+  `NOT TESTED — requires hardware` : cette passe en AJOUTE neuf au lieu d'en
+  valider une seule.
+- **Les courses inter-taches ne sont pas rejouees.** Un test hote est
+  mono-tache et `portENTER_CRITICAL` y est un no-op. Ce qui est verrouille est
+  le contrat qui rend la course impossible.
+- **`WebConfigurator.cpp` et `web_content.h` ne sont compilables par aucun
+  build hote.** Les corrections F-6 a F-11 et F-17 y ont ete **RELUES**, jamais
+  compilees en local ; seul le build ESP32 de la CI les compile. C'est pourquoi
+  les tests correspondants portent sur des modules EXTRAITS (`ConfigSnapshot`,
+  `WebOpChannel`, `FileTransaction`) plutot que sur le fichier lui-meme, et
+  pourquoi la distinction test comportemental / garde de source est ecrite dans
+  `test_fin_web.cpp`.
+- **F-14 est le seul changement qu'un build hote ne peut pas valider du tout** :
+  son `try`/`catch` ne compile que parce que le builder Arduino ajoute
+  `-fexceptions`. Si les exceptions venaient a etre coupees, il cesserait de
+  compiler — bruyamment, et uniquement sur ESP32. Le build ESP32 de la CI est
+  ce qui tient cette affirmation honnete.

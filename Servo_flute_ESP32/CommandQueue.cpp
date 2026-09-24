@@ -3,7 +3,7 @@
 
 CommandQueue::CommandQueue(uint8_t capacity)
   : _items(nullptr), _capacity(capacity), _head(0), _tail(0), _count(0),
-    _dropped(0), _panic(false) {
+    _dropped(0), _panic(false), _stopRequests(0), _pendingPumpStops(0) {
   if (_capacity > 0) {
     // std::nothrow : sur un tas ESP32 fragmente, un `new` nu leve une exception
     // qui, sans gestionnaire, redemarre la carte ; et le pointeur nul rendu par
@@ -43,6 +43,23 @@ bool CommandQueue::push(const ActuatorCommand& cmd) {
   return true;
 }
 
+bool CommandQueue::pushOrFallback(const ActuatorCommand& cmd) {
+  portENTER_CRITICAL(&_mux);
+  if (_items == nullptr || _count >= _capacity) {
+    // PAS de _dropped++ ici, et c'est le seul point qui distingue cette methode
+    // de push() : l'appelant bascule sur un canal qui ne peut pas echouer, donc
+    // la commande n'est pas perdue. La compter comme perdue ferait accuser
+    // dropped_commands d'une saturation sans consequence.
+    portEXIT_CRITICAL(&_mux);
+    return false;
+  }
+  _items[_head] = cmd;
+  _head = (uint8_t)((_head + 1) % _capacity);
+  _count++;
+  portEXIT_CRITICAL(&_mux);
+  return true;
+}
+
 bool CommandQueue::pop(ActuatorCommand& out) {
   portENTER_CRITICAL(&_mux);
   if (_items == nullptr || _count == 0) {
@@ -67,7 +84,129 @@ void CommandQueue::requestPanic() {
   _count = 0;
   // Un panic coupe deja tout : les relachements en attente n'ont plus d'objet.
   for (uint8_t i = 0; i < 4; i++) _pendingNoteOff[i] = 0;
+  // Les ordres d'ARRET en attente, eux, sont volontairement CONSERVES. Le panic
+  // eteint deja tout, donc les appliquer ensuite ne fait rien ; mais les effacer
+  // demanderait de prouver qu'aucun arret depose par une autre tache pendant le
+  // panic ne se perd au passage. Conserver va dans le sens sur : un arret
+  // applique en trop ne peut que retirer de l'energie, jamais en ajouter.
   portEXIT_CRITICAL(&_mux);
+}
+
+/*------------------------------------------------------------------------------
+ * Ordres d'ARRET : meme discipline que le panic.
+ *----------------------------------------------------------------------------*/
+
+bool CommandQueue::commandEnergizes(const ActuatorCommand& cmd, uint8_t bits) {
+  switch (cmd.type) {
+    // Consignes de pompe : elles n'alimentent que si elles demandent autre chose
+    // que zero. Une consigne a 0 % laissee en file est inoffensive.
+    // Une consigne a zero purge les consignes NON NULLES deja en file, pour la
+    // meme raison qu'un arret : sinon la plus ancienne s'appliquerait APRES elle
+    // et realimenterait la pompe.
+    case ACMD_PUMP_TARGET:
+      return (bits & (STOPREQ_PUMPS | STOPREQ_PUMP_TARGET_ZERO)) != 0 && cmd.b > 0;
+    // STOPREQ_PUMP_TARGET_ZERO est volontairement ABSENT ici : une consigne
+    // globale a zero ne termine pas un test mono-pompe (setTargetPercent(0) ne
+    // touche pas _testPumpIndex), seul l'arret dur le fait.
+    case ACMD_PUMP_SINGLE_TEST: return (bits & STOPREQ_PUMPS) != 0 && cmd.b > 0;
+    // Seul pump_enable = true defait pump_enable = false.
+    case ACMD_PUMP_ENABLE:      return (bits & STOPREQ_PUMPS_OFF) != 0 && cmd.a != 0;
+    case ACMD_FAN_TARGET:
+      return (bits & (STOPREQ_FAN | STOPREQ_FAN_TARGET_ZERO)) != 0 && cmd.b > 0;
+    // Seule l'OUVERTURE de la valve defait sa fermeture.
+    case ACMD_TEST_SOLENOID:    return (bits & STOPREQ_SOLENOID) != 0 && cmd.a != 0;
+    default:                    return false;
+  }
+}
+
+void CommandQueue::purgeEnergizingLocked(uint8_t bits, bool allPumpTests) {
+  if (_items == nullptr || _count == 0) return;
+  // Compactage EN PLACE dans l'anneau circulaire : `write` ne depasse jamais
+  // `read`, donc on n'ecrit que sur des emplacements deja lus.
+  uint8_t read = _tail;
+  uint8_t write = _tail;
+  uint8_t kept = 0;
+  const uint8_t total = _count;
+  for (uint8_t i = 0; i < total; i++) {
+    const ActuatorCommand c = _items[read];
+    const bool drop = commandEnergizes(c, bits) ||
+                      (allPumpTests && c.type == ACMD_PUMP_SINGLE_TEST && c.b > 0);
+    if (!drop) {
+      if (write != read) _items[write] = c;
+      write = (uint8_t)((write + 1) % _capacity);
+      kept++;
+    }
+    read = (uint8_t)((read + 1) % _capacity);
+  }
+  _count = kept;
+  _head = write;
+}
+
+void CommandQueue::requestStop(uint8_t bits) {
+  if (bits == 0) return;
+  portENTER_CRITICAL(&_mux);
+  // Coalescence : dix demandes identiques posent le meme bit, et la prise les
+  // ramasse toutes en une application. Jamais zero, jamais dix.
+  _stopRequests |= bits;
+  // MEME RAISONNEMENT QUE requestPanic(), a portee reduite. Le panic VIDE
+  // l'anneau pour qu'aucune commande emise avant lui ne s'applique apres lui ;
+  // un arret cible n'en retire que ce qui REALIMENTERAIT l'actionneur vise, afin
+  // de ne pas jeter au passage des commandes sans rapport (notes, doigts, angles
+  // de servo). Sans cette purge, une consigne de pompe deja en file s'appliquait
+  // APRES l'arret et relancait la pompe - exactement le "on finit alimente" que
+  // ce canal existe pour empecher.
+  purgeEnergizingLocked(bits, false);
+  portEXIT_CRITICAL(&_mux);
+}
+
+uint8_t CommandQueue::takeStopRequests() {
+  portENTER_CRITICAL(&_mux);
+  uint8_t bits = _stopRequests;
+  _stopRequests = 0;
+  portEXIT_CRITICAL(&_mux);
+  return bits;
+}
+
+bool CommandQueue::stopRequestsPending() const {
+  portENTER_CRITICAL(&_mux);
+  bool any = _stopRequests != 0;
+  portEXIT_CRITICAL(&_mux);
+  return any;
+}
+
+void CommandQueue::requestPumpStopSingle(uint8_t pumpIndex) {
+  if (pumpIndex >= COMMAND_QUEUE_MAX_PUMP_STOPS) return;
+  portENTER_CRITICAL(&_mux);
+  _pendingPumpStops |= (uint8_t)(1u << pumpIndex);
+  // L'arret d'un test mono-pompe est GLOBAL cote controleur
+  // (stopSinglePumpTest() ne prend pas d'index) : on retire donc de l'anneau
+  // TOUS les tests mono-pompe en attente, pas seulement celui de `pumpIndex`.
+  // Ne retirer que l'index demande laisserait le test d'une autre pompe demarrer
+  // juste apres l'arret, ce qui est precisement le cas "on finit alimente".
+  purgeEnergizingLocked(0, true);
+  portEXIT_CRITICAL(&_mux);
+}
+
+bool CommandQueue::takePendingPumpStop(uint8_t& pumpIndex) {
+  bool found = false;
+  portENTER_CRITICAL(&_mux);
+  for (uint8_t i = 0; i < COMMAND_QUEUE_MAX_PUMP_STOPS; i++) {
+    if (_pendingPumpStops & (uint8_t)(1u << i)) {
+      _pendingPumpStops &= (uint8_t)~(1u << i);
+      pumpIndex = i;
+      found = true;
+      break;
+    }
+  }
+  portEXIT_CRITICAL(&_mux);
+  return found;
+}
+
+bool CommandQueue::hasPendingPumpStop() const {
+  portENTER_CRITICAL(&_mux);
+  bool any = _pendingPumpStops != 0;
+  portEXIT_CRITICAL(&_mux);
+  return any;
 }
 
 void CommandQueue::requestNoteOff(uint8_t note) {
@@ -126,6 +265,8 @@ void CommandQueue::clear() {
   // tout : un Note Off encore en attente n'a plus d'objet et serait applique sur
   // une note qui ne joue plus.
   for (uint8_t i = 0; i < 4; i++) _pendingNoteOff[i] = 0;
+  // Les ordres d'arret sont CONSERVES, pour la meme raison que dans
+  // requestPanic() : les appliquer en trop ne peut que retirer de l'energie.
   portEXIT_CRITICAL(&_mux);
 }
 

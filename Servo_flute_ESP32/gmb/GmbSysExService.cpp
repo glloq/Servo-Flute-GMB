@@ -1,5 +1,7 @@
 #include "GmbSysExService.h"
 
+#include <utility>
+
 namespace gmb {
 
 // Out-of-class definitions of the class constants: ODR-safe on the pre-C++17
@@ -11,22 +13,91 @@ constexpr int GmbSysExService::kMaxTokens;
 constexpr uint32_t GmbSysExService::kRefillMs;
 #endif
 
+// The default snapshot renders the section 5.1 document: an instrument that is
+// present but not configured. Building it here, before anything else can run,
+// is what makes _descriptor non-null for the whole life of the service - the
+// invariant descriptorJson() and descriptorSize() rest on. It is also the right
+// degraded answer if the FIRST setSnapshot() of the boot never manages to
+// publish: General-Midi-Boop reads "not configured" and hands the user manual
+// entry, instead of a protocol error.
+//
+// make_shared rather than `new std::string(...)`: one allocation for the control
+// block and the string object together instead of two, and no raw owning pointer
+// in flight. Note what it does NOT buy - see setSnapshot() for why an allocation
+// failure here cannot be turned into a null check.
 GmbSysExService::GmbSysExService()
-  : _descriptor(new std::string(GmbDescriptor::toJson(CapabilitySnapshot()))),
+  : _descriptor(std::make_shared<std::string>(GmbDescriptor::toJson(CapabilitySnapshot()))),
     _servingLastMs(0),
     _servingDelivered(0),
     _handshakeFlags(kChangeNotificationSupported),
     _handled(0),
     _dropped(0),
+    _rebuildFailures(0),
     _tokens(kMaxTokens),
     _lastRefillMs(0) {}
 
 void GmbSysExService::setSnapshot(const CapabilitySnapshot& snapshot) {
-  _snapshot = snapshot;
-  // One render per activation. Published atomically: a chunk is never served from
-  // a half-built document, and a transfer already in flight keeps the document it
-  // started on because that one is held alive by _serving.
-  _descriptor = std::shared_ptr<const std::string>(new std::string(GmbDescriptor::toJson(_snapshot)));
+  // BUILD FIRST, PUBLISH LAST. _snapshot and _descriptor are ONE pair as far as
+  // the controller is concerned: the handshake announces _snapshot.revision and
+  // the size of _descriptor, block 0x10 and GET /gmb/descriptor.json serve
+  // _descriptor. Advancing one without the other is not a transient glitch, it
+  // is permanent: General-Midi-Boop would cache the OLD document under the NEW
+  // revision number, and since the revision only moves on the next real
+  // configuration change it would never re-fetch. So everything that can fail
+  // happens below OUT OF SIGHT of the controller, and the pair is handed over in
+  // one step that cannot fail.
+  std::shared_ptr<const std::string> next;
+  try {
+    // _staged still owns the buffers of the previous snapshot, so this copy
+    // reuses them: measured 0 allocations in steady state, against 3 for a
+    // staging copy built afresh on the stack each time.
+    _staged = snapshot;
+    std::string rendered = GmbDescriptor::toJson(_staged);
+    // A rebuild that produces the very same bytes is not a change. Keeping the
+    // document OBJECT then costs nothing and says so: no second copy of ~800
+    // bytes, and a transfer in flight is not dropped by the
+    // "_serving != _descriptor" rule of handleMessage() for a document that did
+    // not move. GmbRuntime::onConfigurationActivated() takes this path on every
+    // activation that changes nothing General-Midi-Boop is told about.
+    if (*_descriptor == rendered) next = _descriptor;
+    else next = std::make_shared<std::string>(std::move(rendered));
+  } catch (...) {
+    // This firmware really is compiled WITH exceptions, contrary to what the
+    // "exceptions desactivees" shorthand elsewhere in the repository suggests:
+    // framework-arduinoespressif32 2.0.17, tools/platformio-build-esp32.py,
+    // CXXFLAGS = [..., "-std=gnu++11", "-fexceptions", "-fno-rtti"], over an
+    // ESP-IDF built with CONFIG_COMPILER_CXX_EXCEPTIONS=y. So a std::string that
+    // cannot find a contiguous block on a fragmented heap THROWS here; it does
+    // not return null, and no amount of std::nothrow on this side would change
+    // that, because the throw happens inside GmbDescriptor::toJson() before any
+    // pointer of ours exists. Left uncaught it unwinds out of loop(), finds no
+    // handler, and aborts the board - a reboot in the middle of a performance,
+    // caused by a discovery document. Caught here it costs exactly one stale
+    // descriptor. The descriptor is metadata; the note is not.
+    next.reset();
+  }
+
+  if (!next) {
+    // Degraded, visible, and NOT permanent: the pair is still the coherent one
+    // it was, descriptorRebuildFailures() says the served document is behind the
+    // active configuration, and the next activation rebuilds from scratch. Only
+    // _staged is left half-written, and nothing ever reads it.
+    _rebuildFailures++;
+    return;
+  }
+
+  // Point of no return, and nothing here can fail: swapping two snapshots moves
+  // std::string and std::vector buffers instead of allocating any, and assigning
+  // a shared_ptr only touches a refcount. A chunk is therefore never served from
+  // a half-built document, and a transfer already in flight keeps the document
+  // it started on because that one is held alive by _serving.
+  //
+  // SWAP, not move-assign: a moved-from _staged would hand its buffers over and
+  // start the next activation empty, which is exactly the allocation this member
+  // exists to avoid. After the swap it holds the previous snapshot instead, with
+  // the capacity that goes with it.
+  std::swap(_snapshot, _staged);
+  _descriptor = next;
 }
 
 void GmbSysExService::setHttpDescriptorAvailable(bool available) {
