@@ -341,7 +341,7 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
   <div class="hdr-c" onclick="openSeqModal()" style="cursor:pointer" title="Sequence editor"><span style="color:#e94560">B</span><svg viewBox="0 0 28 28" width="22" height="22"><circle cx="14" cy="14" r="12" fill="none" stroke="#8aa" stroke-width="1.5"/><text x="14" y="19" text-anchor="middle" fill="#e94560" font-size="18" font-weight="bold">&#8734;</text></svg><span style="color:#e94560">P</span></div>
   <div class="hdr-r">
     <button id="systemState" class="system-pill off" type="button" onclick="openHealthModal()" title="Open hardware diagnostics" aria-label="System status: offline" aria-live="polite">OFFLINE</button>
-    <button id="globalStop" class="emergency-stop" type="button" onclick="globalPanic()" title="Immediately silence and safe all actuators" aria-label="Emergency all sound off">STOP</button>
+    <button id="globalStop" class="emergency-stop" type="button" onclick="globalPanic()" title="Software ALL SOUND OFF. Use the physical power disconnect for an electrical or controller emergency." aria-label="Software all sound off">STOP</button>
     <button class="gear-btn" onclick="toggleSettings()" title="Settings" aria-label="Open settings" id="gearBtn">
       <svg viewBox="0 0 16 16" width="18" height="18"><circle cx="8" cy="8" r="2" fill="currentColor"/><path d="M14.3 6.7l-1.2-.2a5.2 5.2 0 00-.5-1.1l.7-1-1.7-1.7-1 .7c-.3-.2-.7-.4-1.1-.5L9.3 1.7H7.7l-.2 1.2c-.4.1-.8.3-1.1.5l-1-.7L3.7 4.4l.7 1c-.2.3-.4.7-.5 1.1L2.7 6.7v1.6l1.2.2c.1.4.3.8.5 1.1l-.7 1 1.7 1.7 1-.7c.3.2.7.4 1.1.5l.2 1.2h1.6l.2-1.2c.4-.1.8-.3 1.1-.5l1 .7 1.7-1.7-.7-1c.2-.3.4-.7.5-1.1l1.2-.2V6.7z" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
     </button>
@@ -1390,7 +1390,7 @@ function setSystemState(kind,label){
   el.setAttribute('aria-label','System status: '+label.toLowerCase());
 }
 function globalPanic(){
-  if(wsSend({t:'panic'})){setSystemState('fault','STOPPED');showToast('ALL SOUND OFF requested','error')}
+  if(wsSend({t:'panic'})){setSystemState('fault','STOPPED');showToast('Software ALL SOUND OFF requested','error')}
 }
 function closeHealthModal(){const m=$('healthModal');if(m)m.classList.remove('show')}
 function openHealthModal(){const m=$('healthModal');if(m)m.classList.add('show');refreshHealthModal()}
