@@ -152,3 +152,83 @@ vrai, et en particulier :
   `-fexceptions`. Si les exceptions venaient a etre coupees, il cesserait de
   compiler — bruyamment, et uniquement sur ESP32. Le build ESP32 de la CI est
   ce qui tient cette affirmation honnete.
+
+---
+
+# Passe de finalisation 2 — rapport de validation
+
+Derniere passe logicielle avant le bring-up materiel. Repartie de `main` =
+`330c429`. Suite pytest : **122 → 126**. Quatre defauts de jonction, tous
+REPRODUITS avant correction, plus trois trouves en chemin.
+
+Le perimetre est volontairement etroit : fermer les jonctions, prouver les
+corrections, garder la CI verte. Aucune fonction ajoutee, aucun module qui
+marche reecrit.
+
+## Tableau de validation
+
+| ID | Gravite | Defaut | Reproduction | Correction | Test ajoute | Resultat |
+|---|---|---|---|---|---|---|
+| **G-1** | P1 | `setActuatorSessionActive(true)` arretait le sequenceur et vidait la file d'EVENEMENTS MIDI, mais laissait intacte la file de COMMANDES d'actionneurs. Une commande web deposee par AsyncTCP et pas encore consommee par `update()` survivait a la prise de possession et s'appliquait PENDANT la mesure - angle de doigt, consigne de pompe, ouverture de valve - sur un instrument que le calibrateur croit posseder seul | `a_command_queued_before_the_session_never_reaches_the_actuators` : `ACMD_PUMP_TARGET 80` mis en file puis session prise → la consigne finit appliquee | Deux barrieres : **purge** a la transition (`_commands.clear()`, qui conserve arrets et panic) et **garde centrale** dans `applyCommand()`, sur la tache proprietaire des actionneurs | `test_fin2_session.cpp`, 14 points d'entree verifiant le PWM reellement ecrit | **Corrige**, 7 mutations tuees |
+| **G-2** | P1 | Corollaire de G-1 : une garde ecrite sur `commandDrivesActuators()` aurait bloque `pump_target v=0`, qui "pilote un actionneur" mais est le canal IMPERDABLE par lequel l'interface COUPE une pompe. Bloquer une coupure pendant une calibration est l'inverse du but | Mutation M3 : la garde naive fait echouer `a_zero_setpoint_is_a_safety_order_and_is_never_blocked` | Predicat distinct `commandMayEnergizeActuator()`. Les 21 valeurs de `ActuatorCommandType` classees une par une, deux classements argumentes sur place (`PUMP_SINGLE_TEST` confisque la regulation meme a 0 % ; `RESET_CONTROLLERS` peut AUGMENTER le souffle) | idem G-1 | **Corrige** |
+| **G-3** | P1 | `cancelActiveActuatorSession()`, appelee au demarrage d'une calibration, ne touche pas `_testActive` / `_testStartTime`. Une session de test manuel ouverte juste avant survivait, et son plafond `TEST_SESSION_MAX_MS` echoyait EN PLEINE MESURE : `endTestSession(true)` demandait alors un panic qui coupait la calibration | Chaine tracee de bout en bout dans le code ; le verdict est reproduit dans `CalibrationGate` | REFUSER, pas voler : `{"t":"acal_error","msg":"manual_test_active"}`. Effacer `_testActive` desarmerait le filet sans mise en securite - le defaut corrige a la passe precedente | `test_fin2_calgate.cpp`, 5 points d'entree + 2 gardes de source | **Corrige**, 7 mutations tuees |
+| **G-4** | P2 | `serviceWsOps()` drainait la file ENTIEREMENT (`while (true)`). Six places, mais pas six operations equivalentes : `WEBOP_MIC_RESET` comporte un `delay(100)` et jusqu'a ~500 ms d'attente I2S. Six de cette famille retenaient `loop()` pres du plafond du chien de garde et repoussaient d'autant `InstrumentManager::update()` - l'endroit ou un ARRET ou un PANIC atteint les actionneurs | Six operations en file, une passe les executait toutes | UNE operation par passe. La latence ajoutee est bornee par la PLUS LONGUE operation, non par leur somme : ~600 ms au lieu de ~3,6 s | `test_fin2_wsops.cpp`, 8 points d'entree + garde de source | **Corrige**, 6 mutations tuees |
+| **G-5** | P1 | `LittleFS.format()` efface ~1,9 Mo, bloquant : `loop()` ne tourne pas, `esp_task_wdt_reset()` n'est pas appele, et le chien de garde (4 s, `trigger_panic`) redemarrait la carte EN PLEIN EFFACEMENT. C'est le chemin de recuperation d'une carte vierge - celui du premier bring-up | Limitation deja documentee dans BRINGUP.md ; la sequence corrigee est reproduite avec primitives injectees | Sequence explicite : securite materiel (dont **/OE HIGH**, qu'`allSoundOff()` ne faisait pas) → suspension du chien de garde pour la TACHE COURANTE → formatage → restauration. Plafond NON allonge, chien de garde NON desinitialise | `test_fin2_format.cpp`, 8 points d'entree dont un balayage des 16 combinaisons d'echecs | **Corrige**, 7 mutations tuees |
+| **G-6** | P3 | Trouve par la garde ajoutee pour G-3 : le chemin `acal_error` de l'interface affichait `d.msg` BRUT. La table `acalErrText()` existait mais n'etait pas consultee la, si bien que `no_microphone` - anterieur a cette passe - s'affichait tel quel a l'operateur. Meme famille que les trois codes du range finder trouves a l'audit precedent | La garde echoue sur `['no_microphone']` | Le chemin passe par la table (qui fait `M[e]||e`, donc un message en clair la traverse inchange) ; la garde verifie les DEUX bouts - chaque code a un libelle, ET ce chemin le consulte | garde `test_every_calibration_start_error_code_has_a_label_in_the_ui` | **Corrige** |
+| **G-7** | — | **Defaut dans mon propre test**, corrige avant commit : les assertions de bornage etaient ecrites avec `WS_OP_MAX_PER_PASS`, donc elles auraient toutes passe si quelqu'un remontait la borne a 6 - c'est-a-dire s'il supprimait le bornage | Mutation M2 du lot 3 | Deux assertions reecrites SANS la constante (`first.size() < 6`, `passes >= 2`), et la garde de source exige une borne strictement inferieure a la capacite | idem G-4 | **Corrige** |
+
+## Audit des courses de calibration
+
+Demande explicitement : verifier que les decisions de securite finales ne
+reposent jamais sur une lecture non synchronisee faite par AsyncTCP. Resultat,
+apres inventaire des appelants de `_autoCalOwnerClientId`,
+`_autoCal->isRunning()`, `isRangeFinderComplete()` et `isCalibrationActive()` :
+
+| Lecture depuis AsyncTCP | Ce qu'elle decide | Barriere finale |
+|---|---|---|
+| `processWsMessage` / `actuatorCommandBlockedDuringCalibration` | refuser une commande d'actionneur (`calibration_active`) | **la garde centrale de `applyCommand()`** (G-1), sur la tache proprietaire. Une lecture perimee ne peut que laisser passer la commande jusqu'a la file, ou elle est refusee |
+| `rejectIfCalibrationActive` | refuser une ecriture de configuration | le **verrou de configuration**, pris sur `loop()` par le commit transactionnel |
+| `onWsEvent` (deconnexion du proprietaire) | annuler la calibration, mettre en securite | `requestCalibrationCancel()` + `requestPanic()`, deux **drapeaux imperdables** consommes par `loop()` |
+| `processWsMessage` (`"stop"`) | annuler plutot qu'allSoundOff | idem. Une lecture perimee dans un sens n'arrete pas le lecteur MIDI, dans l'autre stoppe un lecteur deja en pause : aucune consequence materielle |
+| `handleApiDiagnostics` | afficher | rien a decider |
+
+**Aucune refonte.** Ce n'est pas que la course est impossible : c'est qu'aucune
+de ces lectures ne porte plus la decision finale. C'est la correction G-1 qui
+rend ce constat vrai - avant elle, le filtrage AsyncTCP etait bel et bien la
+seule chose qui empechait une commande web de bouger un actionneur pendant une
+mesure.
+
+## Warnings de compilation — documente, non corrige
+
+Les builds ESP32 sont verts mais emettent des avertissements ArduinoJson 7 sur
+`containsKey()`, deprecie. **118 sites d'appel**, tous dans
+`ConfigStorage.cpp` et `WebConfigurator.cpp` - c'est-a-dire dans les deux
+fichiers qu'AUCUN build hote ne compile.
+
+Le remplacement n'est pas mecanique : `containsKey("k")` est VRAI pour une cle
+presente valant `null`, la ou `!doc["k"].isNull()` est faux. Le parseur de
+configuration s'en sert justement pour distinguer "champ absent" de "champ
+fourni", y compris sur des cles heritees. Reecrire 118 sites dans des fichiers
+qu'on ne peut compiler qu'en CI, juste avant le bring-up, est exactement le
+genre de modification que ce moment interdit.
+
+**Laisse pour une PR separee**, avec la verification cle par cle que le cas
+`null` ne change pas de sens.
+
+## Ce que cette passe NE prouve PAS
+
+- **Rien n'a tourne sur un ESP32 avec des peripheriques.** Les 84 lignes de
+  `HARDWARE_TEST_MATRIX.md` restent integralement
+  `NOT TESTED — requires hardware` ; cette passe en AJOUTE quatre.
+- **G-5 n'est pas valide au banc.** Un test hote ne formate aucune flash et n'a
+  pas de chien de garde. `TaskWatchdog.cpp` n'entre dans AUCUN build hote - il
+  inclut `esp_task_wdt.h`, et un faux en-tete ne prouverait rien. Seuls les deux
+  builds ESP32 attestent que ces appels existent et sont bien types. L'essai
+  `FIN-FS-WDT` reste a faire.
+- **Les courses inter-taches ne sont toujours pas rejouees** : un test hote est
+  mono-tache et `portENTER_CRITICAL` y est un no-op. Ce qui est verrouille est
+  le contrat.
+- **`WebConfigurator.cpp` et `web_content.h` ne sont compilables par aucun build
+  hote.** Les cablages de G-1, G-3, G-4 et G-5 y ont ete RELUS et sont
+  verrouilles par des gardes de source ; seul le build ESP32 de la CI les
+  compile.
