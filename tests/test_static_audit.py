@@ -2924,7 +2924,10 @@ def test_commissioning_ui_safety_and_feedback_contract():
     assert "_lastHwReady=!!d.hw_ready" in web
     assert "setSystemState('fault','LOCKED')" in web
     assert "setSystemState('busy','CALIBRATING')" in web
-    assert "setSystemState('warn','RESTART')" in web
+    assert "_restartRequired" in web and "_restarting" in web
+    assert "j.restarting?'RESTARTING':'RESTART'" in web
+    status_block = web.split("if(d.hw_ready!==undefined)", 1)[1].split("$('monState')", 1)[0]
+    assert status_block.index("_restartRequired") < status_block.index("_lastHwReady?'ready':'fault'")
 
     # First-boot setup must keep the operator's context when persistence fails.
     wiz = web.split('function wizFinish()', 1)[1].split('function toggleSettings()', 1)[0]
