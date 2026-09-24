@@ -2901,3 +2901,58 @@ def test_p1_autocal_apply_commits_under_the_configuration_lock():
     assert src.count('scheduleControlledRestart();') >= 6
     assert 'ra.saved && !ra.applied' in src
     assert 'ap.saved && !ap.applied' in src
+
+
+def test_commissioning_ui_safety_and_feedback_contract():
+    web = read('Servo_flute_ESP32/web_content.h')
+
+    # A hardware instrument needs a SOFTWARE ALL SOUND OFF action visible from
+    # every tab, while the UI must not pretend it replaces a physical disconnect.
+    assert 'id="globalStop"' in web
+    assert 'Use the physical power disconnect' in web
+    assert 'aria-label="Software all sound off"' in web
+    assert 'function globalPanic()' in web
+    panic = web.split('function globalPanic()', 1)[1].split('\n}', 1)[0]
+    assert "wsSend({t:'panic'})" in panic
+    assert 'ALL SOUND OFF requested' in panic
+
+    # The header status is not decorative: it follows connection/hardware state
+    # and opens the already-existing passive /api/diagnostics checks.
+    assert 'id="systemState"' in web
+    assert 'onclick="openHealthModal()"' in web
+    assert "fetch('/api/diagnostics')" in web
+    assert "setSystemState('off','OFFLINE')" in web
+    assert "setSystemState('warn','CHECKING')" in web
+    assert "_lastHwReady=!!d.hw_ready" in web
+    assert "setSystemState('fault','LOCKED')" in web
+    assert "setSystemState('busy','CALIBRATING')" in web
+    assert "_restartRequired" in web and "_restarting" in web
+    assert "j.restarting?'RESTARTING':'RESTART'" in web
+    status_block = web.split("if(d.hw_ready!==undefined)", 1)[1].split("$('monState')", 1)[0]
+    assert status_block.index("_restartRequired") < status_block.index("_lastHwReady?'ready':'fault'")
+
+    # First-boot setup must keep the operator's context when persistence fails.
+    wiz = web.split('function wizFinish()', 1)[1].split('function toggleSettings()', 1)[0]
+    assert "if(d.ok){" in wiz
+    assert wiz.index("if(d.ok){") < wiz.index("wizardOverlay').classList.remove('open')")
+    catch = wiz.split('.catch(', 1)[1]
+    assert "wizardOverlay').classList.remove('open')" not in catch
+    assert 'setup was not closed' in catch
+    assert 'id="wizMsg"' in web
+
+    # The browser-only Air helper exercises hardware but cannot prove motion.
+    # Never present this timed sequence as a physical PASS.
+    assert '>Test sequence</button>' in web
+    assert 'Test sequence complete - confirm movement and airflow physically before continuing.' in web
+    assert 'Diagnostic termine !' not in web
+    assert 'physically confirm each component' in web
+
+    # Core controls remain reachable by keyboard/screen readers and sufficiently
+    # large for a phone used next to the bench.
+    for step in range(1, 5):
+        assert f'<button type="button" class="step-dot' in web
+        assert f'onclick="goStep({step})"' in web
+    for label in ('Play MIDI file', 'Pause MIDI file', 'Stop MIDI file'):
+        assert f'aria-label="{label}"' in web
+    assert '.emergency-stop{min-height:40px' in web
+    assert '.tabs button{min-height:44px' in web
