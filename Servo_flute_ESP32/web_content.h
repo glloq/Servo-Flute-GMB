@@ -340,7 +340,7 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
   <h1 id="devName">ServoFlute<span class="unsaved-badge" id="unsavedBadge">modified</span></h1>
   <div class="hdr-c" onclick="openSeqModal()" style="cursor:pointer" title="Sequence editor"><span style="color:#e94560">B</span><svg viewBox="0 0 28 28" width="22" height="22"><circle cx="14" cy="14" r="12" fill="none" stroke="#8aa" stroke-width="1.5"/><text x="14" y="19" text-anchor="middle" fill="#e94560" font-size="18" font-weight="bold">&#8734;</text></svg><span style="color:#e94560">P</span></div>
   <div class="hdr-r">
-    <button id="systemState" class="system-pill off" type="button" onclick="openHealthModal()" title="Open hardware diagnostics" aria-label="System status: offline">OFFLINE</button>
+    <button id="systemState" class="system-pill off" type="button" onclick="openHealthModal()" title="Open hardware diagnostics" aria-label="System status: offline" aria-live="polite">OFFLINE</button>
     <button id="globalStop" class="emergency-stop" type="button" onclick="globalPanic()" title="Immediately silence and safe all actuators" aria-label="Emergency all sound off">STOP</button>
     <button class="gear-btn" onclick="toggleSettings()" title="Settings" aria-label="Open settings" id="gearBtn">
       <svg viewBox="0 0 16 16" width="18" height="18"><circle cx="8" cy="8" r="2" fill="currentColor"/><path d="M14.3 6.7l-1.2-.2a5.2 5.2 0 00-.5-1.1l.7-1-1.7-1.7-1 .7c-.3-.2-.7-.4-1.1-.5L9.3 1.7H7.7l-.2 1.2c-.4.1-.8.3-1.1.5l-1-.7L3.7 4.4l.7 1c-.2.3-.4.7-.5 1.1L2.7 6.7v1.6l1.2.2c.1.4.3.8.5 1.1l-.7 1 1.7 1.7 1-.7c.3.2.7.4 1.1.5l.2 1.2h1.6l.2-1.2c.4-.1.8-.3 1.1-.5l1 .7 1.7-1.7-.7-1c.2-.3.4-.7.5-1.1l1.2-.2V6.7z" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
@@ -1160,7 +1160,7 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
       <p style="font-size:.78em;color:#888;margin:0 0 8px">Create a sequence. Click the grid to place/remove notes.</p>
       <div class="cfg-row">
         <label>BPM</label><input type="number" id="seqBpm" value="120" min="40" max="300" style="width:60px" onchange="drawSeqGrid()">
-        <label style="margin-left:12px">Mesures</label><input type="number" id="seqBars" value="4" min="1" max="16" style="width:50px" onchange="drawSeqGrid()">
+        <label style="margin-left:12px">Bars</label><input type="number" id="seqBars" value="4" min="1" max="16" style="width:50px" onchange="drawSeqGrid()">
       </div>
       <div style="overflow-x:auto;-webkit-overflow-scrolling:touch;margin:8px 0">
         <svg id="seqSvg" style="min-width:100%;height:auto;background:rgba(0,0,0,.2);border-radius:6px;cursor:crosshair"></svg>
@@ -1383,7 +1383,7 @@ function showToast(msg,type){type=type||'info';const c=$('toastContainer');
   t.innerHTML=(ic[type]||ic.info)+'<span>'+esc(msg)+'</span>';c.appendChild(t);
   requestAnimationFrame(()=>requestAnimationFrame(()=>t.classList.add('show')));
   setTimeout(()=>{t.classList.remove('show');setTimeout(()=>t.remove(),300)},3000)}
-let _lastHwReady=false;
+let _lastHwReady=false,_restartRequired=false,_restarting=false;
 function setSystemState(kind,label){
   const el=$('systemState');if(!el)return;
   el.className='system-pill '+kind;el.textContent=label;
@@ -1414,10 +1414,11 @@ function refreshHealthModal(){
 var _suppressDirty=false;
 function markDirty(){if(_suppressDirty)return;dirty=true;$('unsavedBadge').classList.add('show');updStepDots();const sb=$('btnAirSave');if(sb)sb.style.boxShadow='0 0 8px #4ecca3';updateConfigSummary()}
 function markClean(){dirty=false;$('unsavedBadge').classList.remove('show');updStepDots();const sb=$('btnAirSave');if(sb)sb.style.boxShadow='';const cs=$('airConfigSummary');if(cs)cs.style.display='none'}
-function handleSaveResponse(j){if(j&&j.restart_required){const b=$('restartRequiredBanner');if(b)b.style.display='block';setSystemState('warn','RESTART');
+function handleSaveResponse(j){if(j&&j.restart_required){const b=$('restartRequiredBanner');if(b)b.style.display='block';
+  _restarting=!!j.restarting;_restartRequired=!j.restarting;setSystemState('warn',j.restarting?'RESTARTING':'RESTART');
   if(j.restarting){const rb=$('btnRestartNow');if(rb){rb.disabled=true;rb.textContent='Restarting automatically...'}showToast('Hardware change saved - restarting automatically','info')}
   else{showToast('Restart required for hardware changes','info')}}}
-function restartNow(){if(confirm('Put actuators in safe state and restart now?'))fetch('/api/restart',{method:'POST'}).then(()=>showToast('Restarting...','info'))}
+function restartNow(){if(confirm('Put actuators in safe state and restart now?')){_restartRequired=false;_restarting=true;setSystemState('warn','RESTARTING');fetch('/api/restart',{method:'POST'}).then(()=>showToast('Restarting...','info'))}}
 function btnLoad(id,on){const b=$(id);if(!b)return;if(on){b.classList.add('loading');b.disabled=true}else{b.classList.remove('loading');b.disabled=false}}
 function testPulse(el){el.classList.add('test-pulse');setTimeout(()=>el.classList.remove('test-pulse'),600)}
 function fpSnap(){if(!CFG)return;fpHistory.push(JSON.stringify(CFG.notes.map(n=>({midi:n.midi,fp:[...n.fp]}))));
@@ -3198,7 +3199,7 @@ function wsConnect(){
     if(AUTH.token)ws.send(JSON.stringify({t:'auth',token:AUTH.token}));
     else AUTH.requireLogin();
     const si=$('airStatusInd');if(si)si.style.outline=''};
-  ws.onclose=()=>{setSystemState('off','OFFLINE');$('sText').textContent='Disconnected';
+  ws.onclose=()=>{setSystemState('off','OFFLINE');$('sText').textContent='Disconnected';_restarting=false;
     const si=$('airStatusInd');if(si){si.style.background='#e94560';si.style.outline='2px solid rgba(233,69,96,.3)'}
     const st=$('airStatusText');if(st){st.textContent='Disconnected';st.style.color='#e94560'};
     if(_diagRunning)cancelDiagnostic();
@@ -3218,7 +3219,7 @@ function handleWs(d){
     _lastHwReady=false;setSystemState('fault','LOCKED');
     showToast('Hardware not ready - actuator commands are disabled','error');return}
   if(d.t==='status'){
-    if(d.hw_ready!==undefined){_lastHwReady=!!d.hw_ready;if(!autoCalRunning)setSystemState(_lastHwReady?'ready':'fault',_lastHwReady?'READY':'LOCKED')}
+    if(d.hw_ready!==undefined){_lastHwReady=!!d.hw_ready;if(!autoCalRunning){if(_restarting)setSystemState('warn','RESTARTING');else if(_restartRequired)setSystemState('warn','RESTART');else setSystemState(_lastHwReady?'ready':'fault',_lastHwReady?'READY':'LOCKED')}}
     $('monState').textContent=STATES[d.state]||'?';
     $('monState').style.color=d.playing?'#e94560':'#4ecca3';
     if(d.heap){$('monHeap').textContent=(d.heap/1024|0)+'KB';$('heapBar').textContent=(d.heap/1024|0)+'KB';
@@ -3269,7 +3270,7 @@ function handleWs(d){
     $('acalNoise').textContent=(d.noise!=null?d.noise.toFixed(3):'-');
     $('acalFrames').textContent=(d.validFrames!=null?(d.validFrames+'/'+d.totalFrames):'-');
   }else if(d.t==='acal_done'){
-    autoCalRunning=false;setSystemState(_lastHwReady?'ready':'fault',_lastHwReady?'READY':'LOCKED');$('btnAcalStart').style.display='';$('btnAcalStop').style.display='none';$('btnRfStart').style.display='';
+    autoCalRunning=false;if(_restartRequired)setSystemState('warn','RESTART');else setSystemState(_lastHwReady?'ready':'fault',_lastHwReady?'READY':'LOCKED');$('btnAcalStart').style.display='';$('btnAcalStop').style.display='none';$('btnRfStart').style.display='';
     $('acalFill').style.width='100%';$('acalAngle').textContent='';$('acalMetrics').style.display='none';
     /* Honour the persisted outcome: only ok (applied AND saved) is a success. */
     if(d.ok){
@@ -3292,9 +3293,9 @@ function handleWs(d){
       h+=';text-align:right">'+detail+'</span></div>'});
       $('acalResults').innerHTML=h;$('acalResults').style.display='block'}
   }else if(d.t==='acal_error'){
-    autoCalRunning=false;setSystemState(_lastHwReady?'ready':'fault',_lastHwReady?'READY':'LOCKED');$('btnAcalStart').style.display='';$('btnAcalStop').style.display='none';$('btnRfStart').style.display='';
+    autoCalRunning=false;if(_restartRequired)setSystemState('warn','RESTART');else setSystemState(_lastHwReady?'ready':'fault',_lastHwReady?'READY':'LOCKED');$('btnAcalStart').style.display='';$('btnAcalStop').style.display='none';$('btnRfStart').style.display='';
     $('acalMetrics').style.display='none';$('acalState').textContent='Error';
-    const am=d.msg?acalErrText(d.msg):'Calibration interrompue';
+    const am=d.msg?acalErrText(d.msg):'Calibration interrupted';
     $('acalMsg').textContent=am;$('acalMsg').style.display='block';
     addLog('Auto-cal ERROR: '+(d.msg||''));showToast(am||'Calibration interrupted','error')
   }else if(d.t==='rf_prog'){
