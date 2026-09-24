@@ -1,5 +1,8 @@
 #include "InstrumentManager.h"
 #include "ConfigStorage.h"
+// Table centrale de la topologie materielle (LOT B) : configChangeRequiresRestart()
+// n'est plus qu'un relais vers elle.
+#include "ConfigTopology.h"
 #include <Wire.h>
 
 InstrumentManager::InstrumentManager()
@@ -678,10 +681,55 @@ bool InstrumentManager::postCommand(const ActuatorCommand& cmd) {
     requestPanic();
     return true;
   }
+  // ORDRES D'ARRET : ils RETIRENT de l'energie, donc ils ne transitent pas non
+  // plus par l'anneau (voir CommandQueue::requestStop). `push()` rendait false
+  // sur un anneau plein et l'appelant web ignore cette valeur : l'ordre d'arret
+  // etait jete ET, cote WebConfigurator, endTestSession(false) supprimait dans
+  // la foulee le timeout de securite de la session d'essai. La pompe restait
+  // alors alimentee a sa consigne, sans limite de duree. Ces cinq routages
+  // rendent donc TOUJOURS true.
+  //
+  // L'ASYMETRIE EST VOULUE : seule la variante qui retire de l'energie quitte
+  // l'anneau. `pump_enable = true` et `test_sol = 1` en AJOUTENT et restent
+  // ordinaires - perdre une mise en route est sur, perdre un arret ne l'est pas.
+  switch (cmd.type) {
+    case ACMD_PUMP_STOP:
+      _commands.requestStop(CommandQueue::STOPREQ_PUMPS);
+      return true;
+    case ACMD_FAN_STOP:
+      _commands.requestStop(CommandQueue::STOPREQ_FAN);
+      return true;
+    case ACMD_PUMP_STOP_SINGLE:
+      _commands.requestPumpStopSingle(cmd.a);
+      return true;
+    case ACMD_PUMP_ENABLE:
+      if (cmd.a == 0) {
+        _commands.requestStop(CommandQueue::STOPREQ_PUMPS_OFF);
+        return true;
+      }
+      break;
+    case ACMD_TEST_SOLENOID:
+      if (cmd.a == 0) {
+        _commands.requestStop(CommandQueue::STOPREQ_SOLENOID);
+        return true;
+      }
+      break;
+    default:
+      break;
+  }
   if (cmd.type == ACMD_NOTE_OFF) {
     // Un relachement ne doit jamais etre perdu par saturation de l'anneau :
     // il partirait sinon avec la note, la valve et le souffle encore ouverts.
-    _commands.requestNoteOff(cmd.a);
+    //
+    // L'ANNEAU D'ABORD, le bitmap en REPLI. Router systematiquement les Note Off
+    // vers le bitmap les sortait de l'ordre FIFO : "Note Off 60 puis Note On 60"
+    // emis entre deux tours de loop() s'appliquait "Note On puis Note Off" et la
+    // note finissait muette. Dans l'anneau, l'ordre d'emission est respecte par
+    // construction ; et quand l'anneau REFUSE, le bitmap le rattrape, ce qui est
+    // exactement l'hypothese sur laquelle processCommands() fonde son ordre
+    // d'application (voir son commentaire). pushOrFallback() ne compte pas ce
+    // refus comme une perte : la commande n'est pas perdue, elle change de canal.
+    if (!_commands.pushOrFallback(cmd)) _commands.requestNoteOff(cmd.a);
     return true;
   }
   if (cmd.type == ACMD_CONTROL_CHANGE && isChannelModeControlChange(cmd.a)) {
@@ -727,6 +775,46 @@ void InstrumentManager::processCommands() {
     resetAllControllers();
   }
 
+  // ORDRES D'ARRET, consommes EN TETE DE PASSE, exactement comme le panic et
+  // pour la meme raison : un ordre qui retire de l'energie ne doit jamais
+  // attendre derriere INSTRUMENT_MAX_COMMANDS_PER_UPDATE. Place dans l'anneau,
+  // il aurait pu patienter jusqu'a COMMAND_QUEUE_SIZE - 1 commandes, soit
+  // plusieurs tours de loop(), pendant lesquels la pompe reste alimentee.
+  //
+  // La PRISE est unique (lecture + effacement sous un seul verrou) : une demande
+  // deposee par la tache AsyncTCP apres la prise survit pour la passe suivante.
+  // N demandes identiques se sont deja coalescees en un seul bit cote file.
+  //
+  // Ils passent par applyCommand() et non par les controleurs en direct : c'est
+  // le seul point qui porte la protection "hardware_not_ready", et un arret sur
+  // un materiel jamais initialise ecrirait sur des GPIO non configures -
+  // allSoundOff() refuse deja pour la meme raison.
+  //
+  // Si un panic a eu lieu ci-dessus, ces arrets sont appliques quand meme : le
+  // panic a deja tout eteint, donc ils ne font rien, et les appliquer en trop ne
+  // peut que RETIRER de l'energie. Cet ordre evite d'avoir a prouver que le
+  // panic couvre exactement chaque bit.
+  const uint8_t stopBits = _commands.takeStopRequests();
+  if (stopBits & CommandQueue::STOPREQ_PUMPS) {
+    applyCommand(ActuatorCommand(ACMD_PUMP_STOP));
+  }
+  if (stopBits & CommandQueue::STOPREQ_PUMPS_OFF) {
+    applyCommand(ActuatorCommand(ACMD_PUMP_ENABLE, 0));
+  }
+  if (stopBits & CommandQueue::STOPREQ_FAN) {
+    applyCommand(ActuatorCommand(ACMD_FAN_STOP));
+  }
+  if (stopBits & CommandQueue::STOPREQ_SOLENOID) {
+    applyCommand(ActuatorCommand(ACMD_TEST_SOLENOID, 0));
+  }
+  // Arrets mono-pompe : bitmap par index, tous consommes dans la passe. Ils ne
+  // sont PAS bornes - ils sont au plus COMMAND_QUEUE_MAX_PUMP_STOPS et chacun
+  // n'ecrit qu'un GPIO de pompe, sans transaction I2C.
+  uint8_t stoppedPumpIndex;
+  while (_commands.takePendingPumpStop(stoppedPumpIndex)) {
+    applyCommand(ActuatorCommand(ACMD_PUMP_STOP_SINGLE, stoppedPumpIndex));
+  }
+
   // TRAVAIL BORNE (voir INSTRUMENT_MAX_COMMANDS_PER_UPDATE). Chaque
   // applyCommand() peut emettre plusieurs transactions I2C : drainer toute la
   // file d'un coup affamait le reste de loop(). Les commandes non traitees
@@ -751,6 +839,13 @@ void InstrumentManager::processCommands() {
   // qui le suivait a ete refuse aussi : le traiter en premier pourrait au
   // contraire le faire preceder un Note On deja en file et laisser la note
   // bloquee. Dans le pire cas on perd une note ; jamais on n'en bloque une.
+  //
+  // CETTE HYPOTHESE EST DESORMAIS GARANTIE, et elle ne l'etait pas. postCommand()
+  // envoyait TOUS les Note Off au bitmap, y compris quand l'anneau avait de la
+  // place : l'ordre d'emission etait alors perdu dans le cas nominal (un
+  // "Note Off puis Note On" sur la meme note s'appliquait a l'envers et la note
+  // finissait muette). Le Note Off passe maintenant par l'anneau et ne tombe
+  // dans le bitmap que sur REFUS - ce que le raisonnement ci-dessus supposait.
   //
   // La borne ci-dessus ajoute un cas que cet ordre ne prevoyait pas : l'anneau
   // peut rester non vide parce qu'on s'est arrete, pas parce qu'il se remplit.
@@ -831,26 +926,21 @@ void InstrumentManager::applyCommand(const ActuatorCommand& cmd) {
 }
 
 bool InstrumentManager::configChangeRequiresRestart(const RuntimeConfig& oldConfig, const RuntimeConfig& newConfig) {
-  bool restartNeeded =
-    oldConfig.numFingers != newConfig.numFingers ||
-    oldConfig.numPumps != newConfig.numPumps ||
-    oldConfig.airMode != newConfig.airMode ||
-    oldConfig.sensorType != newConfig.sensorType ||
-    oldConfig.serialMidiEnabled != newConfig.serialMidiEnabled ||
-    oldConfig.serialMidiRxPin != newConfig.serialMidiRxPin ||
-    oldConfig.airflowPcaChannel != newConfig.airflowPcaChannel ||
-    oldConfig.valveServoPcaChannel != newConfig.valveServoPcaChannel ||
-    oldConfig.angleServoPcaChannel != newConfig.angleServoPcaChannel ||
-    oldConfig.solenoidPin != newConfig.solenoidPin ||
-    oldConfig.fanPin != newConfig.fanPin;
-
-  for (uint8_t i = 0; i < MAX_FINGER_SERVOS && !restartNeeded; i++) {
-    if (oldConfig.fingers[i].pcaChannel != newConfig.fingers[i].pcaChannel) restartNeeded = true;
-  }
-  for (uint8_t i = 0; i < MAX_PUMPS && !restartNeeded; i++) {
-    if (oldConfig.pumpPins[i] != newConfig.pumpPins[i]) restartNeeded = true;
-  }
-  return restartNeeded;
+  // SIMPLE RELAIS vers la table centrale de ConfigTopology.
+  //
+  // La liste qui vivait ici etait ecrite a la main et il en manquait. Les
+  // pinMode() du firmware utilisent aussi cfg.endstopPin et cfg.endstopActiveHigh
+  // (PressureController.cpp:73, via endstopPinModeFor()) ainsi que cfg.hallPin
+  // (PressureController.cpp:95) : aucun des trois n'etait teste. Changer la
+  // broche de fin de course a chaud laissait donc l'ANCIENNE configuree en
+  // entree et la NOUVELLE jamais initialisee, sans aucune demande de
+  // redemarrage - le regulateur lisait alors une broche flottante.
+  //
+  // Une liste par appelant finit toujours par diverger de ce que begin() fait
+  // reellement. Il n'y en a plus qu'une, auditee champ par champ, et cette
+  // signature publique est conservee telle quelle pour ses appelants
+  // (ConfigCommit.cpp).
+  return configTopologyRequiresRestart(oldConfig, newConfig);
 }
 
 ConfigApplyResult InstrumentManager::applyRuntimeConfig(const RuntimeConfig& oldConfig, const RuntimeConfig& newConfig) {

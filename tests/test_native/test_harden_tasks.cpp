@@ -383,8 +383,11 @@ void a_burst_of_note_offs_is_bounded_per_pass_and_fully_applied() {
   InstrumentManager* im = makeReadyInstrument();
   __test_millis = 1000;
 
-  // Anneau VIDE : rien a differer, donc seule la borne par passe joue ici.
-  assert(im->commandQueue().count() == 0);
+  // Anneau PLEIN. C'est desormais la SEULE facon de faire tomber un Note Off
+  // dans le bitmap : postCommand() l'envoie d'abord dans l'anneau, et ne bascule
+  // sur le bitmap qu'au refus. Avec un anneau vide, ce test n'exercait plus rien
+  // du bitmap - il passait par le chemin FIFO ordinaire.
+  assert(fillRingWithPumpTargets(im, 1, COMMAND_QUEUE_SIZE) == COMMAND_QUEUE_SIZE);
 
   // Plus de relachements que la borne. Chaque noteOff() enfile un evenement
   // FORCE : au-dela de EVENT_QUEUE_SIZE evenements d'un coup, la rafale se
@@ -406,8 +409,12 @@ void a_burst_of_note_offs_is_bounded_per_pass_and_fully_applied() {
     passes++;
   }
   assert(!im->commandQueue().hasPendingNoteOff());
-  assert(passes <= (burst + INSTRUMENT_MAX_NOTE_OFFS_PER_UPDATE - 1) /
-                       INSTRUMENT_MAX_NOTE_OFFS_PER_UPDATE);
+  // L'anneau est plein, donc la garde de report entre desormais en jeu ici
+  // aussi : c'est la meme borne que celle du test frere, pas une borne relachee.
+  // L'ancienne formule ne comptait pas les passes cedees a l'anneau.
+  assert(passes <= (int)(INSTRUMENT_MAX_NOTE_OFF_DEFERRAL_PASSES + 1) *
+                       (int)((burst + INSTRUMENT_MAX_NOTE_OFFS_PER_UPDATE - 1) /
+                             INSTRUMENT_MAX_NOTE_OFFS_PER_UPDATE));
 
   delete im;
 }
@@ -421,6 +428,9 @@ void every_pending_note_off_is_applied_even_under_permanent_saturation() {
   // chaque passe : l'anneau n'est donc jamais vide. Sans garde de report, les
   // relachements n'arriveraient jamais.
   const uint8_t notes[] = {60, 61, 62, 64, 67};
+  // Meme raison qu'au test precedent : l'anneau doit etre plein pour que les
+  // relachements atterrissent dans le bitmap plutot que dans la file.
+  assert(fillRingWithPumpTargets(im, 1, COMMAND_QUEUE_SIZE) == COMMAND_QUEUE_SIZE);
   for (uint8_t n : notes) assert(im->postCommand(ACMD_NOTE_OFF, n));
   assert(im->commandQueue().hasPendingNoteOff());
 

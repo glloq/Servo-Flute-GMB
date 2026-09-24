@@ -62,6 +62,7 @@ SOURCES = [
     "tests/test_native/test_harden_autocal.cpp",
     "tests/test_native/test_harden_memory.cpp",
     "tests/test_native/test_harden_tasks.cpp",
+    "tests/test_native/test_fin_actuators.cpp",
     "tests/test_native/test_fin_storage.cpp",
     "tests/test_native/test_behavior.cpp",
 ]
