@@ -60,12 +60,58 @@ bool configAtomicReplace(const FsRenameOps& ops, const char* tmpPath,
 // une sauvegarde interrompue.
 //   - finalPath present : les residus (.tmp, .bak) sont perimes, ils sont
 //     effaces ;
-//   - finalPath absent : promotion du .tmp (contenu ecrit et verifie le plus
-//     recent), a defaut du .bak (configuration precedente).
+//   - finalPath absent : promotion du .bak s'il existe, sinon du .tmp.
 // Retourne true si une configuration est en place a finalPath en sortie, false
 // s'il n'y a rien a recuperer (premier demarrage reel, ou systeme de fichiers
 // hors service - dans ce cas la fonction se contente d'echouer, sans boucler).
+//
+// POURQUOI LE .BAK PASSE AVANT LE .TMP
+// ------------------------------------
+// L'ordre inverse - .tmp d'abord - transformait une sauvegarde RATEE en
+// sauvegarde reussie, un redemarrage plus tard. La sequence :
+//     live = OLD, tmp = NEW, pas de bak
+//     OLD -> bak   OK
+//     tmp -> live  ECHEC
+//     bak -> live  ECHEC     => configAtomicReplace() rend FALSE
+// laisse exactement tmp = NEW et bak = OLD sans configuration finale.
+// L'utilisateur a recu une ERREUR d'enregistrement ; au demarrage suivant le
+// .tmp etait pourtant promu et NEW devenait la configuration active. Or NEW peut
+// decrire un tout autre cablage (canaux PCA, broches de pompe, mode d'air) que
+// celui qui est reellement monte : c'est precisement ce que le refus du
+// formatage automatique de LittleFS protege ailleurs dans ce firmware.
+//
+// La presence d'un .bak signifie qu'une configuration a DEJA ete COMMITEE :
+// configAtomicReplace() ne cree le .bak qu'en deplacant une configuration finale
+// existante. Elle prime donc toujours. Le .tmp n'est promu que s'il n'y a PAS de
+// .bak - c'est-a-dire un tout PREMIER enregistrement interrompu, ou le .tmp est
+// la seule chose qui existe et ou le refuser laisserait la machine vierge.
+//
+// Si le .bak est la mais refuse de bouger, la fonction rend false SANS promouvoir
+// le .tmp a sa place : mieux vaut demarrer en mode recovery (interface web
+// entierement disponible, actionneurs interdits) que piloter du materiel avec une
+// configuration dont l'enregistrement a ete annonce comme echoue. Rien n'est
+// efface : le demarrage suivant retentera la meme promotion.
 bool configRecoverOnBoot(const FsRenameOps& ops, const char* tmpPath,
                          const char* finalPath, const char* bakPath);
+
+// Chemin RESET USINE : efface la configuration persistee ET ses residus.
+//
+// L'ORDRE EST LA CORRECTION. La sequence precedente supprimait la configuration
+// finale EN PREMIER, puis les residus, puis rendait false si un residu avait
+// resiste. L'utilisateur recevait donc une erreur ET avait quand meme perdu sa
+// configuration - le pire des deux mondes, et un etat dont il ne peut rien faire :
+// ni la configuration d'avant, ni une machine vierge.
+//
+// Ici les residus partent D'ABORD. S'ils ne partent pas, la fonction abandonne
+// AVANT d'avoir touche la configuration finale : l'erreur rendue est alors une
+// erreur sans degat, l'instrument redemarre exactement comme avant. La
+// configuration finale n'est supprimee qu'en DERNIER, quand plus rien ne peut
+// faire echouer la suite.
+//
+// Retourne true seulement si l'etat demande est REELLEMENT atteint : aucun des
+// trois chemins n'existe plus. Invariant tenu : jamais "configuration detruite
+// ET false".
+bool configFactoryErase(const FsRenameOps& ops, const char* tmpPath,
+                        const char* finalPath, const char* bakPath);
 
 #endif

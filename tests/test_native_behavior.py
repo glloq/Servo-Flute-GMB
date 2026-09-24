@@ -13,6 +13,7 @@ SOURCES = [
     "lib/native_stubs/src/config_test_stub.cpp",
     "Servo_flute_ESP32/ConfigDefaults.cpp",
     "Servo_flute_ESP32/ConfigPersist.cpp",
+    "Servo_flute_ESP32/ConfigTopology.cpp",
     "Servo_flute_ESP32/ConfigValidator.cpp",
     "Servo_flute_ESP32/ConfigCommit.cpp",
     "Servo_flute_ESP32/WebAuth.cpp",
@@ -61,6 +62,7 @@ SOURCES = [
     "tests/test_native/test_harden_autocal.cpp",
     "tests/test_native/test_harden_memory.cpp",
     "tests/test_native/test_harden_tasks.cpp",
+    "tests/test_native/test_fin_storage.cpp",
     "tests/test_native/test_behavior.cpp",
 ]
 
