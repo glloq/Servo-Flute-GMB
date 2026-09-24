@@ -45,7 +45,7 @@ rapporter a la meme valeur que corriger le reste.
 
 ## Ce que cette passe NE prouve PAS
 
-- **Rien n'a tourne sur un ESP32 avec des peripheriques physiques.** Les 74
+- **Rien n'a tourne sur un ESP32 avec des peripheriques physiques.** Les 77
   lignes de `HARDWARE_TEST_MATRIX.md` restent `NOT TESTED — requires hardware`,
   et une garde de CI interdit desormais d'en changer une sans inscrire quand et
   sur quel firmware l'essai a eu lieu.
