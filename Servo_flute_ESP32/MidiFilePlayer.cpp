@@ -192,7 +192,14 @@ void MidiFilePlayer::update() {
 
   uint32_t currentPositionMs = millis() - _playbackStartMs;
 
-  // Traiter tous les evenements dont le temps est atteint
+  // TRAVAIL BORNE (voir MIDI_PLAYER_MAX_EVENTS_PER_UPDATE dans l'en-tete).
+  // La borne DIFFERE, elle ne PERD rien : _currentEvent n'avance pas pour les
+  // evenements non emis, et la passe suivante les reprend dans l'ordre du
+  // fichier. Elle compte les ORDRES REELLEMENT EMIS vers l'instrument, seuls a
+  // couter quelque chose en aval.
+  uint8_t dispatchedThisPass = 0;
+
+  // Traiter les evenements dont le temps est atteint
   while (_currentEvent < _eventCount) {
     MidiFileEvent& evt = _events[_currentEvent];
 
@@ -200,14 +207,35 @@ void MidiFilePlayer::update() {
       break;  // Pas encore le moment
     }
 
-    // Filtre canal (255 = tous)
+    // Filtre canal (255 = tous). Un evenement ecarte n'atteint jamais
+    // l'instrument : il ne coute qu'une comparaison et un increment, donc il ne
+    // se compte pas dans la borne - sans quoi un filtre de canal ferait prendre
+    // du retard au lecteur sur un fichier multi-canal parfaitement ordinaire.
+    // Ce balayage reste borne par _eventCount (<= MIDI_FILE_MAX_EVENTS).
     if (_channelFilter != 255 && evt.channel != _channelFilter) {
       _currentEvent++;
       continue;
     }
 
-    // Dispatcher l'evenement
     uint8_t msgType = evt.type & 0xF0;
+
+    // CC 120-127 = Channel Mode Messages de la norme MIDI : All Sound Off,
+    // Reset All Controllers, All Notes Off, Omni/Mono/Poly. Ce sont les ordres
+    // d'ARRET, et un fichier en place couramment en fin de piste. Les faire
+    // attendre derriere la borne laisserait souffler une note alors que le
+    // fichier vient justement de demander le silence : ils passent donc HORS
+    // borne - meme discipline que le panic consomme en tete de
+    // InstrumentManager::processCommands(). Ils FERMENT en revanche la passe :
+    // ce qui les suivait allait de toute facon etre coupe, et une rafale de
+    // CC 123 ne doit pas declencher des centaines de paniques dans un seul
+    // tour de loop().
+    bool channelMode = (msgType == 0xB0 && evt.data1 >= 120);
+
+    if (!channelMode && dispatchedThisPass >= MIDI_PLAYER_MAX_EVENTS_PER_UPDATE) {
+      break;  // le reste attend le tour suivant, dans l'ordre
+    }
+
+    // Dispatcher l'evenement
     switch (msgType) {
       case 0x90:  // Note On
         if (evt.data2 > 0) {
@@ -227,6 +255,8 @@ void MidiFilePlayer::update() {
     }
 
     _currentEvent++;
+    if (channelMode) break;
+    dispatchedThisPass++;
   }
 
   // Fin du fichier
