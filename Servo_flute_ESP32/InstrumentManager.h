@@ -183,6 +183,16 @@ public:
   // Vrai si la commande touche physiquement un actionneur : refusee tant que le
   // hardware n'est pas pret (voir isHardwareReady()).
   static bool commandDrivesActuators(uint8_t type);
+  // Vrai si la commande peut AJOUTER de l'energie a un actionneur ou le
+  // DEPLACER. C'est une question differente de commandDrivesActuators(), et les
+  // confondre est precisement le piege de cette garde : une consigne de pompe a
+  // zero "pilote un actionneur" (elle ecrit un PWM) tout en ne pouvant qu'en
+  // RETIRER de l'energie. Une garde ecrite sur commandDrivesActuators()
+  // bloquerait donc le canal imperdable par lequel l'interface coupe une pompe.
+  //
+  // Sert a la garde de session d'actionneurs : pendant une auto-calibration,
+  // seules les commandes pour lesquelles ce predicat est FAUX traversent.
+  static bool commandMayEnergizeActuator(const ActuatorCommand& cmd);
   // Panic entry point for loss of a live MIDI transport (BLE/rtpMIDI/Wi-Fi/DIN).
   // A held note whose Note Off can no longer arrive would otherwise keep the
   // valve/airflow/pump/fan energized indefinitely, so route every disconnect to

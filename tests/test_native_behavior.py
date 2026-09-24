@@ -72,6 +72,7 @@ SOURCES = [
     "tests/test_native/test_fin_web.cpp",
     "tests/test_native/test_fin_midi.cpp",
     "tests/test_native/test_fin_storage.cpp",
+    "tests/test_native/test_fin2_session.cpp",
     "tests/test_native/test_behavior.cpp",
 ]
 

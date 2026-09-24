@@ -465,6 +465,17 @@ void InstrumentManager::setActuatorSessionActive(bool active) {
     // fires while the calibrator owns the actuators, then hold servo power.
     _sequencer.stop();
     _eventQueue.clear();
+    // LES COMMANDES D'ACTIONNEURS AUSSI. _eventQueue.clear() ne couvre que les
+    // evenements MIDI ; une commande web deposee par la tache AsyncTCP et pas
+    // encore consommee par update() survivait a la prise de possession et
+    // s'appliquait PENDANT la mesure - un angle de doigt, une consigne de
+    // pompe, l'ouverture de la valve - sur un instrument que le calibrateur
+    // croit posseder seul.
+    //
+    // clear() conserve les ordres d'ARRET et le panic (voir CommandQueue.cpp) :
+    // ce qui disparait ici, ce sont les commandes ordinaires, jamais une mise
+    // en securite.
+    _commands.clear();
     // Aligner le suivi de transition : sans cela, le retour force a STATE_IDLE
     // serait lu au tour suivant comme une fin de note normale et remettrait la
     // pompe / le ventilateur a leur consigne de repos, par-dessus la demande que
@@ -669,6 +680,41 @@ bool InstrumentManager::commandDrivesActuators(uint8_t type) {
     case ACMD_FAN_STOP:
     case ACMD_SET_ACTUATOR_SESSION:
       return false;
+    default:
+      return true;
+  }
+}
+
+bool InstrumentManager::commandMayEnergizeActuator(const ActuatorCommand& cmd) {
+  switch (cmd.type) {
+    // --- Ne peuvent que RETIRER de l'energie, ou ne touchent aucun actionneur.
+    case ACMD_NONE:
+    case ACMD_ALL_SOUND_OFF:
+    case ACMD_NOTE_OFF:
+    case ACMD_PUMP_STOP:
+    case ACMD_PUMP_STOP_SINGLE:
+    case ACMD_FAN_STOP:
+    case ACMD_SET_ACTUATOR_SESSION:
+      return false;
+
+    // --- Variantes : seul le sens "vers zero" retire de l'energie. Ce sont
+    // exactement les cinq routages imperdables de postCommand() ; les laisser
+    // passer est ce qui garde un arret possible pendant une calibration.
+    case ACMD_PUMP_ENABLE:   return cmd.a != 0;
+    case ACMD_TEST_SOLENOID: return cmd.a != 0;
+    case ACMD_PUMP_TARGET:   return cmd.b != 0;
+    case ACMD_FAN_TARGET:    return cmd.b != 0;
+
+    // --- ACMD_PUMP_SINGLE_TEST est energisant QUEL QUE SOIT b, et ce n'est pas
+    // une approximation : il pose _testPumpIndex, ce qui court-circuite la
+    // regulation dans PressureController::update() et confisque la pompe. Meme
+    // a 0 %, c'est une prise de possession - et l'arret correspondant existe
+    // deja par ailleurs (ACMD_PUMP_STOP_SINGLE), qui lui passe.
+    //
+    // ACMD_RESET_CONTROLLERS tombe aussi ici : remettre les CC a leurs valeurs
+    // par defaut peut AUGMENTER le souffle (ccBreathDefault vaut 127 par
+    // defaut). Ce n'est pas un ordre de securite - CC120/123 le sont, et eux
+    // sont routes vers le panic bien avant d'arriver ici.
     default:
       return true;
   }
@@ -912,6 +958,31 @@ void InstrumentManager::applyCommand(const ActuatorCommand& cmd) {
   if (commandDrivesActuators(cmd.type) && _hardwareInitStatus != HW_INIT_OK) {
     if (DEBUG) {
       Serial.print("ERREUR: InstrumentManager - commande actionneur refusee (hardware_not_ready), type ");
+      Serial.println(cmd.type);
+    }
+    return;
+  }
+
+  // DEUXIEME PROTECTION CENTRALE : pendant une session d'actionneurs
+  // (auto-calibration / range finder), le calibrateur possede le materiel et le
+  // pilote par des references DIRECTES sur les controleurs - il n'emprunte
+  // jamais cette file. Toute commande qui arrive ici vient donc de l'exterieur
+  // (web, MIDI, bouton) et ne doit pas pouvoir ajouter d'energie ni deplacer
+  // quoi que ce soit pendant la mesure.
+  //
+  // POURQUOI CE PREDICAT ET PAS commandDrivesActuators() : une consigne de
+  // pompe ou de ventilateur a ZERO "pilote un actionneur", mais c'est le canal
+  // imperdable par lequel l'interface COUPE cette pompe. La bloquer rendrait
+  // l'arret impossible pendant une calibration - l'inverse du but. Les ordres
+  // d'arret, les Note Off et le panic traversent donc tous.
+  //
+  // C'est ici, et pas dans WebConfigurator, que vit la barriere : ce filtrage-la
+  // s'execute sur la tache AsyncTCP et ne peut pas etre la derniere ligne de
+  // defense. Cette fonction, elle, est le point unique par lequel toute commande
+  // exterieure atteint un actionneur.
+  if (_actuatorSessionActive && commandMayEnergizeActuator(cmd)) {
+    if (DEBUG) {
+      Serial.print("DEBUG: InstrumentManager - commande refusee (session actionneurs), type ");
       Serial.println(cmd.type);
     }
     return;

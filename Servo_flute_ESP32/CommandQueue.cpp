@@ -261,9 +261,13 @@ void CommandQueue::clear() {
   _head = 0;
   _tail = 0;
   _count = 0;
-  // clear() n'est appele qu'au demarrage et par allSoundOff(), qui eteint deja
-  // tout : un Note Off encore en attente n'a plus d'objet et serait applique sur
-  // une note qui ne joue plus.
+  // TROIS APPELANTS, et chacun a deja eteint la note en cours avant d'arriver
+  // ici : le demarrage (rien ne joue), allSoundOff() (qui eteint tout), et la
+  // prise de possession par le calibrateur (setActuatorSessionActive(true), qui
+  // appelle _sequencer.stop() - donc closeSolenoid() + setAirflowToRest() -
+  // juste avant). Un Note Off encore en attente n'a donc plus d'objet dans
+  // aucun des trois cas : il serait applique sur une note qui ne joue plus, et
+  // pendant une session noteOff() sort de toute facon immediatement.
   for (uint8_t i = 0; i < 4; i++) _pendingNoteOff[i] = 0;
   // Les ordres d'arret sont CONSERVES, pour la meme raison que dans
   // requestPanic() : les appliquer en trop ne peut que retirer de l'energie.
