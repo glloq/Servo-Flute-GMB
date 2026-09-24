@@ -15,6 +15,7 @@ SOURCES = [
     "Servo_flute_ESP32/ConfigPersist.cpp",
     "Servo_flute_ESP32/ConfigTopology.cpp",
     "Servo_flute_ESP32/CalibrationGate.cpp",
+    "Servo_flute_ESP32/WsOpRing.cpp",
     "Servo_flute_ESP32/FileTransaction.cpp",
     "Servo_flute_ESP32/ConfigValidator.cpp",
     "Servo_flute_ESP32/ConfigCommit.cpp",
@@ -75,6 +76,7 @@ SOURCES = [
     "tests/test_native/test_fin_storage.cpp",
     "tests/test_native/test_fin2_session.cpp",
     "tests/test_native/test_fin2_calgate.cpp",
+    "tests/test_native/test_fin2_wsops.cpp",
     "tests/test_native/test_behavior.cpp",
 ]
 

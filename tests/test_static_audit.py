@@ -1307,6 +1307,48 @@ def test_every_calibration_start_error_code_has_a_label_in_the_ui():
     assert 'acalErrText(d.msg)' in branch
 
 
+def test_websocket_operations_are_bounded_per_loop_pass():
+    """LOT 3 : `serviceWsOps()` ne draine plus la file d'un seul tour.
+
+    LE DEFAUT : `while (true) { ... executeWebOp(op); ... }`. Six places, mais
+    pas six operations equivalentes - `WEBOP_MIC_RESET` passe par
+    `resetMicrophone()`, qui comporte un `delay(100)` et jusqu'a ~500 ms
+    d'attente I2S. Six de cette famille dans une passe retenaient `loop()` une
+    duree proche du plafond du chien de garde, et repoussaient d'autant
+    `InstrumentManager::update()` - l'endroit ou un ARRET ou un PANIC atteint
+    reellement les actionneurs.
+
+    La comptabilite et la borne sont testees pour de vrai dans
+    test_fin2_wsops.cpp. Ce qui ne peut pas l'etre, et que cette garde
+    verrouille, c'est que WebConfigurator passe bien par ce module :
+    `WebConfigurator.cpp` n'est compilable par aucun build hote.
+    """
+    web = code_only(read('Servo_flute_ESP32/WebConfigurator.cpp'))
+    hdr = code_only(read('Servo_flute_ESP32/WebConfigurator.h'))
+    ring = read('Servo_flute_ESP32/WsOpRing.h')
+
+    # Les indices ne vivent plus dans WebConfigurator : un seul proprietaire.
+    for gone in ('_wsOpHead', '_wsOpTail', '_wsOpCount'):
+        assert gone not in web and gone not in hdr, gone
+    assert 'WsOpRing _wsOpRing;' in hdr
+
+    body = web.split('void WebConfigurator::serviceWsOps()', 1)[1].split('\n}', 1)[0]
+    # La passe est ouverte, et la sortie de boucle est la BORNE, pas un simple
+    # test de file vide.
+    assert '_wsOpRing.beginPass()' in body
+    assert '_wsOpRing.popForPass(slot)' in body
+    # Le depot passe par le meme anneau.
+    post = web.split('bool WebConfigurator::postWebOp(', 1)[1].split('\n}', 1)[0]
+    assert '_wsOpRing.push(slot)' in post
+
+    # La borne doit rester PETITE : elle n'a de sens que strictement en dessous
+    # de la capacite de la file (6). Une borne egale a la capacite serait un
+    # drainage integral deguise.
+    m = re.search(r'WS_OP_MAX_PER_PASS = (\d+);', ring)
+    assert m, "constante de bornage introuvable"
+    assert 1 <= int(m.group(1)) <= 2, "borne trop large : %s" % m.group(1)
+
+
 def test_runtime_strings_are_json_escaped():
     """#13: every network/user controllable string goes through a JSON serialiser."""
     web = read('Servo_flute_ESP32/WebConfigurator.cpp')

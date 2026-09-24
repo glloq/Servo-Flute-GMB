@@ -158,7 +158,7 @@ WebConfigurator::WebConfigurator(uint16_t port)
     _instrument(nullptr), _player(nullptr), _wirelessManager(nullptr),
     _webVelocity(WEB_DEFAULT_VELOCITY), _lastStatusBroadcast(0), _lastWsCleanup(0),
     _opMutex(nullptr), _opDone(nullptr),
-    _wsOpHead(0), _wsOpTail(0), _wsOpCount(0), _wsOpMutex(nullptr),
+    _wsOpRing(kWsOpQueueSize, WS_OP_MAX_PER_PASS), _wsOpMutex(nullptr),
     _cfgMutex(nullptr),
     _uploadSequence(0)
 #if MIC_ENABLED
@@ -960,30 +960,49 @@ bool WebConfigurator::takeCalibrationCancel() {
 bool WebConfigurator::postWebOp(const WebOp& op) {
   if (_wsOpMutex == nullptr) return false;
   if (xSemaphoreTake(_wsOpMutex, pdMS_TO_TICKS(WEBOP_QUEUE_LOCK_MS)) != pdTRUE) return false;
-  if (_wsOpCount >= kWsOpQueueSize) {
+  uint8_t slot;
+  if (!_wsOpRing.push(slot)) {
     xSemaphoreGive(_wsOpMutex);
     return false;
   }
-  _wsOps[_wsOpHead] = op;
-  _wsOpHead = (uint8_t)((_wsOpHead + 1) % kWsOpQueueSize);
-  _wsOpCount++;
+  _wsOps[slot] = op;
   xSemaphoreGive(_wsOpMutex);
   return true;
 }
 
 void WebConfigurator::serviceWsOps() {
   if (_wsOpMutex == nullptr) return;
+  // TRAVAIL BORNE PAR PASSE. Le drainage etait integral : six operations, mais
+  // pas six operations equivalentes. `WEBOP_MIC_RESET` passe par
+  // `resetMicrophone()`, qui comporte un `delay(100)` et jusqu'a ~500 ms
+  // d'attente I2S ; le chargement d'un fichier MIDI, un commit de configuration
+  // et les acces LittleFS sont du meme ordre. Six de cette famille dans une
+  // seule passe retenaient `loop()` pendant une duree proche du plafond du
+  // chien de garde - et repoussaient d'autant `InstrumentManager::update()`,
+  // qui est l'endroit ou un ordre d'ARRET ou un PANIC atteint reellement les
+  // actionneurs. Plus le plan de controle web etait charge, plus la mise en
+  // securite tardait.
+  //
+  // Le panic et l'annulation de calibration n'empruntent PAS cette file : ils
+  // ont chacun leur drapeau dedie, imperdable, consomme ailleurs. Borner ce
+  // drainage ne peut donc retarder aucune mise en securite.
+  if (xSemaphoreTake(_wsOpMutex, pdMS_TO_TICKS(WEBOP_QUEUE_LOCK_MS)) != pdTRUE) return;
+  _wsOpRing.beginPass();
+  xSemaphoreGive(_wsOpMutex);
+
   while (true) {
     WebOp op;
+    uint8_t slot;
     if (xSemaphoreTake(_wsOpMutex, pdMS_TO_TICKS(WEBOP_QUEUE_LOCK_MS)) != pdTRUE) return;
-    if (_wsOpCount == 0) {
+    if (!_wsOpRing.popForPass(slot)) {
+      // File vide OU borne de la passe atteinte. Dans le second cas l'operation
+      // reste EN FILE, a sa place : l'ordre FIFO est conserve et rien n'est
+      // perdu - elle sortira a la passe suivante.
       xSemaphoreGive(_wsOpMutex);
       return;
     }
-    op = _wsOps[_wsOpTail];
-    _wsOps[_wsOpTail] = WebOp();
-    _wsOpTail = (uint8_t)((_wsOpTail + 1) % kWsOpQueueSize);
-    _wsOpCount--;
+    op = _wsOps[slot];
+    _wsOps[slot] = WebOp();
     xSemaphoreGive(_wsOpMutex);
 
     executeWebOp(op);

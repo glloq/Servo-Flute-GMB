@@ -54,6 +54,7 @@
 #include "MidiFilePlayer.h"
 #include "WebAuth.h"
 #include "WebOpChannel.h"
+#include "WsOpRing.h"
 
 #if MIC_ENABLED
 #include "AudioAnalyzer.h"
@@ -223,9 +224,9 @@ private:
   // eventuel est diffuse par loop() sur le WebSocket.
   static const uint8_t kWsOpQueueSize = 6;
   WebOp _wsOps[kWsOpQueueSize];
-  uint8_t _wsOpHead;
-  uint8_t _wsOpTail;
-  uint8_t _wsOpCount;
+  // Les indices et la BORNE par passe vivent dans WsOpRing (pur, teste sur
+  // hote). Seule la charge utile - qui porte des `String` Arduino - reste ici.
+  WsOpRing _wsOpRing;
   // Un MUTEX, pas un portMUX : une WebOp porte des String, donc la copier alloue
   // sur le tas. Faire cela dans une section critique (interruptions coupees,
   // spinlock pris) est interdit - l'allocateur prend lui-meme un verrou. Un
