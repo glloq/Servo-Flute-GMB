@@ -2458,8 +2458,22 @@ def _firmware_translation_units():
 def test_p2_no_bare_new_in_firmware_sources():
     """Toute allocation du firmware passe par `new (std::nothrow)`.
 
-    Sur ESP32, exceptions desactivees, un `new` ORDINAIRE qui echoue ne rend pas
-    nullptr : il abandonne et la carte redemarre. Plusieurs allocations etaient
+    Un `new` ORDINAIRE qui echoue ne rend pas nullptr, et la carte redemarre.
+    ATTENTION au mecanisme, que cette docstring a d'abord donne FAUX : le
+    firmware n'est pas compile sans exceptions. Le builder Arduino ajoute
+    `-fexceptions -fno-rtti` apres les options du projet - meme mecanique que le
+    `-std=gnu++11` documente dans platformio.ini. Un `new` nu qui echoue LEVE
+    donc ; rien n'attrape dans ce firmware, l'exception remonte hors de loop(),
+    `std::terminate()` appelle `abort()`, et la carte panique. Le resultat est
+    le meme, la raison n'est pas celle qui etait ecrite ici.
+
+    Ce n'est pas un detail : c'est parce que les exceptions sont ACTIVES que
+    `GmbSysExService::setSnapshot()` peut attraper un echec de rendu et garder
+    l'ancien descripteur. Le build ESP32 de la CI est ce qui tient cette
+    affirmation honnete - si les exceptions venaient a etre coupees, ce
+    `try`/`catch` ne compilerait plus, bruyamment.
+
+    Plusieurs allocations etaient
     pourtant suivies d'une gestion d'echec soignee - un test de nullite, un mode
     degrade, un code HTTP 500 - qui ne pouvait donc jamais s'executer. Le cas le
     plus net etait `new RuntimeConfig(cfg)` dans WebConfigurator, suivi
