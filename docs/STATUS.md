@@ -46,6 +46,10 @@ This document centralizes the validation state and known limitations of Servo Fl
 | Undroppable actuator stop orders and zero setpoints | Implemented | Software tested; saturation bench check required (`FIN-STOP-*`) |
 | Transactional MIDI file replacement | Implemented | Software tested; flash-failure bench check required (`FIN-MIDI-1`) |
 | Bounded MIDI file playback and UART drain | Implemented | Software tested; dense-burst bench check required (`FIN-MIDI-2`) |
+| Actuator isolation during auto-calibration | Implemented | Software tested; bench check required (`FIN-ACAL-QUEUE`) |
+| Manual test and auto-calibration mutually exclusive | Implemented | Software tested; two-browser bench check required (`FIN-ACAL-MANUAL-SESSION`) |
+| Watchdog-safe LittleFS format | Implemented | Software tested (sequence only, injected primitives); **the erase itself is unproven** — `FIN-FS-WDT` |
+| Bounded WebSocket work per loop pass | Implemented | Software tested; saturation bench check required (`FIN-WS-FAIRNESS`) |
 
 ## Safety and reliability work completed
 
@@ -185,10 +189,35 @@ The 2026-09 finalisation pass, run on the merged hardening firmware, added:
   replies the firmware emits with the ones the interface handles, in both
   directions.
 
+The 2026-09 finalisation-2 pass — the last software pass before hardware
+bring-up — closed the remaining junction defects:
+
+- **an auto-calibration can no longer be polluted by an outside command.** The
+  ownership transition purged queued MIDI events but not queued *actuator*
+  commands, so a slider moved a moment earlier still reached a servo, pump or
+  valve mid-measurement. Two barriers now: the purge, and a central guard in
+  `InstrumentManager::applyCommand()` — on the task that owns the actuators,
+  not in the web layer. The guard distinguishes commands that *add* energy from
+  those that remove it, so a stop, a zero setpoint and a panic still get
+  through;
+- **a calibration no longer starts on top of an open manual test session.** Its
+  30 s ceiling used to expire *during* the measurement and fire a panic. The
+  start is refused (`manual_test_active`) rather than silently stealing the
+  session — clearing `_testActive` would disarm the safety net without safing
+  anything;
+- **the deliberate LittleFS format no longer races the watchdog.** Hardware is
+  safed (including `/OE` HIGH, which `allSoundOff()` never did), the *calling
+  task* steps out of watchdog supervision, the erase runs, and supervision is
+  restored on success and on failure alike. The 4 s ceiling is not raised and
+  the watchdog is not deinitialised;
+- **WebSocket work is bounded to one operation per loop pass**, so a burst of
+  slow web operations can no longer delay the pass that applies stop orders and
+  panics.
+
 The defect-by-defect account — how each one was reproduced before being
-touched, which mutation proves each fix, and what this pass does *not* prove —
-is in [Hardening report](HARDENING_REPORT.md), which now carries one table per
-pass.
+touched, which mutation proves each fix, the calibration race audit, and what
+these passes do *not* prove — is in [Hardening report](HARDENING_REPORT.md),
+which carries one table per pass.
 
 Two rules are now enforced by CI rather than by attention: no test function may
 be defined without being reachable from `main()` and without asserting anything

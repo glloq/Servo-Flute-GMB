@@ -112,7 +112,12 @@ def test_autocal_actuator_ownership_and_locks():
     assert '_micMonitorBeforeCalibration' in hdr and '_micMonitorBeforeCalibration' in web
     assert 'cancelActiveActuatorSession' in web
     assert 'actuatorCommandBlockedDuringCalibration' in web
-    assert 'calibration_busy' in web            # second start refused
+    # Le refus d'un second demarrage n'est plus une chaine en ligne : il vient
+    # de CalibrationGate, pur et teste sur hote (test_fin2_calgate.cpp). On
+    # verifie donc le CABLAGE, qui est la seule chose qu'un test hote ne peut
+    # pas executer ici.
+    assert 'calibration_busy' in read('Servo_flute_ESP32/CalibrationGate.cpp')
+    assert 'calibrationStartVerdict(gate)' in web
     assert 'not_calibration_owner' in web        # non-owner stop/apply refused
     assert 'calibration_active' in web           # blocked commands + 409 config lock
     assert '409' in web                          # config POST lock status
@@ -1233,6 +1238,159 @@ def test_every_websocket_reply_has_a_handler_in_the_ui():
         "reponses emises par le firmware et ignorees par l'interface : %s" % sorted(emitted - handled)
     assert not (handled - emitted), \
         "branchements de l'interface pour des reponses que le firmware n'emet plus : %s" % sorted(handled - emitted)
+
+
+def test_calibration_start_is_refused_while_a_manual_test_session_is_open():
+    """LOT 2 : une auto-calibration ne demarre pas par-dessus un test manuel.
+
+    LE DEFAUT : `cancelActiveActuatorSession()`, appelee au demarrage d'une
+    calibration, ne touche pas `_testActive` / `_testStartTime`. Une session de
+    test manuel ouverte juste avant survivait donc, et son plafond
+    TEST_SESSION_MAX_MS finissait par echoir EN PLEINE MESURE :
+    `endTestSession(true)` demande alors un panic, qui coupe la calibration.
+
+    La DECISION est testee pour de vrai dans test_fin2_calgate.cpp (module pur).
+    Ce qui ne peut pas l'etre, et que cette garde verrouille, c'est le CABLAGE,
+    parce que WebConfigurator.cpp n'est compilable par aucun build hote.
+
+    LE CABLAGE QUI COMPTE : `testSessionActive()` et non `isTestOwner(...)`.
+    Brancher l'appartenance laisserait un SECOND navigateur lancer une
+    calibration pendant le test manuel du premier - le cas a deux clients, qui
+    est justement celui ou personne ne voit venir le panic.
+    """
+    web = read('Servo_flute_ESP32/WebConfigurator.cpp')
+    hdr = read('Servo_flute_ESP32/WebConfigurator.h')
+    gate = read('Servo_flute_ESP32/CalibrationGate.cpp')
+
+    # L'accesseur existe et lit l'etat sous le verrou de session, comme ses voisins.
+    assert 'bool testSessionActive() const;' in hdr
+    body = web.split('bool WebConfigurator::testSessionActive() const {', 1)[1].split('\n}', 1)[0]
+    assert 'portENTER_CRITICAL(&_sessionMux)' in body and 'portEXIT_CRITICAL(&_sessionMux)' in body
+
+    # Le demarrage de calibration passe par le verdict, et lui donne la session
+    # manuelle - pas son proprietaire.
+    start = code_only(web.split('case WEBOP_AUTOCAL_START_RANGE:', 1)[1].split('break;\n    }', 1)[0])
+    assert 'gate.manualTestActive = testSessionActive();' in start
+    assert 'isTestOwner' not in start
+    assert 'calibrationStartVerdict(gate)' in start
+    # Et il s'arrete AVANT tout effet de bord : ni pause du lecteur, ni prise de
+    # session, ni annulation, tant que le verdict n'est pas OK.
+    before = start.split('calibrationStartVerdict(gate)', 1)[0]
+    for side_effect in ('_player->pause()', 'cancelActiveActuatorSession()',
+                        'setActuatorSessionActive(true)', '_autoCal->start('):
+        assert side_effect not in before, side_effect
+
+    # Le module refuse bien ce cas, et avec ce code-la.
+    assert 'CALSTART_MANUAL_TEST_ACTIVE' in gate and 'manual_test_active' in gate
+
+
+def test_every_calibration_start_error_code_has_a_label_in_the_ui():
+    """Un code emis sans libelle s'affiche BRUT : acalErrText() fait `M[e]||e`.
+
+    C'est deja arrive dans ce depot (trois codes du range finder). La liste est
+    DERIVEE de CalibrationGate.cpp, donc un verdict ajoute sans son libelle
+    fait echouer ce test au lieu de produire un message illisible au banc.
+    """
+    gate = read('Servo_flute_ESP32/CalibrationGate.cpp')
+    ui = read('Servo_flute_ESP32/web_content.h')
+    codes = set(re.findall(r'return "([a-z_0-9]+)";', gate))
+    assert codes, "extraction des codes cassee"
+    labels = ui.split('function acalErrText(', 1)[1].split('return M[e]', 1)[0]
+    missing = sorted(c for c in codes if ("%s:'" % c) not in labels)
+    assert not missing, "codes sans libelle dans acalErrText() : %s" % missing
+
+    # ... ET que le chemin acal_error consulte reellement cette table. Il ne le
+    # faisait PAS : il affichait `d.msg` brut, si bien que `no_microphone` - qui
+    # existe depuis bien avant cette passe - s'affichait tel quel. Une table
+    # complete mais jamais lue ne protege rien.
+    branch = ui.split("d.t==='acal_error'", 1)[1].split('}else if', 1)[0]
+    assert 'acalErrText(d.msg)' in branch
+
+
+def test_websocket_operations_are_bounded_per_loop_pass():
+    """LOT 3 : `serviceWsOps()` ne draine plus la file d'un seul tour.
+
+    LE DEFAUT : `while (true) { ... executeWebOp(op); ... }`. Six places, mais
+    pas six operations equivalentes - `WEBOP_MIC_RESET` passe par
+    `resetMicrophone()`, qui comporte un `delay(100)` et jusqu'a ~500 ms
+    d'attente I2S. Six de cette famille dans une passe retenaient `loop()` une
+    duree proche du plafond du chien de garde, et repoussaient d'autant
+    `InstrumentManager::update()` - l'endroit ou un ARRET ou un PANIC atteint
+    reellement les actionneurs.
+
+    La comptabilite et la borne sont testees pour de vrai dans
+    test_fin2_wsops.cpp. Ce qui ne peut pas l'etre, et que cette garde
+    verrouille, c'est que WebConfigurator passe bien par ce module :
+    `WebConfigurator.cpp` n'est compilable par aucun build hote.
+    """
+    web = code_only(read('Servo_flute_ESP32/WebConfigurator.cpp'))
+    hdr = code_only(read('Servo_flute_ESP32/WebConfigurator.h'))
+    ring = read('Servo_flute_ESP32/WsOpRing.h')
+
+    # Les indices ne vivent plus dans WebConfigurator : un seul proprietaire.
+    for gone in ('_wsOpHead', '_wsOpTail', '_wsOpCount'):
+        assert gone not in web and gone not in hdr, gone
+    assert 'WsOpRing _wsOpRing;' in hdr
+
+    body = web.split('void WebConfigurator::serviceWsOps()', 1)[1].split('\n}', 1)[0]
+    # La passe est ouverte, et la sortie de boucle est la BORNE, pas un simple
+    # test de file vide.
+    assert '_wsOpRing.beginPass()' in body
+    assert '_wsOpRing.popForPass(slot)' in body
+    # Le depot passe par le meme anneau.
+    post = web.split('bool WebConfigurator::postWebOp(', 1)[1].split('\n}', 1)[0]
+    assert '_wsOpRing.push(slot)' in post
+
+    # La borne doit rester PETITE : elle n'a de sens que strictement en dessous
+    # de la capacite de la file (6). Une borne egale a la capacite serait un
+    # drainage integral deguise.
+    m = re.search(r'WS_OP_MAX_PER_PASS = (\d+);', ring)
+    assert m, "constante de bornage introuvable"
+    assert 1 <= int(m.group(1)) <= 2, "borne trop large : %s" % m.group(1)
+
+
+def test_littlefs_format_runs_under_a_suspended_watchdog():
+    """LOT 4 : le formatage LittleFS ne doit plus se faire redemarrer en plein vol.
+
+    LE DEFAUT : `LittleFS.format()` efface ~1,9 Mo, bloquant, donc `loop()` ne
+    tourne pas et `esp_task_wdt_reset()` n'est pas appele. Le chien de garde de
+    tache (WATCHDOG_TIMEOUT_MS = 4000, trigger_panic) redemarrait la carte au
+    milieu de l'effacement - sur le chemin de recuperation d'une carte vierge,
+    c'est-a-dire au premier bring-up.
+
+    La SEQUENCE est testee pour de vrai dans test_fin2_format.cpp (module pur,
+    primitives injectees). Ce qui ne peut pas l'etre : le cablage, parce que
+    `WebConfigurator.cpp` n'est compilable par aucun build hote, et
+    `TaskWatchdog.cpp` n'est compile que par les deux builds ESP32 (il inclut
+    esp_task_wdt.h, et un faux en-tete hote ne prouverait rien).
+    """
+    web = code_only(read('Servo_flute_ESP32/WebConfigurator.cpp'))
+    wdt = code_only(read('Servo_flute_ESP32/TaskWatchdog.cpp'))
+    settings = read('Servo_flute_ESP32/settings.h')
+
+    handler = web.split('case WEBOP_FORMAT_FS:', 1)[1].split('break;', 1)[0]
+    # Le formatage passe par la sequence, et NON plus par un appel direct.
+    assert 'formatGuarded(fops)' in handler
+    assert 'safeForBlockingFlashOperation()' in handler
+    assert 'taskWatchdogSuspendCurrent()' in handler
+    assert 'taskWatchdogResumeCurrent()' in handler
+    # `formatFilesystem()` n'est appele QUE depuis la primitive confiee a la
+    # sequence : un appel hors de cette lambda contournerait la garde.
+    assert handler.count('ConfigStorage::formatFilesystem()') == 1
+    assert 'fops.format' in handler
+    # L'ancien appel nu, qui ne mettait pas /OE HIGH et ne touchait pas au chien
+    # de garde, a disparu.
+    assert '_instrument->allSoundOff();\n      bool ok = ConfigStorage::formatFilesystem();' not in web
+
+    # Le CONTOURNEMENT interdit : on ne desarme pas le chien de garde pour tout
+    # le monde, et on n'allonge pas son plafond.
+    assert 'esp_task_wdt_delete' in wdt and 'esp_task_wdt_add' in wdt
+    assert 'esp_task_wdt_deinit' not in wdt
+    assert 'esp_task_wdt_init' not in wdt
+    assert '#define WATCHDOG_TIMEOUT_MS 4000' in settings
+
+    # Aucun appel ESP-IDF de chien de garde disperse dans WebConfigurator.
+    assert 'esp_task_wdt' not in web
 
 
 def test_runtime_strings_are_json_escaped():

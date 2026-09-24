@@ -1,5 +1,9 @@
 #include "WebConfigurator.h"
 
+#include "CalibrationGate.h"
+#include "FormatGuard.h"
+#include "TaskWatchdog.h"
+
 #include <new>   // std::nothrow : une allocation ratee doit rendre nullptr, pas abandonner
 #include "gmb/GmbRuntime.h"
 #include "InstrumentManager.h"
@@ -156,7 +160,7 @@ WebConfigurator::WebConfigurator(uint16_t port)
     _instrument(nullptr), _player(nullptr), _wirelessManager(nullptr),
     _webVelocity(WEB_DEFAULT_VELOCITY), _lastStatusBroadcast(0), _lastWsCleanup(0),
     _opMutex(nullptr), _opDone(nullptr),
-    _wsOpHead(0), _wsOpTail(0), _wsOpCount(0), _wsOpMutex(nullptr),
+    _wsOpRing(kWsOpQueueSize, WS_OP_MAX_PER_PASS), _wsOpMutex(nullptr),
     _cfgMutex(nullptr),
     _uploadSequence(0)
 #if MIC_ENABLED
@@ -958,30 +962,49 @@ bool WebConfigurator::takeCalibrationCancel() {
 bool WebConfigurator::postWebOp(const WebOp& op) {
   if (_wsOpMutex == nullptr) return false;
   if (xSemaphoreTake(_wsOpMutex, pdMS_TO_TICKS(WEBOP_QUEUE_LOCK_MS)) != pdTRUE) return false;
-  if (_wsOpCount >= kWsOpQueueSize) {
+  uint8_t slot;
+  if (!_wsOpRing.push(slot)) {
     xSemaphoreGive(_wsOpMutex);
     return false;
   }
-  _wsOps[_wsOpHead] = op;
-  _wsOpHead = (uint8_t)((_wsOpHead + 1) % kWsOpQueueSize);
-  _wsOpCount++;
+  _wsOps[slot] = op;
   xSemaphoreGive(_wsOpMutex);
   return true;
 }
 
 void WebConfigurator::serviceWsOps() {
   if (_wsOpMutex == nullptr) return;
+  // TRAVAIL BORNE PAR PASSE. Le drainage etait integral : six operations, mais
+  // pas six operations equivalentes. `WEBOP_MIC_RESET` passe par
+  // `resetMicrophone()`, qui comporte un `delay(100)` et jusqu'a ~500 ms
+  // d'attente I2S ; le chargement d'un fichier MIDI, un commit de configuration
+  // et les acces LittleFS sont du meme ordre. Six de cette famille dans une
+  // seule passe retenaient `loop()` pendant une duree proche du plafond du
+  // chien de garde - et repoussaient d'autant `InstrumentManager::update()`,
+  // qui est l'endroit ou un ordre d'ARRET ou un PANIC atteint reellement les
+  // actionneurs. Plus le plan de controle web etait charge, plus la mise en
+  // securite tardait.
+  //
+  // Le panic et l'annulation de calibration n'empruntent PAS cette file : ils
+  // ont chacun leur drapeau dedie, imperdable, consomme ailleurs. Borner ce
+  // drainage ne peut donc retarder aucune mise en securite.
+  if (xSemaphoreTake(_wsOpMutex, pdMS_TO_TICKS(WEBOP_QUEUE_LOCK_MS)) != pdTRUE) return;
+  _wsOpRing.beginPass();
+  xSemaphoreGive(_wsOpMutex);
+
   while (true) {
     WebOp op;
+    uint8_t slot;
     if (xSemaphoreTake(_wsOpMutex, pdMS_TO_TICKS(WEBOP_QUEUE_LOCK_MS)) != pdTRUE) return;
-    if (_wsOpCount == 0) {
+    if (!_wsOpRing.popForPass(slot)) {
+      // File vide OU borne de la passe atteinte. Dans le second cas l'operation
+      // reste EN FILE, a sa place : l'ordre FIFO est conserve et rien n'est
+      // perdu - elle sortira a la passe suivante.
       xSemaphoreGive(_wsOpMutex);
       return;
     }
-    op = _wsOps[_wsOpTail];
-    _wsOps[_wsOpTail] = WebOp();
-    _wsOpTail = (uint8_t)((_wsOpTail + 1) % kWsOpQueueSize);
-    _wsOpCount--;
+    op = _wsOps[slot];
+    _wsOps[slot] = WebOp();
     xSemaphoreGive(_wsOpMutex);
 
     executeWebOp(op);
@@ -1477,17 +1500,56 @@ void WebConfigurator::executeWebOp(WebOp& op) {
 
     case WEBOP_FORMAT_FS: {
       // Action DESTRUCTIVE et volontaire (mode recovery). Jamais automatique.
-      if (_instrument) _instrument->allSoundOff();
-      bool ok = ConfigStorage::formatFilesystem();
+      //
+      // `LittleFS.format()` efface ~1,9 Mo, bloquant : loop() ne tourne pas,
+      // donc esp_task_wdt_reset() n'est pas appele, et le chien de garde de
+      // tache (4 s, trigger_panic) redemarrait la carte EN PLEIN FORMATAGE.
+      // C'est le chemin de recuperation d'une carte vierge - celui du premier
+      // bring-up, celui qui doit marcher du premier coup.
+      //
+      // SEQUENCE : materiel en securite -> chien de garde suspendu -> formatage
+      // -> chien de garde restaure. Elle vit dans FormatGuard (pur, teste sur
+      // hote) ; ici il n'y a que le branchement des primitives reelles.
+      FormatGuardOps fops;
+      fops.ctx = this;
+      fops.safeHardware = [](void* c) -> bool {
+        WebConfigurator* self = static_cast<WebConfigurator*>(c);
+        // Pas d'instrument : aucun controleur n'a configure de GPIO
+        // d'actionneur, et initSafeState() a mis /OE HIGH a la premiere
+        // instruction du demarrage. Le materiel est deja inerte.
+        if (self->_instrument == nullptr) return true;
+        return self->_instrument->safeForBlockingFlashOperation();
+      };
+      fops.suspendWatchdog = [](void*) -> bool { return taskWatchdogSuspendCurrent(); };
+      fops.restoreWatchdog = [](void*) -> bool { return taskWatchdogResumeCurrent(); };
+      fops.format = [](void*) -> bool { return ConfigStorage::formatFilesystem(); };
+
+      const FormatGuardOutcome outcome = formatGuarded(fops);
+      const bool ok = (outcome.result == FMT_OK);
+
       JsonDocument resp;
       resp["ok"] = ok;
       resp["fs_status"] = (int)ConfigStorage::filesystemStatus();
-      if (!ok) resp["error"] = ConfigStorage::filesystemError();
-      resp["restarting"] = ok;
+      if (!ok) {
+        // Le code de FormatGuard dit POURQUOI on a refuse ou echoue ; le
+        // message de ConfigStorage reste disponible quand c'est le formatage
+        // lui-meme qui a rate.
+        resp["error"] = formatGuardErrorCode(outcome.result);
+        if (outcome.result == FMT_FORMAT_FAILED) {
+          resp["msg"] = ConfigStorage::filesystemError();
+        }
+      }
+      // Rendu explicite : un operateur doit pouvoir constater que le chien de
+      // garde a bien ete remis, et pas seulement l'esperer.
+      resp["watchdog_restored"] = outcome.watchdogRestored;
+      resp["restarting"] = ok || !outcome.watchdogRestored;
       serializeJson(resp, op.json);
       op.ok = ok;
       op.httpStatus = ok ? 200 : 500;
-      if (ok) scheduleControlledRestart();
+      // Redemarrage controle apres un succes, comme avant - ET si la
+      // restauration du chien de garde a echoue : un redemarrage le re-arme,
+      // et c'est la seule facon de sortir d'un etat non surveille.
+      if (ok || !outcome.watchdogRestored) scheduleControlledRestart();
       break;
     }
 
@@ -1728,12 +1790,24 @@ void WebConfigurator::executeWebOp(WebOp& op) {
 #if MIC_ENABLED
     case WEBOP_AUTOCAL_START_AIR:
     case WEBOP_AUTOCAL_START_RANGE: {
-      if (!_autoCal || !_audio || !_audio->isMicDetected()) {
-        op.ok = false; op.json = "{\"t\":\"acal_error\",\"msg\":\"no_microphone\"}";
-        break;
-      }
-      if (_autoCal->isRunning()) {
-        op.ok = false; op.json = "{\"t\":\"acal_error\",\"msg\":\"calibration_busy\"}";
+      // DECISION DEPORTEE dans CalibrationGate (pur, donc reellement execute
+      // en test hote - ce fichier n'est compilable par aucun build hote).
+      //
+      // `testSessionActive()` et NON `isTestOwner(op.clientId)` : la question
+      // n'est pas qui demande, c'est si les actionneurs sont deja pris. Cabler
+      // l'appartenance laisserait un SECOND navigateur demarrer une calibration
+      // pendant le test manuel du premier.
+      CalStartInputs gate;
+      gate.calibratorPresent = (_autoCal != nullptr);
+      gate.micDetected = (_audio != nullptr && _audio->isMicDetected());
+      gate.calibrationRunning = (_autoCal != nullptr && _autoCal->isRunning());
+      gate.manualTestActive = testSessionActive();
+      const CalStartVerdict verdict = calibrationStartVerdict(gate);
+      if (verdict != CALSTART_OK) {
+        op.ok = false;
+        op.json = "{\"t\":\"acal_error\",\"msg\":\"";
+        op.json += calibrationStartErrorCode(verdict);
+        op.json += "\"}";
         break;
       }
       // Suspendre la lecture MIDI : sinon le lecteur continuerait a pousser des
@@ -1946,6 +2020,13 @@ bool WebConfigurator::testSessionExpired(unsigned long now) const {
   const bool expired = _testActive && (now - _testStartTime) >= TEST_SESSION_MAX_MS;
   portEXIT_CRITICAL(&_sessionMux);
   return expired;
+}
+
+bool WebConfigurator::testSessionActive() const {
+  portENTER_CRITICAL(&_sessionMux);
+  const bool active = _testActive;
+  portEXIT_CRITICAL(&_sessionMux);
+  return active;
 }
 
 bool WebConfigurator::isTestOwner(uint32_t clientId) const {

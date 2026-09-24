@@ -54,6 +54,7 @@
 #include "MidiFilePlayer.h"
 #include "WebAuth.h"
 #include "WebOpChannel.h"
+#include "WsOpRing.h"
 
 #if MIC_ENABLED
 #include "AudioAnalyzer.h"
@@ -223,9 +224,9 @@ private:
   // eventuel est diffuse par loop() sur le WebSocket.
   static const uint8_t kWsOpQueueSize = 6;
   WebOp _wsOps[kWsOpQueueSize];
-  uint8_t _wsOpHead;
-  uint8_t _wsOpTail;
-  uint8_t _wsOpCount;
+  // Les indices et la BORNE par passe vivent dans WsOpRing (pur, teste sur
+  // hote). Seule la charge utile - qui porte des `String` Arduino - reste ici.
+  WsOpRing _wsOpRing;
   // Un MUTEX, pas un portMUX : une WebOp porte des String, donc la copier alloue
   // sur le tas. Faire cela dans une section critique (interruptions coupees,
   // spinlock pris) est interdit - l'allocateur prend lui-meme un verrou. Un
@@ -435,6 +436,10 @@ private:
   // l'autre tache, et le filet de securite se declenchait a contretemps.
   bool testSessionExpired(unsigned long now) const;
   // Vrai si le proprietaire de la session est ce client (lecture coherente).
+  // Vrai si une session de test manuel est ouverte, QUEL QUE SOIT son
+  // proprietaire. Sert a refuser le demarrage d'une calibration : un second
+  // navigateur ne doit pas pouvoir en lancer une pendant le test du premier.
+  bool testSessionActive() const;
   bool isTestOwner(uint32_t clientId) const;
 
   // A "test note" preview plays a real timed note through the sequencer and is
