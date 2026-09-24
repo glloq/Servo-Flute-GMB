@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -1190,6 +1191,48 @@ def test_web_interface_requires_authentication():
     assert "X-Auth-Token" in ui
     assert "t:'auth',token:AUTH.token" in ui
     assert 'loginOverlay' in ui
+
+
+def test_every_websocket_reply_has_a_handler_in_the_ui():
+    """Toute reponse WebSocket emise par le firmware doit etre TRAITEE par l'interface.
+
+    CE QUE CE TEST N'EST PAS : une verification de presence de texte. Les deux
+    listes sont DERIVEES des sources - les types emis sont extraits de
+    WebConfigurator.cpp, les types traites du repartiteur de web_content.h - et
+    confrontees dans les DEUX SENS. Aucune des deux n'est recopiee ici, donc
+    aucune ne peut se perimer : ajouter une reponse sans son branchement fait
+    echouer ce test, et un branchement pour une reponse que plus personne
+    n'emet aussi.
+
+    LE DEFAUT QU'IL VERROUILLE, trouve par ce test meme : trois reponses
+    partaient vers le navigateur qui les jetait en silence.
+      - `stop_escalated` : l'ordre d'arret n'a pas pu etre mis en file et le
+        serveur l'a ESCALADE en panic. Les actionneurs sont en securite, mais
+        pas par le chemin demande, et tout le reste a ete coupe avec. Ne rien
+        dire laissait croire a un arret ordinaire ;
+      - `noise` : succes ou REFUS d'une capture de profil de bruit, avec la
+        raison (no_microphone, note_playing, too_short) ;
+      - `mic_reset` : resultat de la reinitialisation du micro, `status` etant
+        la seule chose qui dise POURQUOI elle a echoue.
+
+    C'est la meme famille que les trois codes d'erreur de l'audit precedent qui
+    s'affichaient bruts faute de libelle : une extremite parle, l'autre
+    n'ecoute pas, et rien dans la chaine ne le signale.
+    """
+    web = read('Servo_flute_ESP32/WebConfigurator.cpp')
+    ui = read('Servo_flute_ESP32/web_content.h')
+
+    # Les deux formes d'emission : litteral JSON a la main, et ArduinoJson.
+    emitted = set(re.findall(r'\{\\"t\\":\\"([a-z_0-9]+)\\"', web))
+    emitted |= set(re.findall(r'\["t"\]\s*=\s*"([a-z_0-9]+)"', web))
+    # Le repartiteur de l'interface : `d.t==='<type>'`.
+    handled = set(re.findall(r"d\.t===?'([a-z_0-9]+)'", ui))
+
+    assert emitted, "aucun type de reponse extrait : l'extraction elle-meme a casse"
+    assert not (emitted - handled), \
+        "reponses emises par le firmware et ignorees par l'interface : %s" % sorted(emitted - handled)
+    assert not (handled - emitted), \
+        "branchements de l'interface pour des reponses que le firmware n'emet plus : %s" % sorted(handled - emitted)
 
 
 def test_runtime_strings_are_json_escaped():

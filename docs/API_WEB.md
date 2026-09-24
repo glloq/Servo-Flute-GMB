@@ -482,3 +482,73 @@ an actuator.
 Diagnostics, configuration read and write, reset, filesystem recovery and network
 recovery remain available in that state, on purpose: they are what you need to
 get out of it.
+
+## Finalisation pass — answers a client must not ignore
+
+Three server replies and one status key existed in the firmware without ever
+reaching a client. They are listed here with the decision each one calls for,
+because in every case ignoring the reply means believing something that is not
+true.
+
+### `{"t":"stop_escalated","cmd":"pump_stop"|"fan_stop"}` (WebSocket)
+
+The stop order could not be handed to the actuator task, so the server
+**escalated it to a full emergency stop**. The actuators are safe — but not by
+the path that was asked for, and *everything else that was playing was cut with
+it*. A client that ignores this message shows a normal "stopped" state while the
+instrument has actually panicked.
+
+This message is defence in depth and should be unreachable in practice: stop
+orders no longer travel through the command ring at all (see below). It is kept
+because the guarantee must still hold if that routing were ever removed.
+
+### Orders that can no longer be lost
+
+`ACMD_PUMP_STOP`, `ACMD_FAN_STOP`, `ACMD_PUMP_STOP_SINGLE`, `pump_enable=false`,
+`test_sol=0` — and, since this pass, **`pump_target` and `fan_target` with
+`v = 0`** — never travel through the bounded command ring. They set a dedicated
+flag that cannot be full, so `postCommand()` always reports success and the order
+is applied at the head of the very next pass.
+
+A zero setpoint is *not* converted into a hard stop: it keeps its own channel and
+is applied by the original command, because `PressureController::stop()`
+additionally cancels a running single-pump test and `FanController::stop()` skips
+the ramp-down. The observable behaviour of the sliders is unchanged; only the
+loss is gone.
+
+The energising variants (`pump_enable=true`, `test_sol=1`, any `v > 0`) stay
+ordinary and may still be refused under saturation: losing a start-up is safe,
+losing a stop is not.
+
+### `{"t":"midi_error","error":"storage_error","preserved":true|false}`
+
+Returned by a MIDI upload that replaces an existing file when the swap failed.
+
+- `preserved: true` — **the previous file is still there and intact.** The
+  replacement did not happen; nothing was lost. Retry when space allows.
+- `preserved: false` — the destination is gone. This is the only case that calls
+  for re-uploading the original.
+
+The file is replaced transactionally (`dest → .bak`, `tmp → dest`, `.bak` deleted
+only on confirmed success), and an interrupted swap is repaired at boot. The
+backup lives at the filesystem root as `/.mbk_<name>`, outside `MIDI_DIR`, so it
+never appears in `GET /api/midi/list` and never counts against the quota.
+
+### `GET /api/wifi/status` → `"ssid_busy": true`
+
+The configuration lock was held by a commit in progress, so `ssid` was returned
+**empty rather than half-copied**. The field is absent when the read succeeded.
+This route is purely informative, which is why it degrades a single field instead
+of answering `503 config_busy` the way `GET /api/config` does. An empty `ssid`
+without `ssid_busy` genuinely means no SSID is configured — the two are not the
+same and a client must not merge them.
+
+### `gmb.descriptor_rebuild_failures` (`/api/status`, `/api/diagnostics`)
+
+Non-zero means **the descriptor being served is behind the active
+configuration**: a rebuild ran out of memory and the previous, coherent pair was
+kept instead of rebooting the instrument. Playing is unaffected; only GMB
+discovery is stale, and the next successful activation clears it.
+
+`/api/diagnostics` also reports it as the `gmb_descriptor` check, `warning` when
+non-zero.

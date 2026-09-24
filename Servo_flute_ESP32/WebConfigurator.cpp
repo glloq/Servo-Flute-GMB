@@ -2409,6 +2409,12 @@ void WebConfigurator::handleApiStatus(AsyncWebServerRequest* request) {
     g["descriptor_size"] = gmb::runtime::service().descriptorSize();
     g["configured"] = gmb::runtime::isConfigured();
     g["flags"] = gmb::runtime::service().handshakeFlags();
+    // Non nul = le descripteur SERVI est en retard sur la configuration active.
+    // Une reconstruction ratee (tas insuffisant) est deliberement non fatale -
+    // elle garde la paire coherente precedente au lieu de rebooter - mais elle
+    // n'etait observable nulle part : un client GMB lisait alors un document
+    // perime sans qu'aucune interface ne puisse le dire.
+    g["descriptor_rebuild_failures"] = gmb::runtime::service().descriptorRebuildFailures();
   }
 
   if (_instrument) {
@@ -3402,6 +3408,18 @@ void WebConfigurator::handleApiDiagnostics(AsyncWebServerRequest* request) {
     g["revision"] = gmb::runtime::revision();
     g["configured"] = gmb::runtime::isConfigured();
     g["descriptor_size"] = gmb::runtime::service().descriptorSize();
+    const uint32_t rebuildFailures = gmb::runtime::service().descriptorRebuildFailures();
+    g["descriptor_rebuild_failures"] = rebuildFailures;
+    // Etat DEGRADE et non fatal : la reconstruction du descripteur a manque de
+    // memoire, la paire servie reste coherente mais decrit une configuration
+    // qui n'est plus l'active. Un avertissement, pas une erreur - l'instrument
+    // joue normalement, seule la decouverte GMB est en retard.
+    addCheck("gmb_descriptor", rebuildFailures == 0 ? "ok" : "warning",
+             rebuildFailures == 0
+                 ? String("Descriptor up to date (") +
+                       String((unsigned long)gmb::runtime::service().descriptorSize()) + " bytes)"
+                 : String("Served descriptor is behind the active configuration (") +
+                       String((unsigned long)rebuildFailures) + " rebuild failure(s), out of memory)");
   }
 
   // --- Divers ----------------------------------------------------------------

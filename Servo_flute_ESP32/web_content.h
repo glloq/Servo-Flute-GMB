@@ -3251,6 +3251,36 @@ function handleWs(d){
   }else if(d.t==='test_busy'){
     /* another client already owns the manual-test session; this command was refused */
     showToast('Manual test running on another client','error');addLog('test_busy')
+  }else if(d.t==='stop_escalated'){
+    /* The stop order could not be queued and the server escalated it to a full
+       panic. The actuators ARE safe - but not by the path the operator asked
+       for, and everything else playing was cut too. Saying nothing would let the
+       operator believe a simple stop had happened. */
+    showToast('Stop order escalated to emergency stop ('+(d.cmd||'?')+'): everything was cut','error');
+    addLog('stop_escalated: '+(d.cmd||'?'))
+  }else if(d.t==='noise'){
+    /* Noise-profile capture start/stop/reset. Carries the refusal reason on
+       failure (no_microphone, note_playing, too_short) and the stored profile
+       on success. */
+    if(d.ok===false){
+      const NZ={no_microphone:'No microphone detected',note_playing:'A note is playing - stop it first',
+        too_short:'Capture too short'+(d.min_frames!=null?' (min '+d.min_frames+' frames)':'')};
+      showToast('Noise capture: '+(NZ[d.error]||d.error||'refused'),'error');addLog('noise error: '+(d.error||'?'))
+    }else if(d.capturing!=null){
+      showToast('Noise capture started ('+d.capturing+')','info');addLog('noise capturing: '+d.capturing)
+    }else if(d.profile!=null){
+      showToast('Noise profile "'+d.profile+'" stored ('+d.frames+' frames, '+
+        (d.rms_dbfs!=null?d.rms_dbfs.toFixed(1):'?')+' dBFS)','success');
+      addLog('noise stored: '+d.profile+' '+d.frames+' frames')
+    }else{
+      showToast(d.msg||'Noise profiles cleared','success');addLog('noise: '+(d.msg||'reset'))
+    }
+  }else if(d.t==='mic_reset'){
+    /* Microphone re-initialisation result. `status` is the driver state string,
+       which is the only thing that says WHY a reset failed. */
+    if(d.ok){showToast('Microphone reset OK ('+(d.status||'?')+')','success')}
+    else{showToast('Microphone reset FAILED ('+(d.status||'?')+')','error')}
+    addLog('mic_reset '+(d.ok?'ok':'failed')+': '+(d.status||'?'))
   }
 }
 function updateCC(n,v){if(v===undefined)return;const p=(v/MIDI_CC_MAX*100).toFixed(0);
