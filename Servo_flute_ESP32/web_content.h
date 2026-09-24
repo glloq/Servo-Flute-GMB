@@ -1166,8 +1166,8 @@ border-radius:8px;color:#9aa;font-size:.78em;cursor:pointer;transition:all .2s;f
         <svg id="seqSvg" style="min-width:100%;height:auto;background:rgba(0,0,0,.2);border-radius:6px;cursor:crosshair"></svg>
       </div>
       <div class="btn-row">
-        <button class="btn btn-g" onclick="uploadSeqMidi()"><svg viewBox="0 0 16 16" width="14" height="14"><path d="M4 2l10 6-10 6z" fill="currentColor"/></svg>Jouer</button>
-        <button class="btn btn-s" onclick="clearSeq()">Effacer</button>
+        <button class="btn btn-g" onclick="uploadSeqMidi()"><svg viewBox="0 0 16 16" width="14" height="14"><path d="M4 2l10 6-10 6z" fill="currentColor"/></svg>Play</button>
+        <button class="btn btn-s" onclick="clearSeq()">Clear</button>
       </div>
       <div style="margin-top:12px;font-size:.72em;color:#666" id="seqMemInfo"></div>
     </div>
@@ -1431,13 +1431,13 @@ function redoFp(){if(!fpFuture.length||!CFG)return;
   const s=JSON.parse(fpFuture.pop());s.forEach((sn,i)=>{if(CFG.notes[i]){CFG.notes[i].midi=sn.midi;CFG.notes[i].fp=sn.fp}});
   buildFingeringRows();updUndoUI();markDirty()}
 function updUndoUI(){$('undoBtn').disabled=!fpHistory.length;$('redoBtn').disabled=!fpFuture.length;
-  $('undoInfo').textContent=fpHistory.length?fpHistory.length+' modif.':''}
+  $('undoInfo').textContent=fpHistory.length?fpHistory.length+' change(s)':''}
 function checkPca(){if(!CFG)return;const used={};const airP=parseInt($('airPca').value);used[airP]='Breath';
   if(CFG.embouchure==='trav'&&CFG.angle_on){const angP=$('cfgAngPca');if(angP){const av=parseInt(angP.value);used[av]='Servo Angle'}}
   document.querySelectorAll('.cal-card').forEach((card,i)=>{const ch=CFG.fingers[i]?CFG.fingers[i].ch:i;
     let conflict=used[ch]!==undefined;card.classList.toggle('pca-conflict',conflict);
-    const w=card.querySelector('.pca-warn');if(w)w.textContent=conflict?'PCA conflict '+ch+' avec '+used[ch]:'';
-    used[ch]='Doigt '+(i+1)})}
+    const w=card.querySelector('.pca-warn');if(w)w.textContent=conflict?'PCA conflict '+ch+' with '+used[ch]:'';
+    used[ch]='Finger '+(i+1)})}
 function updDualFill(ni){if(!CFG)return;
   if(CFG.notes[ni].amn>CFG.notes[ni].amx){const t=CFG.notes[ni].amn;CFG.notes[ni].amn=CFG.notes[ni].amx;CFG.notes[ni].amx=t;
     const mi=$('amn'+ni),mx=$('amx'+ni);if(mi)mi.textContent=CFG.notes[ni].amn;if(mx)mx.textContent=CFG.notes[ni].amx}
@@ -1736,7 +1736,7 @@ function cancelDiagnostic(){
   _diagTimeouts.forEach(id=>clearTimeout(id));_diagTimeouts=[];
   _diagRunning=false;
   const dm=$('airDiagMsg'),db=$('btnAirDiag'),dbar=$('airDiagBar');
-  if(dm){dm.textContent='Diagnostic annule';dm.style.color='#e9a645';
+  if(dm){dm.textContent='Test sequence cancelled';dm.style.color='#e9a645';
     setTimeout(()=>{dm.style.opacity='0';setTimeout(()=>{dm.style.display='none';dm.style.opacity='1'},300)},2000)}
   if(db){db.disabled=false;db.textContent='Test sequence'}
   if(dbar)dbar.style.display='none';
@@ -2343,7 +2343,7 @@ function updateConfigSummary(){
   if(changed.length>0){
     cs.style.display='';
     const list=changed.length<=4?changed.join(', '):changed.slice(0,3).join(', ')+' +'+( changed.length-3);
-    cs.textContent=changed.length+' modif: '+list;
+    cs.textContent=changed.length+' change(s): '+list;
   }else cs.style.display='none';
 }
 function importAirConfig(){
@@ -3941,7 +3941,7 @@ function buildFingerCards(){
     const f=CFG.fingers[i]||{ch:i,a:90,d:1,th:0};
     const d=document.createElement('div');d.className='cal-card';
     let html='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'+
-      '<h4 style="margin:0">Doigt '+(i+1)+'</h4>'+
+      '<h4 style="margin:0">Finger '+(i+1)+'</h4>'+
       '<div style="display:flex;align-items:center;gap:8px">'+
         '<span style="font-size:.75em;color:#888">Pin PCA</span>'+
         '<select id="fch'+i+'" style="max-width:70px" onchange="CFG.fingers['+i+'].ch=parseInt(this.value);checkPca();markDirty()">'+
