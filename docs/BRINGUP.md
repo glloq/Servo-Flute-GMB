@@ -196,9 +196,38 @@ Never against a closed reservoir.
 
 ---
 
-## Known limitation, not fixed
+## Deliberate filesystem format, and the watchdog
 
 `LittleFS.format()` erases 1.9 MB while the instruction cache is disabled, so
-`loop()` cannot re-arm the 4 s watchdog. The documented recovery path therefore
-has a good chance of being interrupted by a watchdog reset mid-format. Keep the
-serial console open when using it, and expect to repeat it.
+`loop()` cannot re-arm the 4 s task watchdog. Until this pass, the documented
+recovery path — the one you use on a virgin board — had a good chance of being
+interrupted by a watchdog reset mid-erase.
+
+`POST /api/fs/format` now runs the erase inside an explicit sequence:
+
+```text
+SAFE HARDWARE            actuators to rest, /OE HIGH, servo power cut
+  -> suspend watchdog    the LOOP TASK is unsubscribed (esp_task_wdt_delete)
+     -> LittleFS.format()
+  -> restore watchdog    esp_task_wdt_add, on success AND on failure
+-> remount, then controlled restart
+```
+
+What is *not* done, deliberately: the 4 s ceiling is not raised, and the
+watchdog is not deinitialised for the whole system. Only the calling task steps
+out of its supervision, for the duration of one voluntary, authenticated
+operation, and steps back in. There is no return path that leaves it suspended;
+the HTTP reply carries `watchdog_restored` so you can check rather than assume,
+and a failed restore forces the controlled restart, which re-arms it at boot.
+
+The format is refused outright — `hardware_not_safe` — while an actuator
+session (auto-calibration) is running: that owner drives the controllers
+directly and would take them back the moment the erase ends, so inertness
+cannot be guaranteed over the seconds where no code of this project runs.
+
+**Still to prove on the bench.** The host tests exercise the sequence and its
+invariants with injected primitives; they do not erase any flash and have no
+watchdog. Only the two ESP32 builds attest that these ESP-IDF calls exist and
+are correctly typed. Run `FIN-FS-WDT` in
+`Servo_flute_ESP32/docs/HARDWARE_TEST_MATRIX.md` with the serial console open
+before trusting this path on a board you cannot re-flash easily.

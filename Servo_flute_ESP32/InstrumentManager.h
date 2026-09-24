@@ -119,6 +119,17 @@ public:
   byte getCCBrightness() const { return _ccBrightness; }
 
   void allSoundOff();
+  // Prepare le materiel a une operation flash BLOQUANTE (formatage LittleFS),
+  // pendant laquelle loop() ne tourne pas du tout pendant plusieurs secondes.
+  // allSoundOff() ne suffit pas : il laisse les servos ALIMENTES (/OE bas), et
+  // un servo qui tient sa position sans aucune supervision pendant un
+  // effacement de flash n'est pas un etat qu'on veut. On coupe donc aussi
+  // l'alimentation servo - par la voie deja utilisee par la gestion anti-bruit,
+  // donc le prochain besoin d'actionneur la retablit normalement.
+  //
+  // Rend FALSE si l'inertie ne peut pas etre garantie, auquel cas l'appelant
+  // doit REFUSER l'operation.
+  bool safeForBlockingFlashOperation();
 
   // Nombre de paniques survenues depuis le demarrage. Monotone croissant, il ne
   // redescend jamais et ne se remet pas a zero : un consommateur memorise la

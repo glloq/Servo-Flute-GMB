@@ -1,6 +1,8 @@
 #include "WebConfigurator.h"
 
 #include "CalibrationGate.h"
+#include "FormatGuard.h"
+#include "TaskWatchdog.h"
 
 #include <new>   // std::nothrow : une allocation ratee doit rendre nullptr, pas abandonner
 #include "gmb/GmbRuntime.h"
@@ -1498,17 +1500,56 @@ void WebConfigurator::executeWebOp(WebOp& op) {
 
     case WEBOP_FORMAT_FS: {
       // Action DESTRUCTIVE et volontaire (mode recovery). Jamais automatique.
-      if (_instrument) _instrument->allSoundOff();
-      bool ok = ConfigStorage::formatFilesystem();
+      //
+      // `LittleFS.format()` efface ~1,9 Mo, bloquant : loop() ne tourne pas,
+      // donc esp_task_wdt_reset() n'est pas appele, et le chien de garde de
+      // tache (4 s, trigger_panic) redemarrait la carte EN PLEIN FORMATAGE.
+      // C'est le chemin de recuperation d'une carte vierge - celui du premier
+      // bring-up, celui qui doit marcher du premier coup.
+      //
+      // SEQUENCE : materiel en securite -> chien de garde suspendu -> formatage
+      // -> chien de garde restaure. Elle vit dans FormatGuard (pur, teste sur
+      // hote) ; ici il n'y a que le branchement des primitives reelles.
+      FormatGuardOps fops;
+      fops.ctx = this;
+      fops.safeHardware = [](void* c) -> bool {
+        WebConfigurator* self = static_cast<WebConfigurator*>(c);
+        // Pas d'instrument : aucun controleur n'a configure de GPIO
+        // d'actionneur, et initSafeState() a mis /OE HIGH a la premiere
+        // instruction du demarrage. Le materiel est deja inerte.
+        if (self->_instrument == nullptr) return true;
+        return self->_instrument->safeForBlockingFlashOperation();
+      };
+      fops.suspendWatchdog = [](void*) -> bool { return taskWatchdogSuspendCurrent(); };
+      fops.restoreWatchdog = [](void*) -> bool { return taskWatchdogResumeCurrent(); };
+      fops.format = [](void*) -> bool { return ConfigStorage::formatFilesystem(); };
+
+      const FormatGuardOutcome outcome = formatGuarded(fops);
+      const bool ok = (outcome.result == FMT_OK);
+
       JsonDocument resp;
       resp["ok"] = ok;
       resp["fs_status"] = (int)ConfigStorage::filesystemStatus();
-      if (!ok) resp["error"] = ConfigStorage::filesystemError();
-      resp["restarting"] = ok;
+      if (!ok) {
+        // Le code de FormatGuard dit POURQUOI on a refuse ou echoue ; le
+        // message de ConfigStorage reste disponible quand c'est le formatage
+        // lui-meme qui a rate.
+        resp["error"] = formatGuardErrorCode(outcome.result);
+        if (outcome.result == FMT_FORMAT_FAILED) {
+          resp["msg"] = ConfigStorage::filesystemError();
+        }
+      }
+      // Rendu explicite : un operateur doit pouvoir constater que le chien de
+      // garde a bien ete remis, et pas seulement l'esperer.
+      resp["watchdog_restored"] = outcome.watchdogRestored;
+      resp["restarting"] = ok || !outcome.watchdogRestored;
       serializeJson(resp, op.json);
       op.ok = ok;
       op.httpStatus = ok ? 200 : 500;
-      if (ok) scheduleControlledRestart();
+      // Redemarrage controle apres un succes, comme avant - ET si la
+      // restauration du chien de garde a echoue : un redemarrage le re-arme,
+      // et c'est la seule facon de sortir d'un etat non surveille.
+      if (ok || !outcome.watchdogRestored) scheduleControlledRestart();
       break;
     }
 

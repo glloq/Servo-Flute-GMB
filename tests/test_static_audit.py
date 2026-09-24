@@ -1349,6 +1349,50 @@ def test_websocket_operations_are_bounded_per_loop_pass():
     assert 1 <= int(m.group(1)) <= 2, "borne trop large : %s" % m.group(1)
 
 
+def test_littlefs_format_runs_under_a_suspended_watchdog():
+    """LOT 4 : le formatage LittleFS ne doit plus se faire redemarrer en plein vol.
+
+    LE DEFAUT : `LittleFS.format()` efface ~1,9 Mo, bloquant, donc `loop()` ne
+    tourne pas et `esp_task_wdt_reset()` n'est pas appele. Le chien de garde de
+    tache (WATCHDOG_TIMEOUT_MS = 4000, trigger_panic) redemarrait la carte au
+    milieu de l'effacement - sur le chemin de recuperation d'une carte vierge,
+    c'est-a-dire au premier bring-up.
+
+    La SEQUENCE est testee pour de vrai dans test_fin2_format.cpp (module pur,
+    primitives injectees). Ce qui ne peut pas l'etre : le cablage, parce que
+    `WebConfigurator.cpp` n'est compilable par aucun build hote, et
+    `TaskWatchdog.cpp` n'est compile que par les deux builds ESP32 (il inclut
+    esp_task_wdt.h, et un faux en-tete hote ne prouverait rien).
+    """
+    web = code_only(read('Servo_flute_ESP32/WebConfigurator.cpp'))
+    wdt = code_only(read('Servo_flute_ESP32/TaskWatchdog.cpp'))
+    settings = read('Servo_flute_ESP32/settings.h')
+
+    handler = web.split('case WEBOP_FORMAT_FS:', 1)[1].split('break;', 1)[0]
+    # Le formatage passe par la sequence, et NON plus par un appel direct.
+    assert 'formatGuarded(fops)' in handler
+    assert 'safeForBlockingFlashOperation()' in handler
+    assert 'taskWatchdogSuspendCurrent()' in handler
+    assert 'taskWatchdogResumeCurrent()' in handler
+    # `formatFilesystem()` n'est appele QUE depuis la primitive confiee a la
+    # sequence : un appel hors de cette lambda contournerait la garde.
+    assert handler.count('ConfigStorage::formatFilesystem()') == 1
+    assert 'fops.format' in handler
+    # L'ancien appel nu, qui ne mettait pas /OE HIGH et ne touchait pas au chien
+    # de garde, a disparu.
+    assert '_instrument->allSoundOff();\n      bool ok = ConfigStorage::formatFilesystem();' not in web
+
+    # Le CONTOURNEMENT interdit : on ne desarme pas le chien de garde pour tout
+    # le monde, et on n'allonge pas son plafond.
+    assert 'esp_task_wdt_delete' in wdt and 'esp_task_wdt_add' in wdt
+    assert 'esp_task_wdt_deinit' not in wdt
+    assert 'esp_task_wdt_init' not in wdt
+    assert '#define WATCHDOG_TIMEOUT_MS 4000' in settings
+
+    # Aucun appel ESP-IDF de chien de garde disperse dans WebConfigurator.
+    assert 'esp_task_wdt' not in web
+
+
 def test_runtime_strings_are_json_escaped():
     """#13: every network/user controllable string goes through a JSON serialiser."""
     web = read('Servo_flute_ESP32/WebConfigurator.cpp')

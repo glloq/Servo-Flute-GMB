@@ -1082,6 +1082,22 @@ uint32_t InstrumentManager::panicCount() const {
   return _panicCount;
 }
 
+bool InstrumentManager::safeForBlockingFlashOperation() {
+  // UN AUTRE PROPRIETAIRE. Pendant une session d'actionneurs, le calibrateur
+  // pilote les controleurs par references DIRECTES et reprendra la main des la
+  // fin de l'operation : on ne peut pas garantir l'inertie sur les secondes ou
+  // loop() est bloque. Le refus est la seule reponse honnete - l'operateur
+  // arrete sa calibration, puis formate.
+  if (_actuatorSessionActive) return false;
+
+  allSoundOff();
+  // /OE HIGH. C'est ce qu'allSoundOff() ne fait pas, et c'est ce qui compte
+  // ici : pas de couple maintenu, pas de courant servo, pendant tout le temps
+  // ou plus aucun code de ce projet ne s'execute.
+  powerOffServos();
+  return true;
+}
+
 void InstrumentManager::executePanic() {
   // L'INCREMENT VIENT EN PREMIER, avant l'extinction. allSoundOff() touche le
   // bus I2C et les GPIO d'actionneurs ; si l'une de ces ecritures bloque ou
