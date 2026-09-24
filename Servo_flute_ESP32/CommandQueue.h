@@ -107,6 +107,20 @@ public:
   static const uint8_t STOPREQ_FAN       = 1 << 1;  // ventilateur a l'arret
   static const uint8_t STOPREQ_PUMPS_OFF = 1 << 2;  // pump_enable = false
   static const uint8_t STOPREQ_SOLENOID  = 1 << 3;  // solenoide/valve fermes
+  // CONSIGNES A ZERO. Elles retirent de l'energie exactement comme les quatre
+  // ci-dessus, et l'interface web ne passe PAS par pump_stop / fan_stop pour
+  // ramener un actionneur a zero : ses curseurs envoient "pump_target" /
+  // "fan_target" avec v = 0. Sans ces deux bits, cette intention-la restait
+  // dans l'anneau ordinaire et se perdait sur saturation.
+  //
+  // BITS DISTINCTS DE STOPREQ_PUMPS / STOPREQ_FAN, deliberement : une consigne
+  // a zero n'est PAS un arret dur. PressureController::stop() annule en plus le
+  // test mono-pompe et ecrase le PWM immediatement ; FanController::stop()
+  // saute la rampe de descente. Les confondre changerait le comportement
+  // observable de l'interface. Le consommateur applique donc exactement la
+  // commande d'origine (ACMD_PUMP_TARGET / ACMD_FAN_TARGET avec b = 0).
+  static const uint8_t STOPREQ_PUMP_TARGET_ZERO = 1 << 4;  // consigne pompe = 0 %
+  static const uint8_t STOPREQ_FAN_TARGET_ZERO  = 1 << 5;  // consigne ventilateur = 0 %
 
   // Depose un ou plusieurs ordres d'arret. Jamais perdu.
   //

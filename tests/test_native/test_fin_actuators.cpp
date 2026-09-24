@@ -689,6 +689,149 @@ void hardware_topology_changes_require_a_restart() {
   delete changed;
 }
 
+/*=============================================================================
+ * A-6 - une consigne a ZERO retire de l'energie, donc elle ne doit pas non plus
+ *       etre perdable
+ *
+ * LE DEFAUT, tel qu'il existe apres le LOT A :
+ *   `postCommand()` sort de l'anneau les ordres d'ARRET (pump_stop, fan_stop,
+ *   pump_enable=false, test_sol=0, pump_stop_single). Mais l'interface web ne
+ *   passe pas par eux pour amener un actionneur a zero : les curseurs envoient
+ *   "pump_target" / "fan_target" avec v = 0, qui finissent sur le
+ *   `return _commands.push(cmd)` ordinaire. Anneau plein = la consigne a zero
+ *   est JETEE, et l'actionneur reste a sa consigne precedente.
+ *
+ *   La borne INSTRUMENT_MAX_COMMANDS_PER_UPDATE introduite par cette meme passe
+ *   rend la saturation PLUS atteignable qu'avant : 24 emplacements s'ecoulent
+ *   desormais par tranches de 6. Une rafale de notes BLE et un curseur ramene a
+ *   zero suffisent.
+ *
+ * POURQUOI PAS SIMPLEMENT LES ROUTER VERS STOPREQ_PUMPS / STOPREQ_FAN :
+ *   parce que `stop()` n'est PAS `setTargetPercent(0)`.
+ *   PressureController::stop() annule en plus le test mono-pompe en cours et
+ *   ecrase le PWM immediatement ; FanController::stop() saute la rampe de
+ *   descente. Router la consigne a zero vers l'arret dur changerait le
+ *   comportement observable de l'interface. Le canal ajoute applique donc
+ *   exactement la meme commande qu'avant - ACMD_PUMP_TARGET / ACMD_FAN_TARGET
+ *   avec b = 0 - par le meme applyCommand(), en la rendant seulement
+ *   imperdable. Le test A-6d verrouille cette distinction.
+ *===========================================================================*/
+
+void a_zero_pump_target_is_not_lost_when_the_ring_is_full() {
+  finResetCfg();
+  InstrumentManager* im = finMakeReadyInstrument();
+  __test_millis = 1000;
+
+  // La pompe tourne REELLEMENT.
+  assert(im->postCommand(ACMD_PUMP_TARGET, 0, 80));
+  finRunPasses(im, 1, 10);
+  assert(im->getPressureCtrl().getTargetPercent() == 80);
+  assert(im->getPressureCtrl().isPumpRunning());
+
+  // Anneau sature de commandes NEUTRES pour la source d'air.
+  assert(finSaturateRing(im) == COMMAND_QUEUE_SIZE);
+  assert(!im->postCommand(ACMD_TEST_FINGER, 0, 0, 90));   // il est bien plein
+
+  // L'operateur ramene le curseur a zero.
+  assert(im->postCommand(ACMD_PUMP_TARGET, 0, 0));
+
+  // Applique des la passe COURANTE, sans attendre que les 24 commandes neutres
+  // se soient ecoulees par tranches de six.
+  finRunPasses(im, 1, 10);
+  assert(im->getPressureCtrl().getTargetPercent() == 0);
+  assert(!im->getPressureCtrl().isPumpRunning());
+  assert(__analog_writes[kFinPumpPin] == 0);
+
+  // UNE SEULE perte comptee : la sonde ci-dessus, qui sert justement a prouver
+  // que l'anneau etait plein. La consigne a zero, elle, n'y figure pas - c'est
+  // exactement ce que ce test verrouille.
+  assert(im->droppedCommandCount() == 1);
+
+  delete im;
+}
+
+void a_zero_fan_target_is_not_lost_when_the_ring_is_full() {
+  finResetCfgFan();
+  InstrumentManager* im = finMakeReadyInstrument();
+  __test_millis = 1000;
+
+  assert(im->postCommand(ACMD_FAN_TARGET, 0, 80));
+  finRunPasses(im, 4, 200);          // laisser la rampe monter
+  assert(im->getFanCtrl().getSpeed() == 80);
+  assert(im->getFanCtrl().isRunning());
+
+  assert(finSaturateRing(im) == COMMAND_QUEUE_SIZE);
+  assert(!im->postCommand(ACMD_TEST_FINGER, 0, 0, 90));
+
+  assert(im->postCommand(ACMD_FAN_TARGET, 0, 0));
+
+  finRunPasses(im, 4, 200);          // laisser la rampe redescendre
+  assert(im->getFanCtrl().getSpeed() == 0);
+  assert(!im->getFanCtrl().isRunning());
+  assert(__analog_writes[kFinFanPin] == 0);
+  assert(im->droppedCommandCount() == 1);   // la sonde seule, comme ci-dessus
+
+  delete im;
+}
+
+// Meme raisonnement que pour un arret : une consigne NON NULLE deja en file ne
+// doit pas realimenter l'actionneur APRES la consigne a zero.
+void a_zero_target_cancels_the_higher_targets_already_queued() {
+  finResetCfg();
+  InstrumentManager* im = finMakeReadyInstrument();
+  __test_millis = 1000;
+
+  // Anneau rempli de consignes croissantes : sans purge, la derniere appliquee
+  // serait COMMAND_QUEUE_SIZE %.
+  assert(finFillRingWithPumpTargets(im) == COMMAND_QUEUE_SIZE);
+  assert(im->postCommand(ACMD_PUMP_TARGET, 0, 0));
+
+  finRunPasses(im, 8, 10);           // largement de quoi vider l'anneau
+  assert(im->commandQueue().count() == 0);
+  assert(im->getPressureCtrl().getTargetPercent() == 0);
+  assert(!im->getPressureCtrl().isPumpRunning());
+
+  delete im;
+}
+
+// CONTRE-EPREUVE DE COMPORTEMENT : une consigne a zero n'est pas un arret dur.
+// `stop()` annule le test mono-pompe ; `setTargetPercent(0)` ne le fait pas, et
+// ne doit pas commencer a le faire parce que la commande a change de canal.
+void a_zero_pump_target_does_not_end_a_single_pump_test() {
+  finResetCfg();
+  InstrumentManager* im = finMakeReadyInstrument();
+  __test_millis = 1000;
+
+  // PREMIER VOLET - le test mono-pompe est encore DANS L'ANNEAU quand la
+  // consigne a zero arrive. La purge ne doit pas l'emporter : elle ne retire
+  // que ce qui realimenterait la CIBLE GLOBALE.
+  assert(im->postCommand(ACMD_PUMP_SINGLE_TEST, 0, 60));
+  assert(im->commandQueue().count() == 1);
+  assert(im->postCommand(ACMD_PUMP_TARGET, 0, 0));
+  assert(im->commandQueue().count() == 1);   // toujours la, non purge
+  finRunPasses(im, 1, 10);
+  const int duringTest = __analog_writes[kFinPumpPin];
+  assert(duringTest > 0);                    // le test demande a bien demarre
+
+  // SECOND VOLET - consigne globale a zero pendant que le test mono-pompe est
+  // DEJA EN COURS.
+  assert(im->postCommand(ACMD_PUMP_TARGET, 0, 0));
+  finRunPasses(im, 1, 10);
+
+  // La cible globale est bien a zero...
+  assert(im->getPressureCtrl().getTargetPercent() == 0);
+  // ...mais le test mono-pompe possede toujours la pompe : update() sort par sa
+  // branche prioritaire et continue d'ecrire le PWM du test.
+  assert(__analog_writes[kFinPumpPin] == duringTest);
+
+  // L'arret DUR, lui, y met fin - c'est la difference que ce test protege.
+  assert(im->postCommand(ACMD_PUMP_STOP_SINGLE, 0));
+  finRunPasses(im, 1, 10);
+  assert(__analog_writes[kFinPumpPin] == 0);
+
+  delete im;
+}
+
 }  // namespace
 
 void fin_actuators_run_all_tests() {
@@ -708,4 +851,8 @@ void fin_actuators_run_all_tests() {
   a_note_on_followed_by_a_note_off_releases_the_note();
   a_note_off_still_falls_back_to_the_bitmap_under_saturation();
   hardware_topology_changes_require_a_restart();
+  a_zero_pump_target_is_not_lost_when_the_ring_is_full();
+  a_zero_fan_target_is_not_lost_when_the_ring_is_full();
+  a_zero_target_cancels_the_higher_targets_already_queued();
+  a_zero_pump_target_does_not_end_a_single_pump_test();
 }

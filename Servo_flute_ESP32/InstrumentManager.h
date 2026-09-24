@@ -154,10 +154,16 @@ public:
   // EXCEPTION : les commandes qui RETIRENT de l'energie ne passent pas par
   // l'anneau et rendent TOUJOURS true - ACMD_ALL_SOUND_OFF, ACMD_NOTE_OFF,
   // ACMD_PUMP_STOP, ACMD_FAN_STOP, ACMD_PUMP_STOP_SINGLE, ACMD_PUMP_ENABLE avec
-  // a == 0, ACMD_TEST_SOLENOID avec a == 0, et le CC121. Les variantes qui
-  // AJOUTENT de l'energie (ACMD_PUMP_ENABLE a == 1, ACMD_TEST_SOLENOID a == 1)
+  // a == 0, ACMD_TEST_SOLENOID avec a == 0, ACMD_PUMP_TARGET et ACMD_FAN_TARGET
+  // avec b == 0, et le CC121. Les variantes qui AJOUTENT de l'energie
+  // (ACMD_PUMP_ENABLE a == 1, ACMD_TEST_SOLENOID a == 1, une consigne b > 0)
   // restent ordinaires : perdre une mise en route est sur, perdre un arret ne
   // l'est pas. Voir CommandQueue::requestStop().
+  //
+  // Une consigne a ZERO n'est PAS convertie en arret dur : elle emprunte un
+  // canal imperdable distinct et reste appliquee par la meme commande, afin de
+  // ne pas changer le comportement observable (stop() annule en plus le test
+  // mono-pompe et saute la rampe du ventilateur).
   bool postCommand(const ActuatorCommand& cmd);
   bool postCommand(uint8_t type, uint8_t a = 0, uint8_t b = 0, uint16_t c = 0);
   // Panic asynchrone : jamais perdu, prioritaire sur toute commande en attente.

@@ -100,11 +100,19 @@ bool CommandQueue::commandEnergizes(const ActuatorCommand& cmd, uint8_t bits) {
   switch (cmd.type) {
     // Consignes de pompe : elles n'alimentent que si elles demandent autre chose
     // que zero. Une consigne a 0 % laissee en file est inoffensive.
-    case ACMD_PUMP_TARGET:      return (bits & STOPREQ_PUMPS) != 0 && cmd.b > 0;
+    // Une consigne a zero purge les consignes NON NULLES deja en file, pour la
+    // meme raison qu'un arret : sinon la plus ancienne s'appliquerait APRES elle
+    // et realimenterait la pompe.
+    case ACMD_PUMP_TARGET:
+      return (bits & (STOPREQ_PUMPS | STOPREQ_PUMP_TARGET_ZERO)) != 0 && cmd.b > 0;
+    // STOPREQ_PUMP_TARGET_ZERO est volontairement ABSENT ici : une consigne
+    // globale a zero ne termine pas un test mono-pompe (setTargetPercent(0) ne
+    // touche pas _testPumpIndex), seul l'arret dur le fait.
     case ACMD_PUMP_SINGLE_TEST: return (bits & STOPREQ_PUMPS) != 0 && cmd.b > 0;
     // Seul pump_enable = true defait pump_enable = false.
     case ACMD_PUMP_ENABLE:      return (bits & STOPREQ_PUMPS_OFF) != 0 && cmd.a != 0;
-    case ACMD_FAN_TARGET:       return (bits & STOPREQ_FAN) != 0 && cmd.b > 0;
+    case ACMD_FAN_TARGET:
+      return (bits & (STOPREQ_FAN | STOPREQ_FAN_TARGET_ZERO)) != 0 && cmd.b > 0;
     // Seule l'OUVERTURE de la valve defait sa fermeture.
     case ACMD_TEST_SOLENOID:    return (bits & STOPREQ_SOLENOID) != 0 && cmd.a != 0;
     default:                    return false;

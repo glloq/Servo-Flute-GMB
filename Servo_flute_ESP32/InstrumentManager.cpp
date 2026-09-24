@@ -708,6 +708,24 @@ bool InstrumentManager::postCommand(const ActuatorCommand& cmd) {
         return true;
       }
       break;
+    // CONSIGNE A ZERO = retrait d'energie. Les curseurs de l'interface web ne
+    // passent pas par pump_stop / fan_stop pour ramener un actionneur a zero :
+    // ils envoient pump_target / fan_target avec v = 0. Cette intention-la
+    // restait dans l'anneau ordinaire et se perdait quand il etait plein -
+    // l'actionneur gardait alors sa consigne precedente. Le bit dedie applique
+    // EXACTEMENT la meme commande (voir processCommands), pas un arret dur.
+    case ACMD_PUMP_TARGET:
+      if (cmd.b == 0) {
+        _commands.requestStop(CommandQueue::STOPREQ_PUMP_TARGET_ZERO);
+        return true;
+      }
+      break;
+    case ACMD_FAN_TARGET:
+      if (cmd.b == 0) {
+        _commands.requestStop(CommandQueue::STOPREQ_FAN_TARGET_ZERO);
+        return true;
+      }
+      break;
     case ACMD_TEST_SOLENOID:
       if (cmd.a == 0) {
         _commands.requestStop(CommandQueue::STOPREQ_SOLENOID);
@@ -795,6 +813,16 @@ void InstrumentManager::processCommands() {
   // peut que RETIRER de l'energie. Cet ordre evite d'avoir a prouver que le
   // panic couvre exactement chaque bit.
   const uint8_t stopBits = _commands.takeStopRequests();
+  // Les consignes a ZERO sont appliquees AVANT les arrets durs : si les deux
+  // sont demandes dans la meme passe, c'est l'arret dur - le plus fort des deux
+  // - qui a le dernier mot. Elles passent par la commande d'ORIGINE et non par
+  // stop() : voir STOPREQ_PUMP_TARGET_ZERO dans CommandQueue.h.
+  if (stopBits & CommandQueue::STOPREQ_PUMP_TARGET_ZERO) {
+    applyCommand(ActuatorCommand(ACMD_PUMP_TARGET, 0, 0));
+  }
+  if (stopBits & CommandQueue::STOPREQ_FAN_TARGET_ZERO) {
+    applyCommand(ActuatorCommand(ACMD_FAN_TARGET, 0, 0));
+  }
   if (stopBits & CommandQueue::STOPREQ_PUMPS) {
     applyCommand(ActuatorCommand(ACMD_PUMP_STOP));
   }
