@@ -112,7 +112,12 @@ def test_autocal_actuator_ownership_and_locks():
     assert '_micMonitorBeforeCalibration' in hdr and '_micMonitorBeforeCalibration' in web
     assert 'cancelActiveActuatorSession' in web
     assert 'actuatorCommandBlockedDuringCalibration' in web
-    assert 'calibration_busy' in web            # second start refused
+    # Le refus d'un second demarrage n'est plus une chaine en ligne : il vient
+    # de CalibrationGate, pur et teste sur hote (test_fin2_calgate.cpp). On
+    # verifie donc le CABLAGE, qui est la seule chose qu'un test hote ne peut
+    # pas executer ici.
+    assert 'calibration_busy' in read('Servo_flute_ESP32/CalibrationGate.cpp')
+    assert 'calibrationStartVerdict(gate)' in web
     assert 'not_calibration_owner' in web        # non-owner stop/apply refused
     assert 'calibration_active' in web           # blocked commands + 409 config lock
     assert '409' in web                          # config POST lock status
@@ -1233,6 +1238,73 @@ def test_every_websocket_reply_has_a_handler_in_the_ui():
         "reponses emises par le firmware et ignorees par l'interface : %s" % sorted(emitted - handled)
     assert not (handled - emitted), \
         "branchements de l'interface pour des reponses que le firmware n'emet plus : %s" % sorted(handled - emitted)
+
+
+def test_calibration_start_is_refused_while_a_manual_test_session_is_open():
+    """LOT 2 : une auto-calibration ne demarre pas par-dessus un test manuel.
+
+    LE DEFAUT : `cancelActiveActuatorSession()`, appelee au demarrage d'une
+    calibration, ne touche pas `_testActive` / `_testStartTime`. Une session de
+    test manuel ouverte juste avant survivait donc, et son plafond
+    TEST_SESSION_MAX_MS finissait par echoir EN PLEINE MESURE :
+    `endTestSession(true)` demande alors un panic, qui coupe la calibration.
+
+    La DECISION est testee pour de vrai dans test_fin2_calgate.cpp (module pur).
+    Ce qui ne peut pas l'etre, et que cette garde verrouille, c'est le CABLAGE,
+    parce que WebConfigurator.cpp n'est compilable par aucun build hote.
+
+    LE CABLAGE QUI COMPTE : `testSessionActive()` et non `isTestOwner(...)`.
+    Brancher l'appartenance laisserait un SECOND navigateur lancer une
+    calibration pendant le test manuel du premier - le cas a deux clients, qui
+    est justement celui ou personne ne voit venir le panic.
+    """
+    web = read('Servo_flute_ESP32/WebConfigurator.cpp')
+    hdr = read('Servo_flute_ESP32/WebConfigurator.h')
+    gate = read('Servo_flute_ESP32/CalibrationGate.cpp')
+
+    # L'accesseur existe et lit l'etat sous le verrou de session, comme ses voisins.
+    assert 'bool testSessionActive() const;' in hdr
+    body = web.split('bool WebConfigurator::testSessionActive() const {', 1)[1].split('\n}', 1)[0]
+    assert 'portENTER_CRITICAL(&_sessionMux)' in body and 'portEXIT_CRITICAL(&_sessionMux)' in body
+
+    # Le demarrage de calibration passe par le verdict, et lui donne la session
+    # manuelle - pas son proprietaire.
+    start = code_only(web.split('case WEBOP_AUTOCAL_START_RANGE:', 1)[1].split('break;\n    }', 1)[0])
+    assert 'gate.manualTestActive = testSessionActive();' in start
+    assert 'isTestOwner' not in start
+    assert 'calibrationStartVerdict(gate)' in start
+    # Et il s'arrete AVANT tout effet de bord : ni pause du lecteur, ni prise de
+    # session, ni annulation, tant que le verdict n'est pas OK.
+    before = start.split('calibrationStartVerdict(gate)', 1)[0]
+    for side_effect in ('_player->pause()', 'cancelActiveActuatorSession()',
+                        'setActuatorSessionActive(true)', '_autoCal->start('):
+        assert side_effect not in before, side_effect
+
+    # Le module refuse bien ce cas, et avec ce code-la.
+    assert 'CALSTART_MANUAL_TEST_ACTIVE' in gate and 'manual_test_active' in gate
+
+
+def test_every_calibration_start_error_code_has_a_label_in_the_ui():
+    """Un code emis sans libelle s'affiche BRUT : acalErrText() fait `M[e]||e`.
+
+    C'est deja arrive dans ce depot (trois codes du range finder). La liste est
+    DERIVEE de CalibrationGate.cpp, donc un verdict ajoute sans son libelle
+    fait echouer ce test au lieu de produire un message illisible au banc.
+    """
+    gate = read('Servo_flute_ESP32/CalibrationGate.cpp')
+    ui = read('Servo_flute_ESP32/web_content.h')
+    codes = set(re.findall(r'return "([a-z_0-9]+)";', gate))
+    assert codes, "extraction des codes cassee"
+    labels = ui.split('function acalErrText(', 1)[1].split('return M[e]', 1)[0]
+    missing = sorted(c for c in codes if ("%s:'" % c) not in labels)
+    assert not missing, "codes sans libelle dans acalErrText() : %s" % missing
+
+    # ... ET que le chemin acal_error consulte reellement cette table. Il ne le
+    # faisait PAS : il affichait `d.msg` brut, si bien que `no_microphone` - qui
+    # existe depuis bien avant cette passe - s'affichait tel quel. Une table
+    # complete mais jamais lue ne protege rien.
+    branch = ui.split("d.t==='acal_error'", 1)[1].split('}else if', 1)[0]
+    assert 'acalErrText(d.msg)' in branch
 
 
 def test_runtime_strings_are_json_escaped():

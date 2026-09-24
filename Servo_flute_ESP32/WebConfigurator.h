@@ -435,6 +435,10 @@ private:
   // l'autre tache, et le filet de securite se declenchait a contretemps.
   bool testSessionExpired(unsigned long now) const;
   // Vrai si le proprietaire de la session est ce client (lecture coherente).
+  // Vrai si une session de test manuel est ouverte, QUEL QUE SOIT son
+  // proprietaire. Sert a refuser le demarrage d'une calibration : un second
+  // navigateur ne doit pas pouvoir en lancer une pendant le test du premier.
+  bool testSessionActive() const;
   bool isTestOwner(uint32_t clientId) const;
 
   // A "test note" preview plays a real timed note through the sequencer and is

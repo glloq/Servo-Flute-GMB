@@ -3214,8 +3214,9 @@ function handleWs(d){
   }else if(d.t==='acal_error'){
     autoCalRunning=false;$('btnAcalStart').style.display='';$('btnAcalStop').style.display='none';$('btnRfStart').style.display='';
     $('acalMetrics').style.display='none';$('acalState').textContent='Error';
-    $('acalMsg').textContent=d.msg||'Calibration interrompue';$('acalMsg').style.display='block';
-    addLog('Auto-cal ERROR: '+(d.msg||''));showToast(d.msg||'Calibration interrupted','error')
+    const am=d.msg?acalErrText(d.msg):'Calibration interrompue';
+    $('acalMsg').textContent=am;$('acalMsg').style.display='block';
+    addLog('Auto-cal ERROR: '+(d.msg||''));showToast(am||'Calibration interrupted','error')
   }else if(d.t==='rf_prog'){
     $('rfProgress').style.display='block';$('rfAngle').textContent=(d.angle||0)+' deg';
     /* progress across the bounded safe angle window (see AUTOCAL_RF_MIN/MAX_SAFE_ANGLE) */
@@ -3290,6 +3291,8 @@ function acalErrText(e){const M={
   storage_failed:'Save failed (LittleFS)',no_valid_range:'No valid range detected',
   not_applied:'Not applied',no_valid_note:'No valid note',
   not_calibration_owner:'Reserved for the owner client',calibration_active:'Calibration in progress',
+  no_microphone:'No microphone detected',calibration_busy:'A calibration is already running',
+  manual_test_active:'Stop the manual actuator test first (or let its 30 s timeout close it)',
   no_sound:'No sound detected',wrong_note:'Wrong note',low_confidence:'Confidence too low',
   no_stable_nominal:'No stable nominal',audio_stale:'Audio stream frozen',note_timeout:'Note timeout exceeded',
   global_timeout:'Global timeout exceeded',air_supply:'Air supply not ready',

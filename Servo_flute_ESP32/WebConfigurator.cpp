@@ -1,5 +1,7 @@
 #include "WebConfigurator.h"
 
+#include "CalibrationGate.h"
+
 #include <new>   // std::nothrow : une allocation ratee doit rendre nullptr, pas abandonner
 #include "gmb/GmbRuntime.h"
 #include "InstrumentManager.h"
@@ -1728,12 +1730,24 @@ void WebConfigurator::executeWebOp(WebOp& op) {
 #if MIC_ENABLED
     case WEBOP_AUTOCAL_START_AIR:
     case WEBOP_AUTOCAL_START_RANGE: {
-      if (!_autoCal || !_audio || !_audio->isMicDetected()) {
-        op.ok = false; op.json = "{\"t\":\"acal_error\",\"msg\":\"no_microphone\"}";
-        break;
-      }
-      if (_autoCal->isRunning()) {
-        op.ok = false; op.json = "{\"t\":\"acal_error\",\"msg\":\"calibration_busy\"}";
+      // DECISION DEPORTEE dans CalibrationGate (pur, donc reellement execute
+      // en test hote - ce fichier n'est compilable par aucun build hote).
+      //
+      // `testSessionActive()` et NON `isTestOwner(op.clientId)` : la question
+      // n'est pas qui demande, c'est si les actionneurs sont deja pris. Cabler
+      // l'appartenance laisserait un SECOND navigateur demarrer une calibration
+      // pendant le test manuel du premier.
+      CalStartInputs gate;
+      gate.calibratorPresent = (_autoCal != nullptr);
+      gate.micDetected = (_audio != nullptr && _audio->isMicDetected());
+      gate.calibrationRunning = (_autoCal != nullptr && _autoCal->isRunning());
+      gate.manualTestActive = testSessionActive();
+      const CalStartVerdict verdict = calibrationStartVerdict(gate);
+      if (verdict != CALSTART_OK) {
+        op.ok = false;
+        op.json = "{\"t\":\"acal_error\",\"msg\":\"";
+        op.json += calibrationStartErrorCode(verdict);
+        op.json += "\"}";
         break;
       }
       // Suspendre la lecture MIDI : sinon le lecteur continuerait a pousser des
@@ -1946,6 +1960,13 @@ bool WebConfigurator::testSessionExpired(unsigned long now) const {
   const bool expired = _testActive && (now - _testStartTime) >= TEST_SESSION_MAX_MS;
   portEXIT_CRITICAL(&_sessionMux);
   return expired;
+}
+
+bool WebConfigurator::testSessionActive() const {
+  portENTER_CRITICAL(&_sessionMux);
+  const bool active = _testActive;
+  portEXIT_CRITICAL(&_sessionMux);
+  return active;
 }
 
 bool WebConfigurator::isTestOwner(uint32_t clientId) const {
