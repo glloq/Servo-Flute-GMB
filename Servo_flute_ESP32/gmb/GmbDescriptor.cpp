@@ -89,7 +89,7 @@ std::string GmbDescriptor::toJson(const CapabilitySnapshot& s) {
   const InstrumentCapabilities& inst = s.instrument;
 
   std::string j;
-  j.reserve(1024);
+  j.reserve(1150);
   j += "{\"gmb_descriptor\":2";
   j += ",\"revision\":" + std::to_string((unsigned long)s.revision);
   j += ",\"device\":{\"name\":\"" + esc(s.identity.deviceName) + "\"";
@@ -172,6 +172,23 @@ std::string GmbDescriptor::toJson(const CapabilitySnapshot& s) {
   j += ",\"velocity\":";
   j += e.velocity ? "true" : "false";
   j += "}";
+
+  // messages: semantic support at the controller boundary. These values describe
+  // messages that have a real musical or safety effect, not messages a transport
+  // parser can merely decode. The expression-backed fields stay dynamic so a
+  // future implementation automatically follows the active capability snapshot.
+  j += ",\"messages\":{\"note_on\":true,\"note_off\":true";
+  j += ",\"control_change\":";
+  j += e.cc.empty() ? "false" : "true";
+  j += ",\"program_change\":false";
+  j += ",\"pitch_bend\":";
+  j += e.pitchBend ? "true" : "false";
+  j += ",\"channel_aftertouch\":";
+  j += e.channelAftertouch ? "true" : "false";
+  j += ",\"poly_aftertouch\":";
+  j += e.polyAftertouch ? "true" : "false";
+  j += ",\"clock\":false,\"start\":false,\"continue\":false";
+  j += ",\"stop\":false,\"system_reset\":false}";
 
   // physical: the wind-family block. Generic keys keep their generic meaning;
   // the flute-specific extras are ignored by any host that does not know them.
